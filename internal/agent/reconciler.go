@@ -63,7 +63,8 @@ func isDeviceBusy(err error) bool {
 	return strings.Contains(s, "held open") || strings.Contains(s, "busy") ||
 		strings.Contains(s, "in use") ||
 		strings.Contains(s, "snapshot") || // lvremove: origin contains snapshots
-		strings.Contains(s, "has children") // zfs destroy: clones/snapshots exist
+		strings.Contains(s, "has children") || // zfs destroy: snapshots exist
+		strings.Contains(s, "dependent clones") // zfs destroy: restore clones exist
 }
 
 // Reconcile realizes (or tears down) this node's replica of one volume.

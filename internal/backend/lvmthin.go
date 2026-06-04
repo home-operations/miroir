@@ -185,6 +185,13 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 		if err != nil {
 			return "", err
 		}
+		return l.DevicePath(vol), nil
+	}
+	// Same reboot gap as Create: the clone survives in LVM metadata but
+	// inactive, with no device node until activated.
+	if _, err := l.lvm(ctx, "lvchange", "--activate", "y",
+		fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
+		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
 	return l.DevicePath(vol), nil
 }

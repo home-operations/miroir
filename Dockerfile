@@ -26,6 +26,7 @@ RUN apk add --no-cache \
     e2fsprogs \
     e2fsprogs-extra \
     xfsprogs \
+    xfsprogs-extra \
     blkid \
     util-linux-misc
 # No udevd is reachable from the container: stop libdevmapper from waiting

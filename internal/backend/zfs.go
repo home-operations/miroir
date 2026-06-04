@@ -139,8 +139,40 @@ func (z *zfsBackend) Delete(ctx context.Context, vol string) error {
 	if err != nil || !ok {
 		return err
 	}
+	_, derr := z.exec(ctx, "zfs", "destroy", z.name(vol))
+	if derr == nil ||
+		(!strings.Contains(derr.Error(), "has children") &&
+			!strings.Contains(derr.Error(), "dependent clones")) {
+		return derr
+	}
+	// Restore clones pin this volume's snapshot chain — promoting
+	// reparents each clone's origin snapshot onto the clone, freeing the
+	// volume. Snapshots without clones still block the retry, which is
+	// the intended ordering: they go through their own delete lifecycle.
+	if err := z.promoteClones(ctx, vol); err != nil {
+		return err
+	}
 	_, err = z.exec(ctx, "zfs", "destroy", z.name(vol))
 	return err
+}
+
+func (z *zfsBackend) promoteClones(ctx context.Context, vol string) error {
+	out, err := z.exec(ctx, "zfs", "get", "-Hpo", "value", "clones",
+		"-r", "-t", "snapshot", z.name(vol))
+	if err != nil {
+		return err
+	}
+	for _, clones := range strings.Fields(out) {
+		if clones == "-" {
+			continue
+		}
+		for _, clone := range strings.Split(clones, ",") {
+			if _, err := z.exec(ctx, "zfs", "promote", clone); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error {
@@ -148,7 +180,9 @@ func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error
 	if err != nil || !ok {
 		return err
 	}
-	_, err = z.exec(ctx, "zfs", "destroy", z.name(vol)+"@"+snap)
+	// -d defers destruction while restore clones still reference the
+	// snapshot (ZFS removes it with the last clone); immediate otherwise.
+	_, err = z.exec(ctx, "zfs", "destroy", "-d", z.name(vol)+"@"+snap)
 	return err
 }
 

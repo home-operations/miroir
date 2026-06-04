@@ -189,6 +189,59 @@ func TestZFSCreateFromSnapshot(t *testing.T) {
 	fe.calledWith(t, "zfs clone tank/homefs/pvc-1@snap-1 tank/homefs/pvc-2")
 }
 
+func TestLVMThinCloneReactivates(t *testing.T) {
+	// Existing clone (post-reboot reconcile) must be re-activated: Talos
+	// does not activate foreign LVs at boot.
+	fe := &fakeExec{}
+	b := newLVMThin(cfg, fe.run)
+
+	if _, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snap-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "lvcreate")
+	fe.calledWith(t, "lvchange --activate y vg-homefs/pvc-2")
+}
+
+func TestZFSDeleteSnapshotDefersForClones(t *testing.T) {
+	// A restore clone pins its origin snapshot: -d lets ZFS remove it
+	// with the last clone instead of wedging the delete in retries.
+	fe := &fakeExec{}
+	b := newZFS(cfg, fe.run)
+
+	if err := b.DeleteSnapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "zfs destroy -d tank/homefs/pvc-1@snap-1")
+}
+
+func TestZFSDeletePromotesDependentClones(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs destroy tank/homefs/pvc-1",
+		"", errors.New("cannot destroy 'tank/homefs/pvc-1': volume has dependent clones"))
+	fe.respond("zfs get -Hpo value clones",
+		"-\ntank/homefs/pvc-2,tank/homefs/pvc-3\n", nil)
+	b := newZFS(cfg, fe.run)
+
+	// The retry hits the same canned destroy error; what matters is that
+	// every dependent clone was promoted first.
+	if err := b.Delete(context.Background(), "pvc-1"); err == nil {
+		t.Fatal("expected destroy error to propagate")
+	}
+	fe.calledWith(t, "zfs promote tank/homefs/pvc-2")
+	fe.calledWith(t, "zfs promote tank/homefs/pvc-3")
+}
+
+func TestZFSDeleteWithoutClonesDoesNotPromote(t *testing.T) {
+	fe := &fakeExec{}
+	b := newZFS(cfg, fe.run)
+
+	if err := b.Delete(context.Background(), "pvc-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "zfs promote")
+	fe.notCalledWith(t, "zfs get -Hpo value clones")
+}
+
 func TestZFSStatsUsesPool(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("zpool get", "2000000000000\n500000000000\n", nil)
