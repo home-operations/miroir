@@ -91,7 +91,6 @@ func TestLVMThinCreate(t *testing.T) {
 		t.Fatalf("unexpected device path %q", dev)
 	}
 	fe.calledWith(t, "lvcreate --type thin --virtualsize 10737418240b --thinpool thinpool --name pvc-1")
-	fe.calledWith(t, "--noudevsync")
 }
 
 func TestLVMThinCreateIdempotent(t *testing.T) {
@@ -268,20 +267,22 @@ func TestZFSSetupCreatesParentDataset(t *testing.T) {
 	fe.calledWith(t, "zfs create -p tank/homefs")
 }
 
-// Regression: --noudevsync is invalid on read commands (lvs/vgs) and must
-// only be appended to state-modifying lvm calls.
-func TestLVMReadCommandsHaveNoUdevSyncFlag(t *testing.T) {
+// Regression: --noudevsync is invalid on several lvm subcommands
+// (pvcreate rejects it outright); udev is disabled via lvmlocal.conf in
+// the image instead, so no command may carry the flag.
+func TestLVMCommandsHaveNoUdevSyncFlag(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("lv_size", "  10737418240\n", nil)
 	b := newLVMThin(cfg, fe.run)
 
-	_, _ = b.Create(context.Background(), "pvc-1", 1<<30) // exists() → lvs
-	_ = b.Resize(context.Background(), "pvc-1", 1<<30)    // sizeOf() → lvs
-	_, _ = b.Stats(context.Background())                  // lvs
+	_, _ = b.Create(context.Background(), "pvc-1", 1<<30)
+	_ = b.Resize(context.Background(), "pvc-1", 1<<30)
+	_, _ = b.Stats(context.Background())
+	_ = b.Setup(context.Background())
 
 	for _, call := range fe.calls {
-		if strings.HasPrefix(call, "lvm lvs") && strings.Contains(call, "--noudevsync") {
-			t.Fatalf("read command carries --noudevsync: %q", call)
+		if strings.Contains(call, "--noudevsync") {
+			t.Fatalf("lvm command carries --noudevsync: %q", call)
 		}
 	}
 }

@@ -44,7 +44,7 @@ func newLVMThin(cfg Config, e Exec) *lvmThin {
 // not exist yet (notes/DESIGN.md §7.2: kharkiv's r-homefs raw partition). Metadata
 // LV is sized 1 GiB per dm-thin guidance (§4.6).
 func (l *lvmThin) Setup(ctx context.Context) error {
-	if _, err := l.lvmRead(ctx, "vgs", l.vg); err == nil {
+	if _, err := l.lvm(ctx, "vgs", l.vg); err == nil {
 		// VG exists; ensure the thin pool does too (it might not after a
 		// partial first start).
 		ok, perr := l.exists(ctx, l.pool)
@@ -57,11 +57,11 @@ func (l *lvmThin) Setup(ctx context.Context) error {
 	} else if l.device == "" {
 		return fmt.Errorf("VG %s absent and no --lvm-device configured to create it", l.vg)
 	} else {
-		if _, err := l.lvmWrite(ctx, "pvcreate", l.device); err != nil &&
+		if _, err := l.lvm(ctx, "pvcreate", l.device); err != nil &&
 			!strings.Contains(err.Error(), "already") {
 			return fmt.Errorf("pvcreate %s: %w", l.device, err)
 		}
-		if _, err := l.lvmWrite(ctx, "vgcreate", l.vg, l.device); err != nil &&
+		if _, err := l.lvm(ctx, "vgcreate", l.vg, l.device); err != nil &&
 			!strings.Contains(err.Error(), "already exists") {
 			return fmt.Errorf("vgcreate %s: %w", l.vg, err)
 		}
@@ -75,20 +75,18 @@ func (l *lvmThin) Setup(ctx context.Context) error {
 	}
 	args := append([]string{"lvcreate", "--type", "thin-pool"}, sizeArgs...)
 	args = append(args, "--poolmetadatasize", "1g", "--name", l.pool, l.vg)
-	if _, err := l.lvmWrite(ctx, args...); err != nil &&
+	if _, err := l.lvm(ctx, args...); err != nil &&
 		!strings.Contains(err.Error(), "already exists") {
 		return fmt.Errorf("create thin pool %s/%s: %w", l.vg, l.pool, err)
 	}
 	return nil
 }
 
-// lvmWrite runs state-modifying commands with udev sync disabled (the agent
-// container has no udev daemon). --noudevsync is invalid on read commands.
-func (l *lvmThin) lvmWrite(ctx context.Context, args ...string) (string, error) {
-	return l.exec(ctx, "lvm", append(args, "--noudevsync")...)
-}
-
-func (l *lvmThin) lvmRead(ctx context.Context, args ...string) (string, error) {
+// lvm runs an lvm subcommand. Udev handling is disabled centrally in the
+// image's /etc/lvm/lvmlocal.conf (the agent container has no udev daemon);
+// per-command --noudevsync is both redundant and invalid on several
+// subcommands (pvcreate rejects it).
+func (l *lvmThin) lvm(ctx context.Context, args ...string) (string, error) {
 	return l.exec(ctx, "lvm", args...)
 }
 
@@ -97,7 +95,7 @@ func (l *lvmThin) DevicePath(vol string) string {
 }
 
 func (l *lvmThin) exists(ctx context.Context, lv string) (bool, error) {
-	_, err := l.lvmRead(ctx, "lvs", fmt.Sprintf("%s/%s", l.vg, lv))
+	_, err := l.lvm(ctx, "lvs", fmt.Sprintf("%s/%s", l.vg, lv))
 	if err != nil {
 		if strings.Contains(err.Error(), "Failed to find") ||
 			strings.Contains(err.Error(), "not found") {
@@ -114,7 +112,7 @@ func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (stri
 		return "", err
 	}
 	if !ok {
-		_, err = l.lvmWrite(ctx, "lvcreate",
+		_, err = l.lvm(ctx, "lvcreate",
 			"--type", "thin",
 			"--virtualsize", fmt.Sprintf("%db", sizeBytes),
 			"--thinpool", l.pool,
@@ -129,7 +127,7 @@ func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (stri
 	// Talos does not activate foreign LVs at boot, so an LV surviving a
 	// node reboot exists in metadata but has no device node until
 	// activated. Idempotent on an already-active LV.
-	if _, err := l.lvmWrite(ctx, "lvchange", "--activate", "y",
+	if _, err := l.lvm(ctx, "lvchange", "--activate", "y",
 		fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
 		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
@@ -144,7 +142,7 @@ func (l *lvmThin) Resize(ctx context.Context, vol string, sizeBytes int64) error
 	if cur >= sizeBytes {
 		return nil // already big enough (idempotent retry)
 	}
-	_, err = l.lvmWrite(ctx, "lvextend",
+	_, err = l.lvm(ctx, "lvextend",
 		"--size", fmt.Sprintf("%db", sizeBytes),
 		fmt.Sprintf("%s/%s", l.vg, vol))
 	return err
@@ -155,7 +153,7 @@ func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
 	if err != nil || ok {
 		return err
 	}
-	_, err = l.lvmWrite(ctx, "lvcreate",
+	_, err = l.lvm(ctx, "lvcreate",
 		"--snapshot",
 		"--name", snap,
 		"--setactivationskip", "n",
@@ -171,7 +169,7 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 	if !ok {
 		// A writable thin snapshot of the snapshot is the clone: instant
 		// CoW within the same pool, no data copy (notes/DESIGN.md §4.5.5).
-		_, err = l.lvmWrite(ctx, "lvcreate",
+		_, err = l.lvm(ctx, "lvcreate",
 			"--snapshot",
 			"--name", vol,
 			"--setactivationskip", "n",
@@ -188,7 +186,7 @@ func (l *lvmThin) Delete(ctx context.Context, vol string) error {
 	if err != nil || !ok {
 		return err
 	}
-	_, err = l.lvmWrite(ctx, "lvremove", "--yes", fmt.Sprintf("%s/%s", l.vg, vol))
+	_, err = l.lvm(ctx, "lvremove", "--yes", fmt.Sprintf("%s/%s", l.vg, vol))
 	return err
 }
 
@@ -197,7 +195,7 @@ func (l *lvmThin) DeleteSnapshot(ctx context.Context, _ /* vol */, snap string) 
 }
 
 func (l *lvmThin) sizeOf(ctx context.Context, lv string) (int64, error) {
-	out, err := l.lvmRead(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix",
+	out, err := l.lvm(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix",
 		"-o", "lv_size", fmt.Sprintf("%s/%s", l.vg, lv))
 	if err != nil {
 		return 0, err
@@ -206,7 +204,7 @@ func (l *lvmThin) sizeOf(ctx context.Context, lv string) (int64, error) {
 }
 
 func (l *lvmThin) Stats(ctx context.Context) (PoolStats, error) {
-	out, err := l.lvmRead(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix",
+	out, err := l.lvm(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix",
 		"--separator", "|",
 		"-o", "lv_size,data_percent,metadata_percent",
 		fmt.Sprintf("%s/%s", l.vg, l.pool))
