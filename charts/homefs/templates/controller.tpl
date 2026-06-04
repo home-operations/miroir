@@ -39,6 +39,8 @@ spec:
           ports:
             - name: healthz
               containerPort: 8081
+            - name: metrics
+              containerPort: 8080
           livenessProbe:
             httpGet: { path: /healthz, port: healthz }
             initialDelaySeconds: 10
