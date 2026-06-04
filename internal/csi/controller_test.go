@@ -270,3 +270,57 @@ func TestPickNodeNoStorageNodes(t *testing.T) {
 		t.Fatalf("expected RESOURCE_EXHAUSTED, got %v", err)
 	}
 }
+
+func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &homefsv1alpha1.HomefsVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
+		Spec: homefsv1alpha1.HomefsVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []homefsv1alpha1.Replica{{Node: "kharkiv", Backend: homefsv1alpha1.BackendLVMThin}},
+		},
+	}
+	srcSnap := &homefsv1alpha1.HomefsSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
+		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
+		Status:     homefsv1alpha1.HomefsSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+	}
+	cl := readyOnGet(s)
+	if err := cl.Create(context.Background(), srcVol); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Create(context.Background(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-new",
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: "snap-1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Volume.ContentSource == nil {
+		t.Fatal("ContentSource must be set on snapshot-restore responses")
+	}
+	if got := resp.Volume.ContentSource.GetSnapshot().GetSnapshotId(); got != "snap-1" {
+		t.Fatalf("ContentSource.Snapshot.SnapshotId = %q, want snap-1", got)
+	}
+	vol := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-new"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if vol.Spec.Source == nil || vol.Spec.Source.SnapshotName != "snap-1" {
+		t.Fatalf("new volume must record source snapshot, got %+v", vol.Spec.Source)
+	}
+	if len(vol.Spec.Replicas) != 1 || vol.Spec.Replicas[0].Node != "kharkiv" {
+		t.Fatalf("placement must follow source volume, got %+v", vol.Spec.Replicas)
+	}
+}

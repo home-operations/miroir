@@ -184,11 +184,22 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			Segments: map[string]string{constants.TopologyKey: r.Node},
 		})
 	}
+	var contentSource *csi.VolumeContentSource
+	if source != nil && source.SnapshotName != "" {
+		contentSource = &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{
+					SnapshotId: source.SnapshotName,
+				},
+			},
+		}
+	}
 	return &csi.CreateVolumeResponse{
 		Volume: &csi.Volume{
 			VolumeId:           vol.Name,
 			CapacityBytes:      sizeBytes,
 			AccessibleTopology: topology,
+			ContentSource:      contentSource,
 		},
 	}, nil
 }
