@@ -97,6 +97,19 @@ func (z *zfsBackend) Resize(ctx context.Context, vol string, sizeBytes int64) er
 	return err
 }
 
+func (z *zfsBackend) Sync(ctx context.Context, vol string) error {
+	if _, err := z.exec(ctx, "blockdev", "--flushbufs", z.DevicePath(vol)); err != nil {
+		return err
+	}
+	if _, err := z.exec(ctx, "sync"); err != nil {
+		return err
+	}
+	// Commit pending transaction groups before the snapshot dataset is cut.
+	pool := strings.SplitN(z.dataset, "/", 2)[0]
+	_, err := z.exec(ctx, "zpool", "sync", pool)
+	return err
+}
+
 func (z *zfsBackend) Snapshot(ctx context.Context, vol, snap string) error {
 	ok, err := z.exists(ctx, z.name(vol)+"@"+snap)
 	if err != nil || ok {

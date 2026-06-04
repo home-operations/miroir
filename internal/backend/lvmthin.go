@@ -148,6 +148,14 @@ func (l *lvmThin) Resize(ctx context.Context, vol string, sizeBytes int64) error
 	return err
 }
 
+func (l *lvmThin) Sync(ctx context.Context, vol string) error {
+	if _, err := l.exec(ctx, "blockdev", "--flushbufs", l.DevicePath(vol)); err != nil {
+		return err
+	}
+	_, err := l.exec(ctx, "sync")
+	return err
+}
+
 func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
 	ok, err := l.exists(ctx, snap)
 	if err != nil || ok {

@@ -46,6 +46,8 @@ func newFakeBackend() *fakeBackend { return &fakeBackend{created: map[string]int
 
 func (f *fakeBackend) Setup(context.Context) error { return nil }
 
+func (f *fakeBackend) Sync(context.Context, string) error { return nil }
+
 func (f *fakeBackend) Create(_ context.Context, vol string, size int64) (string, error) {
 	if f.failOn == "create" {
 		return "", errors.New("pool exploded")

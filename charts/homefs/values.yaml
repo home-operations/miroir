@@ -15,9 +15,9 @@ sidecars:
   registrar:
     image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
   snapshotter:
-    image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
+    image: registry.k8s.io/sig-storage/csi-snapshotter:v8.5.0
   resizer:
-    image: registry.k8s.io/sig-storage/csi-resizer:v2.2.0
+    image: registry.k8s.io/sig-storage/csi-resizer:v2.1.0
 
 kubeletDir: /var/lib/kubelet
 

@@ -102,7 +102,10 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if vol.Spec.DRBD == nil {
-		// Single replica: no barrier needed.
+		// Single replica: no barrier needed, but queued writes must land.
+		if err := r.Backend.Sync(ctx, vol.Name); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -137,6 +140,12 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 		if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
 			return ctrl.Result{}, err
 		}
+		// suspend-io quiesces new writes only; queued writeback must be
+		// drained or the snapshot captures stale content.
+		if err := r.Backend.Sync(ctx, vol.Name); err != nil {
+			_ = r.DRBD.ResumeIO(ctx, vol.Name)
+			return ctrl.Result{}, err
+		}
 		if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 			// Never leave the volume frozen.
 			_ = r.DRBD.ResumeIO(ctx, vol.Name)
@@ -160,6 +169,9 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 
 	case !coordinator && snap.Status.IOSuspended && myState != homefsv1alpha1.SnapshotDone:
+		if err := r.Backend.Sync(ctx, vol.Name); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 			return ctrl.Result{}, err
 		}

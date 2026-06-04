@@ -51,6 +51,12 @@ type Backend interface {
 	Create(ctx context.Context, vol string, sizeBytes int64) (devPath string, err error)
 	// Resize grows the device to sizeBytes (online). Shrinking errors.
 	Resize(ctx context.Context, vol string, sizeBytes int64) error
+	// Sync drains in-flight writes down to the backing store: dirty
+	// pages, DRBD's writeback queue, and (ZFS) pending transaction
+	// groups. Snapshots taken without it can capture stale content even
+	// under a DRBD suspend-io barrier — suspend stops new writes, not
+	// queued ones.
+	Sync(ctx context.Context, vol string) error
 	// Snapshot takes a local CoW snapshot of the device.
 	Snapshot(ctx context.Context, vol, snap string) error
 	// CreateFromSnapshot provisions a new writable device as a CoW clone
