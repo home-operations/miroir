@@ -104,11 +104,18 @@ type fakeExec struct {
 	calls     []string
 	responses map[string]string
 	errOn     map[string]error
+	errOnce   map[string]error
 }
 
 func (f *fakeExec) run(_ context.Context, name string, args ...string) (string, error) {
 	line := name + " " + strings.Join(args, " ")
 	f.calls = append(f.calls, line)
+	for key, err := range f.errOnce {
+		if strings.Contains(line, key) {
+			delete(f.errOnce, key)
+			return "", err
+		}
+	}
 	for key, err := range f.errOn {
 		if strings.Contains(line, key) {
 			return "", err
@@ -277,6 +284,30 @@ func TestApplyAdoptsAttachedDevice(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); err != nil {
 			t.Fatalf("%s: adoption must leave a breadcrumb", name)
 		}
+	}
+}
+
+func TestApplyAppliesALOnUncleanClone(t *testing.T) {
+	// A clone of an attached volume inherits a mid-flight activity log;
+	// drbdmeta refuses to read it until apply-al replays it. The clone's
+	// inherited GI (the source's, not this volume's day0) must then be
+	// adopted, never re-seeded.
+	fe := &fakeExec{
+		errOnce: map[string]error{
+			"dump-md": errors.New(`Found meta data is "unclean", please apply-al first`),
+		},
+		responses: map[string]string{"dump-md": "current-uuid 0xDEADBEEF00000001;"},
+	}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm apply-al pvc-1/0")
+	fe.notCalledWith(t, "create-md")
+	fe.notCalledWith(t, "set-gi")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); err != nil {
+		t.Fatal("clone adoption must leave a breadcrumb")
 	}
 }
 

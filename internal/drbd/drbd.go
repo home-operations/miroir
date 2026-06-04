@@ -153,6 +153,15 @@ func (d *Driver) probeMetadata(ctx context.Context, name string) (hasMD, attache
 		return true, true, "", nil
 	}
 	out, err := d.adm(ctx, "dump-md", name+"/0")
+	if err != nil && strings.Contains(err.Error(), "unclean") {
+		// A snapshot of an attached volume captures its activity log
+		// mid-flight; the kernel replays it on attach, but drbdmeta
+		// refuses to read unclean metadata. Replay it the same way.
+		if _, aerr := d.adm(ctx, "apply-al", name+"/0"); aerr != nil {
+			return false, false, "", fmt.Errorf("apply-al %s: %w", name, aerr)
+		}
+		out, err = d.adm(ctx, "dump-md", name+"/0")
+	}
 	switch {
 	case err == nil && strings.Contains(out, "might be stale"):
 		// dump-md succeeded against an attached minor (possible when the
