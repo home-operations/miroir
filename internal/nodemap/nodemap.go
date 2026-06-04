@@ -26,7 +26,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	homefsv1alpha1 "github.com/erwanleboucher/homefs/api/v1alpha1"
+	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
 )
 
 // Node describes one storage node's backend.

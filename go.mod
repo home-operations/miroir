@@ -1,4 +1,4 @@
-module github.com/erwanleboucher/homefs
+module github.com/eleboucher/homefs
 
 go 1.26.3
 

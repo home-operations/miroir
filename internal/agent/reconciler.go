@@ -28,9 +28,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	homefsv1alpha1 "github.com/erwanleboucher/homefs/api/v1alpha1"
-	"github.com/erwanleboucher/homefs/internal/backend"
-	"github.com/erwanleboucher/homefs/internal/constants"
+	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
+	"github.com/eleboucher/homefs/internal/backend"
+	"github.com/eleboucher/homefs/internal/constants"
 )
 
 // VolumeReconciler converges local state for volumes that place a replica on

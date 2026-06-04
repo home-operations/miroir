@@ -28,9 +28,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	homefsv1alpha1 "github.com/erwanleboucher/homefs/api/v1alpha1"
-	"github.com/erwanleboucher/homefs/internal/backend"
-	"github.com/erwanleboucher/homefs/internal/constants"
+	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
+	"github.com/eleboucher/homefs/internal/backend"
+	"github.com/eleboucher/homefs/internal/constants"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.

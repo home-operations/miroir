@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/erwanleboucher/homefs
+  repository: ghcr.io/eleboucher/homefs
   # Every main push publishes :main (and the 0.0.0-main chart); releases
   # publish immutable version tags.
   tag: main

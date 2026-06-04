@@ -8,4 +8,4 @@ version: 0.0.1
 appVersion: 0.0.1
 kubeVersion: ">=1.31.0"
 sources:
-  - https://github.com/erwanleboucher/homefs
+  - https://github.com/eleboucher/homefs
