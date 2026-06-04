@@ -73,8 +73,8 @@ type HomefsVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
 	// +kubebuilder:validation:Minimum=1
 	SizeBytes int64 `json:"sizeBytes"`
-	// Replicas lists the placement of the volume. Exactly one entry for
-	// unreplicated volumes; two or more once DRBD replication lands (M2).
+	// Replicas lists the placement of the volume: one entry for local
+	// volumes, two or more for DRBD-replicated ones.
 	// +kubebuilder:validation:MinItems=1
 	Replicas []Replica `json:"replicas"`
 	// QuorumPolicy applies only when len(Replicas) > 1.

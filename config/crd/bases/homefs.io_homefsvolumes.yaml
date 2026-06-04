@@ -84,8 +84,8 @@ spec:
                   type: string
                 replicas:
                   description: |-
-                    Replicas lists the placement of the volume. Exactly one entry for
-                    unreplicated volumes; two or more once DRBD replication lands (M2).
+                    Replicas lists the placement of the volume: one entry for local
+                    volumes, two or more for DRBD-replicated ones.
                   items:
                     description: |-
                       Replica is one placement of the volume's data — a DRBD peer when the

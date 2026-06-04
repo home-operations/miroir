@@ -19,8 +19,8 @@ spec:
     spec:
       serviceAccountName: homefs-agent
       # hostNetwork so the pod IP is the node IP and the container
-      # hostname matches the node — required by DRBD peers in M2, and
-      # why the agent's ports must be host-unique (9810/9811).
+      # hostname matches the node — DRBD peers dial the host IP and
+      # match `on <hostname>` blocks; agent ports must be host-unique.
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
       # drbdadm/drbdsetup need the host PID namespace for /proc access

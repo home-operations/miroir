@@ -4,9 +4,10 @@ Low-resource replicated block storage CSI driver for small Talos Linux
 clusters. Control plane in Go; data path delegated to in-kernel primitives
 (dm-thin / ZFS today, DRBD9 replication planned).
 
-**Status: alpha (M1).** Single-replica volumes: dynamic provisioning,
-filesystem + raw block, node staging. No replication, snapshots, or
-expansion yet. Roadmap: M2 DRBD replication, M3 snapshots, M4 expansion.
+**Status: alpha.** Dynamic provisioning (filesystem + raw block),
+synchronous 2-node replication over DRBD9, crash-consistent snapshots
+with restore, and online expansion. Untested on real hardware beyond
+single-replica volumes — treat replicated volumes as experimental.
 
 ## How it works
 
