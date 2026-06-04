@@ -156,14 +156,18 @@ func (l *lvmThin) Sync(ctx context.Context, vol string) error {
 	return err
 }
 
+// snapLV maps a snapshot's cluster name to its LV name: LVM reserves LV
+// names starting "snapshot", and CSI snapshot names start exactly there.
+func snapLV(snap string) string { return "hfs-" + snap }
+
 func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
-	ok, err := l.exists(ctx, snap)
+	ok, err := l.exists(ctx, snapLV(snap))
 	if err != nil || ok {
 		return err
 	}
 	_, err = l.lvm(ctx, "lvcreate",
 		"--snapshot",
-		"--name", snap,
+		"--name", snapLV(snap),
 		"--setactivationskip", "n",
 		fmt.Sprintf("%s/%s", l.vg, vol))
 	return err
@@ -181,7 +185,7 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 			"--snapshot",
 			"--name", vol,
 			"--setactivationskip", "n",
-			fmt.Sprintf("%s/%s", l.vg, snap))
+			fmt.Sprintf("%s/%s", l.vg, snapLV(snap)))
 		if err != nil {
 			return "", err
 		}
@@ -206,7 +210,7 @@ func (l *lvmThin) Delete(ctx context.Context, vol string) error {
 }
 
 func (l *lvmThin) DeleteSnapshot(ctx context.Context, _ /* vol */, snap string) error {
-	return l.Delete(ctx, snap)
+	return l.Delete(ctx, snapLV(snap))
 }
 
 func (l *lvmThin) sizeOf(ctx context.Context, lv string) (int64, error) {

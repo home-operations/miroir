@@ -202,6 +202,32 @@ func TestLVMThinCloneReactivates(t *testing.T) {
 	fe.calledWith(t, "lvchange --activate y vg-homefs/pvc-2")
 }
 
+func TestLVMThinSnapshotAvoidsReservedName(t *testing.T) {
+	// LVM rejects LV names starting "snapshot"; CSI snapshot names start
+	// exactly there — the LV gets a prefix, end to end.
+	fe := &fakeExec{}
+	fe.respond("lvs vg-homefs/hfs-snapshot-1", "", errors.New("Failed to find logical volume"))
+	b := newLVMThin(cfg, fe.run)
+
+	if err := b.Snapshot(context.Background(), "pvc-1", "snapshot-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "--name hfs-snapshot-1")
+	fe.notCalledWith(t, "--name snapshot-1")
+
+	fe.respond("lvs vg-homefs/pvc-2", "", errors.New("Failed to find logical volume"))
+	if _, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snapshot-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "vg-homefs/hfs-snapshot-1")
+
+	fe.respond("lvs vg-homefs/hfs-snapshot-1", "", nil) // now exists
+	if err := b.DeleteSnapshot(context.Background(), "pvc-1", "snapshot-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "lvremove --yes vg-homefs/hfs-snapshot-1")
+}
+
 func TestZFSDeleteSnapshotDefersForClones(t *testing.T) {
 	// A restore clone pins its origin snapshot: -d lets ZFS remove it
 	// with the last clone instead of wedging the delete in retries.
