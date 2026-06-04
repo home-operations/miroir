@@ -54,32 +54,27 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 		return err
 	}
 
-	// create-md + seed exactly once per backing device. The authority is
-	// the on-disk metadata itself (dump-md probe) — a marker file alone
-	// is hostPath state that can vanish while the LV still holds live
-	// metadata, and a blind create-md --force would then wipe a live GI
-	// and resync bitmap. The marker remains as a cheap fast path.
+	// create-md + seed exactly once per backing device: the .md-created
+	// marker lands only after a fully successful seed, so a retry never
+	// adopts half-seeded metadata (which deadlocks the first handshake:
+	// both sides Inconsistent, no sync source).
 	marker := d.path(r.Name + ".md-created")
-	if _, err := os.Stat(marker); os.IsNotExist(err) {
-		hasMD, err := d.hasMetadata(ctx, r.Name)
-		if err != nil {
+	if _, err := os.Stat(marker); err != nil {
+		if !os.IsNotExist(err) {
 			return err
 		}
-		if !hasMD {
-			// --max-peers reserves metadata slots up-front: it cannot
-			// be raised later without recreating metadata, so leave
-			// headroom beyond the current 2-node shape.
-			if _, err := d.adm(ctx, "create-md", "--force", "--max-peers", "7", r.Name+"/0"); err != nil {
-				return fmt.Errorf("create-md %s: %w", r.Name, err)
-			}
-			if err := d.seedGI(ctx, r); err != nil {
-				return err
-			}
-		}
-		if err := os.WriteFile(marker, nil, 0o640); err != nil {
+		if err := d.ensureMetadata(ctx, r); err != nil {
 			return err
 		}
-	} else if err != nil {
+	}
+	// A sentinel must never outlive a completed seed — left stale, it
+	// would authorize re-seeding live metadata the moment the marker is
+	// lost. Removed before the marker lands so a crash in between leaves
+	// "no markers" (re-probed, re-seeded only if virgin).
+	if err := os.Remove(d.path(r.Name + ".md-seeding")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.WriteFile(marker, nil, 0o640); err != nil {
 		return err
 	}
 
@@ -101,24 +96,125 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 	return d.ensureDeviceNode(r.Minor)
 }
 
-// hasMetadata probes the backing device for existing DRBD metadata.
-// An attached (busy) device necessarily has metadata.
-func (d *Driver) hasMetadata(ctx context.Context, name string) (bool, error) {
-	_, err := d.adm(ctx, "dump-md", name+"/0")
+// ensureMetadata creates and GI-seeds the backing metadata, surviving a
+// crash at any point: the .md-seeding sentinel written before create-md
+// proves on-disk metadata is our own unfinished attempt and safe to
+// re-seed. The on-disk probe stays the authority for "metadata exists" —
+// markers are hostPath state that can vanish while the LV still holds a
+// live GI, and a blind create-md --force would wipe it.
+func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
+	hasMD, attached, dump, err := d.probeMetadata(ctx, r.Name)
+	if err != nil {
+		return err
+	}
+	if attached {
+		// A previous life completed seeding and adjust; the metadata is
+		// live — never touch it.
+		return d.markAdopted(r.Name)
+	}
+	sentinel := d.path(r.Name + ".md-seeding")
+	_, serr := os.Stat(sentinel)
+	if serr != nil && !os.IsNotExist(serr) {
+		return serr
+	}
+	if hasMD && os.IsNotExist(serr) {
+		// Metadata without any marker: lost hostPath state. Re-seed only
+		// when the GI proves no Primary ever wrote; anything else is a
+		// live volume — adopt it untouched.
+		if !virginMetadata(dump, r.Name) {
+			return d.markAdopted(r.Name)
+		}
+	}
+	if err := os.WriteFile(sentinel, nil, 0o640); err != nil {
+		return err
+	}
+	if !hasMD {
+		// --max-peers reserves metadata slots up-front: it cannot
+		// be raised later without recreating metadata, so leave
+		// headroom beyond the current 2-node shape.
+		if _, err := d.adm(ctx, "create-md", "--force", "--max-peers", "7", r.Name+"/0"); err != nil {
+			return fmt.Errorf("create-md %s: %w", r.Name, err)
+		}
+	}
+	return d.seedGI(ctx, r)
+}
+
+// probeMetadata reports the backing device's DRBD metadata state.
+// attached means the kernel has the resource (which necessarily implies
+// metadata exists); dump is the raw dump-md output when readable.
+//
+// Kernel state is probed first: an attached resource claims its backing
+// device exclusively, so dump-md only reports EBUSY — the same error a
+// foreign holder (stale mount, LVM) produces. Asking the kernel
+// disambiguates: resource present → attached; absent → any remaining
+// busy error is a foreign holder and surfaces.
+func (d *Driver) probeMetadata(ctx context.Context, name string) (hasMD, attached bool, dump string, err error) {
+	if out, err := d.Exec(ctx, "drbdsetup", "status", name); err == nil && strings.Contains(out, name) {
+		return true, true, "", nil
+	}
+	out, err := d.adm(ctx, "dump-md", name+"/0")
 	switch {
+	case err == nil && strings.Contains(out, "might be stale"):
+		// dump-md succeeded against an attached minor (possible when the
+		// open is not exclusive), flagging "# Output might be stale".
+		return true, true, "", nil
 	case err == nil:
-		return true, nil
-	case strings.Contains(err.Error(), "busy") ||
-		strings.Contains(err.Error(), "configured"):
-		// Device attached to the kernel — metadata exists.
-		return true, nil
+		return true, false, out, nil
+	case strings.Contains(err.Error(), "is configured!"):
+		// drbdmeta's own refusal — covers a resource attached between
+		// the kernel probe and the dump.
+		return true, true, "", nil
 	case strings.Contains(err.Error(), "no valid meta data") ||
 		strings.Contains(err.Error(), "No valid meta data"):
-		return false, nil
+		return false, false, "", nil
 	default:
-		return false, fmt.Errorf("dump-md %s: %w", name, err)
+		return false, false, "", fmt.Errorf("dump-md %s: %w", name, err)
 	}
 }
+
+// markAdopted leaves a durable breadcrumb when metadata is taken over
+// without local provenance (markers lost): a volume that adopted a
+// deadlocked half-seed is otherwise indistinguishable from one in a
+// normal first sync during triage.
+func (d *Driver) markAdopted(name string) error {
+	return os.WriteFile(d.path(name+".md-adopted"), nil, 0o640)
+}
+
+// justCreatedUUID is drbdmeta's constant current-uuid for metadata that
+// was created but never promoted (UUID_JUST_CREATED).
+const justCreatedUUID = "0000000000000004"
+
+// virginMetadata reports whether a dump-md proves the volume never held
+// data: the current UUID is still the day0 seed or create-md's
+// just-created constant, and no slot carries a bitmap UUID (no
+// divergence was ever tracked). Anything else — including unparseable
+// output — counts as live: adopting a deadlocked volume is
+// operator-recoverable, wiping a live one is not.
+func virginMetadata(dump, name string) bool {
+	current := ""
+	for _, line := range strings.Split(dump, "\n") {
+		fields := strings.Fields(strings.TrimSuffix(strings.TrimSpace(line), ";"))
+		if len(fields) != 2 {
+			continue
+		}
+		val := strings.TrimPrefix(strings.ToUpper(fields[1]), "0X")
+		switch fields[0] {
+		case "current-uuid":
+			if current == "" {
+				current = val
+			}
+		case "bitmap-uuid":
+			if strings.Trim(val, "0") != "" {
+				return false
+			}
+		}
+	}
+	return current == Day0GI(name) || current == justCreatedUUID
+}
+
+// stateSuffixes are the per-resource files in StateDir that teardown
+// removes — keep in sync with everything Apply and ensureMetadata write.
+var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"}
 
 // SweepOrphans tears down kernel resources and rendered config files with
 // no owning volume on this node — leftovers of an agent crash between up
@@ -151,7 +247,7 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 		if !found || owned(name) {
 			continue
 		}
-		for _, suffix := range []string{".res", ".md-created"} {
+		for _, suffix := range stateSuffixes {
 			if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
 				return err
 			}
@@ -207,10 +303,10 @@ func Day0GI(name string) string {
 const maxNodeID = 31
 
 // seedGI lets fresh volumes skip the initial sync: every replica stamps
-// the same deterministic day0 generation identifier (winner = lowest node
-// id, flagged Consistent+UpToDate; others bare), so the first handshake
-// sees identical generations and clean bitmaps — valid because thin
-// backings read zeros.
+// the same deterministic day0 generation identifier into all slots — the
+// winner node (lowest node id) with Consistent+UpToDate flags, every
+// other node bare — so the first handshake sees identical generations
+// and clean bitmaps. Valid because thin backings read zeros.
 //
 // Runs between create-md and the first adjust, into every node-id slot
 // (0..maxNodeID, own slot included): seeding only peer slots would leave
@@ -227,8 +323,15 @@ func (d *Driver) seedGI(ctx context.Context, r Resource) error {
 		// reaches it at the first handshake.
 		gi += ":1:1"
 	}
+	// drbdmeta's DEVICE argument is the minor — resource/volume syntax
+	// is drbdadm-only. Fed a name, the shipped utils derive minor -1 and
+	// probe it with a malformed drbdsetup call whose output is
+	// version-dependent (observed flaking per-invocation on real
+	// hardware). The real minor keeps the in-use probe well-defined:
+	// unconfigured proceeds, configured refuses.
+	minor := strconv.Itoa(int(r.Minor))
 	for nodeID := 0; nodeID <= maxNodeID; nodeID++ {
-		_, err := d.Exec(ctx, "drbdmeta", "--force", r.Name+"/0", "v09",
+		_, err := d.Exec(ctx, "drbdmeta", "--force", minor, "v09",
 			r.LocalDisk, "internal",
 			"set-gi", "--node-id", strconv.Itoa(nodeID), gi)
 		if err != nil {
@@ -261,7 +364,7 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 		!strings.Contains(err.Error(), "not defined in your config") {
 		return fmt.Errorf("down %s: %w", name, err)
 	}
-	for _, suffix := range []string{".res", ".md-created"} {
+	for _, suffix := range stateSuffixes {
 		if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
 			return err
 		}

@@ -103,11 +103,17 @@ func fakeMknod(string, uint32, int) error { return nil }
 type fakeExec struct {
 	calls     []string
 	responses map[string]string
+	errOn     map[string]error
 }
 
 func (f *fakeExec) run(_ context.Context, name string, args ...string) (string, error) {
 	line := name + " " + strings.Join(args, " ")
 	f.calls = append(f.calls, line)
+	for key, err := range f.errOn {
+		if strings.Contains(line, key) {
+			return "", err
+		}
+	}
 	for key, out := range f.responses {
 		if strings.Contains(line, key) {
 			return out, nil
@@ -154,6 +160,11 @@ func TestApplyFreshResource(t *testing.T) {
 	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI("pvc-1")+":0:0:0:1:1")
 	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI("pvc-1")+":0:0:0:1:1")
 	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI("pvc-1")+":0:0:0:1:1")
+	// drbdmeta is addressed by minor: the resource/volume form is drbdadm
+	// syntax and makes drbdmeta consult kernel state through a malformed
+	// drbdsetup invocation with undefined output.
+	fe.calledWith(t, "drbdmeta --force 1000 v09 /dev/vg-homefs/pvc-1 internal set-gi")
+	fe.notCalledWith(t, "drbdmeta --force pvc-1/0")
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.res")); err != nil {
@@ -199,6 +210,167 @@ func TestApplyIdempotent(t *testing.T) {
 		}
 	}
 	fe.calledWith(t, "drbdadm adjust pvc-1")
+}
+
+func TestApplyReseedsAfterMidSeedCrash(t *testing.T) {
+	fe := &fakeExec{errOn: map[string]error{
+		"set-gi --node-id 1": errors.New("exit status 20: Unexpected output from drbdsetup"),
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	r := testResource("paris")
+
+	if err := d.Apply(context.Background(), r); err == nil {
+		t.Fatal("expected mid-seed failure")
+	}
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); !os.IsNotExist(err) {
+		t.Fatal("marker must not be written after a failed seed")
+	}
+
+	// Retry: metadata now exists on disk (create-md ran), but the seeding
+	// sentinel proves it is our own half-seeded attempt — it must be
+	// re-seeded in full, never adopted (adoption deadlocks the handshake:
+	// both replicas Inconsistent, no sync source). The dump is
+	// deliberately non-virgin so only the sentinel can explain the
+	// re-seed.
+	fe.errOn = nil
+	fe.responses = map[string]string{"dump-md": "current-uuid 0xDEADBEEF00000001;"}
+	fe.calls = nil
+	if err := d.Apply(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI("pvc-1"))
+	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI("pvc-1"))
+	fe.notCalledWith(t, "create-md")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
+		t.Fatal("marker not written after successful re-seed")
+	}
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-seeding")); !os.IsNotExist(err) {
+		t.Fatal("seeding sentinel must be removed after success")
+	}
+}
+
+func TestApplyAdoptsAttachedDevice(t *testing.T) {
+	// Markers lost but the kernel holds the minor: a previous life
+	// completed seeding and adjust — metadata is live, never touch it.
+	// dump-md succeeds read-only on an attached minor with a stale-output
+	// warning; the refusal form covers metadata-modifying probes.
+	for name, fe := range map[string]*fakeExec{
+		"kernel has resource": {responses: map[string]string{
+			"drbdsetup status pvc-1": "pvc-1 role:Secondary\n  disk:Inconsistent",
+		}},
+		"stale warning": {responses: map[string]string{
+			"dump-md": "# Output might be stale, since minor 1000 is attached\ncurrent-uuid 0x0000000000000004;",
+		}},
+		"configured refusal": {errOn: map[string]error{
+			"dump-md": errors.New("Device 'pvc-1' is configured!"),
+		}},
+	} {
+		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+		if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		fe.notCalledWith(t, "create-md")
+		fe.notCalledWith(t, "set-gi")
+		if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
+			t.Fatalf("%s: adopted device must be marked created", name)
+		}
+		if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); err != nil {
+			t.Fatalf("%s: adoption must leave a breadcrumb", name)
+		}
+	}
+}
+
+func TestApplySurfacesNonDRBDBusyDevice(t *testing.T) {
+	// A backing device held open by something other than DRBD (stale
+	// mount, LVM) is not an attachment — it must error, not adopt.
+	fe := &fakeExec{errOn: map[string]error{
+		"dump-md": errors.New("open(/dev/vg-homefs/pvc-1) failed: Device or resource busy\n" +
+			"Exclusive open failed. Do it anyways?\nOperation canceled."),
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Apply(context.Background(), testResource("kharkiv")); err == nil {
+		t.Fatal("busy backing device must surface as an error")
+	}
+	fe.notCalledWith(t, "create-md")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); !os.IsNotExist(err) {
+		t.Fatal("busy device must not be marked created")
+	}
+}
+
+func TestApplyFastPathCleansStaleSentinel(t *testing.T) {
+	// marker + sentinel coexisting (crash in a past life, failed Down):
+	// the fast path must clear the sentinel — left stale, it would
+	// authorize re-seeding live metadata the moment the marker is lost.
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	for _, f := range []string{"pvc-1.md-created", "pvc-1.md-seeding"} {
+		if err := os.WriteFile(filepath.Join(d.StateDir, f), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "set-gi")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-seeding")); !os.IsNotExist(err) {
+		t.Fatal("fast path must remove a stale seeding sentinel")
+	}
+}
+
+func TestApplyAdoptsLiveMetadataWithoutMarkers(t *testing.T) {
+	// Markers lost, device detached, but the GI shows a Primary wrote
+	// (current UUID moved off day0): live volume — adopt, no re-seed.
+	fe := &fakeExec{responses: map[string]string{
+		"dump-md": "current-uuid 0xDEADBEEF00000001;\nbitmap-uuid 0x0000000000000000;",
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "create-md")
+	fe.notCalledWith(t, "set-gi")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); err != nil {
+		t.Fatal("adoption must leave a breadcrumb")
+	}
+}
+
+func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
+	// Markers lost, device detached, GI still the day0 seed with clean
+	// bitmaps: provably no data — re-seeding is safe and unsticks a
+	// partially seeded volume.
+	fe := &fakeExec{responses: map[string]string{
+		"dump-md": "current-uuid 0x" + Day0GI("pvc-1") + ";\nbitmap-uuid 0x0000000000000000;",
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "set-gi --node-id 31")
+	fe.notCalledWith(t, "create-md")
+}
+
+func TestVirginMetadata(t *testing.T) {
+	day0 := "current-uuid 0x" + Day0GI("pvc-1") + ";"
+	cases := []struct {
+		name, dump string
+		want       bool
+	}{
+		{"day0 seed", day0, true},
+		{"just created", "current-uuid 0x0000000000000004;", true},
+		{"primary wrote", "current-uuid 0xDEADBEEF00000001;", false},
+		{"divergence tracked", day0 + "\n    bitmap-uuid 0x00000000DEAD0000;", false},
+		{"unparseable", "garbage", false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		if got := virginMetadata(tc.dump, "pvc-1"); got != tc.want {
+			t.Errorf("%s: virginMetadata = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestDownRemovesState(t *testing.T) {
