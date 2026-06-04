@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
 	"github.com/eleboucher/homefs/internal/backend"
 	"github.com/eleboucher/homefs/internal/constants"
+	"github.com/eleboucher/homefs/internal/drbd"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -96,10 +98,14 @@ func vol(name string, nodes ...string) *homefsv1alpha1.HomefsVolume {
 			Node: n, Backend: homefsv1alpha1.BackendLVMThin,
 		})
 	}
+	finalizers := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		finalizers = append(finalizers, constants.FinalizerPrefix+n)
+	}
 	return &homefsv1alpha1.HomefsVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
-			Finalizers: []string{constants.VolumeFinalizer},
+			Finalizers: finalizers,
 		},
 		Spec: homefsv1alpha1.HomefsVolumeSpec{SizeBytes: 1 << 30, Replicas: replicas},
 	}
@@ -183,6 +189,88 @@ func TestReconcileReportsBackendError(t *testing.T) {
 	if got.Status.PerNode["kharkiv"].Message == "" {
 		t.Fatal("error message must be reported in status")
 	}
+}
+
+func TestReconcileReplicatedVolume(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol("pvc-1", "kharkiv", "paris")
+	v.Spec.QuorumPolicy = homefsv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = "192.168.1.41"
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = "192.168.1.42"
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1",
+		"devices":[{"disk-state":"UpToDate"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: "kharkiv", Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	res, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("replicated volumes must requeue to refresh DRBD state")
+	}
+	if fb.created["pvc-1"] != 1<<30 {
+		t.Fatal("backing device not created")
+	}
+	fe.calledWith(t, "drbdadm adjust pvc-1")
+
+	got := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status.PerNode["kharkiv"]
+	if st.DevicePath != "/dev/drbd1000" {
+		t.Fatalf("pods must attach the DRBD device, got %q", st.DevicePath)
+	}
+	if st.DiskState != "UpToDate" || !st.Connected {
+		t.Fatalf("unexpected DRBD status %+v", st)
+	}
+	// Only this node has reported yet -> Degraded, not Ready.
+	if got.Status.Phase != homefsv1alpha1.VolumeDegraded {
+		t.Fatalf("phase = %s, want Degraded until the peer reports", got.Status.Phase)
+	}
+}
+
+type fakeDRBDExec struct {
+	calls      []string
+	statusJSON string
+}
+
+func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (string, error) {
+	line := name + " " + strings.Join(args, " ")
+	f.calls = append(f.calls, line)
+	if strings.HasPrefix(line, "drbdsetup status") {
+		return f.statusJSON, nil
+	}
+	if strings.Contains(line, "dump-md") {
+		return "", errFreshDevice
+	}
+	return "", nil
+}
+
+var errFreshDevice = errors.New("no valid meta data")
+
+func (f *fakeDRBDExec) calledWith(t *testing.T, substr string) {
+	t.Helper()
+	for _, c := range f.calls {
+		if strings.Contains(c, substr) {
+			return
+		}
+	}
+	t.Fatalf("expected call containing %q, got %v", substr, f.calls)
 }
 
 // Regression: a foreign agent must never remove the finalizer — doing so

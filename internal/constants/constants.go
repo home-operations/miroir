@@ -25,9 +25,10 @@ const (
 	// value is the Kubernetes node name (notes/DESIGN.md §6.5).
 	TopologyKey = "homefs.io/node"
 
-	// VolumeFinalizer blocks HomefsVolume deletion until every agent has
-	// torn down its local state.
-	VolumeFinalizer = "homefs.io/teardown"
+	// FinalizerPrefix + node name blocks HomefsVolume deletion until that
+	// node's agent has torn down its local state. One finalizer per
+	// replica: each agent releases exactly its own.
+	FinalizerPrefix = "homefs.io/teardown-"
 
 	// ParamReplicas is the StorageClass parameter for the replica count.
 	ParamReplicas = "homefs.io/replicas"

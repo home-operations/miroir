@@ -32,12 +32,21 @@ const (
 	VolumeFailed   VolumePhase = "Failed"
 )
 
-// Replica is one placement of the volume's data (or, later, a DRBD peer).
+// Replica is one placement of the volume's data — a DRBD peer when the
+// volume is replicated.
 type Replica struct {
 	// Node is the Kubernetes node name hosting this replica.
 	Node string `json:"node"`
 	// Backend selects how the backing device is provisioned on this node.
 	Backend BackendType `json:"backend"`
+	// NodeID is the DRBD node id, assigned by the controller at creation
+	// and stable for the volume's lifetime. Only set on replicated volumes.
+	// +optional
+	NodeID int32 `json:"nodeID,omitempty"`
+	// Address is the replication endpoint (host IP), from the node map.
+	// Only set on replicated volumes.
+	// +optional
+	Address string `json:"address,omitempty"`
 }
 
 // DRBDSpec carries the cluster-unique DRBD identifiers allocated by the
@@ -84,11 +93,23 @@ type ReplicaStatus struct {
 	// DeviceCreated is true once the backing device exists on the node.
 	DeviceCreated bool `json:"deviceCreated,omitempty"`
 	// DevicePath is the node-local path pods attach to (backing device for
-	// replicas:1; /dev/drbd<minor> once replicated).
+	// replicas:1; /dev/drbd<minor> when replicated).
 	DevicePath string `json:"devicePath,omitempty"`
 	// SizeBytes is the currently realized size on this node, used to
 	// acknowledge expansion.
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
+	// DiskState is the DRBD disk state on this node (UpToDate,
+	// Inconsistent, Outdated, Diskless, …). Empty for unreplicated volumes.
+	// +optional
+	DiskState string `json:"diskState,omitempty"`
+	// Connected is true when all replication links from this node are
+	// established. Always true for unreplicated volumes.
+	// +optional
+	Connected bool `json:"connected,omitempty"`
+	// SplitBrain is true when this node's DRBD refused a reconnect after
+	// detecting divergent data — operator intervention required.
+	// +optional
+	SplitBrain bool `json:"splitBrain,omitempty"`
 	// Message carries the last reconcile error, if any.
 	Message string `json:"message,omitempty"`
 }

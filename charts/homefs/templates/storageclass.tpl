@@ -14,3 +14,22 @@ parameters:
   homefs.io/replicas: {{ .Values.storageClass.replicas | quote }}
   csi.storage.k8s.io/fstype: {{ .Values.storageClass.fsType }}
 {{- end }}
+{{- if .Values.replicatedStorageClass.create }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.replicatedStorageClass.name }}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: {{ .Values.replicatedStorageClass.isDefault | quote }}
+provisioner: homefs.io
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+reclaimPolicy: {{ .Values.replicatedStorageClass.reclaimPolicy }}
+parameters:
+  homefs.io/replicas: "2"
+  # last-man-standing: survivor keeps writing on node loss, split-brain
+  # alerts on reconnect; freeze: never diverges, halts on any disconnect.
+  homefs.io/quorum: {{ .Values.replicatedStorageClass.quorum }}
+  csi.storage.k8s.io/fstype: {{ .Values.replicatedStorageClass.fsType }}
+{{- end }}

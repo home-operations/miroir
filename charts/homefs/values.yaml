@@ -59,3 +59,11 @@ storageClass:
   fsType: ext4
   replicas: 1
   reclaimPolicy: Delete
+
+replicatedStorageClass:
+  create: true
+  name: homefs-replicated
+  isDefault: false
+  fsType: ext4
+  quorum: last-man-standing # | freeze
+  reclaimPolicy: Delete

@@ -23,11 +23,13 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -51,6 +53,11 @@ type Controller struct {
 	Nodes nodemap.Map
 	// ProvisionTimeout bounds the wait for agents to realize a volume.
 	ProvisionTimeout time.Duration
+
+	// allocMu serialises allocateDRBD+Create: CreateVolume RPCs run
+	// concurrently within the single controller pod, and two interleaved
+	// List→Create spans would hand out the same minor/port.
+	allocMu sync.Mutex
 }
 
 const defaultProvisionTimeout = 60 * time.Second
@@ -100,46 +107,47 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if err != nil {
 		return nil, err
 	}
-	if replicas != 1 {
-		return nil, status.Error(codes.InvalidArgument,
-			"replicas > 1 not implemented yet (M2)")
+	quorum, err := parseQuorum(req.GetParameters())
+	if err != nil {
+		return nil, err
 	}
 
-	node, err := c.pickNode(req.GetAccessibilityRequirements())
+	placed, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas)
 	if err != nil {
 		return nil, err
 	}
 
 	vol := &homefsv1alpha1.HomefsVolume{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:       req.GetName(),
-			Finalizers: []string{constants.VolumeFinalizer},
+			Name: req.GetName(),
 		},
 		Spec: homefsv1alpha1.HomefsVolumeSpec{
 			SizeBytes: sizeBytes,
-			Replicas: []homefsv1alpha1.Replica{
-				{Node: node.name, Backend: node.backend},
-			},
+			Replicas:  placed,
 		},
 	}
-	if err := c.Client.Create(ctx, vol); err != nil {
-		if !apierrors.IsAlreadyExists(err) {
-			return nil, status.Errorf(codes.Internal, "create HomefsVolume: %v", err)
-		}
-		// Idempotency: same name must mean same request.
-		existing := &homefsv1alpha1.HomefsVolume{}
-		if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetName()}, existing); err != nil {
-			return nil, status.Errorf(codes.Internal, "get existing HomefsVolume: %v", err)
-		}
-		if existing.Spec.SizeBytes != sizeBytes || len(existing.Spec.Replicas) != replicas {
-			return nil, status.Errorf(codes.AlreadyExists,
-				"volume %s exists with size=%d replicas=%d (requested size=%d replicas=%d)",
-				req.GetName(), existing.Spec.SizeBytes, len(existing.Spec.Replicas),
-				sizeBytes, replicas)
-		}
-		vol = existing
+	for _, r := range placed {
+		vol.Finalizers = append(vol.Finalizers, constants.FinalizerPrefix+r.Node)
 	}
-
+	if replicas > 1 {
+		vol.Spec.QuorumPolicy = quorum
+		c.allocMu.Lock()
+		drbdSpec, err := c.allocateDRBD(ctx)
+		if err != nil {
+			c.allocMu.Unlock()
+			return nil, err
+		}
+		vol.Spec.DRBD = drbdSpec
+		err = c.Client.Create(ctx, vol)
+		c.allocMu.Unlock()
+		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum); err2 != nil {
+			return nil, err2
+		}
+	} else if err := c.Client.Create(ctx, vol); err != nil {
+		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum); err2 != nil {
+			return nil, err2
+		}
+	}
 	if err := c.waitReady(ctx, vol.Name); err != nil {
 		return nil, err
 	}
@@ -196,35 +204,121 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 	}, nil
 }
 
-// storageNode is a placement candidate from the node map.
-type storageNode struct {
-	name    string
-	backend homefsv1alpha1.BackendType
-}
-
-// pickNode selects the replica node: the scheduler's preference first
-// (WaitForFirstConsumer), else the first storage node by name
-// (capacity-aware spread is M2).
-func (c *Controller) pickNode(reqs *csi.TopologyRequirement) (*storageNode, error) {
-	if len(c.Nodes) == 0 {
-		return nil, status.Error(codes.ResourceExhausted,
-			"no storage nodes configured (Helm values: nodes)")
+// place selects count replica nodes: the scheduler's preference first
+// (WaitForFirstConsumer), then the remaining storage nodes by name
+// (capacity-aware spread is future work). For replicated volumes it
+// resolves each node's InternalIP and assigns DRBD node ids by slice
+// position — replicas[0] is the GI-seed winner (internal/drbd).
+func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int) ([]homefsv1alpha1.Replica, error) {
+	if len(c.Nodes) < count {
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"need %d storage nodes, have %d (Helm values: nodes)", count, len(c.Nodes))
 	}
 
-	// Honor the scheduler-selected topology when present.
+	ordered := make([]string, 0, len(c.Nodes))
+	// Scheduler-selected topology first.
 	for _, t := range append(reqs.GetPreferred(), reqs.GetRequisite()...) {
 		if name, ok := t.GetSegments()[constants.TopologyKey]; ok {
-			if n, ok := c.Nodes[name]; ok {
-				return &storageNode{name: name, backend: n.Backend}, nil
+			if _, ok := c.Nodes[name]; ok && !slices.Contains(ordered, name) {
+				ordered = append(ordered, name)
 			}
 		}
 	}
-	if reqs != nil && len(reqs.GetRequisite()) > 0 {
+	if reqs != nil && len(reqs.GetRequisite()) > 0 && len(ordered) == 0 {
 		return nil, status.Error(codes.ResourceExhausted,
 			"no storage node satisfies the requested topology")
 	}
-	name := slices.Sorted(maps.Keys(c.Nodes))[0]
-	return &storageNode{name: name, backend: c.Nodes[name].Backend}, nil
+	for _, name := range slices.Sorted(maps.Keys(c.Nodes)) {
+		if !slices.Contains(ordered, name) {
+			ordered = append(ordered, name)
+		}
+	}
+	ordered = ordered[:count]
+
+	replicas := make([]homefsv1alpha1.Replica, 0, count)
+	for i, name := range ordered {
+		r := homefsv1alpha1.Replica{Node: name, Backend: c.Nodes[name].Backend}
+		if count > 1 {
+			addr, err := c.nodeInternalIP(ctx, name)
+			if err != nil {
+				return nil, err
+			}
+			r.NodeID = int32(i) //nolint:gosec // count <= 3
+			r.Address = addr
+		}
+		replicas = append(replicas, r)
+	}
+	return replicas, nil
+}
+
+// nodeInternalIP resolves a node's replication endpoint from its Node
+// object — no addresses to maintain in Helm values.
+func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, error) {
+	node := &corev1.Node{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, node); err != nil {
+		return "", status.Errorf(codes.Internal, "get node %s: %v", name, err)
+	}
+	for _, a := range node.Status.Addresses {
+		if a.Type == corev1.NodeInternalIP {
+			return a.Address, nil
+		}
+	}
+	return "", status.Errorf(codes.Internal, "node %s has no InternalIP", name)
+}
+
+// allocateDRBD picks the lowest free minor and TCP port by scanning
+// existing volumes. Safe without locking: the controller is a single
+// replica with Recreate strategy.
+func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec, error) {
+	const (
+		minorBase = 1000
+		portBase  = 7000
+	)
+	vols := &homefsv1alpha1.HomefsVolumeList{}
+	if err := c.Client.List(ctx, vols); err != nil {
+		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
+	}
+	usedMinor := map[int32]bool{}
+	usedPort := map[int32]bool{}
+	for _, v := range vols.Items {
+		if v.Spec.DRBD != nil {
+			usedMinor[v.Spec.DRBD.Minor] = true
+			usedPort[v.Spec.DRBD.Port] = true
+		}
+	}
+	spec := &homefsv1alpha1.DRBDSpec{Minor: minorBase, Port: portBase}
+	for usedMinor[spec.Minor] {
+		spec.Minor++
+	}
+	for usedPort[spec.Port] {
+		spec.Port++
+	}
+	return spec, nil
+}
+
+// handleCreateErr resolves Create conflicts: nil for success, nil after a
+// compatible AlreadyExists (mutating vol to the existing object), and a
+// gRPC error otherwise. Idempotency: same name must mean same request.
+func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *homefsv1alpha1.HomefsVolume, sizeBytes int64, replicas int, quorum homefsv1alpha1.QuorumPolicy) error {
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return status.Errorf(codes.Internal, "create HomefsVolume: %v", err)
+	}
+	existing := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: vol.Name}, existing); err != nil {
+		return status.Errorf(codes.Internal, "get existing HomefsVolume: %v", err)
+	}
+	if existing.Spec.SizeBytes != sizeBytes || len(existing.Spec.Replicas) != replicas ||
+		(replicas > 1 && existing.Spec.QuorumPolicy != quorum) {
+		return status.Errorf(codes.AlreadyExists,
+			"volume %s exists with size=%d replicas=%d quorum=%s (requested size=%d replicas=%d quorum=%s)",
+			vol.Name, existing.Spec.SizeBytes, len(existing.Spec.Replicas), existing.Spec.QuorumPolicy,
+			sizeBytes, replicas, quorum)
+	}
+	*vol = *existing
+	return nil
 }
 
 // errVolumeFailed marks a hard provisioning failure reported by an agent,
@@ -285,6 +379,18 @@ func parseReplicas(params map[string]string) (int, error) {
 			"invalid %s=%q (want 1..3)", constants.ParamReplicas, raw)
 	}
 	return n, nil
+}
+
+func parseQuorum(params map[string]string) (homefsv1alpha1.QuorumPolicy, error) {
+	switch raw := params[constants.ParamQuorum]; raw {
+	case "", string(homefsv1alpha1.QuorumLastManStanding):
+		return homefsv1alpha1.QuorumLastManStanding, nil
+	case string(homefsv1alpha1.QuorumFreeze):
+		return homefsv1alpha1.QuorumFreeze, nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument,
+			"invalid %s=%q (want last-man-standing | freeze)", constants.ParamQuorum, raw)
+	}
 }
 
 func validateCapabilities(caps []*csi.VolumeCapability) error {

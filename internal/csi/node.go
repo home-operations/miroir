@@ -102,6 +102,17 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, error) 
 		return "", status.Errorf(codes.Unavailable,
 			"volume %s device not ready on node %s", volumeID, n.NodeName)
 	}
+	// Replicated volumes must not be formatted or mounted before this
+	// replica holds current data — mkfs on an Inconsistent secondary
+	// would race the initial handshake.
+	if vol.Spec.DRBD != nil && st.DiskState != "UpToDate" {
+		return "", status.Errorf(codes.Unavailable,
+			"volume %s is %s on node %s (want UpToDate)", volumeID, st.DiskState, n.NodeName)
+	}
+	if st.SplitBrain {
+		return "", status.Errorf(codes.FailedPrecondition,
+			"volume %s is split-brain on node %s — manual resolution required", volumeID, n.NodeName)
+	}
 	return st.DevicePath, nil
 }
 

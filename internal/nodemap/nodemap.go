@@ -29,7 +29,9 @@ import (
 	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
 )
 
-// Node describes one storage node's backend.
+// Node describes one storage node's backend. Replication addresses are
+// not configured here: the controller resolves each node's InternalIP
+// from its Node object at volume creation and persists it in the CRD.
 type Node struct {
 	// Backend selects the storage implementation: "lvmthin" | "zfs".
 	Backend homefsv1alpha1.BackendType `json:"backend"`

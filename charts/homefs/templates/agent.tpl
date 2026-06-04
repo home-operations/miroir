@@ -23,6 +23,9 @@ spec:
       # why the agent's ports must be host-unique (9810/9811).
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      # drbdadm/drbdsetup need the host PID namespace for /proc access
+      # to the kernel module's worker threads.
+      hostPID: true
       # No teardown hooks: kernel-side storage state is host-scoped and
       # survives the pod; reconcile converges on next start. A short
       # grace period keeps DaemonSet rollouts unblocked.
@@ -83,6 +86,19 @@ spec:
             - name: modules
               mountPath: /lib/modules
               readOnly: true
+            # Rendered .res files + create-md/seed markers live on the
+            # host so DRBD state survives pod restarts; the container
+            # path is drbdadm's default include dir. /etc is read-only
+            # on Talos, hence the /var/lib host backing.
+            - name: drbd-cfg
+              mountPath: /etc/drbd.d
+            # The hostPath bind shadows the image-baked global config;
+            # re-introduce it via subPath or drbdadm warns on every
+            # invocation.
+            - name: drbd-global-conf
+              mountPath: /etc/drbd.d/global_common.conf
+              subPath: global_common.conf
+              readOnly: true
         - name: node-driver-registrar
           image: {{ .Values.sidecars.registrar.image }}
           args:
@@ -127,3 +143,13 @@ spec:
         - name: modules
           hostPath:
             path: /lib/modules
+        - name: drbd-cfg
+          hostPath:
+            path: /var/lib/homefs-drbd.d
+            type: DirectoryOrCreate
+        - name: drbd-global-conf
+          configMap:
+            name: homefs-drbd-conf
+            items:
+              - key: global_common.conf
+                path: global_common.conf

@@ -30,6 +30,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -39,6 +40,7 @@ import (
 	"github.com/eleboucher/homefs/internal/agent"
 	"github.com/eleboucher/homefs/internal/backend"
 	"github.com/eleboucher/homefs/internal/csi"
+	"github.com/eleboucher/homefs/internal/drbd"
 	"github.com/eleboucher/homefs/internal/nodemap"
 )
 
@@ -67,9 +69,10 @@ func main() {
 		nodesConfig string
 
 		// agent mode
-		nodeName string
-		vg       string
-		thinPool string
+		nodeName     string
+		vg           string
+		thinPool     string
+		drbdStateDir string
 	)
 	flag.StringVar(&mode, "mode", "", "controller | agent")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
@@ -80,6 +83,8 @@ func main() {
 		"per-node storage topology (rendered from Helm values)")
 	flag.StringVar(&vg, "lvm-vg", "vg-homefs", "LVM volume group (agent, lvmthin)")
 	flag.StringVar(&thinPool, "lvm-thinpool", "thinpool", "LVM thin pool LV (agent, lvmthin)")
+	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
+		"rendered DRBD config dir (agent; hostPath-backed)")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -155,10 +160,18 @@ func main() {
 			setupLog.Error(err, "backend pool setup failed")
 			os.Exit(1)
 		}
+		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
+		// Reap kernel resources and rendered config orphaned by a crash
+		// between up and down — they hold backing devices open forever.
+		if err := sweepOrphans(nodeName, drbdDriver); err != nil {
+			setupLog.Error(err, "orphan sweep failed")
+			os.Exit(1)
+		}
 		reconciler := &agent.VolumeReconciler{
 			Client:   mgr.GetClient(),
 			NodeName: nodeName,
 			Backend:  be,
+			DRBD:     drbdDriver,
 		}
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")
@@ -177,6 +190,29 @@ func main() {
 		setupLog.Error(err, "manager exited")
 		os.Exit(1)
 	}
+}
+
+// sweepOrphans removes DRBD state with no owning volume on this node,
+// using a direct (uncached) client — the manager has not started yet.
+func sweepOrphans(nodeName string, driver *drbd.Driver) error {
+	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		return err
+	}
+	vols := &homefsv1alpha1.HomefsVolumeList{}
+	if err := c.List(context.Background(), vols); err != nil {
+		return err
+	}
+	owned := map[string]bool{}
+	for _, v := range vols.Items {
+		for _, rep := range v.Spec.Replicas {
+			if rep.Node == nodeName {
+				owned[v.Name] = true
+			}
+		}
+	}
+	return driver.SweepOrphans(context.Background(),
+		func(name string) bool { return owned[name] })
 }
 
 // serveCSI runs the CSI gRPC server alongside the manager; controller and

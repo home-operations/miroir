@@ -20,6 +20,7 @@ FROM alpine:3.23
 RUN apk add --no-cache \
     lvm2 \
     zfs \
+    drbd-utils \
     e2fsprogs \
     e2fsprogs-extra \
     xfsprogs \

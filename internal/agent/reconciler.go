@@ -21,7 +21,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -31,6 +34,7 @@ import (
 	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
 	"github.com/eleboucher/homefs/internal/backend"
 	"github.com/eleboucher/homefs/internal/constants"
+	"github.com/eleboucher/homefs/internal/drbd"
 )
 
 // VolumeReconciler converges local state for volumes that place a replica on
@@ -39,6 +43,22 @@ type VolumeReconciler struct {
 	client.Client
 	NodeName string
 	Backend  backend.Backend
+	// DRBD drives the replication layer for multi-replica volumes.
+	DRBD *drbd.Driver
+}
+
+// drbdPollInterval refreshes DRBD state in the CRD: connection/disk state
+// changes in the kernel without generating Kubernetes events.
+const drbdPollInterval = 30 * time.Second
+
+// errSplitBrain gives the split-brain transition log a real error value.
+var errSplitBrain = errors.New("DRBD split-brain detected")
+
+// isDeviceBusy matches drbdadm/lvm failures caused by an open device.
+func isDeviceBusy(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "held open") || strings.Contains(s, "busy") ||
+		strings.Contains(s, "in use")
 }
 
 // Reconcile realizes (or tears down) this node's replica of one volume.
@@ -62,6 +82,12 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, nil
 		}
 		if err := r.teardown(ctx, vol); err != nil {
+			if isDeviceBusy(err) {
+				// A force-deleted pod can leave the device open past
+				// NodeUnstage; retry until the mount goes away.
+				log.Info("device busy during teardown, retrying", "volume", vol.Name)
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, r.removeFinalizer(ctx, vol)
@@ -79,40 +105,101 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 
-	log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
-	return ctrl.Result{}, r.reportReady(ctx, vol, dev)
+	if vol.Spec.DRBD == nil {
+		log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
+		return ctrl.Result{}, r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
+			DeviceCreated: true,
+			DevicePath:    dev,
+			SizeBytes:     vol.Spec.SizeBytes,
+			Connected:     true,
+		})
+	}
+
+	// Replicated: layer DRBD on the backing device. Pods attach the DRBD
+	// device, never the backing LV/zvol directly.
+	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev)); err != nil {
+		return ctrl.Result{}, r.reportError(ctx, vol, err)
+	}
+	st, err := r.DRBD.Status(ctx, vol.Name)
+	if err != nil {
+		return ctrl.Result{}, r.reportError(ctx, vol, err)
+	}
+	if st.SplitBrain && !vol.Status.PerNode[r.NodeName].SplitBrain {
+		log.Error(errSplitBrain,
+			"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
+			"volume", vol.Name)
+	}
+	err = r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
+		DeviceCreated: true,
+		DevicePath:    drbd.DevicePath(vol.Spec.DRBD.Minor),
+		SizeBytes:     vol.Spec.SizeBytes,
+		DiskState:     st.DiskState,
+		Connected:     st.Connected,
+		SplitBrain:    st.SplitBrain,
+	})
+	if apierrors.IsConflict(err) {
+		// Both agents poll the same volume; a lost optimistic-lock race
+		// is routine. A fixed requeue keeps the poll interval bounded
+		// instead of growing exponential backoff (and stale DiskState).
+		return ctrl.Result{RequeueAfter: drbdPollInterval}, nil
+	}
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: drbdPollInterval}, nil
+}
+
+// drbdResource maps the CRD desired state to a render input.
+func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string) drbd.Resource {
+	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
+	for _, rep := range vol.Spec.Replicas {
+		peers = append(peers, drbd.Peer{
+			Node:    rep.Node,
+			NodeID:  rep.NodeID,
+			Address: rep.Address,
+		})
+	}
+	return drbd.Resource{
+		Name:      vol.Name,
+		Minor:     vol.Spec.DRBD.Minor,
+		Port:      vol.Spec.DRBD.Port,
+		Quorum:    vol.Spec.QuorumPolicy,
+		LocalNode: localNode,
+		LocalDisk: localDisk,
+		Peers:     peers,
+	}
 }
 
 func (r *VolumeReconciler) teardown(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) error {
+	if vol.Spec.DRBD != nil {
+		if err := r.DRBD.Down(ctx, vol.Name); err != nil {
+			return err
+		}
+	}
 	return r.Backend.Delete(ctx, vol.Name)
 }
 
-// removeFinalizer releases the volume once local teardown is done. One
-// shared finalizer suffices while volumes are single-replica; M2 needs
-// per-node finalizers.
+// removeFinalizer releases this node's own finalizer once local teardown
+// is done; the volume disappears when the last replica's agent finishes.
 func (r *VolumeReconciler) removeFinalizer(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) error {
-	if !controllerutil.ContainsFinalizer(vol, constants.VolumeFinalizer) {
+	finalizer := constants.FinalizerPrefix + r.NodeName
+	if !controllerutil.ContainsFinalizer(vol, finalizer) {
 		return nil
 	}
-	controllerutil.RemoveFinalizer(vol, constants.VolumeFinalizer)
+	controllerutil.RemoveFinalizer(vol, finalizer)
 	if err := r.Update(ctx, vol); err != nil && !apierrors.IsConflict(err) && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil
 }
 
-func (r *VolumeReconciler) reportReady(ctx context.Context, vol *homefsv1alpha1.HomefsVolume, dev string) error {
-	return r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
-		DeviceCreated: true,
-		DevicePath:    dev,
-		SizeBytes:     vol.Spec.SizeBytes,
-	})
-}
-
 func (r *VolumeReconciler) reportError(ctx context.Context, vol *homefsv1alpha1.HomefsVolume, cause error) error {
-	if err := r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
-		Message: cause.Error(),
-	}); err != nil {
+	// Preserve the realized state: a transient error (e.g. DRBD peer not
+	// up yet) must not erase DeviceCreated, or the volume would read as
+	// hard-Failed while the device exists.
+	st := vol.Status.PerNode[r.NodeName]
+	st.Message = cause.Error()
+	if err := r.patchStatus(ctx, vol, st); err != nil {
 		return err
 	}
 	return cause // requeue with backoff
@@ -139,10 +226,15 @@ func computePhase(vol *homefsv1alpha1.HomefsVolume) homefsv1alpha1.VolumePhase {
 	ready := 0
 	for _, rep := range vol.Spec.Replicas {
 		st, ok := vol.Status.PerNode[rep.Node]
+		replicated := vol.Spec.DRBD != nil
 		switch {
-		case ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes:
+		case ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
+			(!replicated || st.DiskState == "UpToDate"):
 			ready++
-		case ok && st.Message != "":
+		case ok && st.Message != "" && !st.DeviceCreated:
+			// Hard failure: the backing device never materialised.
+			// Errors after that point (DRBD connect retries, status
+			// hiccups) are transient and must not fail provisioning.
 			return homefsv1alpha1.VolumeFailed
 		}
 	}

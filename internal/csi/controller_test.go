@@ -24,6 +24,8 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -161,6 +163,98 @@ func TestDeleteVolumeIdempotent(t *testing.T) {
 
 	if _, err := c.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "nope"}); err != nil {
 		t.Fatalf("deleting absent volume must succeed: %v", err)
+	}
+}
+
+func nodeObj(name, ip string) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: ip}},
+		},
+	}
+}
+
+func TestCreateVolumeReplicated(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(nodeObj("kharkiv", "192.168.1.41"), nodeObj("paris", "192.168.1.42")).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := cl.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					if vol, ok := obj.(*homefsv1alpha1.HomefsVolume); ok {
+						vol.Status.Phase = homefsv1alpha1.VolumeReady
+					}
+					return nil
+				},
+			}).Build(),
+		Nodes:            testNodes,
+		ProvisionTimeout: 2 * time.Second,
+	}
+
+	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-r1",
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		Parameters: map[string]string{
+			constants.ParamReplicas: "2",
+			constants.ParamQuorum:   "last-man-standing",
+		},
+		AccessibilityRequirements: &csi.TopologyRequirement{
+			Preferred: []*csi.Topology{
+				{Segments: map[string]string{constants.TopologyKey: "paris"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Volume.AccessibleTopology) != 2 {
+		t.Fatalf("topology must cover both replica nodes: %+v", resp.Volume.AccessibleTopology)
+	}
+
+	vol := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-r1"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if len(vol.Spec.Replicas) != 2 {
+		t.Fatalf("replicas = %d", len(vol.Spec.Replicas))
+	}
+	// Scheduler preference first → paris is replicas[0] (the GI winner).
+	if vol.Spec.Replicas[0].Node != "paris" || vol.Spec.Replicas[0].NodeID != 0 {
+		t.Fatalf("unexpected first replica %+v", vol.Spec.Replicas[0])
+	}
+	if vol.Spec.Replicas[0].Address != "192.168.1.42" ||
+		vol.Spec.Replicas[1].Address != "192.168.1.41" {
+		t.Fatalf("InternalIPs not resolved: %+v", vol.Spec.Replicas)
+	}
+	if vol.Spec.DRBD == nil || vol.Spec.DRBD.Minor != 1000 || vol.Spec.DRBD.Port != 7000 {
+		t.Fatalf("unexpected DRBD allocation %+v", vol.Spec.DRBD)
+	}
+	if vol.Spec.QuorumPolicy != homefsv1alpha1.QuorumLastManStanding {
+		t.Fatalf("quorum = %s", vol.Spec.QuorumPolicy)
+	}
+	if len(vol.Finalizers) != 2 {
+		t.Fatalf("want per-node finalizers, got %v", vol.Finalizers)
+	}
+
+	// A second volume gets the next minor/port.
+	if _, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-r2",
+		VolumeCapabilities: volCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vol2 := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-r2"}, vol2); err != nil {
+		t.Fatal(err)
+	}
+	if vol2.Spec.DRBD.Minor != 1001 || vol2.Spec.DRBD.Port != 7001 {
+		t.Fatalf("allocator must advance: %+v", vol2.Spec.DRBD)
 	}
 }
 
