@@ -177,6 +177,16 @@ func main() {
 			setupLog.Error(err, "unable to set up agent reconciler")
 			os.Exit(1)
 		}
+		snapReconciler := &agent.SnapshotReconciler{
+			Client:   mgr.GetClient(),
+			NodeName: nodeName,
+			Backend:  be,
+			DRBD:     drbdDriver,
+		}
+		if err := snapReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to set up snapshot reconciler")
+			os.Exit(1)
+		}
 		node := csi.NewNode(mgr.GetClient(), nodeName)
 		serveCSI(mgr, csiSocket, identity, nil, node)
 

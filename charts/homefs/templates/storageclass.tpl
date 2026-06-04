@@ -7,8 +7,7 @@ metadata:
     storageclass.kubernetes.io/is-default-class: {{ .Values.storageClass.isDefault | quote }}
 provisioner: homefs.io
 volumeBindingMode: WaitForFirstConsumer
-# Expansion is not implemented yet (M4).
-allowVolumeExpansion: false
+allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
 parameters:
   homefs.io/replicas: {{ .Values.storageClass.replicas | quote }}
@@ -24,7 +23,7 @@ metadata:
     storageclass.kubernetes.io/is-default-class: {{ .Values.replicatedStorageClass.isDefault | quote }}
 provisioner: homefs.io
 volumeBindingMode: WaitForFirstConsumer
-allowVolumeExpansion: false
+allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.replicatedStorageClass.reclaimPolicy }}
 parameters:
   homefs.io/replicas: "2"
@@ -32,4 +31,13 @@ parameters:
   # alerts on reconnect; freeze: never diverges, halts on any disconnect.
   homefs.io/quorum: {{ .Values.replicatedStorageClass.quorum }}
   csi.storage.k8s.io/fstype: {{ .Values.replicatedStorageClass.fsType }}
+{{- end }}
+{{- if .Values.volumeSnapshotClass.create }}
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ .Values.volumeSnapshotClass.name }}
+driver: homefs.io
+deletionPolicy: {{ .Values.volumeSnapshotClass.deletionPolicy }}
 {{- end }}

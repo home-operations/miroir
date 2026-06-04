@@ -33,6 +33,7 @@ import (
 
 	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
 	"github.com/eleboucher/homefs/internal/constants"
+	"github.com/eleboucher/homefs/internal/drbd"
 )
 
 // Node implements csi.NodeServer (notes/DESIGN.md §4.5.2). It looks the volume up
@@ -68,6 +69,7 @@ func (n *Node) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi.N
 func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
 	caps := []csi.NodeServiceCapability_RPC_Type{
 		csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
+		csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 		csi.NodeServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 	}
 	resp := &csi.NodeGetCapabilitiesResponse{}
@@ -105,7 +107,7 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, error) 
 	// Replicated volumes must not be formatted or mounted before this
 	// replica holds current data — mkfs on an Inconsistent secondary
 	// would race the initial handshake.
-	if vol.Spec.DRBD != nil && st.DiskState != "UpToDate" {
+	if vol.Spec.DRBD != nil && st.DiskState != drbd.DiskUpToDate {
 		return "", status.Errorf(codes.Unavailable,
 			"volume %s is %s on node %s (want UpToDate)", volumeID, st.DiskState, n.NodeName)
 	}
@@ -167,6 +169,26 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
+}
+
+// NodeExpandVolume grows the filesystem to the (already grown) device,
+// online. Raw block volumes need nothing.
+func (n *Node) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
+	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume id and path are required")
+	}
+	if req.GetVolumeCapability().GetBlock() != nil {
+		return &csi.NodeExpandVolumeResponse{}, nil
+	}
+	dev, err := n.devicePath(ctx, req.GetVolumeId())
+	if err != nil {
+		return nil, err
+	}
+	resizer := mount.NewResizeFs(n.Mounter.Exec)
+	if _, err := resizer.Resize(dev, req.GetVolumePath()); err != nil {
+		return nil, status.Errorf(codes.Internal, "grow filesystem on %s: %v", dev, err)
+	}
+	return &csi.NodeExpandVolumeResponse{CapacityBytes: req.GetCapacityRange().GetRequiredBytes()}, nil
 }
 
 // NodeUnstageVolume unmounts the staging path. Idempotent.

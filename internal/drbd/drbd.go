@@ -269,10 +269,15 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 	return nil
 }
 
+// DiskUpToDate is the disk state of a replica holding current data.
+const DiskUpToDate = "UpToDate"
+
 // Status reports this node's view of one resource.
 type Status struct {
 	// DiskState: UpToDate, Inconsistent, Outdated, Consistent, Diskless…
 	DiskState string
+	// Primary is true when this node holds the device open (auto-promote).
+	Primary bool
 	// Connected is true when every peer connection is established.
 	Connected bool
 	// SplitBrain is true when a connection is StandAlone — DRBD refused
@@ -283,6 +288,7 @@ type Status struct {
 // drbdsetup status --json shapes (the fields homefs reads).
 type jsonStatus struct {
 	Name    string `json:"name"`
+	Role    string `json:"role"`
 	Devices []struct {
 		DiskState string `json:"disk-state"`
 	} `json:"devices"`
@@ -306,7 +312,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	}
 	res := parsed[0]
 
-	s := Status{Connected: true}
+	s := Status{Connected: true, Primary: res.Role == "Primary"}
 	if len(res.Devices) > 0 {
 		s.DiskState = res.Devices[0].DiskState
 	}
@@ -321,6 +327,28 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		}
 	}
 	return s, nil
+}
+
+// SuspendIO freezes writes on this node's device — the cluster-wide write
+// barrier for crash-consistent snapshots when run on the Primary.
+func (d *Driver) SuspendIO(ctx context.Context, name string) error {
+	_, err := d.Exec(ctx, "drbdsetup", "suspend-io", name)
+	return err
+}
+
+// ResumeIO lifts the barrier. Callers run it unconditionally after a
+// snapshot attempt: a volume left suspended is an outage.
+func (d *Driver) ResumeIO(ctx context.Context, name string) error {
+	_, err := d.Exec(ctx, "drbdsetup", "resume-io", name)
+	return err
+}
+
+// Resize grows the DRBD device to the (already grown) backing devices.
+// Safe to call before the peer's backing grew — DRBD refuses and the
+// reconciler retries.
+func (d *Driver) Resize(ctx context.Context, name string) error {
+	_, err := d.adm(ctx, "resize", name)
+	return err
 }
 
 func (d *Driver) writeConfig(r Resource) (bool, error) {

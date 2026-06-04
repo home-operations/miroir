@@ -124,6 +124,10 @@ func (in *HomefsSnapshotStatus) DeepCopyInto(out *HomefsSnapshotStatus) {
 			(*out)[key] = val
 		}
 	}
+	if in.SuspendedAt != nil {
+		in, out := &in.SuspendedAt, &out.SuspendedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]v1.Condition, len(*in))

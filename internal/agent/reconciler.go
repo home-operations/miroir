@@ -27,6 +27,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -81,6 +82,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if !mine {
 			return ctrl.Result{}, nil
 		}
+		dropVolumeMetrics(vol.Name)
 		if err := r.teardown(ctx, vol); err != nil {
 			if isDeviceBusy(err) {
 				// A force-deleted pod can leave the device open past
@@ -96,8 +98,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, nil
 	}
 
-	// Realize: create (or grow) the backing device.
-	dev, err := r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+	// Realize: create (or grow) the backing device — a CoW clone when the
+	// volume restores from a snapshot.
+	dev, err := r.realizeBacking(ctx, vol)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
@@ -107,6 +110,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if vol.Spec.DRBD == nil {
 		log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
+		recordVolumeMetrics(vol.Name, homefsReplicaView{upToDate: true, connected: true})
 		return ctrl.Result{}, r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
 			DeviceCreated: true,
 			DevicePath:    dev,
@@ -120,6 +124,23 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev)); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
+	// Online growth: once every peer's backing device is at the new size
+	// (the local leg was just resized above), replicas[0] grows the DRBD
+	// device over them. It withholds the new size from its status until
+	// then — the CSI expansion wait keys on status, and the filesystem
+	// must not grow against a still-small DRBD device.
+	reportSize := vol.Spec.SizeBytes
+	requeue := drbdPollInterval
+	if vol.Spec.Replicas[0].Node == r.NodeName {
+		if peerBackingsGrown(vol, r.NodeName) {
+			if err := r.DRBD.Resize(ctx, vol.Name); err != nil {
+				return ctrl.Result{}, r.reportError(ctx, vol, err)
+			}
+		} else {
+			reportSize = vol.Status.PerNode[r.NodeName].SizeBytes
+			requeue = 5 * time.Second
+		}
+	}
 	st, err := r.DRBD.Status(ctx, vol.Name)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
@@ -129,10 +150,15 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
 			"volume", vol.Name)
 	}
+	recordVolumeMetrics(vol.Name, homefsReplicaView{
+		upToDate:   st.DiskState == drbd.DiskUpToDate,
+		connected:  st.Connected,
+		splitBrain: st.SplitBrain,
+	})
 	err = r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
 		DeviceCreated: true,
 		DevicePath:    drbd.DevicePath(vol.Spec.DRBD.Minor),
-		SizeBytes:     vol.Spec.SizeBytes,
+		SizeBytes:     reportSize,
 		DiskState:     st.DiskState,
 		Connected:     st.Connected,
 		SplitBrain:    st.SplitBrain,
@@ -141,12 +167,41 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// Both agents poll the same volume; a lost optimistic-lock race
 		// is routine. A fixed requeue keeps the poll interval bounded
 		// instead of growing exponential backoff (and stale DiskState).
-		return ctrl.Result{RequeueAfter: drbdPollInterval}, nil
+		return ctrl.Result{RequeueAfter: requeue}, nil
 	}
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: drbdPollInterval}, nil
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// peerBackingsGrown reports whether every peer realized the desired size.
+// The local leg is excluded: it was resized in this pass and its status
+// entry is one cycle stale.
+func peerBackingsGrown(vol *homefsv1alpha1.HomefsVolume, self string) bool {
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == self {
+			continue
+		}
+		if vol.Status.PerNode[rep.Node].SizeBytes < vol.Spec.SizeBytes {
+			return false
+		}
+	}
+	return true
+}
+
+// realizeBacking creates the backing device: fresh, or cloned from a
+// snapshot for restores. Clones are byte-identical on every replica, so
+// the day0 GI seed keeps restored volumes from resyncing.
+func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) (string, error) {
+	if vol.Spec.Source == nil {
+		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+	}
+	snap := &homefsv1alpha1.HomefsSnapshot{}
+	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
+		return "", err
+	}
+	return r.Backend.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
 }
 
 // drbdResource maps the CRD desired state to a render input.
@@ -229,7 +284,7 @@ func computePhase(vol *homefsv1alpha1.HomefsVolume) homefsv1alpha1.VolumePhase {
 		replicated := vol.Spec.DRBD != nil
 		switch {
 		case ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
-			(!replicated || st.DiskState == "UpToDate"):
+			(!replicated || st.DiskState == drbd.DiskUpToDate):
 			ready++
 		case ok && st.Message != "" && !st.DeviceCreated:
 			// Hard failure: the backing device never materialised.

@@ -14,6 +14,10 @@ sidecars:
     timeout: 120s
   registrar:
     image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+  snapshotter:
+    image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
+  resizer:
+    image: registry.k8s.io/sig-storage/csi-resizer:v2.2.0
 
 kubeletDir: /var/lib/kubelet
 
@@ -67,3 +71,10 @@ replicatedStorageClass:
   fsType: ext4
   quorum: last-man-standing # | freeze
   reclaimPolicy: Delete
+
+# Requires the cluster-wide snapshot-controller + CRDs (deployed
+# separately; kube-system/snapshot-controller in the homelab).
+volumeSnapshotClass:
+  create: true
+  name: homefs-snap
+  deletionPolicy: Delete

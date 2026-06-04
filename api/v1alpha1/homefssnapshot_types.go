@@ -34,6 +34,15 @@ type HomefsSnapshotStatus struct {
 	// the CSI layer to size restored volumes.
 	// +optional
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
+	// IOSuspended is the replicated-snapshot write barrier: set by the
+	// coordinator after suspend-io, cleared on resume. Peers snapshot
+	// only while it holds.
+	// +optional
+	IOSuspended bool `json:"ioSuspended,omitempty"`
+	// SuspendedAt bounds the barrier: the coordinator resumes IO at the
+	// deadline even if a peer never snapshots.
+	// +optional
+	SuspendedAt *metav1.Time `json:"suspendedAt,omitempty"`
 	// Conditions follow the standard Kubernetes condition conventions.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

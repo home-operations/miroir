@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
@@ -238,9 +239,36 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	if st.DiskState != "UpToDate" || !st.Connected {
 		t.Fatalf("unexpected DRBD status %+v", st)
 	}
-	// Only this node has reported yet -> Degraded, not Ready.
-	if got.Status.Phase != homefsv1alpha1.VolumeDegraded {
-		t.Fatalf("phase = %s, want Degraded until the peer reports", got.Status.Phase)
+	// replicas[0] withholds its realized size (and the volume stays
+	// unready) until the peer's backing reports grown — the size in
+	// status is what the expansion wait keys on.
+	if st.SizeBytes != 0 {
+		t.Fatalf("coordinator must withhold size before the peer reports, got %d", st.SizeBytes)
+	}
+	fe.notCalledWith(t, "drbdadm resize")
+
+	// Peer reports its leg; the next coordinator pass grows DRBD and
+	// publishes the size.
+	base := got.DeepCopy()
+	got.Status.PerNode["paris"] = homefsv1alpha1.ReplicaStatus{
+		DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "UpToDate", Connected: true,
+	}
+	if err := c.Status().Patch(context.Background(), got, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm resize pvc-1")
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.PerNode["kharkiv"].SizeBytes != 1<<30 {
+		t.Fatalf("size must publish after DRBD resize, got %d", got.Status.PerNode["kharkiv"].SizeBytes)
+	}
+	if got.Status.Phase != homefsv1alpha1.VolumeReady {
+		t.Fatalf("phase = %s, want Ready with both legs UpToDate", got.Status.Phase)
 	}
 }
 
@@ -271,6 +299,15 @@ func (f *fakeDRBDExec) calledWith(t *testing.T, substr string) {
 		}
 	}
 	t.Fatalf("expected call containing %q, got %v", substr, f.calls)
+}
+
+func (f *fakeDRBDExec) notCalledWith(t *testing.T, substr string) {
+	t.Helper()
+	for _, c := range f.calls {
+		if strings.Contains(c, substr) {
+			t.Fatalf("expected no call containing %q, got %q", substr, c)
+		}
+	}
 }
 
 // Regression: a foreign agent must never remove the finalizer — doing so

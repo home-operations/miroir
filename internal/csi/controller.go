@@ -29,6 +29,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,6 +68,9 @@ const defaultProvisionTimeout = 60 * time.Second
 func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
 	caps := []csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
+		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
+		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 	}
 	resp := &csi.ControllerGetCapabilitiesResponse{}
@@ -112,9 +116,31 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	placed, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas)
-	if err != nil {
-		return nil, err
+	var source *homefsv1alpha1.VolumeSource
+	var placed []homefsv1alpha1.Replica
+	if snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId(); snapID != "" {
+		// Restore: clones are local CoW, so replicas must live on the
+		// nodes holding the snapshot — placement follows the source.
+		srcVol, snap, err := c.snapshotSource(ctx, snapID)
+		if err != nil {
+			return nil, err
+		}
+		if sizeBytes < snap.Status.SizeBytes {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"requested %d below snapshot size %d", sizeBytes, snap.Status.SizeBytes)
+		}
+		if len(srcVol.Spec.Replicas) != replicas {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"restore replica count %d must match source %d",
+				replicas, len(srcVol.Spec.Replicas))
+		}
+		source = &homefsv1alpha1.VolumeSource{SnapshotName: snapID}
+		placed = srcVol.Spec.Replicas
+	} else {
+		placed, err = c.place(ctx, req.GetAccessibilityRequirements(), replicas)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	vol := &homefsv1alpha1.HomefsVolume{
@@ -124,6 +150,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		Spec: homefsv1alpha1.HomefsVolumeSpec{
 			SizeBytes: sizeBytes,
 			Replicas:  placed,
+			Source:    source,
 		},
 	}
 	for _, r := range placed {
@@ -366,6 +393,171 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 	// Genuine timeout: the provisioner retries CreateVolume and finds the
 	// existing CR, so the CR is deliberately left in place.
 	return status.Errorf(codes.DeadlineExceeded, "volume %s not ready: %v", name, err)
+}
+
+// ControllerExpandVolume grows the volume online: bump the desired size
+// and wait for every agent to realize it (backing devices + DRBD).
+func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume id is required")
+	}
+	newSize := req.GetCapacityRange().GetRequiredBytes()
+	if newSize == 0 {
+		return nil, status.Error(codes.InvalidArgument, "capacity range is required")
+	}
+	nodeExpansion := req.GetVolumeCapability().GetBlock() == nil
+
+	vol := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+		}
+		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
+	}
+	if newSize <= vol.Spec.SizeBytes {
+		// Already at or above the requested size; never shrink, and never
+		// advertise less capacity than exists.
+		return &csi.ControllerExpandVolumeResponse{
+			CapacityBytes:         vol.Spec.SizeBytes,
+			NodeExpansionRequired: nodeExpansion,
+		}, nil
+	}
+	base := vol.DeepCopy()
+	vol.Spec.SizeBytes = newSize
+	if err := c.Client.Patch(ctx, vol, client.MergeFrom(base)); err != nil {
+		return nil, status.Errorf(codes.Internal, "grow volume: %v", err)
+	}
+
+	// Wait for all replicas to realize the size; the resizer retries on
+	// timeout, so a slow grow is not terminal.
+	timeout := c.ProvisionTimeout
+	if timeout == 0 {
+		timeout = defaultProvisionTimeout
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	err := wait.PollUntilContextCancel(waitCtx, 500*time.Millisecond, true,
+		func(ctx context.Context) (bool, error) {
+			v := &homefsv1alpha1.HomefsVolume{}
+			if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, v); err != nil {
+				return false, client.IgnoreNotFound(err) // cache lag → retry
+			}
+			for _, rep := range v.Spec.Replicas {
+				if v.Status.PerNode[rep.Node].SizeBytes < newSize {
+					return false, nil
+				}
+			}
+			return true, nil
+		})
+	if err != nil {
+		return nil, status.Errorf(codes.DeadlineExceeded, "volume %s not grown yet: %v", req.GetVolumeId(), err)
+	}
+	return &csi.ControllerExpandVolumeResponse{
+		CapacityBytes:         newSize,
+		NodeExpansionRequired: nodeExpansion,
+	}, nil
+}
+
+// CreateSnapshot provisions a HomefsSnapshot and reports readiness as-is:
+// the external-snapshotter polls until ready_to_use. Idempotent by name.
+func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
+	if req.GetName() == "" || req.GetSourceVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "snapshot name and source volume are required")
+	}
+	vol := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetSourceVolumeId()}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetSourceVolumeId())
+		}
+		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
+	}
+
+	snap := &homefsv1alpha1.HomefsSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
+		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: req.GetSourceVolumeId()},
+	}
+	for _, rep := range vol.Spec.Replicas {
+		snap.Finalizers = append(snap.Finalizers, constants.FinalizerPrefix+rep.Node)
+	}
+	if err := c.Client.Create(ctx, snap); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return nil, status.Errorf(codes.Internal, "create HomefsSnapshot: %v", err)
+		}
+		existing := &homefsv1alpha1.HomefsSnapshot{}
+		if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetName()}, existing); err != nil {
+			return nil, status.Errorf(codes.Internal, "get existing snapshot: %v", err)
+		}
+		if existing.Spec.VolumeName != req.GetSourceVolumeId() {
+			return nil, status.Errorf(codes.AlreadyExists,
+				"snapshot %s exists for volume %s", req.GetName(), existing.Spec.VolumeName)
+		}
+		snap = existing
+	}
+	return &csi.CreateSnapshotResponse{Snapshot: csiSnapshot(snap, vol.Spec.SizeBytes)}, nil
+}
+
+// DeleteSnapshot removes the HomefsSnapshot; agents drop the backend
+// snapshots via finalizers. Idempotent.
+func (c *Controller) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
+	if req.GetSnapshotId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "snapshot id is required")
+	}
+	snap := &homefsv1alpha1.HomefsSnapshot{ObjectMeta: metav1.ObjectMeta{Name: req.GetSnapshotId()}}
+	if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
+		return nil, status.Errorf(codes.Internal, "delete HomefsSnapshot: %v", err)
+	}
+	return &csi.DeleteSnapshotResponse{}, nil
+}
+
+// ListSnapshots reports existing snapshots (no pagination: home scale).
+func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	snaps := &homefsv1alpha1.HomefsSnapshotList{}
+	if err := c.Client.List(ctx, snaps); err != nil {
+		return nil, status.Errorf(codes.Internal, "list snapshots: %v", err)
+	}
+	resp := &csi.ListSnapshotsResponse{}
+	for i := range snaps.Items {
+		s := &snaps.Items[i]
+		if req.GetSnapshotId() != "" && s.Name != req.GetSnapshotId() {
+			continue
+		}
+		if req.GetSourceVolumeId() != "" && s.Spec.VolumeName != req.GetSourceVolumeId() {
+			continue
+		}
+		resp.Entries = append(resp.Entries, &csi.ListSnapshotsResponse_Entry{
+			Snapshot: csiSnapshot(s, s.Status.SizeBytes),
+		})
+	}
+	return resp, nil
+}
+
+func csiSnapshot(snap *homefsv1alpha1.HomefsSnapshot, sizeBytes int64) *csi.Snapshot {
+	return &csi.Snapshot{
+		SnapshotId:     snap.Name,
+		SourceVolumeId: snap.Spec.VolumeName,
+		SizeBytes:      sizeBytes,
+		CreationTime:   timestamppb.New(snap.CreationTimestamp.Time),
+		ReadyToUse:     snap.Status.ReadyToUse,
+	}
+}
+
+// snapshotSource resolves a ready snapshot and its source volume.
+func (c *Controller) snapshotSource(ctx context.Context, snapID string) (*homefsv1alpha1.HomefsVolume, *homefsv1alpha1.HomefsSnapshot, error) {
+	snap := &homefsv1alpha1.HomefsSnapshot{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: snapID}, snap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil, status.Errorf(codes.NotFound, "snapshot %s not found", snapID)
+		}
+		return nil, nil, status.Errorf(codes.Internal, "get snapshot: %v", err)
+	}
+	if !snap.Status.ReadyToUse {
+		return nil, nil, status.Errorf(codes.FailedPrecondition, "snapshot %s not ready", snapID)
+	}
+	vol := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: snap.Spec.VolumeName}, vol); err != nil {
+		return nil, nil, status.Errorf(codes.Internal, "get snapshot source volume: %v", err)
+	}
+	return vol, snap, nil
 }
 
 func parseReplicas(params map[string]string) (int, error) {
