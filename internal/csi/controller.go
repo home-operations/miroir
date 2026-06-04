@@ -63,8 +63,7 @@ type Controller struct {
 
 const defaultProvisionTimeout = 60 * time.Second
 
-// ControllerGetCapabilities advertises exactly what is implemented (M1:
-// provisioning only; snapshots and expansion arrive in M3/M4).
+// ControllerGetCapabilities advertises exactly what is implemented.
 func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
 	caps := []csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
@@ -294,8 +293,8 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 }
 
 // allocateDRBD picks the lowest free minor and TCP port by scanning
-// existing volumes. Safe without locking: the controller is a single
-// replica with Recreate strategy.
+// existing volumes. Callers hold allocMu across allocate+Create —
+// CreateVolume RPCs run concurrently within the pod.
 func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec, error) {
 	const (
 		minorBase = 1000
@@ -493,7 +492,13 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 		}
 		snap = existing
 	}
-	return &csi.CreateSnapshotResponse{Snapshot: csiSnapshot(snap, vol.Spec.SizeBytes)}, nil
+	// Report the size captured at snapshot time once known; the live
+	// volume may have been expanded since.
+	size := vol.Spec.SizeBytes
+	if snap.Status.SizeBytes > 0 {
+		size = snap.Status.SizeBytes
+	}
+	return &csi.CreateSnapshotResponse{Snapshot: csiSnapshot(snap, size)}, nil
 }
 
 // DeleteSnapshot removes the HomefsSnapshot; agents drop the backend

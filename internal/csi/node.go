@@ -65,7 +65,7 @@ func (n *Node) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi.N
 	}, nil
 }
 
-// NodeGetCapabilities advertises staging (expansion/stats arrive in M4).
+// NodeGetCapabilities advertises staging and expansion.
 func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
 	caps := []csi.NodeServiceCapability_RPC_Type{
 		csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,

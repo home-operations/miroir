@@ -76,6 +76,10 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
 	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000}
+	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
+		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
 		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
@@ -123,6 +127,10 @@ func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
 	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000}
+	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
+		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
 		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).

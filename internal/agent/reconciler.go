@@ -55,11 +55,15 @@ const drbdPollInterval = 30 * time.Second
 // errSplitBrain gives the split-brain transition log a real error value.
 var errSplitBrain = errors.New("DRBD split-brain detected")
 
-// isDeviceBusy matches drbdadm/lvm failures caused by an open device.
+// isDeviceBusy matches failures that resolve themselves once something
+// else goes away: an open device (force-deleted pod), an LVM origin with
+// snapshot children, a ZFS origin with clones.
 func isDeviceBusy(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "held open") || strings.Contains(s, "busy") ||
-		strings.Contains(s, "in use")
+		strings.Contains(s, "in use") ||
+		strings.Contains(s, "snapshot") || // lvremove: origin contains snapshots
+		strings.Contains(s, "has children") // zfs destroy: clones/snapshots exist
 }
 
 // Reconcile realizes (or tears down) this node's replica of one volume.
@@ -103,6 +107,20 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	dev, err := r.realizeBacking(ctx, vol)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
+	}
+	// Record the device before growing it: computePhase treats errors
+	// with DeviceCreated=false as hard provisioning failures, and a
+	// transient resize error must not be one.
+	if !vol.Status.PerNode[r.NodeName].DeviceCreated {
+		if err := r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
+			DeviceCreated: true,
+			DevicePath:    dev,
+		}); err != nil && !apierrors.IsConflict(err) {
+			return ctrl.Result{}, err
+		}
+		vol.Status.PerNode[r.NodeName] = homefsv1alpha1.ReplicaStatus{
+			DeviceCreated: true, DevicePath: dev,
+		}
 	}
 	if err := r.Backend.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)

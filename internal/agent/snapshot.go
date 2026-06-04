@@ -95,6 +95,12 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
+	if vol.Spec.DRBD != nil && vol.Status.PerNode[r.NodeName].DiskState == "" {
+		// The volume agent has not brought DRBD up here yet (fresh volume
+		// or post-restart re-apply); drbdsetup status would hard-error.
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
 	if vol.Spec.DRBD == nil {
 		// Single replica: no barrier needed.
 		if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
