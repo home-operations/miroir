@@ -433,16 +433,17 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 }
 
 // SuspendIO freezes writes on this node's device — the cluster-wide write
-// barrier for crash-consistent snapshots when run on the Primary.
+// barrier for crash-consistent snapshots when run on the Primary. Goes
+// through drbdadm: drbdsetup's suspend-io wants a minor, not a name.
 func (d *Driver) SuspendIO(ctx context.Context, name string) error {
-	_, err := d.Exec(ctx, "drbdsetup", "suspend-io", name)
+	_, err := d.adm(ctx, "suspend-io", name)
 	return err
 }
 
 // ResumeIO lifts the barrier. Callers run it unconditionally after a
 // snapshot attempt: a volume left suspended is an outage.
 func (d *Driver) ResumeIO(ctx context.Context, name string) error {
-	_, err := d.Exec(ctx, "drbdsetup", "resume-io", name)
+	_, err := d.adm(ctx, "resume-io", name)
 	return err
 }
 

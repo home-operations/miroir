@@ -93,7 +93,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	rK := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fbK,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
 	reconcileSnap(t, rK, "snap-1")
-	feK.calledWith(t, "drbdsetup suspend-io pvc-1")
+	feK.calledWith(t, "drbdadm suspend-io pvc-1")
 
 	got := &homefsv1alpha1.HomefsSnapshot{}
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
@@ -116,7 +116,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 
 	// Coordinator sees both Done → resumes and marks ready.
 	reconcileSnap(t, rK, "snap-1")
-	feK.calledWith(t, "drbdsetup resume-io pvc-1")
+	feK.calledWith(t, "drbdadm resume-io pvc-1")
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
 	if !got.Status.ReadyToUse || got.Status.IOSuspended {
 		t.Fatalf("snapshot must be ready with IO resumed: %+v", got.Status)
