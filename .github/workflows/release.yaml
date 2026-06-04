@@ -91,13 +91,15 @@ jobs:
     name: Helm
     needs:
       - release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     env:
-      VERSION: ${{ needs.release-please.outputs.tag_name }}
+      # Releases publish the real version; every other main push publishes
+      # a mutable 0.0.0-main chart so the cluster can test pre-release.
+      VERSION: ${{ needs.release-please.outputs.release_created == 'true' && needs.release-please.outputs.tag_name || '0.0.0-main' }}
+      APP_VERSION: ${{ needs.release-please.outputs.release_created == 'true' && needs.release-please.outputs.tag_name || 'main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -117,7 +119,7 @@ jobs:
         run: |
           helm package charts/homefs \
             --version "${VERSION}" \
-            --app-version "${VERSION}"
+            --app-version "${APP_VERSION}"
 
       - name: Log in to Container Registry
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
