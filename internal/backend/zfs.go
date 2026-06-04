@@ -1,0 +1,171 @@
+/*
+Copyright 2026.
+
+Licensed under the GNU Affero General Public License, Version 3 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.gnu.org/licenses/agpl-3.0.html
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package backend
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// zfsBackend provisions sparse zvols under a dedicated dataset (paris's
+// backend; pool shared with OpenEBS LocalPV-ZFS — notes/DESIGN.md §4.1a).
+// volblocksize is fixed at 4k to align with the LVM-thin peer leg.
+type zfsBackend struct {
+	dataset string
+	exec    Exec
+}
+
+func newZFS(cfg Config, e Exec) *zfsBackend {
+	return &zfsBackend{dataset: cfg.Dataset, exec: e}
+}
+
+// Setup creates the parent dataset (e.g. tank/homefs) if absent — the
+// namespace separating homefs zvols from OpenEBS datasets in the shared
+// pool (notes/DESIGN.md §4.1a).
+func (z *zfsBackend) Setup(ctx context.Context) error {
+	ok, err := z.exists(ctx, z.dataset)
+	if err != nil || ok {
+		return err
+	}
+	_, err = z.exec(ctx, "zfs", "create", "-p", z.dataset)
+	return err
+}
+
+func (z *zfsBackend) name(vol string) string {
+	return z.dataset + "/" + vol
+}
+
+func (z *zfsBackend) DevicePath(vol string) string {
+	return "/dev/zvol/" + z.name(vol)
+}
+
+func (z *zfsBackend) exists(ctx context.Context, name string) (bool, error) {
+	_, err := z.exec(ctx, "zfs", "list", "-H", name)
+	if err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (string, error) {
+	ok, err := z.exists(ctx, z.name(vol))
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		_, err = z.exec(ctx, "zfs", "create",
+			"-s", // sparse: thin semantics, matching the lvm-thin leg
+			"-b", "4096",
+			"-V", strconv.FormatInt(sizeBytes, 10),
+			z.name(vol))
+		if err != nil {
+			return "", fmt.Errorf("zfs create %s: %w", vol, err)
+		}
+	}
+	return z.DevicePath(vol), nil
+}
+
+func (z *zfsBackend) Resize(ctx context.Context, vol string, sizeBytes int64) error {
+	cur, err := z.volSize(ctx, vol)
+	if err != nil {
+		return err
+	}
+	if cur >= sizeBytes {
+		return nil // already big enough (idempotent retry)
+	}
+	_, err = z.exec(ctx, "zfs", "set",
+		fmt.Sprintf("volsize=%d", sizeBytes), z.name(vol))
+	return err
+}
+
+func (z *zfsBackend) Snapshot(ctx context.Context, vol, snap string) error {
+	ok, err := z.exists(ctx, z.name(vol)+"@"+snap)
+	if err != nil || ok {
+		return err
+	}
+	_, err = z.exec(ctx, "zfs", "snapshot", z.name(vol)+"@"+snap)
+	return err
+}
+
+func (z *zfsBackend) CreateFromSnapshot(ctx context.Context, vol, sourceVol, snap string) (string, error) {
+	ok, err := z.exists(ctx, z.name(vol))
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		_, err = z.exec(ctx, "zfs", "clone",
+			z.name(sourceVol)+"@"+snap, z.name(vol))
+		if err != nil {
+			return "", err
+		}
+	}
+	return z.DevicePath(vol), nil
+}
+
+func (z *zfsBackend) Delete(ctx context.Context, vol string) error {
+	ok, err := z.exists(ctx, z.name(vol))
+	if err != nil || !ok {
+		return err
+	}
+	_, err = z.exec(ctx, "zfs", "destroy", z.name(vol))
+	return err
+}
+
+func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error {
+	ok, err := z.exists(ctx, z.name(vol)+"@"+snap)
+	if err != nil || !ok {
+		return err
+	}
+	_, err = z.exec(ctx, "zfs", "destroy", z.name(vol)+"@"+snap)
+	return err
+}
+
+func (z *zfsBackend) volSize(ctx context.Context, vol string) (int64, error) {
+	out, err := z.exec(ctx, "zfs", "get", "-Hpo", "value", "volsize", z.name(vol))
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+}
+
+func (z *zfsBackend) Stats(ctx context.Context) (PoolStats, error) {
+	// Pool-level stats: the pool is shared with OpenEBS, so headroom must
+	// account for everything in it, not only homefs zvols (notes/DESIGN.md §4.6).
+	pool := strings.SplitN(z.dataset, "/", 2)[0]
+	out, err := z.exec(ctx, "zpool", "get", "-Hpo", "value", "size,allocated", pool)
+	if err != nil {
+		return PoolStats{}, err
+	}
+	lines := strings.Fields(strings.TrimSpace(out))
+	if len(lines) != 2 {
+		return PoolStats{}, fmt.Errorf("unexpected zpool output %q", out)
+	}
+	size, err := strconv.ParseInt(lines[0], 10, 64)
+	if err != nil {
+		return PoolStats{}, err
+	}
+	used, err := strconv.ParseInt(lines[1], 10, 64)
+	if err != nil {
+		return PoolStats{}, err
+	}
+	return PoolStats{SizeBytes: size, UsedBytes: used}, nil
+}

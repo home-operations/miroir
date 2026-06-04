@@ -1,0 +1,11 @@
+apiVersion: v2
+name: homefs
+description: Low-resource replicated block storage CSI driver for small Talos clusters
+type: application
+# Placeholder — CI overrides both at publish time (helm package
+# --version/--app-version from the release tag).
+version: 0.0.1
+appVersion: 0.0.1
+kubeVersion: ">=1.31.0"
+sources:
+  - https://github.com/erwanleboucher/homefs

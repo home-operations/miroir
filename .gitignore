@@ -1,0 +1,32 @@
+# Binaries for programs and plugins
+*.dll
+*.dylib
+*.exe
+*.exe~
+*.so
+bin/*
+Dockerfile.cross
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Kubernetes Generated files - skip generated files, except for vendored files
+!vendor/**/zz_generated.*
+
+# editor and IDE paraphernalia
+*.swo
+*.swp
+*~
+.claude
+.idea
+.private
+.vscode
+.remember/
+*.sock
+notes/

@@ -1,0 +1,39 @@
+/*
+Copyright 2026.
+
+Licensed under the GNU Affero General Public License, Version 3 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.gnu.org/licenses/agpl-3.0.html
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package backend
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+// Exec runs a CLI command and returns its combined output. Injectable so
+// backends are unit-testable without lvm/zfs installed.
+type Exec func(ctx context.Context, name string, args ...string) (string, error)
+
+// RealExec executes commands on the host. The agent container runs with the
+// host namespaces, so lvm/zfs act on the node's devices directly.
+func RealExec(ctx context.Context, name string, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("%s %s: %w: %s",
+			name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
