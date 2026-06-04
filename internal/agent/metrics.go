@@ -23,19 +23,21 @@ import (
 
 // Exposed on the agent's metrics endpoint; the split-brain gauge is the
 // alerting hook for the last-man-standing failure mode (DESIGN §3.2).
+const volumeLabel = "volume"
+
 var (
 	metricUpToDate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "homefs_volume_up_to_date",
 		Help: "1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created).",
-	}, []string{"volume"})
+	}, []string{volumeLabel})
 	metricConnected = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "homefs_volume_connected",
 		Help: "1 when all replication links from this node are established.",
-	}, []string{"volume"})
+	}, []string{volumeLabel})
 	metricSplitBrain = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "homefs_volume_split_brain",
 		Help: "1 when DRBD refused to reconnect after divergence; manual resolution required.",
-	}, []string{"volume"})
+	}, []string{volumeLabel})
 )
 
 func init() {
