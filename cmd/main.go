@@ -117,6 +117,38 @@ func main() {
 	identity := &csi.Identity{Version: version, WithController: mode == "controller"}
 
 	switch mode {
+	case "setup":
+		if nodeName == "" {
+			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
+			os.Exit(1)
+		}
+		nodes, err := nodemap.Load(nodesConfig)
+		if err != nil {
+			setupLog.Error(err, "unable to load node map")
+			os.Exit(1)
+		}
+		entry, ok := nodes[nodeName]
+		if !ok {
+			setupLog.Error(nil, "node absent from the node map", "node", nodeName)
+			os.Exit(1)
+		}
+		be, err := backend.New(entry.Backend, backend.Config{
+			VolumeGroup: vg,
+			ThinPool:    thinPool,
+			Device:      entry.Device,
+			Dataset:     entry.ZFSDataset,
+			PoolSize:    entry.ThinPoolSize,
+		}, backend.RealExec)
+		if err != nil {
+			setupLog.Error(err, "invalid backend for node", "node", nodeName)
+			os.Exit(1)
+		}
+		if err := be.Setup(context.Background()); err != nil {
+			setupLog.Error(err, "backend pool setup failed", "node", nodeName)
+			os.Exit(1)
+		}
+		setupLog.Info("pool ready", "node", nodeName)
+
 	case "controller":
 		nodes, err := nodemap.Load(nodesConfig)
 		if err != nil {
@@ -198,7 +230,7 @@ func main() {
 		serveCSI(mgr, csiSocket, identity, nil, node)
 
 	default:
-		setupLog.Error(nil, "--mode must be controller or agent")
+		setupLog.Error(nil, "--mode must be controller, agent, or setup")
 		os.Exit(1)
 	}
 

@@ -290,23 +290,18 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *homefsv1alpha1.
 	}
 	vol.Status.PerNode[r.NodeName] = mine
 	vol.Status.Phase = computePhase(vol)
-	// SSA requires GVK to be set. The volume was read in Reconcile, but
-	// ensure it isn't lost (e.g. under the fake client).
 	vol.SetGroupVersionKind(homefsv1alpha1.GroupVersion.WithKind("HomefsVolume"))
-	return r.Status().Patch(ctx, vol, client.Apply, //nolint:staticcheck // v0.24 deprecation, new SubResource().Apply() requires runtime.ApplyConfiguration
+	return r.Status().Patch(ctx, vol, client.Apply, //nolint:staticcheck
 		client.FieldOwner("agent-volume-"+r.NodeName),
 		client.ForceOwnership)
 }
 
-// assignMinor returns the DRBD device minor assigned to this volume,
-// allocating a free one if none was assigned yet. The result is
-// idempotent for a given resource name and persisted in the rendered
-// .res file — agent restarts reuse the same minor.
+// assignMinor returns the DRBD minor for this volume, allocating a free one if unset.
 func (r *VolumeReconciler) assignMinor(_ context.Context, vol *homefsv1alpha1.HomefsVolume) (int32, error) {
 	if m := vol.Status.PerNode[r.NodeName].DRBDMinor; m > 0 {
 		return m, nil
 	}
-	minor, err := r.DRBD.AllocateMinor(vol.Name)
+	minor, err := r.DRBD.AllocateMinor()
 	if err != nil {
 		return 0, err
 	}

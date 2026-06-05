@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: homefs-uninstall
+  namespace: { { .Release.Namespace } }
+  labels:
+    app.kubernetes.io/name: homefs
+    app.kubernetes.io/component: uninstall
+  annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  template:
+    spec:
+      serviceAccountName: homefs-uninstall
+      restartPolicy: Never
+      containers:
+        - name: kubectl
+          image: bitnami/kubectl:1.31
+          command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl delete homefssnapshots --all --ignore-not-found
+              kubectl delete homefsvolumes --all --ignore-not-found

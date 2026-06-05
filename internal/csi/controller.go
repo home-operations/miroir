@@ -245,7 +245,7 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 		return nil, status.Errorf(codes.Internal, "get HomefsVolume: %v", err)
 	}
 	if err := validateCapabilities(req.GetVolumeCapabilities()); err != nil {
-		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil //nolint:nilerr // spec
+		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil //nolint:nilerr
 	}
 	return &csi.ValidateVolumeCapabilitiesResponse{
 		Confirmed: &csi.ValidateVolumeCapabilitiesResponse_Confirmed{

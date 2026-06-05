@@ -272,24 +272,10 @@ const drbdMajor = 147
 // volumes. Lower numbers may be reserved for system DRBD resources.
 const minorBase int32 = 1000
 
-// AllocateMinor picks the lowest unused DRBD minor by scanning .res
-// files in StateDir. Idempotent across agent restarts: a previously
-// assigned minor lives in the .res file and is returned again.
-func (d *Driver) AllocateMinor(name string) (int32, error) {
-	// Check for an existing .res file → re-use its minor.
-	path := d.path(name + ".res")
-	if raw, err := os.ReadFile(path); err == nil {
-		for _, line := range strings.Split(string(raw), "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 4 && f[0] == "device" && f[2] == "minor" {
-				n, err := strconv.Atoi(strings.TrimSuffix(f[3], ";"))
-				if err == nil {
-					return int32(n), nil
-				}
-			}
-		}
-	}
-	// Scan every .res file for used minors.
+// AllocateMinor returns the lowest unused DRBD minor by scanning .res
+// files in StateDir. The volume's own .res is authoritative if present.
+func (d *Driver) AllocateMinor() (int32, error) {
+	used := map[int32]bool{}
 	entries, err := os.ReadDir(d.StateDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -297,7 +283,6 @@ func (d *Driver) AllocateMinor(name string) (int32, error) {
 		}
 		return 0, err
 	}
-	used := map[int32]bool{}
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".res") {
 			continue
@@ -350,8 +335,7 @@ func (d *Driver) ensureDeviceNode(minor int32) error {
 	if err := mknod(path, unix.S_IFBLK|0o660, int(want)); err != nil && !os.IsExist(err) {
 		return fmt.Errorf("mknod %s: %w", path, err)
 	}
-	// Enforce perms regardless of umask: kubelet opens /dev/drbd<minor>
-	// as non-root, and a restrictive umask can leave the node inaccessible.
+	// Enforce perms regardless of umask.
 	if err := os.Chmod(path, 0o660); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("chmod %s: %w", path, err)
 	}
