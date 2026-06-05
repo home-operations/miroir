@@ -1,0 +1,33 @@
+# Driver definition for the upstream Kubernetes external-storage e2e
+# suite (test/e2e/storage/external). Run via ./run.sh.
+#
+# Uses the production StorageClass/VolumeSnapshotClass so the gate tests
+# the replicated (DRBD) path with the shipped configuration.
+StorageClass:
+  FromExistingClassName: homefs-replicated
+SnapshotClass:
+  FromExistingClassName: homefs-snap
+DriverInfo:
+  Name: homefs.io
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 10Gi
+  SupportedFsType:
+    ext4: {}
+  Capabilities:
+    persistence: true
+    block: true
+    exec: true
+    fsGroup: true
+    multipods: true
+    controllerExpansion: true
+    nodeExpansion: true
+    onlineExpansion: true
+    offlineExpansion: true
+    snapshotDataSource: true
+    pvcDataSource: false
+    topology: true
+    singleNodeVolume: false
+    RWX: false
+    readWriteOncePod: true
+    capacity: false
