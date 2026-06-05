@@ -118,6 +118,12 @@ func main() {
 
 	identity := &csi.Identity{Version: version, WithController: mode == "controller"}
 
+	// Set in agent mode; runs after the manager stops. A write barrier is
+	// kernel state and outlives the process — a terminating agent must
+	// not leave one for its successor (anything touching the frozen
+	// device blocks in D state and wedges pod shutdown).
+	var shutdownSweep func() error
+
 	switch mode {
 	case "setup":
 		if nodeName == "" {
@@ -209,6 +215,7 @@ func main() {
 			setupLog.Error(err, "barrier resume sweep failed")
 			os.Exit(1)
 		}
+		shutdownSweep = func() error { return resumeStaleBarriers(drbdDriver) }
 		// events2 turns kernel state changes into immediate reconciles;
 		// the 30s poll remains as the safety net.
 		drbdEvents := make(chan event.GenericEvent, 64)
@@ -258,6 +265,11 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "manager exited")
 		os.Exit(1)
+	}
+	if shutdownSweep != nil {
+		if err := shutdownSweep(); err != nil {
+			setupLog.Error(err, "shutdown barrier sweep failed")
+		}
 	}
 }
 
