@@ -73,6 +73,7 @@ func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.Control
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
 		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
+		csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 	}
@@ -554,6 +555,54 @@ func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRe
 		resp.Entries = append(resp.Entries, &csi.ListSnapshotsResponse_Entry{
 			Snapshot: csiSnapshot(s, s.Status.SizeBytes),
 		})
+	}
+	return resp, nil
+}
+
+// ListVolumes returns all provisioned volumes for external-provisioner reconciliation.
+func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
+	vols := &homefsv1alpha1.HomefsVolumeList{}
+	if err := c.Client.List(ctx, vols); err != nil {
+		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
+	}
+
+	start := 0
+	if req.GetStartingToken() != "" {
+		if _, err := fmt.Sscanf(req.GetStartingToken(), "%d", &start); err != nil || start < 0 || start >= len(vols.Items) {
+			return nil, status.Errorf(codes.Aborted, "invalid starting_token: %s", req.GetStartingToken())
+		}
+	}
+
+	maxEntries := int(req.GetMaxEntries())
+	if maxEntries <= 0 {
+		maxEntries = len(vols.Items) - start
+	}
+
+	resp := &csi.ListVolumesResponse{}
+	end := start + maxEntries
+	if end > len(vols.Items) {
+		end = len(vols.Items)
+	}
+
+	for i := start; i < end; i++ {
+		v := &vols.Items[i]
+		topology := make([]*csi.Topology, 0, len(v.Spec.Replicas))
+		for _, r := range v.Spec.Replicas {
+			topology = append(topology, &csi.Topology{
+				Segments: map[string]string{constants.TopologyKey: r.Node},
+			})
+		}
+		resp.Entries = append(resp.Entries, &csi.ListVolumesResponse_Entry{
+			Volume: &csi.Volume{
+				VolumeId:           v.Name,
+				CapacityBytes:      v.Spec.SizeBytes,
+				AccessibleTopology: topology,
+			},
+		})
+	}
+
+	if end < len(vols.Items) {
+		resp.NextToken = fmt.Sprintf("%d", end)
 	}
 	return resp, nil
 }
