@@ -272,16 +272,100 @@ const drbdMajor = 147
 // volumes. Lower numbers may be reserved for system DRBD resources.
 const minorBase int32 = 1000
 
-// AllocateMinor returns the lowest unused DRBD minor by scanning .res
-// files in StateDir. The volume's own .res is authoritative if present.
-func (d *Driver) AllocateMinor() (int32, error) {
-	used := map[int32]bool{}
-	entries, err := os.ReadDir(d.StateDir)
+// AllocateMinor assigns a DRBD minor to a volume, returning the same
+// minor on future calls. Thread-safe via lock file + atomic rename.
+func (d *Driver) AllocateMinor(volume string) (int32, error) {
+	lockPath := d.path("minor.lock")
+	for tries := 0; tries < 10; tries++ {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+		if err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return 0, err
+		}
+		assigned, err := d.readAssignments()
+		if err != nil {
+			_ = f.Close()
+			_ = os.Remove(lockPath)
+			return 0, err
+		}
+		if m, ok := assigned[volume]; ok {
+			_ = f.Close()
+			_ = os.Remove(lockPath)
+			return m, nil
+		}
+		used := d.scanUsedMinors(assigned)
+		m := minorBase
+		for used[m] {
+			m++
+		}
+		assigned[volume] = m
+		if err := d.writeAssignments(assigned); err != nil {
+			_ = f.Close()
+			_ = os.Remove(lockPath)
+			return 0, err
+		}
+		_ = f.Close()
+		_ = os.Remove(lockPath)
+		return m, nil
+	}
+	return 0, fmt.Errorf("minor lock held after 10 retries")
+}
+
+func (d *Driver) readAssignments() (map[string]int32, error) {
+	raw, err := os.ReadFile(d.path("minor.assign"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return minorBase, nil
+			return map[string]int32{}, nil
 		}
-		return 0, err
+		return nil, err
+	}
+	m := map[string]int32{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		n, err := strconv.Atoi(parts[1])
+		if err == nil {
+			m[parts[0]] = int32(n)
+		}
+	}
+	return m, nil
+}
+
+func (d *Driver) writeAssignments(m map[string]int32) error {
+	path := d.path("minor.assign")
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	for name, minor := range m {
+		if _, err := fmt.Fprintf(f, "%s %d\n", name, minor); err != nil {
+			return err
+		}
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (d *Driver) scanUsedMinors(assigned map[string]int32) map[int32]bool {
+	used := map[int32]bool{}
+	for _, m := range assigned {
+		used[m] = true
+	}
+	entries, err := os.ReadDir(d.StateDir)
+	if err != nil {
+		return used
 	}
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".res") {
@@ -301,11 +385,7 @@ func (d *Driver) AllocateMinor() (int32, error) {
 			}
 		}
 	}
-	pref := minorBase
-	for used[pref] {
-		pref++
-	}
-	return pref, nil
+	return used
 }
 
 // ensureDeviceNode creates /dev/drbd<minor> if absent (mknod; the agent

@@ -301,7 +301,7 @@ func (r *VolumeReconciler) assignMinor(_ context.Context, vol *homefsv1alpha1.Ho
 	if m := vol.Status.PerNode[r.NodeName].DRBDMinor; m > 0 {
 		return m, nil
 	}
-	minor, err := r.DRBD.AllocateMinor()
+	minor, err := r.DRBD.AllocateMinor(vol.Name)
 	if err != nil {
 		return 0, err
 	}
