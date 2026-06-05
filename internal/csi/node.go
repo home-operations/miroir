@@ -166,6 +166,16 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 	}
 	mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
 
+	// Open-for-write probe: the first open(2) auto-promotes DRBD, and a
+	// refused promotion (peer already Primary) otherwise surfaces as
+	// mkfs "Wrong medium type".
+	f, err := os.OpenFile(dev, os.O_RDWR, 0)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable,
+			"device %s not writable (is the volume in use on another node?): %v", dev, err)
+	}
+	_ = f.Close()
+
 	// FormatAndMount formats only when the device has no filesystem —
 	// the mkfs-if-blank step of notes/DESIGN.md §4.5.2.
 	if err := n.Mounter.FormatAndMount(dev, req.GetStagingTargetPath(), fsType, mountFlags); err != nil {

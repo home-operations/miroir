@@ -514,6 +514,12 @@ type Status struct {
 	DiskState string
 	// Primary is true when this node holds the device open (auto-promote).
 	Primary bool
+	// PeerPrimary is true when a connected peer holds the device open —
+	// that peer is where writes originate, hence where a write barrier
+	// must be raised.
+	PeerPrimary bool
+	// Suspended is true while suspend-io holds this node's write barrier.
+	Suspended bool
 	// Connected is true when every peer connection is established.
 	Connected bool
 	// SplitBrain is true when a connection is StandAlone — DRBD refused
@@ -523,13 +529,15 @@ type Status struct {
 
 // drbdsetup status --json shapes (the fields homefs reads).
 type jsonStatus struct {
-	Name    string `json:"name"`
-	Role    string `json:"role"`
-	Devices []struct {
+	Name          string `json:"name"`
+	Role          string `json:"role"`
+	SuspendedUser bool   `json:"suspended-user"`
+	Devices       []struct {
 		DiskState string `json:"disk-state"`
 	} `json:"devices"`
 	Connections []struct {
 		ConnectionState string `json:"connection-state"`
+		PeerRole        string `json:"peer-role"`
 	} `json:"connections"`
 }
 
@@ -548,11 +556,14 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	}
 	res := parsed[0]
 
-	s := Status{Connected: true, Primary: res.Role == "Primary"}
+	s := Status{Connected: true, Primary: res.Role == "Primary", Suspended: res.SuspendedUser}
 	if len(res.Devices) > 0 {
 		s.DiskState = res.Devices[0].DiskState
 	}
 	for _, c := range res.Connections {
+		if c.PeerRole == "Primary" {
+			s.PeerPrimary = true
+		}
 		switch c.ConnectionState {
 		case "Connected":
 		case "StandAlone":
@@ -563,6 +574,27 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		}
 	}
 	return s, nil
+}
+
+// UserSuspended lists resources whose IO is frozen by suspend-io. The
+// kernel is the authority here: a crash between suspend-io and the status
+// patch leaves a frozen device that no snapshot status records.
+func (d *Driver) UserSuspended(ctx context.Context) ([]string, error) {
+	out, err := d.Exec(ctx, "drbdsetup", "status", "--json")
+	if err != nil {
+		return nil, fmt.Errorf("status: %w", err)
+	}
+	var parsed []jsonStatus
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		return nil, fmt.Errorf("parse status: %w", err)
+	}
+	var names []string
+	for _, r := range parsed {
+		if r.SuspendedUser {
+			names = append(names, r.Name)
+		}
+	}
+	return names, nil
 }
 
 // SuspendIO freezes writes on this node's device — the cluster-wide write

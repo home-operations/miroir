@@ -49,6 +49,9 @@ type Resource struct {
 	LocalNode string
 	// LocalDisk is the local backing device path.
 	LocalDisk string
+	// Secret authenticates peers (cram-hmac challenge-response). Empty
+	// renders no auth — volumes created before secrets existed.
+	Secret string
 	// Peers are all diskful members, including the local node.
 	Peers []Peer
 }
@@ -85,6 +88,12 @@ func Render(r Resource) string {
 
 	b.WriteString("    net {\n")
 	b.WriteString("        protocol C;\n")
+	if r.Secret != "" {
+		// Without auth, anything that can reach the replication port can
+		// join the resource.
+		b.WriteString("        cram-hmac-alg sha1;\n")
+		fmt.Fprintf(&b, "        shared-secret %q;\n", r.Secret)
+	}
 	// Never auto-resolve diverged data: an operator picks the loser
 	// (DESIGN §3.2).
 	b.WriteString("        after-sb-0pri discard-zero-changes;\n")

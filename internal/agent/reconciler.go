@@ -31,6 +31,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
 	"github.com/eleboucher/homefs/internal/backend"
@@ -46,6 +49,9 @@ type VolumeReconciler struct {
 	Backend  backend.Backend
 	// DRBD drives the replication layer for multi-replica volumes.
 	DRBD *drbd.Driver
+	// DRBDEvents delivers kernel state changes (drbdsetup events2) as
+	// reconcile triggers, ahead of the next poll.
+	DRBDEvents <-chan event.GenericEvent
 }
 
 // drbdPollInterval refreshes DRBD state in the CRD: connection/disk state
@@ -244,6 +250,7 @@ func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string,
 		Quorum:    vol.Spec.QuorumPolicy,
 		LocalNode: localNode,
 		LocalDisk: localDisk,
+		Secret:    vol.Spec.DRBD.SharedSecret,
 		Peers:     peers,
 	}
 }
@@ -339,8 +346,11 @@ func computePhase(vol *homefsv1alpha1.HomefsVolume) homefsv1alpha1.VolumePhase {
 
 // SetupWithManager registers the reconciler.
 func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&homefsv1alpha1.HomefsVolume{}).
-		Named("agent-volume").
-		Complete(r)
+		Named("agent-volume")
+	if r.DRBDEvents != nil {
+		b = b.WatchesRawSource(source.Channel(r.DRBDEvents, &handler.EnqueueRequestForObject{}))
+	}
+	return b.Complete(r)
 }

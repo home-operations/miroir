@@ -9,8 +9,11 @@ type SnapshotNodeState string
 
 const (
 	SnapshotPending SnapshotNodeState = "Pending"
-	SnapshotDone    SnapshotNodeState = "Done"
-	SnapshotError   SnapshotNodeState = "Error"
+	// SnapshotSuspended: this node's write barrier is up; no leg may be
+	// cut until every replica reports it (or Done).
+	SnapshotSuspended SnapshotNodeState = "Suspended"
+	SnapshotDone      SnapshotNodeState = "Done"
+	SnapshotError     SnapshotNodeState = "Error"
 )
 
 // HomefsSnapshotSpec is the desired state, created by the controller on

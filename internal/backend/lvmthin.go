@@ -151,10 +151,9 @@ func (l *lvmThin) Resize(ctx context.Context, vol string, sizeBytes int64) error
 }
 
 func (l *lvmThin) Sync(ctx context.Context, vol string) error {
-	if _, err := l.exec(ctx, "blockdev", "--flushbufs", l.DevicePath(vol)); err != nil {
-		return err
-	}
-	_, err := l.exec(ctx, "sync")
+	// No global sync(2): it deadlocks against filesystems frozen on the
+	// suspended DRBD device above this LV (see zfsBackend.Sync).
+	_, err := l.exec(ctx, "blockdev", "--flushbufs", l.DevicePath(vol))
 	return err
 }
 

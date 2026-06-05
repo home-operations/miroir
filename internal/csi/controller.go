@@ -18,11 +18,14 @@ package csi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -318,9 +321,10 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 }
 
 // allocateDRBD picks the lowest free TCP port by scanning existing
-// volumes. Callers hold allocMu across allocate+Create — CreateVolume
-// RPCs run concurrently within the pod. The minor is per-node and
-// allocated locally by each agent.
+// volumes, and mints the resource's peer-auth secret. Callers hold
+// allocMu across allocate+Create — CreateVolume RPCs run concurrently
+// within the pod. The minor is per-node and allocated locally by each
+// agent.
 func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec, error) {
 	const portBase = 7000
 	vols := &homefsv1alpha1.HomefsVolumeList{}
@@ -337,6 +341,12 @@ func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec
 	for usedPort[spec.Port] {
 		spec.Port++
 	}
+	// 24 random bytes → 48 hex chars, under DRBD's 64-character cap.
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, status.Errorf(codes.Internal, "generate shared secret: %v", err)
+	}
+	spec.SharedSecret = hex.EncodeToString(raw)
 	return spec, nil
 }
 
@@ -565,6 +575,11 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 	if err := c.Client.List(ctx, vols); err != nil {
 		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
 	}
+	// Tokens are positional; the listing order must be stable across calls
+	// or pages skip and duplicate entries.
+	slices.SortFunc(vols.Items, func(a, b homefsv1alpha1.HomefsVolume) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	start := 0
 	if req.GetStartingToken() != "" {

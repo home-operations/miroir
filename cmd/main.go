@@ -28,11 +28,13 @@ import (
 	"os"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -203,15 +205,32 @@ func main() {
 			os.Exit(1)
 		}
 		// Lift any IO barrier left by a previous agent crash.
-		if err := resumeStaleBarriers(nodeName, drbdDriver); err != nil {
+		if err := resumeStaleBarriers(drbdDriver); err != nil {
 			setupLog.Error(err, "barrier resume sweep failed")
 			os.Exit(1)
 		}
+		// events2 turns kernel state changes into immediate reconciles;
+		// the 30s poll remains as the safety net.
+		drbdEvents := make(chan event.GenericEvent, 64)
+		watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
+			ev := event.GenericEvent{Object: &homefsv1alpha1.HomefsVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: resource},
+			}}
+			select {
+			case drbdEvents <- ev:
+			case <-ctx.Done():
+			}
+		}}
+		if err := mgr.Add(watcher); err != nil {
+			setupLog.Error(err, "unable to add DRBD event watcher")
+			os.Exit(1)
+		}
 		reconciler := &agent.VolumeReconciler{
-			Client:   mgr.GetClient(),
-			NodeName: nodeName,
-			Backend:  be,
-			DRBD:     drbdDriver,
+			Client:     mgr.GetClient(),
+			NodeName:   nodeName,
+			Backend:    be,
+			DRBD:       drbdDriver,
+			DRBDEvents: drbdEvents,
 		}
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")
@@ -266,7 +285,10 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 }
 
 // resumeStaleBarriers lifts suspend-io left behind by a previous crash.
-func resumeStaleBarriers(nodeName string, driver *drbd.Driver) error {
+// The kernel's view drives the sweep: a crash between suspend-io and the
+// status patch leaves a frozen device no snapshot records. Barriers whose
+// round is still within the deadline are the reconciler's to drive.
+func resumeStaleBarriers(driver *drbd.Driver) error {
 	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
 		return err
@@ -275,33 +297,26 @@ func resumeStaleBarriers(nodeName string, driver *drbd.Driver) error {
 	if err := c.List(context.Background(), snaps); err != nil {
 		return err
 	}
-	vols := &homefsv1alpha1.HomefsVolumeList{}
-	if err := c.List(context.Background(), vols); err != nil {
-		return err
-	}
-	hosted := map[string]bool{}
-	for _, v := range vols.Items {
-		for _, rep := range v.Spec.Replicas {
-			if rep.Node == nodeName {
-				hosted[v.Name] = true
-			}
+	fresh := map[string]bool{}
+	for _, s := range snaps.Items {
+		if s.Status.IOSuspended && s.Status.SuspendedAt != nil &&
+			time.Since(s.Status.SuspendedAt.Time) < agent.SuspendDeadline {
+			fresh[s.Spec.VolumeName] = true
 		}
 	}
-	for i := range snaps.Items {
-		s := &snaps.Items[i]
-		if !s.Status.IOSuspended || s.Status.SuspendedAt == nil {
+	suspended, err := driver.UserSuspended(context.Background())
+	if err != nil {
+		// No kernel view (e.g. module not loaded yet) also means nothing
+		// can be suspended — don't block agent startup on it.
+		setupLog.Error(err, "cannot list suspended resources; skipping barrier sweep")
+		return nil
+	}
+	for _, vol := range suspended {
+		if fresh[vol] {
 			continue
 		}
-		if !hosted[s.Spec.VolumeName] {
-			continue
-		}
-		// Only force-resume past the deadline; otherwise let the
-		// reconciler (which has more context) drive the barrier.
-		if time.Since(s.Status.SuspendedAt.Time) < agent.SuspendDeadline {
-			continue
-		}
-		if err := driver.ResumeIO(context.Background(), s.Spec.VolumeName); err != nil {
-			return fmt.Errorf("resume stale barrier %s: %w", s.Name, err)
+		if err := driver.ResumeIO(context.Background(), vol); err != nil {
+			return fmt.Errorf("resume stale barrier on %s: %w", vol, err)
 		}
 	}
 	return nil

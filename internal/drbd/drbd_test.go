@@ -62,6 +62,38 @@ func TestRenderDeterministicAndLocalDisk(t *testing.T) {
 	}
 }
 
+func TestRenderSharedSecret(t *testing.T) {
+	r := testResource("kharkiv")
+	if out := Render(r); strings.Contains(out, "shared-secret") {
+		t.Fatalf("no auth must render for secretless volumes (pre-secret CRs):\n%s", out)
+	}
+	r.Secret = "0123456789abcdef"
+	out := Render(r)
+	if !strings.Contains(out, "cram-hmac-alg sha1;") ||
+		!strings.Contains(out, `shared-secret "0123456789abcdef";`) {
+		t.Fatalf("peer auth missing:\n%s", out)
+	}
+}
+
+func TestParseEvent2(t *testing.T) {
+	cases := []struct{ line, want string }{
+		{"exists resource name:pvc-1 role:Secondary suspended:no", "pvc-1"},
+		{"change connection name:pvc-1 peer-node-id:1 connection:StandAlone", "pvc-1"},
+		{"change device name:pvc-2 volume:0 minor:1000 disk:UpToDate", "pvc-2"},
+		{"destroy resource name:pvc-3", "pvc-3"},
+		{"change peer-device name:pvc-1 peer-node-id:1 replication:SyncTarget", "pvc-1"},
+		{"exists -", ""},
+		{"call helper name:pvc-1 helper:before-resync-target", ""},
+		{"", ""},
+		{"garbage", ""},
+	}
+	for _, tc := range cases {
+		if got := parseEvent2(tc.line); got != tc.want {
+			t.Errorf("parseEvent2(%q) = %q, want %q", tc.line, got, tc.want)
+		}
+	}
+}
+
 func TestRenderFreezeQuorum(t *testing.T) {
 	r := testResource("kharkiv")
 	r.Quorum = homefsv1alpha1.QuorumFreeze
@@ -432,9 +464,9 @@ func TestDownRemovesState(t *testing.T) {
 
 func TestStatusParsing(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
-		"drbdsetup status": `[{"name":"pvc-1",
+		"drbdsetup status": `[{"name":"pvc-1","suspended-user":true,
 			"devices":[{"disk-state":"UpToDate"}],
-			"connections":[{"connection-state":"Connected"}]}]`,
+			"connections":[{"connection-state":"Connected","peer-role":"Primary"}]}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
@@ -442,8 +474,25 @@ func TestStatusParsing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.DiskState != "UpToDate" || !s.Connected || s.SplitBrain {
+	if s.DiskState != "UpToDate" || !s.Connected || s.SplitBrain || !s.PeerPrimary || !s.Suspended {
 		t.Fatalf("unexpected status %+v", s)
+	}
+}
+
+func TestUserSuspendedListsFrozenResources(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		"drbdsetup status": `[
+			{"name":"pvc-1","suspended":true,"suspended-user":true},
+			{"name":"pvc-2","suspended":false,"suspended-user":false}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	got, err := d.UserSuspended(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "pvc-1" {
+		t.Fatalf("want [pvc-1], got %v", got)
 	}
 }
 

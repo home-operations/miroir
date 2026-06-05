@@ -40,8 +40,9 @@ import (
 
 // fakeBackend records calls and simulates a thin pool in memory.
 type fakeBackend struct {
-	created map[string]int64
-	failOn  string
+	created   map[string]int64
+	failOn    string
+	snapCalls []string
 }
 
 func newFakeBackend() *fakeBackend { return &fakeBackend{created: map[string]int64{}} }
@@ -67,7 +68,10 @@ func (f *fakeBackend) Resize(_ context.Context, vol string, size int64) error {
 	return nil
 }
 
-func (f *fakeBackend) Snapshot(context.Context, string, string) error { return nil }
+func (f *fakeBackend) Snapshot(_ context.Context, vol, snap string) error {
+	f.snapCalls = append(f.snapCalls, "snapshot "+vol+"@"+snap)
+	return nil
+}
 
 func (f *fakeBackend) CreateFromSnapshot(_ context.Context, vol, _, _ string) (string, error) {
 	return f.DevicePath(vol), nil
@@ -78,7 +82,10 @@ func (f *fakeBackend) Delete(_ context.Context, vol string) error {
 	return nil
 }
 
-func (f *fakeBackend) DeleteSnapshot(context.Context, string, string) error { return nil }
+func (f *fakeBackend) DeleteSnapshot(_ context.Context, vol, snap string) error {
+	f.snapCalls = append(f.snapCalls, "delete "+vol+"@"+snap)
+	return nil
+}
 
 func (f *fakeBackend) DevicePath(vol string) string { return "/dev/fake/" + vol }
 

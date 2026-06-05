@@ -100,11 +100,11 @@ func (z *zfsBackend) Resize(ctx context.Context, vol string, sizeBytes int64) er
 }
 
 func (z *zfsBackend) Sync(ctx context.Context, vol string) error {
+	// No global sync(2): it waits on dirty pages of filesystems mounted
+	// on the suspended DRBD device above this zvol, which cannot flush
+	// while the barrier is up — deadlock. Crash-consistent is the contract.
 	if _, err := z.exec(ctx, "blockdev", "--flushbufs", z.DevicePath(vol)); err != nil {
 		return fmt.Errorf("flush %s: %w", vol, err)
-	}
-	if _, err := z.exec(ctx, "sync"); err != nil {
-		return fmt.Errorf("sync: %w", err)
 	}
 	// Commit pending transaction groups before the snapshot dataset is cut.
 	pool := strings.SplitN(z.dataset, "/", 2)[0]
