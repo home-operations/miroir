@@ -259,6 +259,36 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	}
 }
 
+// Regression: a volume whose peer link is down writes alone (quorum
+// off) — no barrier and no cut until replication is healthy again.
+func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
+	s := newScheme(t)
+	v := vol("pvc-1", "kharkiv", "paris")
+	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
+		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
+		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		Build()
+
+	// Primary and locally UpToDate, but the peer link is still down.
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Primary",
+		"devices":[{"disk-state":"UpToDate"}],
+		"connections":[{"connection-state":"Connecting"}]}]`}
+	fb := newFakeBackend()
+	r := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, "snap-1")
+
+	fe.notCalledWith(t, "suspend-io")
+	if len(fb.snapCalls) != 0 {
+		t.Fatalf("no leg may be cut while replication is degraded: %v", fb.snapCalls)
+	}
+}
+
 // Regression: a snapshot deleted while its barrier is up must resume IO
 // on the way out — nothing else ever would.
 func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {

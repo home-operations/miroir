@@ -157,9 +157,14 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 	myState := snap.Status.PerNode[r.NodeName]
 	expired := snap.Status.SuspendedAt != nil &&
 		time.Since(snap.Status.SuspendedAt.Time) > SuspendDeadline
+	// Disconnected or resyncing legs have diverged (quorum off lets the
+	// survivor write alone) and a barrier over diverged legs cuts
+	// diverged legs. Gates raising and cutting only — a degraded volume
+	// must still resume.
+	healthy := st.Connected && st.DiskState == drbd.DiskUpToDate
 
 	switch {
-	case coordinator && !snap.Status.IOSuspended:
+	case coordinator && !snap.Status.IOSuspended && healthy:
 		// A failed previous round (a replica never finished before the
 		// deadline) retries with backoff instead of churning the barrier.
 		if myState == homefsv1alpha1.SnapshotError &&
@@ -169,11 +174,11 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 		}
 		return r.raiseBarrier(ctx, snap, vol, true)
 
-	case !coordinator && snap.Status.IOSuspended && !expired &&
+	case !coordinator && snap.Status.IOSuspended && !expired && healthy &&
 		myState != homefsv1alpha1.SnapshotSuspended && myState != homefsv1alpha1.SnapshotDone:
 		return r.raiseBarrier(ctx, snap, vol, false)
 
-	case snap.Status.IOSuspended && !expired &&
+	case snap.Status.IOSuspended && !expired && healthy &&
 		myState == homefsv1alpha1.SnapshotSuspended && allSuspended(vol, snap):
 		return r.cutLeg(ctx, snap, vol)
 
