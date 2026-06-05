@@ -103,8 +103,9 @@ kubectl exec -n "$NS" reader -- sha256sum -c /data/seed.sha >/dev/null || die "c
 ok "data intact after move $node -> $other"
 
 step "snapshot under write load"
+# Detach the churn loop's stdio or kubectl exec waits on it forever.
 kubectl exec -n "$NS" reader -- sh -c \
-    'while true; do dd if=/dev/urandom of=/data/churn bs=1M count=8 2>/dev/null; done & echo started'
+    'nohup sh -c "while true; do dd if=/dev/urandom of=/data/churn bs=1M count=8 2>/dev/null; done" >/dev/null 2>&1 & echo started'
 kubectl apply -f - <<EOF
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
