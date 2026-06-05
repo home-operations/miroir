@@ -118,10 +118,9 @@ func main() {
 
 	identity := &csi.Identity{Version: version, WithController: mode == "controller"}
 
-	// Set in agent mode; runs after the manager stops. A write barrier is
-	// kernel state and outlives the process — a terminating agent must
-	// not leave one for its successor (anything touching the frozen
-	// device blocks in D state and wedges pod shutdown).
+	// Agent mode only, run after the manager stops: a write barrier is
+	// kernel state and outlives the process — never leave one behind for
+	// the successor.
 	var shutdownSweep func() error
 
 	switch mode {
