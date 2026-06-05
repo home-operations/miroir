@@ -1,9 +1,8 @@
----
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: homefs-setup
-  namespace: { { .Release.Namespace } }
+  namespace: {{ .Release.Namespace }}
   annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "-10"
@@ -13,7 +12,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: homefs-uninstall
-  namespace: { { .Release.Namespace } }
+  namespace: {{ .Release.Namespace }}
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "5"
@@ -47,4 +46,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: homefs-uninstall
-    namespace: { { .Release.Namespace } }
+    namespace: {{ .Release.Namespace }}

@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: homefs-uninstall
-  namespace: { { .Release.Namespace } }
+  namespace: {{ .Release.Namespace }}
   labels:
     app.kubernetes.io/name: homefs
     app.kubernetes.io/component: uninstall
