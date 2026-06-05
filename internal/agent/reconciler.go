@@ -183,6 +183,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		upToDate:   st.DiskState == drbd.DiskUpToDate,
 		connected:  st.Connected,
 		splitBrain: st.SplitBrain,
+		suspended:  st.Suspended,
 	})
 	err = r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
 		DeviceCreated: true,

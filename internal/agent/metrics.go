@@ -38,28 +38,35 @@ var (
 		Name: "homefs_volume_split_brain",
 		Help: "1 when DRBD refused to reconnect after divergence; manual resolution required.",
 	}, []string{volumeLabel})
+	metricSuspended = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "homefs_volume_suspended",
+		Help: "1 while suspend-io holds this node's write barrier; sustained means a stranded barrier (snapshot rounds last seconds).",
+	}, []string{volumeLabel})
 )
 
 func init() {
-	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain)
+	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain, metricSuspended)
 }
 
 func recordVolumeMetrics(volume string, st homefsReplicaView) {
 	metricUpToDate.WithLabelValues(volume).Set(boolGauge(st.upToDate))
 	metricConnected.WithLabelValues(volume).Set(boolGauge(st.connected))
 	metricSplitBrain.WithLabelValues(volume).Set(boolGauge(st.splitBrain))
+	metricSuspended.WithLabelValues(volume).Set(boolGauge(st.suspended))
 }
 
 func dropVolumeMetrics(volume string) {
 	metricUpToDate.DeleteLabelValues(volume)
 	metricConnected.DeleteLabelValues(volume)
 	metricSplitBrain.DeleteLabelValues(volume)
+	metricSuspended.DeleteLabelValues(volume)
 }
 
 type homefsReplicaView struct {
 	upToDate   bool
 	connected  bool
 	splitBrain bool
+	suspended  bool
 }
 
 func boolGauge(b bool) float64 {
