@@ -26,7 +26,7 @@ type HomefsSnapshotSpec struct {
 type HomefsSnapshotStatus struct {
 	// ReadyToUse is true once every replica holds the snapshot.
 	// +optional
-	ReadyToUse bool `json:"readyToUse,omitempty"`
+	ReadyToUse bool `json:"readyToUse"`
 	// PerNode maps node name to that agent's snapshot progress.
 	// +optional
 	PerNode map[string]SnapshotNodeState `json:"perNode,omitempty"`
@@ -38,7 +38,7 @@ type HomefsSnapshotStatus struct {
 	// coordinator after suspend-io, cleared on resume. Peers snapshot
 	// only while it holds.
 	// +optional
-	IOSuspended bool `json:"ioSuspended,omitempty"`
+	IOSuspended bool `json:"ioSuspended"`
 	// SuspendedAt bounds the barrier: the coordinator resumes IO at the
 	// deadline even if a peer never snapshots.
 	// +optional

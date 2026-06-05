@@ -140,7 +140,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Replicated: layer DRBD on the backing device. Pods attach the DRBD
 	// device, never the backing LV/zvol directly.
-	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev)); err != nil {
+	minor, err := r.assignMinor(ctx, vol)
+	if err != nil {
+		return ctrl.Result{}, r.reportError(ctx, vol, err)
+	}
+	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor)); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	// Online growth: once every peer's backing device is at the new size
@@ -176,7 +180,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	})
 	err = r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
 		DeviceCreated: true,
-		DevicePath:    drbd.DevicePath(vol.Spec.DRBD.Minor),
+		DevicePath:    drbd.DevicePath(minor),
+		DRBDMinor:     minor,
 		SizeBytes:     reportSize,
 		DiskState:     st.DiskState,
 		Connected:     st.Connected,
@@ -223,7 +228,7 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *homefsv1alph
 }
 
 // drbdResource maps the CRD desired state to a render input.
-func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string) drbd.Resource {
+func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string, minor int32) drbd.Resource {
 	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
 	for _, rep := range vol.Spec.Replicas {
 		peers = append(peers, drbd.Peer{
@@ -234,7 +239,7 @@ func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string)
 	}
 	return drbd.Resource{
 		Name:      vol.Name,
-		Minor:     vol.Spec.DRBD.Minor,
+		Minor:     minor,
 		Port:      vol.Spec.DRBD.Port,
 		Quorum:    vol.Spec.QuorumPolicy,
 		LocalNode: localNode,
@@ -280,17 +285,32 @@ func (r *VolumeReconciler) reportError(ctx context.Context, vol *homefsv1alpha1.
 
 // patchStatus updates this node's slot in status and recomputes the phase.
 func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *homefsv1alpha1.HomefsVolume, mine homefsv1alpha1.ReplicaStatus) error {
-	base := vol.DeepCopy()
 	if vol.Status.PerNode == nil {
 		vol.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{}
 	}
 	vol.Status.PerNode[r.NodeName] = mine
 	vol.Status.Phase = computePhase(vol)
-	// Optimistic lock: a JSON merge patch replaces the whole perNode map,
-	// so a concurrent patch from another node's agent must conflict (and
-	// requeue) instead of silently dropping that node's entry.
-	return r.Status().Patch(ctx, vol,
-		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	// SSA requires GVK to be set. The volume was read in Reconcile, but
+	// ensure it isn't lost (e.g. under the fake client).
+	vol.SetGroupVersionKind(homefsv1alpha1.GroupVersion.WithKind("HomefsVolume"))
+	return r.Status().Patch(ctx, vol, client.Apply, //nolint:staticcheck // v0.24 deprecation, new SubResource().Apply() requires runtime.ApplyConfiguration
+		client.FieldOwner("agent-volume-"+r.NodeName),
+		client.ForceOwnership)
+}
+
+// assignMinor returns the DRBD device minor assigned to this volume,
+// allocating a free one if none was assigned yet. The result is
+// idempotent for a given resource name and persisted in the rendered
+// .res file — agent restarts reuse the same minor.
+func (r *VolumeReconciler) assignMinor(_ context.Context, vol *homefsv1alpha1.HomefsVolume) (int32, error) {
+	if m := vol.Status.PerNode[r.NodeName].DRBDMinor; m > 0 {
+		return m, nil
+	}
+	minor, err := r.DRBD.AllocateMinor(vol.Name)
+	if err != nil {
+		return 0, err
+	}
+	return minor, nil
 }
 
 // computePhase aggregates per-node states into the volume phase the CSI

@@ -50,12 +50,11 @@ type Replica struct {
 }
 
 // DRBDSpec carries the cluster-unique DRBD identifiers allocated by the
-// controller. Unset for replicas:1 volumes (no replication layer).
+// controller. The Minor is per-node and managed locally by each agent.
+// Unset for replicas:1 volumes (no replication layer).
 type DRBDSpec struct {
-	// Minor is the DRBD device minor number (device /dev/drbd<minor>).
-	// +kubebuilder:validation:Minimum=0
-	Minor int32 `json:"minor"`
-	// Port is the TCP port for this resource's replication links.
+	// Port is the TCP port for this resource's replication links,
+	// allocated cluster-wide by the controller at creation.
 	// +kubebuilder:validation:Minimum=1024
 	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port"`
@@ -91,13 +90,17 @@ type HomefsVolumeSpec struct {
 // ReplicaStatus is the per-node observed state, written by that node's agent.
 type ReplicaStatus struct {
 	// DeviceCreated is true once the backing device exists on the node.
-	DeviceCreated bool `json:"deviceCreated,omitempty"`
+	DeviceCreated bool `json:"deviceCreated"`
 	// DevicePath is the node-local path pods attach to (backing device for
 	// replicas:1; /dev/drbd<minor> when replicated).
 	DevicePath string `json:"devicePath,omitempty"`
 	// SizeBytes is the currently realized size on this node, used to
 	// acknowledge expansion.
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
+	// DRBDMinor is the DRBD device minor assigned locally by the agent.
+	// Zero means unassigned (fresh volume or unreplicated).
+	// +optional
+	DRBDMinor int32 `json:"drbdMinor,omitempty"`
 	// DiskState is the DRBD disk state on this node (UpToDate,
 	// Inconsistent, Outdated, Diskless, …). Empty for unreplicated volumes.
 	// +optional
@@ -105,11 +108,11 @@ type ReplicaStatus struct {
 	// Connected is true when all replication links from this node are
 	// established. Always true for unreplicated volumes.
 	// +optional
-	Connected bool `json:"connected,omitempty"`
+	Connected bool `json:"connected"`
 	// SplitBrain is true when this node's DRBD refused a reconnect after
 	// detecting divergent data — operator intervention required.
 	// +optional
-	SplitBrain bool `json:"splitBrain,omitempty"`
+	SplitBrain bool `json:"splitBrain"`
 	// Message carries the last reconcile error, if any.
 	Message string `json:"message,omitempty"`
 }

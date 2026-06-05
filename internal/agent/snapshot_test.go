@@ -36,6 +36,10 @@ func snapObj(name, volume string, nodes ...string) *homefsv1alpha1.HomefsSnapsho
 		finalizers = append(finalizers, constants.FinalizerPrefix+n)
 	}
 	return &homefsv1alpha1.HomefsSnapshot{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: homefsv1alpha1.GroupVersion.String(),
+			Kind:       "HomefsSnapshot",
+		},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Finalizers: finalizers},
 		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: volume},
 	}
@@ -75,7 +79,7 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 func TestSnapshotReplicatedBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000}
+	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
 		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
 		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
@@ -126,7 +130,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000}
+	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
 		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
 		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},

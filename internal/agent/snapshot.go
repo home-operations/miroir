@@ -242,10 +242,11 @@ func replicaOn(vol *homefsv1alpha1.HomefsVolume, node string) bool {
 }
 
 func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot, mutate func(*homefsv1alpha1.HomefsSnapshot)) error {
-	base := snap.DeepCopy()
 	mutate(snap)
-	return r.Status().Patch(ctx, snap,
-		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	snap.SetGroupVersionKind(homefsv1alpha1.GroupVersion.WithKind("HomefsSnapshot"))
+	return r.Status().Patch(ctx, snap, client.Apply, //nolint:staticcheck // v0.24 deprecation
+		client.FieldOwner("agent-snapshot-"+r.NodeName),
+		client.ForceOwnership)
 }
 
 func (r *SnapshotReconciler) removeFinalizer(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot) error {

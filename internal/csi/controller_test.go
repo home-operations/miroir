@@ -232,7 +232,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		vol.Spec.Replicas[1].Address != "192.168.1.41" {
 		t.Fatalf("InternalIPs not resolved: %+v", vol.Spec.Replicas)
 	}
-	if vol.Spec.DRBD == nil || vol.Spec.DRBD.Minor != 1000 || vol.Spec.DRBD.Port != 7000 {
+	if vol.Spec.DRBD == nil || vol.Spec.DRBD.Port != 7000 {
 		t.Fatalf("unexpected DRBD allocation %+v", vol.Spec.DRBD)
 	}
 	if vol.Spec.QuorumPolicy != homefsv1alpha1.QuorumLastManStanding {
@@ -254,7 +254,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-r2"}, vol2); err != nil {
 		t.Fatal(err)
 	}
-	if vol2.Spec.DRBD.Minor != 1001 || vol2.Spec.DRBD.Port != 7001 {
+	if vol2.Spec.DRBD.Port != 7001 {
 		t.Fatalf("allocator must advance: %+v", vol2.Spec.DRBD)
 	}
 }

@@ -55,9 +55,10 @@ type Controller struct {
 	// ProvisionTimeout bounds the wait for agents to realize a volume.
 	ProvisionTimeout time.Duration
 
-	// allocMu serialises allocateDRBD+Create: CreateVolume RPCs run
-	// concurrently within the single controller pod, and two interleaved
-	// List→Create spans would hand out the same minor/port.
+	// allocMu serialises CreateVolume RPCs that run concurrently within
+	// the single controller pod: two interleaved List→Create spans would
+	// hand out the same port. The port must be cluster-wide unique per
+	// DRBD resource.
 	allocMu sync.Mutex
 }
 
@@ -315,30 +316,23 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 	return "", status.Errorf(codes.Internal, "node %s has no InternalIP", name)
 }
 
-// allocateDRBD picks the lowest free minor and TCP port by scanning
-// existing volumes. Callers hold allocMu across allocate+Create —
-// CreateVolume RPCs run concurrently within the pod.
+// allocateDRBD picks the lowest free TCP port by scanning existing
+// volumes. Callers hold allocMu across allocate+Create — CreateVolume
+// RPCs run concurrently within the pod. The minor is per-node and
+// allocated locally by each agent.
 func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec, error) {
-	const (
-		minorBase = 1000
-		portBase  = 7000
-	)
+	const portBase = 7000
 	vols := &homefsv1alpha1.HomefsVolumeList{}
 	if err := c.Client.List(ctx, vols); err != nil {
 		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
 	}
-	usedMinor := map[int32]bool{}
 	usedPort := map[int32]bool{}
 	for _, v := range vols.Items {
 		if v.Spec.DRBD != nil {
-			usedMinor[v.Spec.DRBD.Minor] = true
 			usedPort[v.Spec.DRBD.Port] = true
 		}
 	}
-	spec := &homefsv1alpha1.DRBDSpec{Minor: minorBase, Port: portBase}
-	for usedMinor[spec.Minor] {
-		spec.Minor++
-	}
+	spec := &homefsv1alpha1.DRBDSpec{Port: portBase}
 	for usedPort[spec.Port] {
 		spec.Port++
 	}

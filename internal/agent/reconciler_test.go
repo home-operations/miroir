@@ -19,6 +19,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +108,10 @@ func vol(name string, nodes ...string) *homefsv1alpha1.HomefsVolume {
 		finalizers = append(finalizers, constants.FinalizerPrefix+n)
 	}
 	return &homefsv1alpha1.HomefsVolume{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: homefsv1alpha1.GroupVersion.String(),
+			Kind:       "HomefsVolume",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
 			Finalizers: finalizers,
@@ -199,11 +205,23 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	fb := newFakeBackend()
 	v := vol("pvc-1", "kharkiv", "paris")
 	v.Spec.QuorumPolicy = homefsv1alpha1.QuorumLastManStanding
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000}
+	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
 	v.Spec.Replicas[0].Address = "192.168.1.41"
 	v.Spec.Replicas[1].NodeID = 1
 	v.Spec.Replicas[1].Address = "192.168.1.42"
+
+	stateDir := t.TempDir()
+	// Pre-seed .res so assignMinor → AllocateMinor picks minor 1000.
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n"+
+			"    on \"kharkiv\" {\n"+
+			"        device minor 1000;\n"+
+			"    }\n"+
+			"}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1",
 		"devices":[{"disk-state":"UpToDate"}],
@@ -214,7 +232,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{
 		Client: c, NodeName: "kharkiv", Backend: fb,
-		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
 	res, err := r.Reconcile(context.Background(),
@@ -397,7 +415,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				Spec: homefsv1alpha1.HomefsVolumeSpec{
 					SizeBytes: 1 << 30,
 					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
-					DRBD:      &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000},
+					DRBD:      &homefsv1alpha1.DRBDSpec{Port: 7000},
 				},
 				Status: homefsv1alpha1.HomefsVolumeStatus{
 					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
@@ -414,7 +432,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				Spec: homefsv1alpha1.HomefsVolumeSpec{
 					SizeBytes: 1 << 30,
 					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
-					DRBD:      &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000},
+					DRBD:      &homefsv1alpha1.DRBDSpec{Port: 7000},
 				},
 				Status: homefsv1alpha1.HomefsVolumeStatus{
 					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
@@ -447,7 +465,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				Spec: homefsv1alpha1.HomefsVolumeSpec{
 					SizeBytes: 1 << 30,
 					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
-					DRBD:      &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000},
+					DRBD:      &homefsv1alpha1.DRBDSpec{Port: 7000},
 				},
 				Status: homefsv1alpha1.HomefsVolumeStatus{
 					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
