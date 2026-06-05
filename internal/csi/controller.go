@@ -52,6 +52,10 @@ type Controller struct {
 	csi.UnimplementedControllerServer
 
 	Client client.Client
+	// APIReader reads straight from the API server, bypassing the
+	// informer cache. Port allocation needs read-your-writes: the cache
+	// can lag a just-created volume, handing its port out twice.
+	APIReader client.Reader
 	// Nodes is the storage topology from the Helm-rendered node map —
 	// which nodes hold storage and with which backend.
 	Nodes nodemap.Map
@@ -327,8 +331,12 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 // agent.
 func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec, error) {
 	const portBase = 7000
+	reader := c.APIReader
+	if reader == nil {
+		reader = c.Client
+	}
 	vols := &homefsv1alpha1.HomefsVolumeList{}
-	if err := c.Client.List(ctx, vols); err != nil {
+	if err := reader.List(ctx, vols); err != nil {
 		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
 	}
 	usedPort := map[int32]bool{}

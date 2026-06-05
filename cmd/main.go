@@ -163,7 +163,11 @@ func main() {
 			setupLog.Error(err, "unable to load node map")
 			os.Exit(1)
 		}
-		controller := &csi.Controller{Client: mgr.GetClient(), Nodes: nodes}
+		controller := &csi.Controller{
+			Client:    mgr.GetClient(),
+			APIReader: mgr.GetAPIReader(),
+			Nodes:     nodes,
+		}
 		serveCSI(mgr, csiSocket, identity, controller, nil)
 
 	case "agent":
