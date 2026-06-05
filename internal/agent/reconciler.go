@@ -291,6 +291,7 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *homefsv1alpha1.
 	vol.Status.PerNode[r.NodeName] = mine
 	vol.Status.Phase = computePhase(vol)
 	vol.SetGroupVersionKind(homefsv1alpha1.GroupVersion.WithKind("HomefsVolume"))
+	vol.ManagedFields = nil
 	return r.Status().Patch(ctx, vol, client.Apply, //nolint:staticcheck
 		client.FieldOwner("agent-volume-"+r.NodeName),
 		client.ForceOwnership)

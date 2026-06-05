@@ -244,6 +244,7 @@ func replicaOn(vol *homefsv1alpha1.HomefsVolume, node string) bool {
 func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot, mutate func(*homefsv1alpha1.HomefsSnapshot)) error {
 	mutate(snap)
 	snap.SetGroupVersionKind(homefsv1alpha1.GroupVersion.WithKind("HomefsSnapshot"))
+	snap.ManagedFields = nil
 	return r.Status().Patch(ctx, snap, client.Apply, //nolint:staticcheck
 		client.FieldOwner("agent-snapshot-"+r.NodeName),
 		client.ForceOwnership)

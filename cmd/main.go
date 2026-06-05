@@ -148,6 +148,7 @@ func main() {
 			os.Exit(1)
 		}
 		setupLog.Info("pool ready", "node", nodeName)
+		return
 
 	case "controller":
 		nodes, err := nodemap.Load(nodesConfig)
