@@ -488,13 +488,14 @@ func isWinner(r Resource) bool {
 }
 
 // Down stops the resource and removes its rendered state. Idempotent.
+// drbdsetup, not drbdadm: drbdadm refuses to do anything while any two
+// .res files in the directory conflict, and teardown is how a conflict
+// gets removed. drbdsetup needs no config and exits 0 for unknown names.
 func (d *Driver) Down(ctx context.Context, name string) error {
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
-	if _, err := d.adm(ctx, "down", name); err != nil &&
-		!strings.Contains(err.Error(), "no resources defined") &&
-		!strings.Contains(err.Error(), "not defined in your config") {
+	if _, err := d.Exec(ctx, "drbdsetup", "down", name); err != nil {
 		return fmt.Errorf("down %s: %w", name, err)
 	}
 	for _, suffix := range stateSuffixes {

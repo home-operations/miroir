@@ -447,7 +447,7 @@ func TestDownRemovesState(t *testing.T) {
 	if err := d.Down(context.Background(), "pvc-1"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "drbdadm down pvc-1")
+	fe.calledWith(t, "drbdsetup down pvc-1")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.res")); !os.IsNotExist(err) {
 		t.Fatal("res file must be removed")
 	}
