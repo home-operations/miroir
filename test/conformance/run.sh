@@ -24,8 +24,9 @@ fi
 KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
 FOCUS=${FOCUS:-'homefs.io'}
 # Disruptive specs restart kubelet; Serial ones assume exclusive use of
-# the cluster. Both are excluded from the default parallel run.
-SKIP=${SKIP:-'\[Disruptive\]|\[Serial\]'}
+# the cluster; the volumeMode host check nsenters the node and runs sh,
+# which Talos does not ship.
+SKIP=${SKIP:-'\[Disruptive\]|\[Serial\]|should not mount / map unused volumes'}
 PROCS=${PROCS:-4}
 mkdir -p report
 
