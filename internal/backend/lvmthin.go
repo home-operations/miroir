@@ -142,10 +142,12 @@ func (l *lvmThin) Resize(ctx context.Context, vol string, sizeBytes int64) error
 	if cur >= sizeBytes {
 		return nil // already big enough (idempotent retry)
 	}
-	_, err = l.lvm(ctx, "lvextend",
+	if _, err := l.lvm(ctx, "lvextend",
 		"--size", fmt.Sprintf("%db", sizeBytes),
-		fmt.Sprintf("%s/%s", l.vg, vol))
-	return err
+		fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
+		return fmt.Errorf("lvextend %s to %d: %w", vol, sizeBytes, err)
+	}
+	return nil
 }
 
 func (l *lvmThin) Sync(ctx context.Context, vol string) error {
@@ -170,7 +172,10 @@ func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
 		"--name", snapLV(snap),
 		"--setactivationskip", "n",
 		fmt.Sprintf("%s/%s", l.vg, vol))
-	return err
+	if err != nil {
+		return fmt.Errorf("snapshot %s of %s: %w", snap, vol, err)
+	}
+	return nil
 }
 
 func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */, snap string) (string, error) {
@@ -205,8 +210,10 @@ func (l *lvmThin) Delete(ctx context.Context, vol string) error {
 	if err != nil || !ok {
 		return err
 	}
-	_, err = l.lvm(ctx, "lvremove", "--yes", fmt.Sprintf("%s/%s", l.vg, vol))
-	return err
+	if _, err := l.lvm(ctx, "lvremove", "--yes", fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
+		return fmt.Errorf("lvremove %s: %w", vol, err)
+	}
+	return nil
 }
 
 func (l *lvmThin) DeleteSnapshot(ctx context.Context, _ /* vol */, snap string) error {

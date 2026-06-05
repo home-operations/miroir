@@ -24,7 +24,9 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -167,6 +169,11 @@ func main() {
 			setupLog.Error(err, "orphan sweep failed")
 			os.Exit(1)
 		}
+		// Lift any IO barrier left by a previous agent crash.
+		if err := resumeStaleBarriers(nodeName, drbdDriver); err != nil {
+			setupLog.Error(err, "barrier resume sweep failed")
+			os.Exit(1)
+		}
 		reconciler := &agent.VolumeReconciler{
 			Client:   mgr.GetClient(),
 			NodeName: nodeName,
@@ -223,6 +230,48 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 	}
 	return driver.SweepOrphans(context.Background(),
 		func(name string) bool { return owned[name] })
+}
+
+// resumeStaleBarriers lifts suspend-io left behind by a previous crash.
+func resumeStaleBarriers(nodeName string, driver *drbd.Driver) error {
+	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		return err
+	}
+	snaps := &homefsv1alpha1.HomefsSnapshotList{}
+	if err := c.List(context.Background(), snaps); err != nil {
+		return err
+	}
+	vols := &homefsv1alpha1.HomefsVolumeList{}
+	if err := c.List(context.Background(), vols); err != nil {
+		return err
+	}
+	hosted := map[string]bool{}
+	for _, v := range vols.Items {
+		for _, rep := range v.Spec.Replicas {
+			if rep.Node == nodeName {
+				hosted[v.Name] = true
+			}
+		}
+	}
+	for i := range snaps.Items {
+		s := &snaps.Items[i]
+		if !s.Status.IOSuspended || s.Status.SuspendedAt == nil {
+			continue
+		}
+		if !hosted[s.Spec.VolumeName] {
+			continue
+		}
+		// Only force-resume past the deadline; otherwise let the
+		// reconciler (which has more context) drive the barrier.
+		if time.Since(s.Status.SuspendedAt.Time) < agent.SuspendDeadline {
+			continue
+		}
+		if err := driver.ResumeIO(context.Background(), s.Spec.VolumeName); err != nil {
+			return fmt.Errorf("resume stale barrier %s: %w", s.Name, err)
+		}
+	}
+	return nil
 }
 
 // serveCSI runs the CSI gRPC server alongside the manager; controller and

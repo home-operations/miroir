@@ -366,3 +366,141 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 		t.Fatalf("volume should be gone, still has finalizers %v", got.Finalizers)
 	}
 }
+
+// computePhase is the function the controller's waitReady depends on;
+// covering its mixed-state logic here means a regression breaks the
+// test that mirrors the live behaviour, not a synthetic helper.
+func TestComputePhaseMixing(t *testing.T) {
+	cases := []struct {
+		name string
+		vol  *homefsv1alpha1.HomefsVolume
+		want homefsv1alpha1.VolumePhase
+	}{
+		{
+			name: "all replicas ready (unreplicated)",
+			vol: &homefsv1alpha1.HomefsVolume{
+				Spec: homefsv1alpha1.HomefsVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: homefsv1alpha1.HomefsVolumeStatus{
+					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30},
+					},
+				},
+			},
+			want: homefsv1alpha1.VolumeReady,
+		},
+		{
+			name: "one ready, one not (replicated, degraded)",
+			vol: &homefsv1alpha1.HomefsVolume{
+				Spec: homefsv1alpha1.HomefsVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000},
+				},
+				Status: homefsv1alpha1.HomefsVolumeStatus{
+					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "UpToDate"},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Inconsistent"},
+					},
+				},
+			},
+			want: homefsv1alpha1.VolumeDegraded,
+		},
+		{
+			name: "all replicas Inconsistent (creating)",
+			vol: &homefsv1alpha1.HomefsVolume{
+				Spec: homefsv1alpha1.HomefsVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000},
+				},
+				Status: homefsv1alpha1.HomefsVolumeStatus{
+					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Inconsistent"},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Inconsistent"},
+					},
+				},
+			},
+			want: homefsv1alpha1.VolumeCreating,
+		},
+		{
+			name: "hard failure (no device, message set)",
+			vol: &homefsv1alpha1.HomefsVolume{
+				Spec: homefsv1alpha1.HomefsVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+				},
+				Status: homefsv1alpha1.HomefsVolumeStatus{
+					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: false, Message: "pool exploded"},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30},
+					},
+				},
+			},
+			want: homefsv1alpha1.VolumeFailed,
+		},
+		{
+			name: "transient error after device exists (stays Degraded, not Failed)",
+			vol: &homefsv1alpha1.HomefsVolume{
+				Spec: homefsv1alpha1.HomefsVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &homefsv1alpha1.DRBDSpec{Minor: 1000, Port: 7000},
+				},
+				Status: homefsv1alpha1.HomefsVolumeStatus{
+					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "UpToDate"},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Outdated", Message: "peer not yet up"},
+					},
+				},
+			},
+			want: homefsv1alpha1.VolumeDegraded,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := computePhase(tc.vol); got != tc.want {
+				t.Fatalf("phase = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// reportError must not demote Ready volumes on transient errors.
+func TestReportErrorPreservesObservedState(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(vol("pvc-1", "kharkiv")).
+		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
+	if err := c.Status().Patch(context.Background(), &homefsv1alpha1.HomefsVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-1"},
+	}, client.RawPatch(types.MergePatchType, []byte(`{
+		"status": {"perNode": {"kharkiv": {
+			"deviceCreated": true, "sizeBytes": 1073741824, "connected": true
+		}}}
+	}`))); err != nil {
+		t.Fatal(err)
+	}
+	got := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.reportError(context.Background(), got, errors.New("transient K8s blip")); err == nil {
+		t.Fatal("expected reportError to requeue with the original cause")
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status.PerNode["kharkiv"]
+	if !st.DeviceCreated || st.SizeBytes != 1<<30 || !st.Connected {
+		t.Fatalf("reportError wiped observed state: %+v", st)
+	}
+	if st.Message == "" {
+		t.Fatal("reportError must set Message")
+	}
+}

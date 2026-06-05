@@ -195,8 +195,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 }
 
 // peerBackingsGrown reports whether every peer realized the desired size.
-// The local leg is excluded: it was resized in this pass and its status
-// entry is one cycle stale.
+// The local leg is excluded: its status entry is stale (just patched).
 func peerBackingsGrown(vol *homefsv1alpha1.HomefsVolume, self string) bool {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == self {

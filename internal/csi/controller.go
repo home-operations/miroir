@@ -61,7 +61,10 @@ type Controller struct {
 	allocMu sync.Mutex
 }
 
-const defaultProvisionTimeout = 60 * time.Second
+const (
+	defaultProvisionTimeout = 60 * time.Second
+	defaultExpandTimeout    = 10 * time.Minute // node reboots during grow
+)
 
 // ControllerGetCapabilities advertises exactly what is implemented.
 func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
@@ -166,11 +169,20 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		vol.Spec.DRBD = drbdSpec
 		err = c.Client.Create(ctx, vol)
 		c.allocMu.Unlock()
-		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum); err2 != nil {
+		sourceSnapshot := ""
+		if source != nil {
+			sourceSnapshot = source.SnapshotName
+		}
+		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum, sourceSnapshot); err2 != nil {
 			return nil, err2
 		}
-	} else if err := c.Client.Create(ctx, vol); err != nil {
-		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum); err2 != nil {
+	} else {
+		err := c.Client.Create(ctx, vol)
+		sourceSnapshot := ""
+		if source != nil {
+			sourceSnapshot = source.SnapshotName
+		}
+		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum, sourceSnapshot); err2 != nil {
 			return nil, err2
 		}
 	}
@@ -232,7 +244,7 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 		return nil, status.Errorf(codes.Internal, "get HomefsVolume: %v", err)
 	}
 	if err := validateCapabilities(req.GetVolumeCapabilities()); err != nil {
-		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil //nolint:nilerr // spec: unsupported caps are a non-error response
+		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil //nolint:nilerr // spec
 	}
 	return &csi.ValidateVolumeCapabilitiesResponse{
 		Confirmed: &csi.ValidateVolumeCapabilitiesResponse_Confirmed{
@@ -336,7 +348,7 @@ func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec
 // handleCreateErr resolves Create conflicts: nil for success, nil after a
 // compatible AlreadyExists (mutating vol to the existing object), and a
 // gRPC error otherwise. Idempotency: same name must mean same request.
-func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *homefsv1alpha1.HomefsVolume, sizeBytes int64, replicas int, quorum homefsv1alpha1.QuorumPolicy) error {
+func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *homefsv1alpha1.HomefsVolume, sizeBytes int64, replicas int, quorum homefsv1alpha1.QuorumPolicy, sourceSnapshot string) error {
 	if err == nil {
 		return nil
 	}
@@ -347,12 +359,17 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *homefs
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: vol.Name}, existing); err != nil {
 		return status.Errorf(codes.Internal, "get existing HomefsVolume: %v", err)
 	}
+	existingSource := ""
+	if existing.Spec.Source != nil {
+		existingSource = existing.Spec.Source.SnapshotName
+	}
 	if existing.Spec.SizeBytes != sizeBytes || len(existing.Spec.Replicas) != replicas ||
-		(replicas > 1 && existing.Spec.QuorumPolicy != quorum) {
+		(replicas > 1 && existing.Spec.QuorumPolicy != quorum) ||
+		existingSource != sourceSnapshot {
 		return status.Errorf(codes.AlreadyExists,
-			"volume %s exists with size=%d replicas=%d quorum=%s (requested size=%d replicas=%d quorum=%s)",
-			vol.Name, existing.Spec.SizeBytes, len(existing.Spec.Replicas), existing.Spec.QuorumPolicy,
-			sizeBytes, replicas, quorum)
+			"volume %s exists with size=%d replicas=%d quorum=%s source=%q (requested size=%d replicas=%d quorum=%s source=%q)",
+			vol.Name, existing.Spec.SizeBytes, len(existing.Spec.Replicas), existing.Spec.QuorumPolicy, existingSource,
+			sizeBytes, replicas, quorum, sourceSnapshot)
 	}
 	*vol = *existing
 	return nil
@@ -438,11 +455,11 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 		return nil, status.Errorf(codes.Internal, "grow volume: %v", err)
 	}
 
-	// Wait for all replicas to realize the size; the resizer retries on
-	// timeout, so a slow grow is not terminal.
+	// Wait for all replicas to realize the size. Use a longer timeout than
+	// provisioning: a boot-time resize blocks until the node comes back up.
 	timeout := c.ProvisionTimeout
 	if timeout == 0 {
-		timeout = defaultProvisionTimeout
+		timeout = defaultExpandTimeout
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -581,6 +598,8 @@ func parseReplicas(params map[string]string) (int, error) {
 	if !ok {
 		return 1, nil
 	}
+	// Ceiling: DRBD9 metadata reservation (--max-peers=7) and
+	// last-man-standing quorum only make sense for ≤3 replicas.
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 1 || n > 3 {
 		return 0, status.Errorf(codes.InvalidArgument,

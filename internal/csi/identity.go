@@ -47,13 +47,21 @@ func (s *Identity) GetPluginInfo(_ context.Context, _ *csi.GetPluginInfoRequest)
 }
 
 // GetPluginCapabilities advertises the controller service and topology
-// constraints (PV nodeAffinity pins pods to replica nodes, §6.5).
+// constraints (PV nodeAffinity pins pods to replica nodes, §6.5). Also
+// ONLINE volume expansion (ControllerExpandVolume + NodeExpandVolume).
 func (s *Identity) GetPluginCapabilities(_ context.Context, _ *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
 	caps := []*csi.PluginCapability{
 		{
 			Type: &csi.PluginCapability_Service_{
 				Service: &csi.PluginCapability_Service{
 					Type: csi.PluginCapability_Service_VOLUME_ACCESSIBILITY_CONSTRAINTS,
+				},
+			},
+		},
+		{
+			Type: &csi.PluginCapability_VolumeExpansion_{
+				VolumeExpansion: &csi.PluginCapability_VolumeExpansion{
+					Type: csi.PluginCapability_VolumeExpansion_ONLINE,
 				},
 			},
 		},

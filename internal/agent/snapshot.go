@@ -33,9 +33,11 @@ import (
 	"github.com/eleboucher/homefs/internal/drbd"
 )
 
-// suspendDeadline bounds the snapshot write barrier: a peer that never
-// snapshots must not freeze the volume forever.
-const suspendDeadline = 60 * time.Second
+// SuspendDeadline bounds the snapshot write barrier: a peer that never
+// snapshots must not freeze the volume forever. Exported so the agent's
+// startup sweep can apply the same deadline when lifting barriers left
+// raised by a previous crash.
+const SuspendDeadline = 60 * time.Second
 
 // suspendRetryBackoff spaces barrier retries after a failed round.
 const suspendRetryBackoff = 30 * time.Second
@@ -95,10 +97,16 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	if vol.Spec.DRBD != nil && vol.Status.PerNode[r.NodeName].DiskState == "" {
-		// The volume agent has not brought DRBD up here yet (fresh volume
-		// or post-restart re-apply); drbdsetup status would hard-error.
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	if vol.Spec.DRBD != nil {
+		// The volume agent has not brought DRBD up yet; also skip
+		// split-brain (snapshotting divergent data is worse than none).
+		st := vol.Status.PerNode[r.NodeName]
+		switch {
+		case st.DiskState == "":
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		case st.SplitBrain:
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 	}
 
 	if vol.Spec.DRBD == nil {
@@ -190,7 +198,7 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 			}
 		}
 		expired := snap.Status.SuspendedAt != nil &&
-			time.Since(snap.Status.SuspendedAt.Time) > suspendDeadline
+			time.Since(snap.Status.SuspendedAt.Time) > SuspendDeadline
 		if done < len(vol.Spec.Replicas) && !expired {
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}

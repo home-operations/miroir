@@ -56,6 +56,7 @@ var testNodes = nodemap.Map{
 }
 
 // readyOnGet flips a created volume to Ready, simulating the agent.
+// NB: depends on the fake client returning the same object pointer.
 func readyOnGet(s *runtime.Scheme) client.WithWatch {
 	return fake.NewClientBuilder().
 		WithScheme(s).
@@ -322,5 +323,74 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	}
 	if len(vol.Spec.Replicas) != 1 || vol.Spec.Replicas[0].Node != "kharkiv" {
 		t.Fatalf("placement must follow source volume, got %+v", vol.Spec.Replicas)
+	}
+}
+
+func TestCreateVolumeRejectsFourReplicas(t *testing.T) {
+	// Exceeding --max-peers headroom; fail loudly.
+	s := newScheme(t)
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-1",
+		VolumeCapabilities: volCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "4"},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("replicas=4 must be rejected, got %v", err)
+	}
+}
+
+// ALREADY_EXISTS spec check: a re-issued CreateVolume with a different
+// source snapshot must reject, not silently re-point the existing CR.
+func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &homefsv1alpha1.HomefsVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
+		Spec: homefsv1alpha1.HomefsVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []homefsv1alpha1.Replica{{Node: "kharkiv", Backend: homefsv1alpha1.BackendLVMThin}},
+		},
+	}
+	cl := readyOnGet(s)
+	if err := cl.Create(context.Background(), srcVol); err != nil {
+		t.Fatal(err)
+	}
+	snap1 := &homefsv1alpha1.HomefsSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
+		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
+		Status:     homefsv1alpha1.HomefsSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+	}
+	snap2 := &homefsv1alpha1.HomefsSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: "snap-2"},
+		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
+		Status:     homefsv1alpha1.HomefsSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+	}
+	if err := cl.Create(context.Background(), snap1); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Create(context.Background(), snap2); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+	mk := func(snapID string) *csi.CreateVolumeRequest {
+		return &csi.CreateVolumeRequest{
+			Name:               "pvc-r",
+			VolumeCapabilities: volCaps(),
+			CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+			VolumeContentSource: &csi.VolumeContentSource{
+				Type: &csi.VolumeContentSource_Snapshot{
+					Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapID},
+				},
+			},
+		}
+	}
+	if _, err := c.CreateVolume(context.Background(), mk("snap-1")); err != nil {
+		t.Fatal(err)
+	}
+	// Same name, different source snapshot → ALREADY_EXISTS, not silent
+	// re-pointing of the existing CR's source field.
+	_, err := c.CreateVolume(context.Background(), mk("snap-2"))
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("source change must be ALREADY_EXISTS, got %v", err)
 	}
 }

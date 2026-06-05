@@ -18,11 +18,13 @@ package csi
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -65,12 +67,13 @@ func (n *Node) NodeGetInfo(_ context.Context, _ *csi.NodeGetInfoRequest) (*csi.N
 	}, nil
 }
 
-// NodeGetCapabilities advertises staging and expansion.
+// NodeGetCapabilities advertises staging, expansion and stats.
 func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilitiesRequest) (*csi.NodeGetCapabilitiesResponse, error) {
 	caps := []csi.NodeServiceCapability_RPC_Type{
 		csi.NodeServiceCapability_RPC_STAGE_UNSTAGE_VOLUME,
 		csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 		csi.NodeServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
+		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
 	}
 	resp := &csi.NodeGetCapabilitiesResponse{}
 	for _, t := range caps {
@@ -267,4 +270,48 @@ func (n *Node) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolu
 		return nil, status.Errorf(codes.Internal, "unpublish: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+// NodeGetVolumeStats reports capacity on a published volume via statfs.
+func (n *Node) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
+	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume id and path are required")
+	}
+	stats, err := statfsAt(req.GetVolumePath())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "volume stats: %v", err)
+	}
+	return &csi.NodeGetVolumeStatsResponse{
+		Usage: []*csi.VolumeUsage{
+			{Unit: csi.VolumeUsage_BYTES, Total: stats.total, Used: stats.used, Available: stats.available},
+			{Unit: csi.VolumeUsage_INODES, Total: stats.inodes, Used: stats.inodesUsed, Available: stats.inodesAvail},
+		},
+	}, nil
+}
+
+type fsStatResult struct {
+	total, used, available          int64
+	inodes, inodesUsed, inodesAvail int64
+}
+
+// statfsAt wraps unix.Statfs — no shelling out.
+func statfsAt(path string) (fsStatResult, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(path, &st); err != nil {
+		return fsStatResult{}, fmt.Errorf("statfs %s: %w", path, err)
+	}
+	// Fragment and block sizes are in units defined by the filesystem;
+	// the kernel returns them as int64 and the math is straight.
+	bsize := st.Bsize
+	total := int64(st.Blocks) * bsize
+	free := int64(st.Bavail) * bsize // Bavail: blocks free to non-root
+	used := total - int64(st.Bfree)*bsize
+	return fsStatResult{
+		total:       total,
+		used:        used,
+		available:   free,
+		inodes:      int64(st.Files),
+		inodesAvail: int64(st.Ffree),
+		inodesUsed:  int64(st.Files) - int64(st.Ffree),
+	}, nil
 }
