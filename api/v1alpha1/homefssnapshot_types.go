@@ -37,6 +37,11 @@ type HomefsSnapshotStatus struct {
 	// the CSI layer to size restored volumes.
 	// +optional
 	SizeBytes int64 `json:"sizeBytes,omitempty"`
+	// SourceFormatted records the source volume's Formatted flag when
+	// the snapshot is cut. Restored volumes inherit it so their first
+	// stage never reformats a clone that should carry a filesystem.
+	// +optional
+	SourceFormatted bool `json:"sourceFormatted,omitempty"`
 	// IOSuspended is the replicated-snapshot write barrier: set by the
 	// coordinator after suspend-io, cleared on resume. Peers snapshot
 	// only while it holds.

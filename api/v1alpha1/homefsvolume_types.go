@@ -132,6 +132,12 @@ type HomefsVolumeStatus struct {
 	// PerNode maps node name to that agent's observed state.
 	// +optional
 	PerNode map[string]ReplicaStatus `json:"perNode,omitempty"`
+	// Formatted is set once the volume has ever carried a filesystem —
+	// first mkfs at stage time, or inherited from the snapshot source on
+	// restore. A blank device on a formatted volume is data loss: the
+	// node refuses to mkfs again rather than silently wipe it.
+	// +optional
+	Formatted bool `json:"formatted,omitempty"`
 	// Conditions follow the standard Kubernetes condition conventions.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

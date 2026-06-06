@@ -142,6 +142,7 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				r.NodeName: homefsv1alpha1.SnapshotDone,
 			}
 			s.Status.SizeBytes = vol.Spec.SizeBytes
+			s.Status.SourceFormatted = vol.Status.Formatted
 			s.Status.ReadyToUse = true
 		})
 	}
@@ -283,6 +284,7 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *homefsv1alph
 		s.Status.IOSuspended = false
 		if done == len(vol.Spec.Replicas) {
 			s.Status.SizeBytes = vol.Spec.SizeBytes
+			s.Status.SourceFormatted = vol.Status.Formatted
 			s.Status.ReadyToUse = true
 		} else {
 			// Every leg of this round is void, Done ones included: they

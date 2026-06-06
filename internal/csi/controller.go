@@ -129,6 +129,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 
 	var source *homefsv1alpha1.VolumeSource
 	var placed []homefsv1alpha1.Replica
+	var sourceFormatted bool
 	if snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId(); snapID != "" {
 		// Restore: clones are local CoW, so replicas must live on the
 		// nodes holding the snapshot — placement follows the source.
@@ -136,6 +137,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		if err != nil {
 			return nil, err
 		}
+		sourceFormatted = snap.Status.SourceFormatted
 		if sizeBytes < snap.Status.SizeBytes {
 			return nil, status.Errorf(codes.InvalidArgument,
 				"requested %d below snapshot size %d", sizeBytes, snap.Status.SizeBytes)
@@ -193,6 +195,13 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		}
 		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum, sourceSnapshot); err2 != nil {
 			return nil, err2
+		}
+	}
+	// A clone carries the source's filesystem: inherit Formatted before
+	// any pod stages it, so a blank clone is refused instead of mkfs'd.
+	if sourceFormatted {
+		if err := c.markVolumeFormatted(ctx, vol.Name); err != nil {
+			return nil, status.Errorf(codes.Unavailable, "record formatted flag on %s: %v", vol.Name, err)
 		}
 	}
 	if err := c.waitReady(ctx, vol.Name); err != nil {
@@ -657,6 +666,22 @@ func (c *Controller) snapshotSource(ctx context.Context, snapID string) (*homefs
 		return nil, nil, status.Errorf(codes.Internal, "get snapshot source volume: %v", err)
 	}
 	return vol, snap, nil
+}
+
+// markVolumeFormatted records that the volume carries a filesystem. Reads
+// fresh and patches so it works for both just-created and pre-existing
+// volumes (idempotent CreateVolume retries).
+func (c *Controller) markVolumeFormatted(ctx context.Context, name string) error {
+	vol := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
+		return err
+	}
+	if vol.Status.Formatted {
+		return nil
+	}
+	base := vol.DeepCopy()
+	vol.Status.Formatted = true
+	return c.Client.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
 func parseReplicas(params map[string]string) (int, error) {

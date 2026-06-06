@@ -60,6 +60,7 @@ var testNodes = nodemap.Map{
 func readyOnGet(s *runtime.Scheme) client.WithWatch {
 	return fake.NewClientBuilder().
 		WithScheme(s).
+		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}, &homefsv1alpha1.HomefsSnapshot{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if err := c.Get(ctx, key, obj, opts...); err != nil {
@@ -293,6 +294,10 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	if err := cl.Create(context.Background(), srcSnap); err != nil {
 		t.Fatal(err)
 	}
+	// The status subresource strips status on create.
+	if err := cl.Status().Update(context.Background(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
 	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
@@ -323,6 +328,59 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	}
 	if len(vol.Spec.Replicas) != 1 || vol.Spec.Replicas[0].Node != "kharkiv" {
 		t.Fatalf("placement must follow source volume, got %+v", vol.Spec.Replicas)
+	}
+}
+
+// A restore of a formatted source must inherit Formatted before any pod
+// stages it — a blank clone is then refused instead of mkfs'd.
+func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &homefsv1alpha1.HomefsVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
+		Spec: homefsv1alpha1.HomefsVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []homefsv1alpha1.Replica{{Node: "kharkiv", Backend: homefsv1alpha1.BackendLVMThin}},
+		},
+	}
+	srcSnap := &homefsv1alpha1.HomefsSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
+		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
+		Status: homefsv1alpha1.HomefsSnapshotStatus{
+			ReadyToUse: true, SizeBytes: 5 << 30, SourceFormatted: true,
+		},
+	}
+	cl := readyOnGet(s)
+	if err := cl.Create(context.Background(), srcVol); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Create(context.Background(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	// The status subresource strips status on create.
+	if err := cl.Status().Update(context.Background(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-new",
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: "snap-1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vol := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-new"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if !vol.Status.Formatted {
+		t.Fatal("restored volume must inherit Formatted from the snapshot source")
 	}
 }
 
@@ -368,7 +426,13 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 	if err := cl.Create(context.Background(), snap1); err != nil {
 		t.Fatal(err)
 	}
+	if err := cl.Status().Update(context.Background(), snap1); err != nil {
+		t.Fatal(err)
+	}
 	if err := cl.Create(context.Background(), snap2); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Status().Update(context.Background(), snap2); err != nil {
 		t.Fatal(err)
 	}
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}

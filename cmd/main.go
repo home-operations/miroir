@@ -256,7 +256,7 @@ func main() {
 			setupLog.Error(err, "unable to set up snapshot reconciler")
 			os.Exit(1)
 		}
-		node := csi.NewNode(mgr.GetClient(), nodeName)
+		node := csi.NewNode(mgr.GetClient(), nodeName, drbdDriver)
 		serveCSI(mgr, csiSocket, identity, nil, node)
 
 	default:

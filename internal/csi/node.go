@@ -38,6 +38,11 @@ import (
 	"github.com/eleboucher/homefs/internal/drbd"
 )
 
+// DRBDStatus reports this node's live view of a DRBD resource.
+type DRBDStatus interface {
+	Status(ctx context.Context, name string) (drbd.Status, error)
+}
+
 // Node implements csi.NodeServer (notes/DESIGN.md §4.5.2). It looks the volume up
 // in the CRD (the source of truth) and stages its node-local device.
 type Node struct {
@@ -46,14 +51,19 @@ type Node struct {
 	Client   client.Client
 	NodeName string
 	Mounter  *mount.SafeFormatAndMount
+	// DRBD answers from the kernel, not the CRD: status written by the
+	// reconciler lags, and staging on a stale UpToDate mounts (or worse,
+	// formats) a diverged replica.
+	DRBD DRBDStatus
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
-func NewNode(c client.Client, nodeName string) *Node {
+func NewNode(c client.Client, nodeName string, d DRBDStatus) *Node {
 	return &Node{
 		Client:   c,
 		NodeName: nodeName,
 		Mounter:  mount.NewSafeFormatAndMount(mount.New(""), utilexec.New()),
+		DRBD:     d,
 	}
 }
 
@@ -87,38 +97,46 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 }
 
 // devicePath resolves the volume's local device from the CRD and verifies
-// this node holds a replica.
-func (n *Node) devicePath(ctx context.Context, volumeID string) (string, error) {
+// this node holds a replica with current data.
+func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *homefsv1alpha1.HomefsVolume, error) {
 	vol := &homefsv1alpha1.HomefsVolume{}
 	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
-			return "", status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+			return "", nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
 		}
-		return "", status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
+		return "", nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
 	}
 	if !slices.ContainsFunc(vol.Spec.Replicas, func(r homefsv1alpha1.Replica) bool {
 		return r.Node == n.NodeName
 	}) {
-		return "", status.Errorf(codes.FailedPrecondition,
+		return "", nil, status.Errorf(codes.FailedPrecondition,
 			"volume %s has no replica on node %s", volumeID, n.NodeName)
 	}
 	st, ok := vol.Status.PerNode[n.NodeName]
 	if !ok || !st.DeviceCreated || st.DevicePath == "" {
-		return "", status.Errorf(codes.Unavailable,
+		return "", nil, status.Errorf(codes.Unavailable,
 			"volume %s device not ready on node %s", volumeID, n.NodeName)
 	}
 	// Replicated volumes must not be formatted or mounted before this
 	// replica holds current data — mkfs on an Inconsistent secondary
-	// would race the initial handshake.
-	if vol.Spec.DRBD != nil && st.DiskState != drbd.DiskUpToDate {
-		return "", status.Errorf(codes.Unavailable,
-			"volume %s is %s on node %s (want UpToDate)", volumeID, st.DiskState, n.NodeName)
+	// would race the initial handshake. Ask the kernel, not the CRD:
+	// status lags behind a link flap by a reconcile interval.
+	if vol.Spec.DRBD != nil {
+		live, err := n.DRBD.Status(ctx, volumeID)
+		if err != nil {
+			return "", nil, status.Errorf(codes.Unavailable,
+				"volume %s DRBD state unreadable on node %s: %v", volumeID, n.NodeName, err)
+		}
+		if live.SplitBrain {
+			return "", nil, status.Errorf(codes.FailedPrecondition,
+				"volume %s is split-brain on node %s — manual resolution required", volumeID, n.NodeName)
+		}
+		if live.DiskState != drbd.DiskUpToDate {
+			return "", nil, status.Errorf(codes.Unavailable,
+				"volume %s is %s on node %s (want UpToDate)", volumeID, live.DiskState, n.NodeName)
+		}
 	}
-	if st.SplitBrain {
-		return "", status.Errorf(codes.FailedPrecondition,
-			"volume %s is split-brain on node %s — manual resolution required", volumeID, n.NodeName)
-	}
-	return st.DevicePath, nil
+	return st.DevicePath, vol, nil
 }
 
 // NodeStageVolume makes the device usable at the staging path: filesystem
@@ -132,7 +150,7 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, err
 	}
 
-	dev, err := n.devicePath(ctx, req.GetVolumeId())
+	dev, vol, err := n.devicePath(ctx, req.GetVolumeId())
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +175,12 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, status.Errorf(codes.Internal, "inspect staging path: %v", err)
 	}
 	if !notMnt {
-		return &csi.NodeStageVolumeResponse{}, nil // already staged (idempotent)
+		// Already staged: a mounted device carries a filesystem, so a
+		// missed Formatted patch from an earlier stage heals here.
+		if err := n.markFormatted(ctx, vol); err != nil {
+			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
+		}
+		return &csi.NodeStageVolumeResponse{}, nil // idempotent
 	}
 
 	fsType := req.GetVolumeCapability().GetMount().GetFsType()
@@ -176,10 +199,36 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 	}
 	_ = f.Close()
 
+	// mkfs-if-blank is allowed exactly once per volume: a blank device on
+	// a volume that ever carried a filesystem is data loss (diverged
+	// replica, torn clone), and reformatting would silently finish it.
+	format, err := n.Mounter.GetDiskFormat(dev)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "probe filesystem on %s: %v", dev, err)
+	}
+	if format == "" && vol.Status.Formatted {
+		return nil, status.Errorf(codes.DataLoss,
+			"volume %s was formatted before but %s reads blank — refusing to reformat", req.GetVolumeId(), dev)
+	}
+	if format != "" {
+		// Record before mounting so a clone that arrived with a
+		// filesystem is protected from then on.
+		if err := n.markFormatted(ctx, vol); err != nil {
+			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
+		}
+	}
+
 	// FormatAndMount formats only when the device has no filesystem —
 	// the mkfs-if-blank step of notes/DESIGN.md §4.5.2.
 	if err := n.Mounter.FormatAndMount(dev, req.GetStagingTargetPath(), fsType, mountFlags); err != nil {
 		return nil, status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
+	}
+	if format == "" {
+		// First mkfs. A failed patch fails the stage; the retry lands in
+		// the format != "" path above and records it then.
+		if err := n.markFormatted(ctx, vol); err != nil {
+			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
+		}
 	}
 
 	// A restored clone carries the snapshot's filesystem, which is smaller
@@ -197,6 +246,17 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 
+// markFormatted records that the volume carries a filesystem. No-op when
+// already recorded.
+func (n *Node) markFormatted(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) error {
+	if vol.Status.Formatted {
+		return nil
+	}
+	base := vol.DeepCopy()
+	vol.Status.Formatted = true
+	return n.Client.Status().Patch(ctx, vol, client.MergeFrom(base))
+}
+
 // NodeExpandVolume grows the filesystem to the (already grown) device,
 // online. Raw block volumes need nothing.
 func (n *Node) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
@@ -206,7 +266,7 @@ func (n *Node) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRe
 	if req.GetVolumeCapability().GetBlock() != nil {
 		return &csi.NodeExpandVolumeResponse{}, nil
 	}
-	dev, err := n.devicePath(ctx, req.GetVolumeId())
+	dev, _, err := n.devicePath(ctx, req.GetVolumeId())
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +305,7 @@ func (n *Node) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolume
 
 	var source string
 	if req.GetVolumeCapability().GetBlock() != nil {
-		dev, err := n.devicePath(ctx, req.GetVolumeId())
+		dev, _, err := n.devicePath(ctx, req.GetVolumeId())
 		if err != nil {
 			return nil, err
 		}

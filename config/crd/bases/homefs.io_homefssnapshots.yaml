@@ -147,6 +147,12 @@ spec:
                     the CSI layer to size restored volumes.
                   format: int64
                   type: integer
+                sourceFormatted:
+                  description: |-
+                    SourceFormatted records the source volume's Formatted flag when
+                    the snapshot is cut. Restored volumes inherit it so their first
+                    stage never reformats a clone that should carry a filesystem.
+                  type: boolean
                 suspendedAt:
                   description: |-
                     SuspendedAt bounds the barrier: the coordinator resumes IO at the

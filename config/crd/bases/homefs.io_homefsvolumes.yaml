@@ -60,14 +60,10 @@ spec:
                 drbd:
                   description: DRBD is set by the controller when len(Replicas) > 1.
                   properties:
-                    minor:
-                      description: Minor is the DRBD device minor number (device /dev/drbd<minor>).
-                      format: int32
-                      minimum: 0
-                      type: integer
                     port:
-                      description: Port is the TCP port for this resource's replication
-                        links.
+                      description: |-
+                        Port is the TCP port for this resource's replication links,
+                        allocated cluster-wide by the controller at creation.
                       format: int32
                       maximum: 65535
                       minimum: 1024
@@ -81,7 +77,6 @@ spec:
                       maxLength: 64
                       type: string
                   required:
-                    - minor
                     - port
                   type: object
                 quorumPolicy:
@@ -207,6 +202,13 @@ spec:
                       - type
                     type: object
                   type: array
+                formatted:
+                  description: |-
+                    Formatted is set once the volume has ever carried a filesystem —
+                    first mkfs at stage time, or inherited from the snapshot source on
+                    restore. A blank device on a formatted volume is data loss: the
+                    node refuses to mkfs again rather than silently wipe it.
+                  type: boolean
                 perNode:
                   additionalProperties:
                     description: ReplicaStatus is the per-node observed state, written
@@ -231,6 +233,12 @@ spec:
                           DiskState is the DRBD disk state on this node (UpToDate,
                           Inconsistent, Outdated, Diskless, …). Empty for unreplicated volumes.
                         type: string
+                      drbdMinor:
+                        description: |-
+                          DRBDMinor is the DRBD device minor assigned locally by the agent.
+                          Zero means unassigned (fresh volume or unreplicated).
+                        format: int32
+                        type: integer
                       message:
                         description: Message carries the last reconcile error, if any.
                         type: string
@@ -245,6 +253,8 @@ spec:
                           SplitBrain is true when this node's DRBD refused a reconnect after
                           detecting divergent data — operator intervention required.
                         type: boolean
+                    required:
+                      - deviceCreated
                     type: object
                   description: PerNode maps node name to that agent's observed state.
                   type: object
