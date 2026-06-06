@@ -95,9 +95,11 @@ func Render(r Resource) string {
 		fmt.Fprintf(&b, "        shared-secret %q;\n", r.Secret)
 	}
 	// Never auto-resolve diverged data: an operator picks the loser
-	// (DESIGN §3.2).
-	b.WriteString("        after-sb-0pri discard-zero-changes;\n")
-	b.WriteString("        after-sb-1pri consensus;\n")
+	// (DESIGN §3.2). discard-zero-changes and consensus let DRBD pick
+	// one — a zero-changes verdict trusts generation identifiers that
+	// day0-seeded clones share without sharing history.
+	b.WriteString("        after-sb-0pri disconnect;\n")
+	b.WriteString("        after-sb-1pri disconnect;\n")
 	b.WriteString("        after-sb-2pri disconnect;\n")
 	b.WriteString("    }\n")
 

@@ -106,8 +106,8 @@ func TestRenderFreezeQuorum(t *testing.T) {
 func TestRenderNoAutoSplitBrainResolution(t *testing.T) {
 	out := Render(testResource("kharkiv"))
 	for _, directive := range []string{
-		"after-sb-0pri discard-zero-changes;",
-		"after-sb-1pri consensus;",
+		"after-sb-0pri disconnect;",
+		"after-sb-1pri disconnect;",
 		"after-sb-2pri disconnect;",
 	} {
 		if !strings.Contains(out, directive) {
