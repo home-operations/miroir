@@ -181,6 +181,19 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 	if err := n.Mounter.FormatAndMount(dev, req.GetStagingTargetPath(), fsType, mountFlags); err != nil {
 		return nil, status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
 	}
+
+	// A restored clone carries the snapshot's filesystem, which is smaller
+	// than the device when the new PVC asked for more — grow it to fill.
+	resizer := mount.NewResizeFs(n.Mounter.Exec)
+	need, err := resizer.NeedResize(dev, req.GetStagingTargetPath())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "check filesystem size on %s: %v", dev, err)
+	}
+	if need {
+		if _, err := resizer.Resize(dev, req.GetStagingTargetPath()); err != nil {
+			return nil, status.Errorf(codes.Internal, "grow filesystem on %s: %v", dev, err)
+		}
+	}
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 
