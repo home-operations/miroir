@@ -229,6 +229,23 @@ func TestApplyNonWinnerSeedsBareGI(t *testing.T) {
 	fe.notCalledWith(t, ":1:1")
 }
 
+func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	r := testResource("kharkiv")
+	r.SkipSeed = true // late joiner: must full-sync, not pose as a day0 twin
+
+	if err := d.Apply(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
+	fe.notCalledWith(t, "set-gi")
+	fe.calledWith(t, "drbdadm adjust pvc-1")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
+		t.Fatal("marker not written")
+	}
+}
+
 func TestApplyIdempotent(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}

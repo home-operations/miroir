@@ -136,6 +136,13 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 			return fmt.Errorf("create-md %s: %w", r.Name, err)
 		}
 	}
+	if r.SkipSeed {
+		// Late joiner: just-created metadata (UUID_JUST_CREATED) makes
+		// the first handshake elect this node full SyncTarget — the only
+		// correct outcome, since the peers' bitmaps never tracked writes
+		// against a replica that did not exist yet.
+		return nil
+	}
 	return d.seedGI(ctx, r)
 }
 

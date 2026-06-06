@@ -43,8 +43,10 @@ import (
 	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
 	"github.com/eleboucher/homefs/internal/agent"
 	"github.com/eleboucher/homefs/internal/backend"
+	"github.com/eleboucher/homefs/internal/constants"
 	"github.com/eleboucher/homefs/internal/csi"
 	"github.com/eleboucher/homefs/internal/drbd"
+	"github.com/eleboucher/homefs/internal/membership"
 	"github.com/eleboucher/homefs/internal/nodemap"
 )
 
@@ -167,6 +169,16 @@ func main() {
 			Client:    mgr.GetClient(),
 			APIReader: mgr.GetAPIReader(),
 			Nodes:     nodes,
+		}
+		// Completes operator-added replica entries on live volumes
+		// (kubectl edit of spec.replicas).
+		membershipReconciler := &membership.Reconciler{
+			Client: mgr.GetClient(),
+			Nodes:  nodes,
+		}
+		if err := membershipReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to set up membership reconciler")
+			os.Exit(1)
 		}
 		serveCSI(mgr, csiSocket, identity, controller, nil)
 
@@ -291,6 +303,14 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 	for _, v := range vols.Items {
 		for _, rep := range v.Spec.Replicas {
 			if rep.Node == nodeName {
+				owned[v.Name] = true
+			}
+		}
+		// A held finalizer without a spec entry is a replica pending
+		// removal: its teardown is the reconciler's, gated on the
+		// remaining replicas' health — not the orphan sweep's.
+		for _, f := range v.Finalizers {
+			if f == constants.FinalizerPrefix+nodeName {
 				owned[v.Name] = true
 			}
 		}

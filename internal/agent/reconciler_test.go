@@ -529,3 +529,154 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 		t.Fatal("reportError must set Message")
 	}
 }
+
+// removedReplicaVol builds a 2-replica volume on paris+oslo whose kharkiv
+// leg was just removed from spec.replicas (finalizer still held).
+func removedReplicaVol() *homefsv1alpha1.HomefsVolume {
+	v := vol("pvc-1", "paris", "oslo")
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+"kharkiv")
+	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
+	for i := range v.Spec.Replicas {
+		v.Spec.Replicas[i].NodeID = int32(i)
+		v.Spec.Replicas[i].Address = "192.168.1.4" + string(rune('1'+i))
+	}
+	return v
+}
+
+func patchPeersUpToDate(t *testing.T, c client.Client, diskState string) {
+	t.Helper()
+	err := c.Status().Patch(context.Background(), &homefsv1alpha1.HomefsVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-1"},
+	}, client.RawPatch(types.MergePatchType, []byte(`{
+		"status": {"perNode": {
+			"paris": {"deviceCreated": true, "diskState": "`+diskState+`", "connected": true},
+			"oslo": {"deviceCreated": true, "diskState": "UpToDate", "connected": true},
+			"kharkiv": {"deviceCreated": true, "diskState": "UpToDate", "connected": true}
+		}}
+	}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	fb.created["pvc-1"] = 1 << 30
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeDRBDExec{}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(removedReplicaVol()).
+		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		Build()
+	patchPeersUpToDate(t, c, "UpToDate")
+	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run}}
+
+	reconcile(t, r, "pvc-1")
+
+	if _, ok := fb.created["pvc-1"]; ok {
+		t.Fatal("backing device not deleted")
+	}
+	fe.calledWith(t, "drbdsetup down pvc-1")
+	got := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range got.Finalizers {
+		if f == constants.FinalizerPrefix+"kharkiv" {
+			t.Fatal("finalizer not released after removal teardown")
+		}
+	}
+	if _, ok := got.Status.PerNode["kharkiv"]; ok {
+		t.Fatal("removed replica's status slot not cleared")
+	}
+}
+
+func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	fb.created["pvc-1"] = 1 << 30
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(removedReplicaVol(), &homefsv1alpha1.HomefsSnapshot{
+			ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
+			Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-1"},
+		}).
+		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		Build()
+	patchPeersUpToDate(t, c, "UpToDate")
+	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
+
+	res, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("blocked removal must requeue")
+	}
+	if _, ok := fb.created["pvc-1"]; !ok {
+		t.Fatal("must not tear down while a snapshot references the volume")
+	}
+	got := &homefsv1alpha1.HomefsVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Status.PerNode["kharkiv"].Message, "snapshot") {
+		t.Fatalf("blocked reason not surfaced: %+v", got.Status.PerNode["kharkiv"])
+	}
+}
+
+func TestReconcileRemovalBlockedByDegradedPeer(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	fb.created["pvc-1"] = 1 << 30
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(removedReplicaVol()).
+		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		Build()
+	patchPeersUpToDate(t, c, "Inconsistent") // paris still syncing
+	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
+
+	res, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("blocked removal must requeue")
+	}
+	if _, ok := fb.created["pvc-1"]; !ok {
+		t.Fatal("must not cut the leg while a remaining replica is not UpToDate")
+	}
+}
+
+func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol("pvc-1", "kharkiv", "paris")
+	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = "192.168.1.42"
+	// kharkiv's entry was just added by an operator: no address yet.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
+
+	res, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("must wait for the membership reconciler to complete the entry")
+	}
+	if len(fb.created) != 0 {
+		t.Fatalf("must not realize an incomplete entry: %+v", fb.created)
+	}
+}

@@ -47,6 +47,12 @@ type Replica struct {
 	// Only set on replicated volumes.
 	// +optional
 	Address string `json:"address,omitempty"`
+	// FullSync marks a replica added after volume creation: its agent
+	// skips the day0 GI seed so DRBD full-syncs it from the existing
+	// peers instead of treating it as a pristine twin. Set by the
+	// membership reconciler when it completes the entry.
+	// +optional
+	FullSync bool `json:"fullSync,omitempty"`
 }
 
 // DRBDSpec carries the cluster-unique DRBD identifiers allocated by the
@@ -74,7 +80,13 @@ type VolumeSource struct {
 }
 
 // HomefsVolumeSpec is the desired state, written by the controller at
-// CreateVolume time and reconciled by node agents.
+// CreateVolume time and reconciled by node agents. Replicas may be edited
+// on a live replicated volume — add an entry (node + backend; the
+// membership reconciler completes it) or remove one — within the bounds
+// the validation rule pins: an unreplicated volume cannot grow a
+// replication layer in place (internal DRBD metadata cannot be added
+// under a live filesystem), and a replicated one keeps 2–3 replicas.
+// +kubebuilder:validation:XValidation:rule="has(self.drbd) ? (size(self.replicas) >= 2 && size(self.replicas) <= 3) : size(self.replicas) == 1",message="replicated volumes (spec.drbd set) need 2-3 replicas; unreplicated exactly 1"
 type HomefsVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
 	// +kubebuilder:validation:Minimum=1

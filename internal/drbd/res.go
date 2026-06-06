@@ -52,6 +52,10 @@ type Resource struct {
 	// Secret authenticates peers (cram-hmac challenge-response). Empty
 	// renders no auth — volumes created before secrets existed.
 	Secret string
+	// SkipSeed leaves fresh metadata at create-md's just-created state
+	// instead of day0 GI seeding: a replica joining an existing volume
+	// must full-sync from its peers, not pose as a pristine twin.
+	SkipSeed bool
 	// Peers are all diskful members, including the local node.
 	Peers []Peer
 }

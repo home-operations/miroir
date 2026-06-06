@@ -22,6 +22,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -82,15 +83,18 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	mine := slices.ContainsFunc(vol.Spec.Replicas, func(rep homefsv1alpha1.Replica) bool {
+	idx := slices.IndexFunc(vol.Spec.Replicas, func(rep homefsv1alpha1.Replica) bool {
 		return rep.Node == r.NodeName
 	})
+	mine := idx >= 0
 
 	if !vol.DeletionTimestamp.IsZero() {
 		// Only the agent owning a replica may release the finalizer, and
 		// only after its local teardown succeeded — a foreign agent
 		// touching it would race the owner and leak the backing device.
-		if !mine {
+		// A pending-removal replica (finalizer held, not in spec) takes
+		// the same path: volume deletion supersedes the removal gates.
+		if !mine && !controllerutil.ContainsFinalizer(vol, constants.FinalizerPrefix+r.NodeName) {
 			return ctrl.Result{}, nil
 		}
 		dropVolumeMetrics(vol.Name)
@@ -106,7 +110,15 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, r.removeFinalizer(ctx, vol)
 	}
 	if !mine {
-		return ctrl.Result{}, nil
+		// Not placed here, but a held finalizer means this replica was
+		// removed from spec.replicas: tear down the local leg once it is
+		// safe (notes/DESIGN.md §4.2).
+		return r.reconcileRemoval(ctx, vol)
+	}
+	if vol.Spec.DRBD != nil && vol.Spec.Replicas[idx].Address == "" {
+		// A just-added entry the membership reconciler has not completed
+		// yet (no NodeID/address): nothing can be realized safely.
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Realize: create (or grow) the backing device — a CoW clone when the
@@ -234,10 +246,20 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *homefsv1alph
 	return r.Backend.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
 }
 
-// drbdResource maps the CRD desired state to a render input.
+// drbdResource maps the CRD desired state to a render input. Entries the
+// membership reconciler has not completed yet (no address) are left out:
+// rendering them would produce a config DRBD cannot parse, and the peer
+// cannot connect before completion anyway.
 func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string, minor int32) drbd.Resource {
 	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
+	skipSeed := false
 	for _, rep := range vol.Spec.Replicas {
+		if rep.Address == "" {
+			continue
+		}
+		if rep.Node == localNode {
+			skipSeed = rep.FullSync
+		}
 		peers = append(peers, drbd.Peer{
 			Node:    rep.Node,
 			NodeID:  rep.NodeID,
@@ -252,8 +274,80 @@ func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string,
 		LocalNode: localNode,
 		LocalDisk: localDisk,
 		Secret:    vol.Spec.DRBD.SharedSecret,
+		SkipSeed:  skipSeed,
 		Peers:     peers,
 	}
+}
+
+// reconcileRemoval tears down a replica that was removed from
+// spec.replicas while the volume lives on. It only proceeds when losing
+// this leg cannot lose data: every remaining replica must be UpToDate and
+// connected, and no snapshot may reference the volume — snapshots exist as
+// backend CoW state on every replica, and restores expect to find them
+// wherever the volume is placed.
+func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) (ctrl.Result, error) {
+	log := ctrl.LoggerFrom(ctx)
+	finalizer := constants.FinalizerPrefix + r.NodeName
+	if !controllerutil.ContainsFinalizer(vol, finalizer) {
+		return ctrl.Result{}, nil
+	}
+	if reason := r.removalBlocked(ctx, vol); reason != "" {
+		log.Info("replica removal blocked", "volume", vol.Name, "reason", reason)
+		st := vol.Status.PerNode[r.NodeName]
+		st.Message = "replica removal blocked: " + reason
+		if err := r.patchStatus(ctx, vol, st); err != nil && !apierrors.IsConflict(err) {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+	dropVolumeMetrics(vol.Name)
+	if err := r.teardown(ctx, vol); err != nil {
+		if isDeviceBusy(err) {
+			// A pod still staged here holds the device open; it has to
+			// move off this node before the leg can go.
+			log.Info("device busy during replica removal, retrying", "volume", vol.Name)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	// Drop this node's status slot — merge-patch null deletes the key.
+	// Best-effort ordering: a crash here leaves a stale slot, which
+	// nothing reads (phase and growth iterate spec.replicas only).
+	patch := fmt.Appendf(nil, `{"status":{"perNode":{%q:null}}}`, r.NodeName)
+	if err := r.Status().Patch(ctx, vol, client.RawPatch(types.MergePatchType, patch)); err != nil &&
+		!apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+	log.Info("replica removed", "volume", vol.Name)
+	return ctrl.Result{}, r.removeFinalizer(ctx, vol)
+}
+
+// removalBlocked reports why this replica must not be torn down yet, or ""
+// when it is safe. The remaining replicas' health is read from the CRD
+// status the peers report — by removal time the peers have already dropped
+// this node from their configs, so the local kernel's view of them is gone.
+func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) string {
+	if vol.Spec.DRBD == nil {
+		// An unreplicated volume's lone entry moved: there is no peer
+		// holding the data, so tearing down here is data loss. Unsupported.
+		return "volume has no replication layer; refusing to drop the only copy"
+	}
+	snaps := &homefsv1alpha1.HomefsSnapshotList{}
+	if err := r.List(ctx, snaps); err != nil {
+		return "cannot list snapshots: " + err.Error()
+	}
+	for _, s := range snaps.Items {
+		if s.Spec.VolumeName == vol.Name {
+			return "snapshot " + s.Name + " exists; delete the volume's snapshots first"
+		}
+	}
+	for _, rep := range vol.Spec.Replicas {
+		st, ok := vol.Status.PerNode[rep.Node]
+		if !ok || st.DiskState != drbd.DiskUpToDate || !st.Connected {
+			return "replica on " + rep.Node + " is not UpToDate and connected"
+		}
+	}
+	return ""
 }
 
 func (r *VolumeReconciler) teardown(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) error {
