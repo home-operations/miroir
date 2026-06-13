@@ -28,7 +28,11 @@ RUN apk add --no-cache \
     xfsprogs \
     xfsprogs-extra \
     blkid \
-    util-linux-misc
+    util-linux-misc \
+    # loopfile backend: full losetup (-j/-O/-c, beyond busybox's) and GNU cp
+    # for reflink (cp --reflink → FICLONE); both shadow busybox via PATH.
+    losetup \
+    coreutils
 # No udevd is reachable from the container: stop libdevmapper from waiting
 # on udev cookies and lvm from querying udev for the device list.
 # global_filter rejects DRBD devices: lvm's device scan would block in D

@@ -1,3 +1,14 @@
+{{- /* Distinct loopfile base directories across nodes, identity-mounted
+       (host path == container path) so losetup/reflink see the same path
+       the agent reads from nodes.yaml. DirectoryOrCreate is harmless on
+       nodes that don't use the loopfile backend. */ -}}
+{{- $loopDirs := list }}
+{{- range $name, $node := .Values.nodes }}
+{{-   if eq (toString $node.backend) "loopfile" }}
+{{-     $loopDirs = append $loopDirs $node.baseDir }}
+{{-   end }}
+{{- end }}
+{{- $loopDirs = $loopDirs | uniq }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -101,6 +112,12 @@ spec:
               mountPath: /etc/drbd.d/global_common.conf
               subPath: global_common.conf
               readOnly: true
+{{- range $i, $dir := $loopDirs }}
+            # loopfile backing files live on the host filesystem; identity
+            # mount so the path matches nodes.yaml baseDir.
+            - name: loopfile-base-{{ $i }}
+              mountPath: {{ $dir }}
+{{- end }}
         - name: node-driver-registrar
           image: {{ .Values.sidecars.registrar.image }}
           args:
@@ -155,3 +172,9 @@ spec:
             items:
               - key: global_common.conf
                 path: global_common.conf
+{{- range $i, $dir := $loopDirs }}
+        - name: loopfile-base-{{ $i }}
+          hostPath:
+            path: {{ $dir }}
+            type: DirectoryOrCreate
+{{- end }}

@@ -110,6 +110,7 @@ spec:
                         enum:
                           - lvmthin
                           - zfs
+                          - loopfile
                         type: string
                       fullSync:
                         description: |-

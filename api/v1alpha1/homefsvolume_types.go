@@ -5,12 +5,15 @@ import (
 )
 
 // BackendType selects the node-local storage backend for a replica.
-// +kubebuilder:validation:Enum=lvmthin;zfs
+// +kubebuilder:validation:Enum=lvmthin;zfs;loopfile
 type BackendType string
 
 const (
 	BackendLVMThin BackendType = "lvmthin"
 	BackendZFS     BackendType = "zfs"
+	// BackendLoopfile stores volumes as loop-backed sparse files on the
+	// node's existing filesystem (no dedicated disk or pool).
+	BackendLoopfile BackendType = "loopfile"
 )
 
 // QuorumPolicy selects the 2-node consistency mode (DESIGN.md §3.2).

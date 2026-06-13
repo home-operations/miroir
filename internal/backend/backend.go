@@ -79,6 +79,8 @@ func New(typ homefsv1alpha1.BackendType, cfg Config, exec Exec) (Backend, error)
 		return newLVMThin(cfg, exec), nil
 	case homefsv1alpha1.BackendZFS:
 		return newZFS(cfg, exec), nil
+	case homefsv1alpha1.BackendLoopfile:
+		return newLoopfile(cfg, exec), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type %q", typ)
 	}
@@ -102,4 +104,8 @@ type Config struct {
 	PoolSize string
 	// Dataset is the parent ZFS dataset for zvols (zfs), e.g. "tank/homefs".
 	Dataset string
+	// BaseDir is the directory on the node's existing filesystem under which
+	// the loopfile backend stores backing files, snapshots, and device
+	// symlinks (loopfile), e.g. "/var/lib/homefs". Must be reflink-capable.
+	BaseDir string
 }

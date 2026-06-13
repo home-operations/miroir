@@ -32,6 +32,14 @@ kubeletDir: /var/lib/kubelet
 #   paris:
 #     backend: zfs
 #     zfsDataset: data-pool/homefs
+#   le-havre:
+#     # loopfile: sparse files on the node's existing filesystem — no
+#     # dedicated disk or pool. baseDir must be reflink-capable (XFS
+#     # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the agent
+#     # refuses to start otherwise. The dir is hostPath-mounted into the
+#     # agent at the same path.
+#     backend: loopfile
+#     baseDir: /var/lib/homefs
 nodes: {}
 
 controller:

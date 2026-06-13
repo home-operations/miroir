@@ -46,6 +46,10 @@ spec:
             - name: modules
               mountPath: /lib/modules
               readOnly: true
+{{- if eq (toString $node.backend) "loopfile" }}
+            - name: loopfile-base
+              mountPath: {{ $node.baseDir }}
+{{- end }}
       volumes:
         - name: nodes
           configMap:
@@ -65,4 +69,10 @@ spec:
         - name: modules
           hostPath:
             path: /lib/modules
+{{- if eq (toString $node.backend) "loopfile" }}
+        - name: loopfile-base
+          hostPath:
+            path: {{ $node.baseDir }}
+            type: DirectoryOrCreate
+{{- end }}
 {{ end }}

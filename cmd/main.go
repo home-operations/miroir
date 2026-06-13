@@ -147,6 +147,7 @@ func main() {
 			Device:      entry.Device,
 			Dataset:     entry.ZFSDataset,
 			PoolSize:    entry.ThinPoolSize,
+			BaseDir:     entry.BaseDir,
 		}, backend.RealExec)
 		if err != nil {
 			setupLog.Error(err, "invalid backend for node", "node", nodeName)
@@ -206,6 +207,7 @@ func main() {
 			Device:      entry.Device,
 			Dataset:     entry.ZFSDataset,
 			PoolSize:    entry.ThinPoolSize,
+			BaseDir:     entry.BaseDir,
 		}, backend.RealExec)
 		if err != nil {
 			setupLog.Error(err, "invalid backend for node", "node", nodeName)

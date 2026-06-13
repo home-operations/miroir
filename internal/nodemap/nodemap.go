@@ -42,6 +42,9 @@ type Node struct {
 	// ThinPoolSize bounds the thin pool (lvm size spec, e.g. "400g");
 	// empty claims all free VG space.
 	ThinPoolSize string `json:"thinPoolSize,omitempty"`
+	// BaseDir is the directory on the node's existing filesystem holding the
+	// loop-backed sparse files (loopfile), e.g. "/var/lib/homefs".
+	BaseDir string `json:"baseDir,omitempty"`
 }
 
 // Map is node name → storage config. Nodes absent from the map hold no
@@ -60,12 +63,15 @@ func Load(path string) (Map, error) {
 	}
 	for name, n := range m {
 		switch n.Backend {
-		case homefsv1alpha1.BackendLVMThin, homefsv1alpha1.BackendZFS:
+		case homefsv1alpha1.BackendLVMThin, homefsv1alpha1.BackendZFS, homefsv1alpha1.BackendLoopfile:
 		default:
 			return nil, fmt.Errorf("node %s: invalid backend %q", name, n.Backend)
 		}
 		if n.Backend == homefsv1alpha1.BackendZFS && n.ZFSDataset == "" {
 			return nil, fmt.Errorf("node %s: zfs backend requires zfsDataset", name)
+		}
+		if n.Backend == homefsv1alpha1.BackendLoopfile && n.BaseDir == "" {
+			return nil, fmt.Errorf("node %s: loopfile backend requires baseDir", name)
 		}
 	}
 	return m, nil

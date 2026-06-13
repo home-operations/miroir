@@ -29,7 +29,12 @@ status back. The data path never depends on homefs processes.
 - One of, per storage node:
     - an unformatted partition/disk for LVM (e.g. a Talos `RawVolumeConfig`
       partition labeled `r-homefs`), or
-    - an existing ZFS pool
+    - an existing ZFS pool, or
+    - nothing extra — the `loopfile` backend stores loop-backed sparse files
+      on the node's existing filesystem (`baseDir`, e.g. `/var/lib/homefs`).
+      The filesystem must support reflink for CoW snapshots (XFS `reflink=1`,
+      the Talos `/var` default, or btrfs); the agent refuses to start
+      otherwise. Needs the `loop` kernel module.
 
 ## Install
 
@@ -45,15 +50,18 @@ nodes:
     paris:
         backend: zfs
         zfsDataset: data-pool/homefs
+    le-havre:
+        backend: loopfile
+        baseDir: /var/lib/homefs
 ```
 
 ```bash
 helm install homefs charts/homefs -n homefs-system --create-namespace -f values.yaml
 ```
 
-Each agent bootstraps its pool on first start (PV → VG → thin pool, or
-the parent ZFS dataset). Existing pools and datasets are reused, never
-wiped.
+Each agent bootstraps its pool on first start (PV → VG → thin pool, the
+parent ZFS dataset, or the loopfile `baseDir` layout). Existing pools and
+datasets are reused, never wiped.
 
 Sharing storage with other provisioners works on both backends: on ZFS,
 homefs confines itself to its parent dataset (e.g. in a pool OpenEBS
@@ -81,6 +89,9 @@ spec:
 - [ ] `talosctl read /proc/modules | grep dm_thin` on lvmthin nodes
 - [ ] ZFS userland (image: 2.4.x from Alpine) vs node's zfs module version —
       `talosctl read /sys/module/zfs/version`; same minor required
+- [ ] on loopfile nodes, the `baseDir` filesystem is reflink-capable
+      (`xfs_info <baseDir> | grep reflink` shows `reflink=1`) and the `loop`
+      module is present (`talosctl read /proc/modules | grep loop`)
 - [ ] every storage node present in the Helm `nodes` values with correct backend/device
 - [ ] `openebs-zfs` remains the default StorageClass (homefs-local is opt-in)
 
