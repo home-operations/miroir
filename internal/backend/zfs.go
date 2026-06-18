@@ -66,6 +66,10 @@ func (z *zfsBackend) exists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
+func (z *zfsBackend) Exists(ctx context.Context, vol string) (bool, error) {
+	return z.exists(ctx, z.name(vol))
+}
+
 func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (string, error) {
 	ok, err := z.exists(ctx, z.name(vol))
 	if err != nil {

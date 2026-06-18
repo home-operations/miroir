@@ -62,6 +62,8 @@ type Backend interface {
 	// CreateFromSnapshot provisions a new writable device as a CoW clone
 	// of an existing snapshot and returns its device path.
 	CreateFromSnapshot(ctx context.Context, vol, sourceVol, snap string) (devPath string, err error)
+	// Exists reports whether a device for vol is present on this node.
+	Exists(ctx context.Context, vol string) (bool, error)
 	// Delete removes the device. Succeeds if already absent.
 	Delete(ctx context.Context, vol string) error
 	// DeleteSnapshot removes a snapshot. Succeeds if already absent.

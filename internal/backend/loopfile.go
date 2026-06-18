@@ -137,6 +137,10 @@ func (lf *loopfile) attach(ctx context.Context, vol, file string) (string, error
 	return link, nil
 }
 
+func (lf *loopfile) Exists(ctx context.Context, vol string) (bool, error) {
+	return lf.exists(ctx, lf.imgPath(vol))
+}
+
 func (lf *loopfile) Create(ctx context.Context, vol string, sizeBytes int64) (string, error) {
 	file := lf.imgPath(vol)
 	ok, err := lf.exists(ctx, file)

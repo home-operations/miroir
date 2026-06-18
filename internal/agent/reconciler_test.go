@@ -49,12 +49,21 @@ const (
 
 // fakeBackend records calls and simulates a thin pool in memory.
 type fakeBackend struct {
-	created   map[string]int64
-	failOn    string
-	snapCalls []string
+	created     map[string]int64
+	existing    map[string]bool
+	failOn      string
+	snapCalls   []string
+	fromSnapVol []string
+	createVol   []string
 }
 
-func newFakeBackend() *fakeBackend { return &fakeBackend{created: map[string]int64{}} }
+func newFakeBackend() *fakeBackend {
+	return &fakeBackend{created: map[string]int64{}, existing: map[string]bool{}}
+}
+
+func (f *fakeBackend) Exists(_ context.Context, vol string) (bool, error) {
+	return f.existing[vol], nil
+}
 
 func (f *fakeBackend) Setup(context.Context) error { return nil }
 
@@ -67,6 +76,8 @@ func (f *fakeBackend) Create(_ context.Context, vol string, size int64) (string,
 	if _, ok := f.created[vol]; !ok {
 		f.created[vol] = size
 	}
+	f.existing[vol] = true
+	f.createVol = append(f.createVol, vol)
 	return f.DevicePath(vol), nil
 }
 
@@ -83,11 +94,14 @@ func (f *fakeBackend) Snapshot(_ context.Context, vol, snap string) error {
 }
 
 func (f *fakeBackend) CreateFromSnapshot(_ context.Context, vol, _, _ string) (string, error) {
+	f.existing[vol] = true
+	f.fromSnapVol = append(f.fromSnapVol, vol)
 	return f.DevicePath(vol), nil
 }
 
 func (f *fakeBackend) Delete(_ context.Context, vol string) error {
 	delete(f.created, vol)
+	delete(f.existing, vol)
 	return nil
 }
 
@@ -213,6 +227,65 @@ func TestReconcileReportsBackendError(t *testing.T) {
 	}
 	if got.Status.PerNode[nodeKharkiv].Message == "" {
 		t.Fatal("error message must be reported in status")
+	}
+}
+
+// TestReconcileSourceSnapshotGoneRecoversBacking: a GC'd source snapshot must
+// not strand a volume whose backing survived the reboot.
+func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true // backing survived the reboot
+	v := vol(volPvc1, nodeKharkiv)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-deleted"}
+	// No MiroirSnapshot object in the client: it has been garbage-collected.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+
+	reconcile(t, r, volPvc1)
+
+	if len(fb.fromSnapVol) != 0 {
+		t.Fatalf("must not clone (snapshot gone), got CreateFromSnapshot calls %v", fb.fromSnapVol)
+	}
+	if len(fb.createVol) != 1 || fb.createVol[0] != volPvc1 {
+		t.Fatalf("must recover the existing device via Create, got %v", fb.createVol)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
+	}
+	if got.Status.PerNode[nodeKharkiv].DevicePath != "/dev/fake/pvc-1" {
+		t.Fatalf("backing not recovered: %+v", got.Status.PerNode)
+	}
+}
+
+// TestReconcileSourceSnapshotGoneAndDeviceMissingFails: no snapshot and no
+// device — the restore can't complete, so fail loud rather than seed empty.
+func TestReconcileSourceSnapshotGoneAndDeviceMissingFails(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend() // no existing device
+	v := vol(volPvc1, nodeKharkiv)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-deleted"}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+
+	_, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	if err == nil {
+		t.Fatal("expected error: restore source is gone and device was never created")
+	}
+	if len(fb.createVol) != 0 || len(fb.fromSnapVol) != 0 {
+		t.Fatalf("must not create or clone an empty device: create=%v fromSnap=%v",
+			fb.createVol, fb.fromSnapVol)
 	}
 }
 

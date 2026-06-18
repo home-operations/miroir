@@ -239,6 +239,13 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alph
 	if vol.Spec.Source == nil {
 		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 	}
+	// The backing is cloned once and survives reboots; the source snapshot
+	// may be gone by then, so recover an existing device without it.
+	if exists, err := r.Backend.Exists(ctx, vol.Name); err != nil {
+		return "", err
+	} else if exists {
+		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+	}
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
 		return "", err
