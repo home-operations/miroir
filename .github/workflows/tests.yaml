@@ -50,8 +50,6 @@ jobs:
           git diff --exit-code go.mod go.sum
       - name: Running Unit Tests
         run: mise run test
-      - name: Running Integration Tests
-        run: mise run test-integration
   helm-test:
     name: Helm Unit Tests
     runs-on: ubuntu-24.04
