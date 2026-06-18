@@ -106,6 +106,10 @@ func (l *lvmThin) exists(ctx context.Context, lv string) (bool, error) {
 	return true, nil
 }
 
+func (l *lvmThin) Exists(ctx context.Context, vol string) (bool, error) {
+	return l.exists(ctx, vol)
+}
+
 func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (string, error) {
 	ok, err := l.exists(ctx, vol)
 	if err != nil {
