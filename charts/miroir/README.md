@@ -53,7 +53,7 @@ Kubernetes: `>=1.31.0`
 | replicatedStorageClass.name | string | `"miroir-replicated"` |  |
 | replicatedStorageClass.quorum | string | `"last-man-standing"` |  |
 | replicatedStorageClass.reclaimPolicy | string | `"Delete"` |  |
-| sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.2.0"` |  |
+| sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
 | sidecars.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |
 | sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.1.0"` |  |
