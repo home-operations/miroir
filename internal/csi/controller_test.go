@@ -33,9 +33,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/nodemap"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/nodemap"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -44,15 +44,15 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	if err := clientgoscheme.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	if err := homefsv1alpha1.AddToScheme(s); err != nil {
+	if err := miroirv1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	return s
 }
 
 var testNodes = nodemap.Map{
-	"kharkiv": nodemap.Node{Backend: homefsv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-homefs"},
-	"paris":   nodemap.Node{Backend: homefsv1alpha1.BackendZFS, ZFSDataset: "data-pool/homefs"},
+	"kharkiv": nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-miroir"},
+	"paris":   nodemap.Node{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
 }
 
 // readyOnGet flips a created volume to Ready, simulating the agent.
@@ -60,14 +60,14 @@ var testNodes = nodemap.Map{
 func readyOnGet(s *runtime.Scheme) client.WithWatch {
 	return fake.NewClientBuilder().
 		WithScheme(s).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}, &homefsv1alpha1.HomefsSnapshot{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if err := c.Get(ctx, key, obj, opts...); err != nil {
 					return err
 				}
-				if vol, ok := obj.(*homefsv1alpha1.HomefsVolume); ok {
-					vol.Status.Phase = homefsv1alpha1.VolumeReady
+				if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
+					vol.Status.Phase = miroirv1alpha1.VolumeReady
 				}
 				return nil
 			},
@@ -109,11 +109,11 @@ func TestCreateVolumePlacesOnPreferredNode(t *testing.T) {
 	}
 
 	// The CR must exist with the right backend for the chosen node.
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, vol); err != nil {
 		t.Fatal(err)
 	}
-	if vol.Spec.Replicas[0].Backend != homefsv1alpha1.BackendLVMThin {
+	if vol.Spec.Replicas[0].Backend != miroirv1alpha1.BackendLVMThin {
 		t.Fatalf("expected lvmthin backend, got %s", vol.Spec.Replicas[0].Backend)
 	}
 }
@@ -187,8 +187,8 @@ func TestCreateVolumeReplicated(t *testing.T) {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {
 						return err
 					}
-					if vol, ok := obj.(*homefsv1alpha1.HomefsVolume); ok {
-						vol.Status.Phase = homefsv1alpha1.VolumeReady
+					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
+						vol.Status.Phase = miroirv1alpha1.VolumeReady
 					}
 					return nil
 				},
@@ -218,7 +218,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		t.Fatalf("topology must cover both replica nodes: %+v", resp.Volume.AccessibleTopology)
 	}
 
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-r1"}, vol); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +236,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	if vol.Spec.DRBD == nil || vol.Spec.DRBD.Port != 7000 {
 		t.Fatalf("unexpected DRBD allocation %+v", vol.Spec.DRBD)
 	}
-	if vol.Spec.QuorumPolicy != homefsv1alpha1.QuorumLastManStanding {
+	if vol.Spec.QuorumPolicy != miroirv1alpha1.QuorumLastManStanding {
 		t.Fatalf("quorum = %s", vol.Spec.QuorumPolicy)
 	}
 	if len(vol.Finalizers) != 2 {
@@ -251,7 +251,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	vol2 := &homefsv1alpha1.HomefsVolume{}
+	vol2 := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-r2"}, vol2); err != nil {
 		t.Fatal(err)
 	}
@@ -275,17 +275,17 @@ func TestPickNodeNoStorageNodes(t *testing.T) {
 
 func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	s := newScheme(t)
-	srcVol := &homefsv1alpha1.HomefsVolume{
+	srcVol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
-		Spec: homefsv1alpha1.HomefsVolumeSpec{
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []homefsv1alpha1.Replica{{Node: "kharkiv", Backend: homefsv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: "kharkiv", Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
-	srcSnap := &homefsv1alpha1.HomefsSnapshot{
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
-		Status:     homefsv1alpha1.HomefsSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	cl := readyOnGet(s)
 	if err := cl.Create(context.Background(), srcVol); err != nil {
@@ -319,7 +319,7 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	if got := resp.Volume.ContentSource.GetSnapshot().GetSnapshotId(); got != "snap-1" {
 		t.Fatalf("ContentSource.Snapshot.SnapshotId = %q, want snap-1", got)
 	}
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-new"}, vol); err != nil {
 		t.Fatal(err)
 	}
@@ -335,17 +335,17 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 // stages it — a blank clone is then refused instead of mkfs'd.
 func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 	s := newScheme(t)
-	srcVol := &homefsv1alpha1.HomefsVolume{
+	srcVol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
-		Spec: homefsv1alpha1.HomefsVolumeSpec{
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []homefsv1alpha1.Replica{{Node: "kharkiv", Backend: homefsv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: "kharkiv", Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
-	srcSnap := &homefsv1alpha1.HomefsSnapshot{
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
-		Status: homefsv1alpha1.HomefsSnapshotStatus{
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{
 			ReadyToUse: true, SizeBytes: 5 << 30, SourceFormatted: true,
 		},
 	}
@@ -375,7 +375,7 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-new"}, vol); err != nil {
 		t.Fatal(err)
 	}
@@ -402,26 +402,26 @@ func TestCreateVolumeRejectsFourReplicas(t *testing.T) {
 // source snapshot must reject, not silently re-point the existing CR.
 func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 	s := newScheme(t)
-	srcVol := &homefsv1alpha1.HomefsVolume{
+	srcVol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
-		Spec: homefsv1alpha1.HomefsVolumeSpec{
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []homefsv1alpha1.Replica{{Node: "kharkiv", Backend: homefsv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: "kharkiv", Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	cl := readyOnGet(s)
 	if err := cl.Create(context.Background(), srcVol); err != nil {
 		t.Fatal(err)
 	}
-	snap1 := &homefsv1alpha1.HomefsSnapshot{
+	snap1 := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
-		Status:     homefsv1alpha1.HomefsSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
-	snap2 := &homefsv1alpha1.HomefsSnapshot{
+	snap2 := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-2"},
-		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-src"},
-		Status:     homefsv1alpha1.HomefsSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	if err := cl.Create(context.Background(), snap1); err != nil {
 		t.Fatal(err)

@@ -1,26 +1,26 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: homefs-controller
+  name: miroir-controller
   namespace: {{ .Release.Namespace }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: homefs-agent
+  name: miroir-agent
   namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: homefs-controller
+  name: miroir-controller
 rules:
-  # homefs desired state
-  - apiGroups: ["homefs.io"]
-    resources: ["homefsvolumes", "homefssnapshots"]
+  # miroir desired state
+  - apiGroups: ["miroir.io"]
+    resources: ["miroirvolumes", "miroirsnapshots"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["homefs.io"]
-    resources: ["homefsvolumes/status", "homefssnapshots/status"]
+  - apiGroups: ["miroir.io"]
+    resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     verbs: ["get"]
   # external-provisioner sidecar (topology needs nodes + csinodes)
   - apiGroups: [""]
@@ -68,37 +68,37 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: homefs-controller
+  name: miroir-controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: homefs-controller
+  name: miroir-controller
 subjects:
   - kind: ServiceAccount
-    name: homefs-controller
+    name: miroir-controller
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: homefs-agent
+  name: miroir-agent
 rules:
-  - apiGroups: ["homefs.io"]
-    resources: ["homefsvolumes", "homefssnapshots"]
+  - apiGroups: ["miroir.io"]
+    resources: ["miroirvolumes", "miroirsnapshots"]
     verbs: ["get", "list", "watch", "update"] # update releases finalizers
-  - apiGroups: ["homefs.io"]
-    resources: ["homefsvolumes/status", "homefssnapshots/status"]
+  - apiGroups: ["miroir.io"]
+    resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: homefs-agent
+  name: miroir-agent
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: homefs-agent
+  name: miroir-agent
 subjects:
   - kind: ServiceAccount
-    name: homefs-agent
+    name: miroir-agent
     namespace: {{ .Release.Namespace }}

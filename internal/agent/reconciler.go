@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package agent realizes HomefsVolume desired state on one node: it creates,
+// Package agent realizes MiroirVolume desired state on one node: it creates,
 // resizes, and deletes backing devices via the node's Backend and reports
 // observed state back through the CRD status (notes/DESIGN.md §4.2).
 package agent
@@ -36,10 +36,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/backend"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/drbd"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/backend"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/drbd"
 )
 
 // VolumeReconciler converges local state for volumes that place a replica on
@@ -78,12 +78,12 @@ func isDeviceBusy(err error) bool {
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(ctx, req.NamespacedName, vol); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	idx := slices.IndexFunc(vol.Spec.Replicas, func(rep homefsv1alpha1.Replica) bool {
+	idx := slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
 		return rep.Node == r.NodeName
 	})
 	mine := idx >= 0
@@ -131,13 +131,13 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// with DeviceCreated=false as hard provisioning failures, and a
 	// transient resize error must not be one.
 	if !vol.Status.PerNode[r.NodeName].DeviceCreated {
-		if err := r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
+		if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 			DeviceCreated: true,
 			DevicePath:    dev,
 		}); err != nil && !apierrors.IsConflict(err) {
 			return ctrl.Result{}, err
 		}
-		vol.Status.PerNode[r.NodeName] = homefsv1alpha1.ReplicaStatus{
+		vol.Status.PerNode[r.NodeName] = miroirv1alpha1.ReplicaStatus{
 			DeviceCreated: true, DevicePath: dev,
 		}
 	}
@@ -147,8 +147,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	if vol.Spec.DRBD == nil {
 		log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
-		recordVolumeMetrics(vol.Name, homefsReplicaView{upToDate: true, connected: true})
-		return ctrl.Result{}, r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
+		recordVolumeMetrics(vol.Name, miroirReplicaView{upToDate: true, connected: true})
+		return ctrl.Result{}, r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 			DeviceCreated: true,
 			DevicePath:    dev,
 			SizeBytes:     vol.Spec.SizeBytes,
@@ -191,13 +191,13 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
 			"volume", vol.Name)
 	}
-	recordVolumeMetrics(vol.Name, homefsReplicaView{
+	recordVolumeMetrics(vol.Name, miroirReplicaView{
 		upToDate:   st.DiskState == drbd.DiskUpToDate,
 		connected:  st.Connected,
 		splitBrain: st.SplitBrain,
 		suspended:  st.Suspended,
 	})
-	err = r.patchStatus(ctx, vol, homefsv1alpha1.ReplicaStatus{
+	err = r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: true,
 		DevicePath:    drbd.DevicePath(minor),
 		DRBDMinor:     minor,
@@ -220,7 +220,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 // peerBackingsGrown reports whether every peer realized the desired size.
 // The local leg is excluded: its status entry is stale (just patched).
-func peerBackingsGrown(vol *homefsv1alpha1.HomefsVolume, self string) bool {
+func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == self {
 			continue
@@ -235,11 +235,11 @@ func peerBackingsGrown(vol *homefsv1alpha1.HomefsVolume, self string) bool {
 // realizeBacking creates the backing device: fresh, or cloned from a
 // snapshot for restores. Clones are byte-identical on every replica, so
 // the day0 GI seed keeps restored volumes from resyncing.
-func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) (string, error) {
+func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (string, error) {
 	if vol.Spec.Source == nil {
 		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 	}
-	snap := &homefsv1alpha1.HomefsSnapshot{}
+	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
 		return "", err
 	}
@@ -250,7 +250,7 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *homefsv1alph
 // membership reconciler has not completed yet (no address) are left out:
 // rendering them would produce a config DRBD cannot parse, and the peer
 // cannot connect before completion anyway.
-func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string, minor int32) drbd.Resource {
+func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32) drbd.Resource {
 	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
 	skipSeed := false
 	for _, rep := range vol.Spec.Replicas {
@@ -285,7 +285,7 @@ func drbdResource(vol *homefsv1alpha1.HomefsVolume, localNode, localDisk string,
 // connected, and no snapshot may reference the volume — snapshots exist as
 // backend CoW state on every replica, and restores expect to find them
 // wherever the volume is placed.
-func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) (ctrl.Result, error) {
+func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	finalizer := constants.FinalizerPrefix + r.NodeName
 	if !controllerutil.ContainsFinalizer(vol, finalizer) {
@@ -326,13 +326,13 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *homefsv1al
 // when it is safe. The remaining replicas' health is read from the CRD
 // status the peers report — by removal time the peers have already dropped
 // this node from their configs, so the local kernel's view of them is gone.
-func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) string {
+func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) string {
 	if vol.Spec.DRBD == nil {
 		// An unreplicated volume's lone entry moved: there is no peer
 		// holding the data, so tearing down here is data loss. Unsupported.
 		return "volume has no replication layer; refusing to drop the only copy"
 	}
-	snaps := &homefsv1alpha1.HomefsSnapshotList{}
+	snaps := &miroirv1alpha1.MiroirSnapshotList{}
 	if err := r.List(ctx, snaps); err != nil {
 		return "cannot list snapshots: " + err.Error()
 	}
@@ -350,7 +350,7 @@ func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *homefsv1alph
 	return ""
 }
 
-func (r *VolumeReconciler) teardown(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) error {
+func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
 	if vol.Spec.DRBD != nil {
 		if err := r.DRBD.Down(ctx, vol.Name); err != nil {
 			return err
@@ -361,7 +361,7 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *homefsv1alpha1.Hom
 
 // removeFinalizer releases this node's own finalizer once local teardown
 // is done; the volume disappears when the last replica's agent finishes.
-func (r *VolumeReconciler) removeFinalizer(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) error {
+func (r *VolumeReconciler) removeFinalizer(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
 	finalizer := constants.FinalizerPrefix + r.NodeName
 	if !controllerutil.ContainsFinalizer(vol, finalizer) {
 		return nil
@@ -373,7 +373,7 @@ func (r *VolumeReconciler) removeFinalizer(ctx context.Context, vol *homefsv1alp
 	return nil
 }
 
-func (r *VolumeReconciler) reportError(ctx context.Context, vol *homefsv1alpha1.HomefsVolume, cause error) error {
+func (r *VolumeReconciler) reportError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) error {
 	// Preserve the realized state: a transient error (e.g. DRBD peer not
 	// up yet) must not erase DeviceCreated, or the volume would read as
 	// hard-Failed while the device exists.
@@ -386,13 +386,13 @@ func (r *VolumeReconciler) reportError(ctx context.Context, vol *homefsv1alpha1.
 }
 
 // patchStatus updates this node's slot in status and recomputes the phase.
-func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *homefsv1alpha1.HomefsVolume, mine homefsv1alpha1.ReplicaStatus) error {
+func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, mine miroirv1alpha1.ReplicaStatus) error {
 	if vol.Status.PerNode == nil {
-		vol.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{}
+		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
 	}
 	vol.Status.PerNode[r.NodeName] = mine
 	vol.Status.Phase = computePhase(vol)
-	vol.SetGroupVersionKind(homefsv1alpha1.GroupVersion.WithKind("HomefsVolume"))
+	vol.SetGroupVersionKind(miroirv1alpha1.GroupVersion.WithKind("MiroirVolume"))
 	vol.ManagedFields = nil
 	return r.Status().Patch(ctx, vol, client.Apply, //nolint:staticcheck
 		client.FieldOwner("agent-volume-"+r.NodeName),
@@ -400,7 +400,7 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *homefsv1alpha1.
 }
 
 // assignMinor returns the DRBD minor for this volume, allocating a free one if unset.
-func (r *VolumeReconciler) assignMinor(_ context.Context, vol *homefsv1alpha1.HomefsVolume) (int32, error) {
+func (r *VolumeReconciler) assignMinor(_ context.Context, vol *miroirv1alpha1.MiroirVolume) (int32, error) {
 	if m := vol.Status.PerNode[r.NodeName].DRBDMinor; m > 0 {
 		return m, nil
 	}
@@ -413,7 +413,7 @@ func (r *VolumeReconciler) assignMinor(_ context.Context, vol *homefsv1alpha1.Ho
 
 // computePhase aggregates per-node states into the volume phase the CSI
 // controller waits on (notes/DESIGN.md §4.5.1).
-func computePhase(vol *homefsv1alpha1.HomefsVolume) homefsv1alpha1.VolumePhase {
+func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
 	ready := 0
 	for _, rep := range vol.Spec.Replicas {
 		st, ok := vol.Status.PerNode[rep.Node]
@@ -426,23 +426,23 @@ func computePhase(vol *homefsv1alpha1.HomefsVolume) homefsv1alpha1.VolumePhase {
 			// Hard failure: the backing device never materialised.
 			// Errors after that point (DRBD connect retries, status
 			// hiccups) are transient and must not fail provisioning.
-			return homefsv1alpha1.VolumeFailed
+			return miroirv1alpha1.VolumeFailed
 		}
 	}
 	switch {
 	case ready == len(vol.Spec.Replicas):
-		return homefsv1alpha1.VolumeReady
+		return miroirv1alpha1.VolumeReady
 	case ready > 0:
-		return homefsv1alpha1.VolumeDegraded
+		return miroirv1alpha1.VolumeDegraded
 	default:
-		return homefsv1alpha1.VolumeCreating
+		return miroirv1alpha1.VolumeCreating
 	}
 }
 
 // SetupWithManager registers the reconciler.
 func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&homefsv1alpha1.HomefsVolume{}).
+		For(&miroirv1alpha1.MiroirVolume{}).
 		Named("agent-volume")
 	if r.DRBDEvents != nil {
 		b = b.WatchesRawSource(source.Channel(r.DRBDEvents, &handler.EnqueueRequestForObject{}))

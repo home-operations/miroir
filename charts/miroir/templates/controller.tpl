@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: homefs-controller
+  name: miroir-controller
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: homefs
+    app.kubernetes.io/name: miroir
     app.kubernetes.io/component: controller
 spec:
   replicas: 1
@@ -12,15 +12,15 @@ spec:
     type: Recreate # one writer for allocations; no leader election
   selector:
     matchLabels:
-      app.kubernetes.io/name: homefs
+      app.kubernetes.io/name: miroir
       app.kubernetes.io/component: controller
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: homefs
+        app.kubernetes.io/name: miroir
         app.kubernetes.io/component: controller
     spec:
-      serviceAccountName: homefs-controller
+      serviceAccountName: miroir-controller
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -32,7 +32,7 @@ spec:
           args:
             - --mode=controller
             - --csi-socket=/csi/csi.sock
-            - --nodes-config=/etc/homefs/nodes.yaml
+            - --nodes-config=/etc/miroir/nodes.yaml
             - --provision-timeout={{ .Values.controller.provisionTimeout }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -52,7 +52,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
             - name: nodes
-              mountPath: /etc/homefs
+              mountPath: /etc/miroir
               readOnly: true
         - name: csi-provisioner
           image: {{ .Values.sidecars.provisioner.image }}
@@ -96,4 +96,4 @@ spec:
           emptyDir: {}
         - name: nodes
           configMap:
-            name: homefs-nodes
+            name: miroir-nodes

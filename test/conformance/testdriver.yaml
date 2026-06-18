@@ -4,11 +4,11 @@
 # Uses the production StorageClass/VolumeSnapshotClass so the gate tests
 # the replicated (DRBD) path with the shipped configuration.
 StorageClass:
-  FromExistingClassName: homefs-replicated
+  FromExistingClassName: miroir-replicated
 SnapshotClass:
-  FromExistingClassName: homefs-snap
+  FromExistingClassName: miroir-snap
 DriverInfo:
-  Name: homefs.io
+  Name: miroir.io
   SupportedSizeRange:
     Min: 1Gi
     Max: 10Gi

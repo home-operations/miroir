@@ -27,19 +27,19 @@ const volumeLabel = "volume"
 
 var (
 	metricUpToDate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "homefs_volume_up_to_date",
+		Name: "miroir_volume_up_to_date",
 		Help: "1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created).",
 	}, []string{volumeLabel})
 	metricConnected = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "homefs_volume_connected",
+		Name: "miroir_volume_connected",
 		Help: "1 when all replication links from this node are established.",
 	}, []string{volumeLabel})
 	metricSplitBrain = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "homefs_volume_split_brain",
+		Name: "miroir_volume_split_brain",
 		Help: "1 when DRBD refused to reconnect after divergence; manual resolution required.",
 	}, []string{volumeLabel})
 	metricSuspended = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "homefs_volume_suspended",
+		Name: "miroir_volume_suspended",
 		Help: "1 while suspend-io holds this node's write barrier; sustained means a stranded barrier (snapshot rounds last seconds).",
 	}, []string{volumeLabel})
 )
@@ -48,7 +48,7 @@ func init() {
 	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain, metricSuspended)
 }
 
-func recordVolumeMetrics(volume string, st homefsReplicaView) {
+func recordVolumeMetrics(volume string, st miroirReplicaView) {
 	metricUpToDate.WithLabelValues(volume).Set(boolGauge(st.upToDate))
 	metricConnected.WithLabelValues(volume).Set(boolGauge(st.connected))
 	metricSplitBrain.WithLabelValues(volume).Set(boolGauge(st.splitBrain))
@@ -62,7 +62,7 @@ func dropVolumeMetrics(volume string) {
 	metricSuspended.DeleteLabelValues(volume)
 }
 
-type homefsReplicaView struct {
+type miroirReplicaView struct {
 	upToDate   bool
 	connected  bool
 	splitBrain bool

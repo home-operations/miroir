@@ -16,7 +16,7 @@ zizmor = "1.25.2"
 
 [tasks.manifests]
 description = "Generate CRD and RBAC manifests"
-run = "controller-gen rbac:roleName=homefs-controller crd paths='./...' output:crd:artifacts:config=config/crd/bases"
+run = "controller-gen rbac:roleName=miroir-controller crd paths='./...' output:crd:artifacts:config=config/crd/bases"
 
 [tasks.generate]
 description = "Generate DeepCopy methods"
@@ -40,14 +40,14 @@ run = "golangci-lint run --fix"
 
 [tasks.helm-lint]
 description = "Run helm lint"
-run = "helm lint charts/homefs"
+run = "helm lint charts/miroir"
 
 [tasks.helm-crds]
 description = "Generate CRDs and copy them into the Helm chart"
 depends = ["manifests"]
 run = '''
-mkdir -p charts/homefs/crds
-cp config/crd/bases/*.yaml charts/homefs/crds/
+mkdir -p charts/miroir/crds
+cp config/crd/bases/*.yaml charts/miroir/crds/
 '''
 
 [tasks.test]
@@ -70,7 +70,7 @@ go test ./test/integration/ -v -ginkgo.v
 description = "Run e2e tests against a Kind cluster"
 depends = ["manifests", "generate", "fmt", "vet"]
 run = '''
-cluster="${KIND_CLUSTER:-homefs-test-e2e}"
+cluster="${KIND_CLUSTER:-miroir-test-e2e}"
 if ! kind get clusters | grep -qx "$cluster"; then
   kind create cluster --name "$cluster"
 fi
@@ -79,12 +79,12 @@ KIND_CLUSTER="$cluster" go test ./test/e2e/ -v -ginkgo.v
 '''
 
 [tasks.build]
-description = "Build homefs binary"
+description = "Build miroir binary"
 depends = ["generate", "fmt", "vet"]
 run = '''
 version="${VERSION:-$(git describe --tags --always 2>/dev/null || echo dev)}"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-go build -ldflags "-X main.version=$version -X main.commit=$commit" -o bin/homefs cmd/main.go
+go build -ldflags "-X main.version=$version -X main.commit=$commit" -o bin/miroir cmd/main.go
 '''
 
 [tasks.run-controller]

@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
 func testResource(local string) Resource {
@@ -32,9 +32,9 @@ func testResource(local string) Resource {
 		Name:      "pvc-1",
 		Minor:     1000,
 		Port:      7000,
-		Quorum:    homefsv1alpha1.QuorumLastManStanding,
+		Quorum:    miroirv1alpha1.QuorumLastManStanding,
 		LocalNode: local,
-		LocalDisk: "/dev/vg-homefs/pvc-1",
+		LocalDisk: "/dev/vg-miroir/pvc-1",
 		Peers: []Peer{
 			{Node: "kharkiv", NodeID: 0, Address: "192.168.1.41"},
 			{Node: "paris", NodeID: 1, Address: "192.168.1.42"},
@@ -48,7 +48,7 @@ func TestRenderDeterministicAndLocalDisk(t *testing.T) {
 	if a != b {
 		t.Fatal("render is not deterministic")
 	}
-	if !strings.Contains(a, `disk "/dev/vg-homefs/pvc-1";`) {
+	if !strings.Contains(a, `disk "/dev/vg-miroir/pvc-1";`) {
 		t.Fatalf("local disk path missing:\n%s", a)
 	}
 	if !strings.Contains(a, `disk "/dev/drbd/this/is/not/used";`) {
@@ -96,7 +96,7 @@ func TestParseEvent2(t *testing.T) {
 
 func TestRenderFreezeQuorum(t *testing.T) {
 	r := testResource("kharkiv")
-	r.Quorum = homefsv1alpha1.QuorumFreeze
+	r.Quorum = miroirv1alpha1.QuorumFreeze
 	out := Render(r)
 	if !strings.Contains(out, "quorum majority;") || !strings.Contains(out, "on-no-quorum io-error;") {
 		t.Fatalf("freeze policy not rendered:\n%s", out)
@@ -202,7 +202,7 @@ func TestApplyFreshResource(t *testing.T) {
 	// drbdmeta is addressed by minor: the resource/volume form is drbdadm
 	// syntax and makes drbdmeta consult kernel state through a malformed
 	// drbdsetup invocation with undefined output.
-	fe.calledWith(t, "drbdmeta --force 1000 v09 /dev/vg-homefs/pvc-1 internal set-gi")
+	fe.calledWith(t, "drbdmeta --force 1000 v09 /dev/vg-miroir/pvc-1 internal set-gi")
 	fe.notCalledWith(t, "drbdmeta --force pvc-1/0")
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 
@@ -364,7 +364,7 @@ func TestApplySurfacesNonDRBDBusyDevice(t *testing.T) {
 	// A backing device held open by something other than DRBD (stale
 	// mount, LVM) is not an attachment — it must error, not adopt.
 	fe := &fakeExec{errOn: map[string]error{
-		"dump-md": errors.New("open(/dev/vg-homefs/pvc-1) failed: Device or resource busy\n" +
+		"dump-md": errors.New("open(/dev/vg-miroir/pvc-1) failed: Device or resource busy\n" +
 			"Exclusive open failed. Do it anyways?\nOperation canceled."),
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}

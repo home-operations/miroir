@@ -36,9 +36,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/nodemap"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/nodemap"
 )
 
 // Reconciler completes operator-added replica entries on replicated
@@ -55,7 +55,7 @@ type Reconciler struct {
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(ctx, req.NamespacedName, vol); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -100,7 +100,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // used by the other entries — freed ids may be reused; the joiner's
 // just-created metadata forces a full sync either way, so a stale bitmap
 // slot on the peers cannot leak as data.
-func (r *Reconciler) complete(ctx context.Context, vol *homefsv1alpha1.HomefsVolume, rep *homefsv1alpha1.Replica) error {
+func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, rep *miroirv1alpha1.Replica) error {
 	entry, ok := r.Nodes[rep.Node]
 	if !ok {
 		return fmt.Errorf("node %s is not in the storage node map", rep.Node)
@@ -130,7 +130,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *homefsv1alpha1.HomefsVol
 	}
 
 	id := int32(0)
-	for slices.ContainsFunc(vol.Spec.Replicas, func(other homefsv1alpha1.Replica) bool {
+	for slices.ContainsFunc(vol.Spec.Replicas, func(other miroirv1alpha1.Replica) bool {
 		return other.Node != rep.Node && other.Address != "" && other.NodeID == id
 	}) {
 		id++
@@ -148,7 +148,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *homefsv1alpha1.HomefsVol
 // reconciler reads.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&homefsv1alpha1.HomefsVolume{},
+		For(&miroirv1alpha1.MiroirVolume{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("membership").
 		Complete(r)

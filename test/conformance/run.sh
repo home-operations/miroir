@@ -22,7 +22,7 @@ if [ ! -x "$bin/e2e.test" ]; then
 fi
 
 KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
-FOCUS=${FOCUS:-'homefs.io'}
+FOCUS=${FOCUS:-'miroir.io'}
 # Disruptive specs restart kubelet; Serial ones assume exclusive use of
 # the cluster; the volumeMode host check nsenters the node and runs sh,
 # which Talos does not ship.

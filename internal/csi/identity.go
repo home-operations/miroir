@@ -22,7 +22,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
-	"github.com/eleboucher/homefs/internal/constants"
+	"github.com/home-operations/miroir/internal/constants"
 )
 
 // Identity implements csi.IdentityServer for both the controller and the

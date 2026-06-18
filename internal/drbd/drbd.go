@@ -30,7 +30,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/eleboucher/homefs/internal/backend"
+	"github.com/home-operations/miroir/internal/backend"
 )
 
 // Driver realizes DRBD resources on one node by rendering config into
@@ -275,7 +275,7 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 // drbdMajor is DRBD's fixed block-device major number.
 const drbdMajor = 147
 
-// minorBase is the first DRBD minor number the agent assigns to homefs
+// minorBase is the first DRBD minor number the agent assigns to miroir
 // volumes. Lower numbers may be reserved for system DRBD resources.
 const minorBase int32 = 1000
 
@@ -434,7 +434,7 @@ func (d *Driver) ensureDeviceNode(minor int32) error {
 // first 8 bytes of sha256), low bit cleared — DRBD's low bit marks
 // "primary writes happened" and a synthetic day0 means none have.
 func Day0GI(name string) string {
-	h := sha256.Sum256(fmt.Appendf(nil, "homefs-day0:%s/0", name))
+	h := sha256.Sum256(fmt.Appendf(nil, "miroir-day0:%s/0", name))
 	h[7] &^= 0x01
 	return strings.ToUpper(hex.EncodeToString(h[:8]))
 }
@@ -535,7 +535,7 @@ type Status struct {
 	SplitBrain bool
 }
 
-// drbdsetup status --json shapes (the fields homefs reads).
+// drbdsetup status --json shapes (the fields miroir reads).
 type jsonStatus struct {
 	Name          string `json:"name"`
 	Role          string `json:"role"`

@@ -14,25 +14,25 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package constants holds cross-component identifiers for the homefs driver.
+// Package constants holds cross-component identifiers for the miroir driver.
 package constants
 
 const (
 	// DriverName is the CSI driver name, also the CRD API group.
-	DriverName = "homefs.io"
+	DriverName = "miroir.io"
 
 	// TopologyKey is the CSI topology key reported by NodeGetInfo; its
 	// value is the Kubernetes node name (notes/DESIGN.md §6.5).
-	TopologyKey = "homefs.io/node"
+	TopologyKey = "miroir.io/node"
 
-	// FinalizerPrefix + node name blocks HomefsVolume deletion until that
+	// FinalizerPrefix + node name blocks MiroirVolume deletion until that
 	// node's agent has torn down its local state. One finalizer per
 	// replica: each agent releases exactly its own.
-	FinalizerPrefix = "homefs.io/teardown-"
+	FinalizerPrefix = "miroir.io/teardown-"
 
 	// ParamReplicas is the StorageClass parameter for the replica count.
-	ParamReplicas = "homefs.io/replicas"
+	ParamReplicas = "miroir.io/replicas"
 
 	// ParamQuorum is the StorageClass parameter for the 2-node policy.
-	ParamQuorum = "homefs.io/quorum"
+	ParamQuorum = "miroir.io/quorum"
 )

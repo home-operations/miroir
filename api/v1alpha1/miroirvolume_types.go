@@ -78,11 +78,11 @@ type DRBDSpec struct {
 
 // VolumeSource provisions the volume's content from an existing snapshot.
 type VolumeSource struct {
-	// SnapshotName references a HomefsSnapshot by name.
+	// SnapshotName references a MiroirSnapshot by name.
 	SnapshotName string `json:"snapshotName"`
 }
 
-// HomefsVolumeSpec is the desired state, written by the controller at
+// MiroirVolumeSpec is the desired state, written by the controller at
 // CreateVolume time and reconciled by node agents. Replicas may be edited
 // on a live replicated volume — add an entry (node + backend; the
 // membership reconciler completes it) or remove one — within the bounds
@@ -90,7 +90,7 @@ type VolumeSource struct {
 // replication layer in place (internal DRBD metadata cannot be added
 // under a live filesystem), and a replicated one keeps 2–3 replicas.
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) ? (size(self.replicas) >= 2 && size(self.replicas) <= 3) : size(self.replicas) == 1",message="replicated volumes (spec.drbd set) need 2-3 replicas; unreplicated exactly 1"
-type HomefsVolumeSpec struct {
+type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
 	// +kubebuilder:validation:Minimum=1
 	SizeBytes int64 `json:"sizeBytes"`
@@ -139,8 +139,8 @@ type ReplicaStatus struct {
 	Message string `json:"message,omitempty"`
 }
 
-// HomefsVolumeStatus is the observed state aggregated from node agents.
-type HomefsVolumeStatus struct {
+// MiroirVolumeStatus is the observed state aggregated from node agents.
+type MiroirVolumeStatus struct {
 	// Phase summarizes the volume state for the controller and humans.
 	// +optional
 	Phase VolumePhase `json:"phase,omitempty"`
@@ -159,27 +159,27 @@ type HomefsVolumeStatus struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=hfv
+// +kubebuilder:resource:scope=Cluster,shortName=miv
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Size",type=integer,JSONPath=`.spec.sizeBytes`
 // +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.spec.replicas[*].node`,priority=1
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// HomefsVolume is one provisioned volume (1:1 with a PV).
-type HomefsVolume struct {
+// MiroirVolume is one provisioned volume (1:1 with a PV).
+type MiroirVolume struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   HomefsVolumeSpec   `json:"spec"`
-	Status HomefsVolumeStatus `json:"status,omitempty"`
+	Spec   MiroirVolumeSpec   `json:"spec"`
+	Status MiroirVolumeStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// HomefsVolumeList contains a list of HomefsVolume.
-type HomefsVolumeList struct {
+// MiroirVolumeList contains a list of MiroirVolume.
+type MiroirVolumeList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []HomefsVolume `json:"items"`
+	Items           []MiroirVolume `json:"items"`
 }

@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: homefsvolumes.homefs.io
+  name: miroirvolumes.miroir.io
 spec:
-  group: homefs.io
+  group: miroir.io
   names:
-    kind: HomefsVolume
-    listKind: HomefsVolumeList
-    plural: homefsvolumes
+    kind: MiroirVolume
+    listKind: MiroirVolumeList
+    plural: miroirvolumes
     shortNames:
-      - hfv
-    singular: homefsvolume
+      - miv
+    singular: miroirvolume
   scope: Cluster
   versions:
     - additionalPrinterColumns:
@@ -33,7 +33,7 @@ spec:
       name: v1alpha1
       schema:
         openAPIV3Schema:
-          description: HomefsVolume is one provisioned volume (1:1 with a PV).
+          description: MiroirVolume is one provisioned volume (1:1 with a PV).
           properties:
             apiVersion:
               description: |-
@@ -54,7 +54,7 @@ spec:
               type: object
             spec:
               description: |-
-                HomefsVolumeSpec is the desired state, written by the controller at
+                MiroirVolumeSpec is the desired state, written by the controller at
                 CreateVolume time and reconciled by node agents. Replicas may be edited
                 on a live replicated volume — add an entry (node + backend; the
                 membership reconciler completes it) or remove one — within the bounds
@@ -145,7 +145,7 @@ spec:
                     clone).
                   properties:
                     snapshotName:
-                      description: SnapshotName references a HomefsSnapshot by name.
+                      description: SnapshotName references a MiroirSnapshot by name.
                       type: string
                   required:
                     - snapshotName
@@ -160,7 +160,7 @@ spec:
                   rule: "has(self.drbd) ? (size(self.replicas) >= 2 && size(self.replicas)
                     <= 3) : size(self.replicas) == 1"
             status:
-              description: HomefsVolumeStatus is the observed state aggregated from
+              description: MiroirVolumeStatus is the observed state aggregated from
                 node agents.
               properties:
                 conditions:

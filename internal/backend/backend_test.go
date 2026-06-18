@@ -76,18 +76,18 @@ func (f *fakeExec) notCalledWith(t *testing.T, substr string) {
 	}
 }
 
-var cfg = Config{VolumeGroup: "vg-homefs", ThinPool: "thinpool", Dataset: "tank/homefs"}
+var cfg = Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool", Dataset: "tank/miroir"}
 
 func TestLVMThinCreate(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("lvs vg-homefs/pvc-1", "", errors.New("Failed to find logical volume"))
+	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("Failed to find logical volume"))
 	b := newLVMThin(cfg, fe.run)
 
 	dev, err := b.Create(context.Background(), "pvc-1", 10<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/dev/vg-homefs/pvc-1" {
+	if dev != "/dev/vg-miroir/pvc-1" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
 	fe.calledWith(t, "lvcreate --type thin --virtualsize 10737418240b --thinpool thinpool --name pvc-1")
@@ -103,7 +103,7 @@ func TestLVMThinCreateIdempotent(t *testing.T) {
 	fe.notCalledWith(t, "lvcreate")
 	// Existing LVs are activated: Talos does not run vgchange -ay at boot,
 	// so post-reboot the LV has no device node until activated.
-	fe.calledWith(t, "lvchange --activate y vg-homefs/pvc-1")
+	fe.calledWith(t, "lvchange --activate y vg-miroir/pvc-1")
 }
 
 func TestLVMThinResizeSkipsWhenBigEnough(t *testing.T) {
@@ -119,7 +119,7 @@ func TestLVMThinResizeSkipsWhenBigEnough(t *testing.T) {
 
 func TestLVMThinDeleteAbsentIsNoop(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("lvs vg-homefs/pvc-1", "", errors.New("Failed to find logical volume"))
+	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("Failed to find logical volume"))
 	b := newLVMThin(cfg, fe.run)
 
 	if err := b.Delete(context.Background(), "pvc-1"); err != nil {
@@ -150,18 +150,18 @@ func TestLVMThinStats(t *testing.T) {
 
 func TestZFSCreate(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("zfs list -H tank/homefs/pvc-1", "", errors.New("dataset does not exist"))
+	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
 	b := newZFS(cfg, fe.run)
 
 	dev, err := b.Create(context.Background(), "pvc-1", 10<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/dev/zvol/tank/homefs/pvc-1" {
+	if dev != "/dev/zvol/tank/miroir/pvc-1" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
 	// Sparse + 4k volblocksize per notes/DESIGN.md §4.1a / SPIKE P0-1.
-	fe.calledWith(t, "zfs create -s -b 4096 -V 10737418240 tank/homefs/pvc-1")
+	fe.calledWith(t, "zfs create -s -b 4096 -V 10737418240 tank/miroir/pvc-1")
 }
 
 func TestZFSSnapshotIdempotent(t *testing.T) {
@@ -176,17 +176,17 @@ func TestZFSSnapshotIdempotent(t *testing.T) {
 
 func TestZFSCreateFromSnapshot(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("zfs list -H tank/homefs/pvc-2", "", errors.New("dataset does not exist"))
+	fe.respond("zfs list -H tank/miroir/pvc-2", "", errors.New("dataset does not exist"))
 	b := newZFS(cfg, fe.run)
 
 	dev, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snap-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/dev/zvol/tank/homefs/pvc-2" {
+	if dev != "/dev/zvol/tank/miroir/pvc-2" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
-	fe.calledWith(t, "zfs clone tank/homefs/pvc-1@snap-1 tank/homefs/pvc-2")
+	fe.calledWith(t, "zfs clone tank/miroir/pvc-1@snap-1 tank/miroir/pvc-2")
 }
 
 func TestLVMThinCloneReactivates(t *testing.T) {
@@ -199,33 +199,33 @@ func TestLVMThinCloneReactivates(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "lvcreate")
-	fe.calledWith(t, "lvchange --activate y vg-homefs/pvc-2")
+	fe.calledWith(t, "lvchange --activate y vg-miroir/pvc-2")
 }
 
 func TestLVMThinSnapshotAvoidsReservedName(t *testing.T) {
 	// LVM rejects LV names starting "snapshot"; CSI snapshot names start
 	// exactly there — the LV gets a prefix, end to end.
 	fe := &fakeExec{}
-	fe.respond("lvs vg-homefs/hfs-snapshot-1", "", errors.New("Failed to find logical volume"))
+	fe.respond("lvs vg-miroir/miroir-snapshot-1", "", errors.New("Failed to find logical volume"))
 	b := newLVMThin(cfg, fe.run)
 
 	if err := b.Snapshot(context.Background(), "pvc-1", "snapshot-1"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "--name hfs-snapshot-1")
+	fe.calledWith(t, "--name miroir-snapshot-1")
 	fe.notCalledWith(t, "--name snapshot-1")
 
-	fe.respond("lvs vg-homefs/pvc-2", "", errors.New("Failed to find logical volume"))
+	fe.respond("lvs vg-miroir/pvc-2", "", errors.New("Failed to find logical volume"))
 	if _, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snapshot-1"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "vg-homefs/hfs-snapshot-1")
+	fe.calledWith(t, "vg-miroir/miroir-snapshot-1")
 
-	fe.respond("lvs vg-homefs/hfs-snapshot-1", "", nil) // now exists
+	fe.respond("lvs vg-miroir/miroir-snapshot-1", "", nil) // now exists
 	if err := b.DeleteSnapshot(context.Background(), "pvc-1", "snapshot-1"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "lvremove --yes vg-homefs/hfs-snapshot-1")
+	fe.calledWith(t, "lvremove --yes vg-miroir/miroir-snapshot-1")
 }
 
 func TestZFSDeleteSnapshotDefersForClones(t *testing.T) {
@@ -237,15 +237,15 @@ func TestZFSDeleteSnapshotDefersForClones(t *testing.T) {
 	if err := b.DeleteSnapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "zfs destroy -d tank/homefs/pvc-1@snap-1")
+	fe.calledWith(t, "zfs destroy -d tank/miroir/pvc-1@snap-1")
 }
 
 func TestZFSDeletePromotesDependentClones(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("zfs destroy tank/homefs/pvc-1",
-		"", errors.New("cannot destroy 'tank/homefs/pvc-1': volume has dependent clones"))
+	fe.respond("zfs destroy tank/miroir/pvc-1",
+		"", errors.New("cannot destroy 'tank/miroir/pvc-1': volume has dependent clones"))
 	fe.respond("zfs get -Hpo value clones",
-		"-\ntank/homefs/pvc-2,tank/homefs/pvc-3\n", nil)
+		"-\ntank/miroir/pvc-2,tank/miroir/pvc-3\n", nil)
 	b := newZFS(cfg, fe.run)
 
 	// The retry hits the same canned destroy error; what matters is that
@@ -253,8 +253,8 @@ func TestZFSDeletePromotesDependentClones(t *testing.T) {
 	if err := b.Delete(context.Background(), "pvc-1"); err == nil {
 		t.Fatal("expected destroy error to propagate")
 	}
-	fe.calledWith(t, "zfs promote tank/homefs/pvc-2")
-	fe.calledWith(t, "zfs promote tank/homefs/pvc-3")
+	fe.calledWith(t, "zfs promote tank/miroir/pvc-2")
+	fe.calledWith(t, "zfs promote tank/miroir/pvc-3")
 }
 
 func TestZFSDeleteWithoutClonesDoesNotPromote(t *testing.T) {
@@ -285,32 +285,32 @@ func TestZFSStatsUsesPool(t *testing.T) {
 
 func TestLVMThinSetupBootstrapsPool(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("vgs vg-homefs", "", errors.New("Volume group \"vg-homefs\" not found"))
-	fe.respond("lvs vg-homefs/thinpool", "", errors.New("Failed to find logical volume"))
-	b := newLVMThin(Config{VolumeGroup: "vg-homefs", ThinPool: "thinpool",
-		Device: "/dev/disk/by-partlabel/r-homefs"}, fe.run)
+	fe.respond("vgs vg-miroir", "", errors.New("Volume group \"vg-miroir\" not found"))
+	fe.respond("lvs vg-miroir/thinpool", "", errors.New("Failed to find logical volume"))
+	b := newLVMThin(Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool",
+		Device: "/dev/disk/by-partlabel/r-miroir"}, fe.run)
 
 	if err := b.Setup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "pvcreate /dev/disk/by-partlabel/r-homefs")
-	fe.calledWith(t, "vgcreate vg-homefs /dev/disk/by-partlabel/r-homefs")
-	fe.calledWith(t, "lvcreate --type thin-pool --extents 100%FREE --poolmetadatasize 1g --name thinpool vg-homefs")
+	fe.calledWith(t, "pvcreate /dev/disk/by-partlabel/r-miroir")
+	fe.calledWith(t, "vgcreate vg-miroir /dev/disk/by-partlabel/r-miroir")
+	fe.calledWith(t, "lvcreate --type thin-pool --extents 100%FREE --poolmetadatasize 1g --name thinpool vg-miroir")
 }
 
 // A bounded pool leaves VG free space for co-tenant provisioners
 // (e.g. OpenEBS LVM-LocalPV creating <vg>_thinpool alongside).
 func TestLVMThinSetupBoundedPoolSize(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("vgs vg-homefs", "", errors.New("Volume group \"vg-homefs\" not found"))
-	fe.respond("lvs vg-homefs/thinpool", "", errors.New("Failed to find logical volume"))
-	b := newLVMThin(Config{VolumeGroup: "vg-homefs", ThinPool: "thinpool",
-		Device: "/dev/disk/by-partlabel/r-homefs", PoolSize: "400g"}, fe.run)
+	fe.respond("vgs vg-miroir", "", errors.New("Volume group \"vg-miroir\" not found"))
+	fe.respond("lvs vg-miroir/thinpool", "", errors.New("Failed to find logical volume"))
+	b := newLVMThin(Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool",
+		Device: "/dev/disk/by-partlabel/r-miroir", PoolSize: "400g"}, fe.run)
 
 	if err := b.Setup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "lvcreate --type thin-pool --size 400g --poolmetadatasize 1g --name thinpool vg-homefs")
+	fe.calledWith(t, "lvcreate --type thin-pool --size 400g --poolmetadatasize 1g --name thinpool vg-miroir")
 	fe.notCalledWith(t, "100%FREE")
 }
 
@@ -327,8 +327,8 @@ func TestLVMThinSetupIdempotent(t *testing.T) {
 
 func TestLVMThinSetupNoDeviceFails(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("vgs vg-homefs", "", errors.New("Volume group \"vg-homefs\" not found"))
-	b := newLVMThin(Config{VolumeGroup: "vg-homefs", ThinPool: "thinpool"}, fe.run)
+	fe.respond("vgs vg-miroir", "", errors.New("Volume group \"vg-miroir\" not found"))
+	b := newLVMThin(Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool"}, fe.run)
 
 	if err := b.Setup(context.Background()); err == nil {
 		t.Fatal("expected error when VG absent and no device configured")
@@ -337,13 +337,13 @@ func TestLVMThinSetupNoDeviceFails(t *testing.T) {
 
 func TestZFSSetupCreatesParentDataset(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("zfs list -H tank/homefs", "", errors.New("dataset does not exist"))
+	fe.respond("zfs list -H tank/miroir", "", errors.New("dataset does not exist"))
 	b := newZFS(cfg, fe.run)
 
 	if err := b.Setup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "zfs create -p tank/homefs")
+	fe.calledWith(t, "zfs create -p tank/miroir")
 }
 
 // Regression: --noudevsync is invalid on several lvm subcommands

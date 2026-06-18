@@ -4,16 +4,16 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-  name: homefssnapshots.homefs.io
+  name: miroirsnapshots.miroir.io
 spec:
-  group: homefs.io
+  group: miroir.io
   names:
-    kind: HomefsSnapshot
-    listKind: HomefsSnapshotList
-    plural: homefssnapshots
+    kind: MiroirSnapshot
+    listKind: MiroirSnapshotList
+    plural: miroirsnapshots
     shortNames:
-      - hfs
-    singular: homefssnapshot
+      - mis
+    singular: miroirsnapshot
   scope: Cluster
   versions:
     - additionalPrinterColumns:
@@ -30,8 +30,8 @@ spec:
       schema:
         openAPIV3Schema:
           description: |-
-            HomefsSnapshot is one crash-consistent point-in-time snapshot of a
-            HomefsVolume (1:1 with a VolumeSnapshotContent).
+            MiroirSnapshot is one crash-consistent point-in-time snapshot of a
+            MiroirVolume (1:1 with a VolumeSnapshotContent).
           properties:
             apiVersion:
               description: |-
@@ -52,11 +52,11 @@ spec:
               type: object
             spec:
               description: |-
-                HomefsSnapshotSpec is the desired state, created by the controller on
+                MiroirSnapshotSpec is the desired state, created by the controller on
                 CSI CreateSnapshot.
               properties:
                 volumeName:
-                  description: VolumeName references the HomefsVolume this snapshot
+                  description: VolumeName references the MiroirVolume this snapshot
                     captures.
                   type: string
               required:
@@ -64,7 +64,7 @@ spec:
               type: object
             status:
               description: |-
-                HomefsSnapshotStatus is the observed state aggregated from node agents.
+                MiroirSnapshotStatus is the observed state aggregated from node agents.
                 The snapshot exists as a backend CoW snapshot on every replica of the
                 source volume (DESIGN.md §4.5.4).
               properties:

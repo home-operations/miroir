@@ -3,10 +3,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: homefs-setup-{{ $name }}
+  name: miroir-setup-{{ $name }}
   namespace: {{ $.Release.Namespace }}
   labels:
-    app.kubernetes.io/name: homefs
+    app.kubernetes.io/name: miroir
     app.kubernetes.io/component: setup
   annotations:
     helm.sh/hook: post-install,post-upgrade
@@ -15,7 +15,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: homefs-setup
+      serviceAccountName: miroir-setup
       nodeName: {{ $name }}
       restartPolicy: Never
       hostNetwork: true
@@ -29,12 +29,12 @@ spec:
           args:
             - --mode=setup
             - --node-name={{ $name }}
-            - --nodes-config=/etc/homefs/nodes.yaml
+            - --nodes-config=/etc/miroir/nodes.yaml
           securityContext:
             privileged: true
           volumeMounts:
             - name: nodes
-              mountPath: /etc/homefs
+              mountPath: /etc/miroir
               readOnly: true
             - name: dev
               mountPath: /dev
@@ -53,7 +53,7 @@ spec:
       volumes:
         - name: nodes
           configMap:
-            name: homefs-nodes
+            name: miroir-nodes
         - name: dev
           hostPath:
             path: /dev

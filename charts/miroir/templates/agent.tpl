@@ -12,23 +12,23 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: homefs-agent
+  name: miroir-agent
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: homefs
+    app.kubernetes.io/name: miroir
     app.kubernetes.io/component: agent
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: homefs
+      app.kubernetes.io/name: miroir
       app.kubernetes.io/component: agent
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: homefs
+        app.kubernetes.io/name: miroir
         app.kubernetes.io/component: agent
     spec:
-      serviceAccountName: homefs-agent
+      serviceAccountName: miroir-agent
       # hostNetwork so the pod IP is the node IP and the container
       # hostname matches the node — DRBD peers dial the host IP and
       # match `on <hostname>` blocks; agent ports must be host-unique.
@@ -50,7 +50,7 @@ spec:
           args:
             - --mode=agent
             - --csi-socket=/csi/csi.sock
-            - --nodes-config=/etc/homefs/nodes.yaml
+            - --nodes-config=/etc/miroir/nodes.yaml
             - --metrics-bind-address=:9810
             - --health-probe-bind-address=:9811
           env:
@@ -78,7 +78,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
             - name: nodes
-              mountPath: /etc/homefs
+              mountPath: /etc/miroir
               readOnly: true
             - name: kubelet
               mountPath: {{ .Values.kubeletDir }}
@@ -122,7 +122,7 @@ spec:
           image: {{ .Values.sidecars.registrar.image }}
           args:
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path={{ .Values.kubeletDir }}/plugins/homefs.io/csi.sock
+            - --kubelet-registration-path={{ .Values.kubeletDir }}/plugins/miroir.io/csi.sock
           resources:
             requests: { cpu: 5m, memory: 16Mi }
             limits: { memory: 64Mi }
@@ -134,10 +134,10 @@ spec:
       volumes:
         - name: nodes
           configMap:
-            name: homefs-nodes
+            name: miroir-nodes
         - name: socket-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins/homefs.io
+            path: {{ .Values.kubeletDir }}/plugins/miroir.io
             type: DirectoryOrCreate
         - name: registration
           hostPath:
@@ -164,11 +164,11 @@ spec:
             path: /lib/modules
         - name: drbd-cfg
           hostPath:
-            path: /var/lib/homefs-drbd.d
+            path: /var/lib/miroir-drbd.d
             type: DirectoryOrCreate
         - name: drbd-global-conf
           configMap:
-            name: homefs-drbd-conf
+            name: miroir-drbd-conf
             items:
               - key: global_common.conf
                 path: global_common.conf

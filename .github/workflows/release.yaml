@@ -117,7 +117,7 @@ jobs:
 
       - name: Package Helm chart
         run: |
-          helm package charts/homefs \
+          helm package charts/miroir \
             --version "${VERSION}" \
             --app-version "${APP_VERSION}"
 
@@ -130,4 +130,4 @@ jobs:
 
       - name: Publish Helm chart to GHCR
         run: |-
-          helm push "homefs-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+          helm push "miroir-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"

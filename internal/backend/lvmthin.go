@@ -41,7 +41,7 @@ func newLVMThin(cfg Config, e Exec) *lvmThin {
 }
 
 // Setup creates PV → VG → thin pool on the configured device if the VG does
-// not exist yet (notes/DESIGN.md §7.2: kharkiv's r-homefs raw partition). Metadata
+// not exist yet (notes/DESIGN.md §7.2: kharkiv's r-miroir raw partition). Metadata
 // LV is sized 1 GiB per dm-thin guidance (§4.6).
 func (l *lvmThin) Setup(ctx context.Context) error {
 	if _, err := l.lvm(ctx, "vgs", l.vg); err == nil {
@@ -66,7 +66,7 @@ func (l *lvmThin) Setup(ctx context.Context) error {
 			return fmt.Errorf("vgcreate %s: %w", l.vg, err)
 		}
 	}
-	// Sizing: all free space when homefs owns the VG; an explicit bound
+	// Sizing: all free space when miroir owns the VG; an explicit bound
 	// when the VG is shared (other provisioners need room for their own
 	// pools/LVs).
 	sizeArgs := []string{"--extents", "100%FREE"}
@@ -159,7 +159,7 @@ func (l *lvmThin) Sync(ctx context.Context, vol string) error {
 
 // snapLV maps a snapshot's cluster name to its LV name: LVM reserves LV
 // names starting "snapshot", and CSI snapshot names start exactly there.
-func snapLV(snap string) string { return "hfs-" + snap }
+func snapLV(snap string) string { return "miroir-" + snap }
 
 func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
 	ok, err := l.exists(ctx, snapLV(snap))

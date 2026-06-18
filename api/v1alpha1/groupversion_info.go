@@ -1,6 +1,6 @@
-// Package v1alpha1 contains API Schema definitions for the homefs v1alpha1 API group
+// Package v1alpha1 contains API Schema definitions for the miroir v1alpha1 API group
 // +kubebuilder:object:generate=true
-// +groupName=homefs.io
+// +groupName=miroir.io
 package v1alpha1
 
 import (
@@ -11,7 +11,7 @@ import (
 
 var (
 	// GroupVersion is group version used to register these objects
-	GroupVersion = schema.GroupVersion{Group: "homefs.io", Version: "v1alpha1"}
+	GroupVersion = schema.GroupVersion{Group: "miroir.io", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme
 	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
@@ -22,10 +22,10 @@ var (
 
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion,
-		&HomefsVolume{},
-		&HomefsVolumeList{},
-		&HomefsSnapshot{},
-		&HomefsSnapshotList{},
+		&MiroirVolume{},
+		&MiroirVolumeList{},
+		&MiroirSnapshot{},
+		&MiroirSnapshotList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

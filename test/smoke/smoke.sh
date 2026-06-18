@@ -4,13 +4,13 @@
 #
 #   ./test/smoke/smoke.sh
 #
-# Requires: kubectl pointed at the cluster, the homefs-replicated
-# StorageClass and homefs-snap VolumeSnapshotClass installed.
+# Requires: kubectl pointed at the cluster, the miroir-replicated
+# StorageClass and miroir-snap VolumeSnapshotClass installed.
 set -euo pipefail
 
-NS=homefs-smoke
-SC=${SC:-homefs-replicated}
-SNAPCLASS=${SNAPCLASS:-homefs-snap}
+NS=miroir-smoke
+SC=${SC:-miroir-replicated}
+SNAPCLASS=${SNAPCLASS:-miroir-snap}
 TIMEOUT=${TIMEOUT:-300s}
 
 pass=0
@@ -29,7 +29,7 @@ cleanup() {
 trap cleanup EXIT
 
 agent_pod() { # agent_pod <node>
-    kubectl get pods -n homefs-system -l app.kubernetes.io/component=agent \
+    kubectl get pods -n miroir-system -l app.kubernetes.io/component=agent \
         --field-selector spec.nodeName="$1" -o jsonpath='{.items[0].metadata.name}'
 }
 
@@ -83,9 +83,9 @@ ok "PVC bound and pod running"
 
 step "replication healthy on both legs"
 pv=$(kubectl get pvc -n "$NS" smoke-data -o jsonpath='{.spec.volumeName}')
-phase=$(kubectl get homefsvolume "$pv" -o jsonpath='{.status.phase}')
+phase=$(kubectl get miroirvolume "$pv" -o jsonpath='{.status.phase}')
 [ "$phase" = Ready ] || die "volume $pv phase=$phase, want Ready"
-ok "homefsvolume $pv Ready (both replicas UpToDate)"
+ok "miroirvolume $pv Ready (both replicas UpToDate)"
 
 step "write checksummed data"
 kubectl exec -n "$NS" writer -- sh -c \
@@ -123,7 +123,7 @@ ok "snapshot ready under write load"
 
 step "no barrier left behind"
 for n in $node $other; do
-    suspended=$(kubectl exec -n homefs-system "$(agent_pod "$n")" -c agent -- \
+    suspended=$(kubectl exec -n miroir-system "$(agent_pod "$n")" -c agent -- \
         sh -c 'drbdsetup status | grep -c suspended' || true)
     [ "${suspended:-0}" = 0 ] || die "device still suspended on $n"
 done
@@ -167,13 +167,13 @@ pv2=$(kubectl get pvc -n "$NS" smoke-restore -o jsonpath='{.spec.volumeName}')
 kubectl delete namespace "$NS" --wait=true --timeout=120s
 trap - EXIT
 deadline=$((SECONDS + 120))
-while kubectl get homefsvolume "$pv" "$pv2" 2>/dev/null | grep -q pvc-; do
-    [ "$SECONDS" -lt "$deadline" ] || die "homefsvolumes not cleaned up"
+while kubectl get miroirvolume "$pv" "$pv2" 2>/dev/null | grep -q pvc-; do
+    [ "$SECONDS" -lt "$deadline" ] || die "miroirvolumes not cleaned up"
     sleep 5
 done
 for n in $node $other; do
     pod=$(agent_pod "$n")
-    leftovers=$(kubectl exec -n homefs-system "$pod" -c agent -- sh -c \
+    leftovers=$(kubectl exec -n miroir-system "$pod" -c agent -- sh -c \
         "drbdsetup status 2>/dev/null | grep -cE '^($pv|$pv2)'" || true)
     [ "${leftovers:-0}" = 0 ] || die "DRBD resource leftover on $n"
 done

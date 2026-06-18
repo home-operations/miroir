@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// homefs is a low-resource replicated block storage driver for Kubernetes.
+// miroir is a low-resource replicated block storage driver for Kubernetes.
 // One binary, two modes (notes/DESIGN.md §4.2):
 //
 //	--mode=controller  CSI Identity+Controller services (Deployment)
@@ -40,14 +40,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/agent"
-	"github.com/eleboucher/homefs/internal/backend"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/csi"
-	"github.com/eleboucher/homefs/internal/drbd"
-	"github.com/eleboucher/homefs/internal/membership"
-	"github.com/eleboucher/homefs/internal/nodemap"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/agent"
+	"github.com/home-operations/miroir/internal/backend"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/csi"
+	"github.com/home-operations/miroir/internal/drbd"
+	"github.com/home-operations/miroir/internal/membership"
+	"github.com/home-operations/miroir/internal/nodemap"
 )
 
 var (
@@ -63,7 +63,7 @@ var (
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(homefsv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(miroirv1alpha1.AddToScheme(scheme))
 }
 
 func main() {
@@ -86,11 +86,11 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint (0 to disable)")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"), "this node's name (agent)")
-	flag.StringVar(&nodesConfig, "nodes-config", "/etc/homefs/nodes.yaml",
+	flag.StringVar(&nodesConfig, "nodes-config", "/etc/miroir/nodes.yaml",
 		"per-node storage topology (rendered from Helm values)")
 	flag.DurationVar(&provisionTimeout, "provision-timeout", 0,
 		"wait for agents to realise a new volume (controller; 0 → default)")
-	flag.StringVar(&vg, "lvm-vg", "vg-homefs", "LVM volume group (agent, lvmthin)")
+	flag.StringVar(&vg, "lvm-vg", "vg-miroir", "LVM volume group (agent, lvmthin)")
 	flag.StringVar(&thinPool, "lvm-thinpool", "thinpool", "LVM thin pool LV (agent, lvmthin)")
 	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
 		"rendered DRBD config dir (agent; hostPath-backed)")
@@ -99,7 +99,7 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-	setupLog.Info("starting homefs", "mode", mode, "version", version, "commit", commit)
+	setupLog.Info("starting miroir", "mode", mode, "version", version, "commit", commit)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -241,7 +241,7 @@ func main() {
 		// the 30s poll remains as the safety net.
 		drbdEvents := make(chan event.GenericEvent, 64)
 		watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
-			ev := event.GenericEvent{Object: &homefsv1alpha1.HomefsVolume{
+			ev := event.GenericEvent{Object: &miroirv1alpha1.MiroirVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: resource},
 			}}
 			select {
@@ -301,7 +301,7 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 	if err != nil {
 		return err
 	}
-	vols := &homefsv1alpha1.HomefsVolumeList{}
+	vols := &miroirv1alpha1.MiroirVolumeList{}
 	if err := c.List(context.Background(), vols); err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func resumeStaleBarriers(driver *drbd.Driver) error {
 	if err != nil {
 		return err
 	}
-	snaps := &homefsv1alpha1.HomefsSnapshotList{}
+	snaps := &miroirv1alpha1.MiroirSnapshotList{}
 	if err := c.List(context.Background(), snaps); err != nil {
 		return err
 	}

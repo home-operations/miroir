@@ -27,10 +27,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/backend"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/drbd"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/backend"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/drbd"
 )
 
 // SuspendDeadline bounds the snapshot write barrier: a peer that never
@@ -42,7 +42,7 @@ const SuspendDeadline = 60 * time.Second
 // suspendRetryBackoff spaces barrier retries after a failed round.
 const suspendRetryBackoff = 30 * time.Second
 
-// SnapshotReconciler realizes HomefsSnapshots on this node.
+// SnapshotReconciler realizes MiroirSnapshots on this node.
 //
 // Replicated volumes need byte-identical snapshots on both legs (restore
 // clones each leg locally and skips the resync), so every replica raises
@@ -68,11 +68,11 @@ type SnapshotReconciler struct {
 
 // Reconcile drives one snapshot's state machine from this node's view.
 func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	snap := &homefsv1alpha1.HomefsSnapshot{}
+	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, req.NamespacedName, snap); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(ctx, types.NamespacedName{Name: snap.Spec.VolumeName}, vol); err != nil {
 		if apierrors.IsNotFound(err) && !snap.DeletionTimestamp.IsZero() {
 			// Source volume already gone; nothing local can remain.
@@ -137,9 +137,9 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *homefsv1alpha1.HomefsSnapshot) {
-			s.Status.PerNode = map[string]homefsv1alpha1.SnapshotNodeState{
-				r.NodeName: homefsv1alpha1.SnapshotDone,
+		return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
+			s.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+				r.NodeName: miroirv1alpha1.SnapshotDone,
 			}
 			s.Status.SizeBytes = vol.Spec.SizeBytes
 			s.Status.SourceFormatted = vol.Status.Formatted
@@ -149,7 +149,7 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return r.reconcileReplicated(ctx, snap, vol)
 }
 
-func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot, vol *homefsv1alpha1.HomefsVolume) (ctrl.Result, error) {
+func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
 	st, err := r.DRBD.Status(ctx, vol.Name)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -168,7 +168,7 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 	case coordinator && !snap.Status.IOSuspended && healthy:
 		// A failed previous round (a replica never finished before the
 		// deadline) retries with backoff instead of churning the barrier.
-		if myState == homefsv1alpha1.SnapshotError &&
+		if myState == miroirv1alpha1.SnapshotError &&
 			snap.Status.SuspendedAt != nil &&
 			time.Since(snap.Status.SuspendedAt.Time) < suspendRetryBackoff {
 			return ctrl.Result{RequeueAfter: suspendRetryBackoff}, nil
@@ -176,11 +176,11 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 		return r.raiseBarrier(ctx, snap, vol, true)
 
 	case !coordinator && snap.Status.IOSuspended && !expired && healthy &&
-		myState != homefsv1alpha1.SnapshotSuspended && myState != homefsv1alpha1.SnapshotDone:
+		myState != miroirv1alpha1.SnapshotSuspended && myState != miroirv1alpha1.SnapshotDone:
 		return r.raiseBarrier(ctx, snap, vol, false)
 
 	case snap.Status.IOSuspended && !expired && healthy &&
-		myState == homefsv1alpha1.SnapshotSuspended && allSuspended(vol, snap):
+		myState == miroirv1alpha1.SnapshotSuspended && allSuspended(vol, snap):
 		return r.cutLeg(ctx, snap, vol)
 
 	case coordinator && snap.Status.IOSuspended:
@@ -200,14 +200,14 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *home
 
 // raiseBarrier is phase one: freeze local writes and record it. The
 // coordinator's barrier opens the round (ioSuspended + deadline clock).
-func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot, vol *homefsv1alpha1.HomefsVolume, opensRound bool) (ctrl.Result, error) {
+func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, opensRound bool) (ctrl.Result, error) {
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 	now := metav1.Now()
-	err := r.patchSnap(ctx, snap, func(s *homefsv1alpha1.HomefsSnapshot) {
+	err := r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
 		if s.Status.PerNode == nil {
-			s.Status.PerNode = map[string]homefsv1alpha1.SnapshotNodeState{}
+			s.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{}
 		}
 		if opensRound {
 			s.Status.IOSuspended = true
@@ -217,11 +217,11 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *homefsv1alp
 			// this round's cuts.
 			for _, rep := range vol.Spec.Replicas {
 				if rep.Node != r.NodeName {
-					s.Status.PerNode[rep.Node] = homefsv1alpha1.SnapshotPending
+					s.Status.PerNode[rep.Node] = miroirv1alpha1.SnapshotPending
 				}
 			}
 		}
-		s.Status.PerNode[r.NodeName] = homefsv1alpha1.SnapshotSuspended
+		s.Status.PerNode[r.NodeName] = miroirv1alpha1.SnapshotSuspended
 	})
 	if err != nil {
 		// The barrier is only real once recorded; a failed patch must
@@ -239,7 +239,7 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *homefsv1alp
 // Errors do not resume the local barrier: peers still read Suspended and
 // keep cutting, so dropping it would let writes into some legs and not
 // others. The deadline bounds the freeze instead.
-func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot, vol *homefsv1alpha1.HomefsVolume) (ctrl.Result, error) {
+func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
 	// Re-assert the local barrier first (idempotent) — a crash or manual
 	// resume-io between phases must not let a leg be cut unprotected.
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
@@ -258,17 +258,17 @@ func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *homefsv1alpha1.Ho
 	if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: time.Second}, r.patchSnap(ctx, snap, func(s *homefsv1alpha1.HomefsSnapshot) {
-		s.Status.PerNode[r.NodeName] = homefsv1alpha1.SnapshotDone
+	return ctrl.Result{RequeueAfter: time.Second}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
+		s.Status.PerNode[r.NodeName] = miroirv1alpha1.SnapshotDone
 	})
 }
 
 // collectLegs is the coordinator's last phase: all legs Done → resume and
 // publish; deadline passed → resume and void the round.
-func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot, vol *homefsv1alpha1.HomefsVolume, expired bool) (ctrl.Result, error) {
+func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, expired bool) (ctrl.Result, error) {
 	done := 0
 	for _, rep := range vol.Spec.Replicas {
-		if snap.Status.PerNode[rep.Node] == homefsv1alpha1.SnapshotDone {
+		if snap.Status.PerNode[rep.Node] == miroirv1alpha1.SnapshotDone {
 			done++
 		}
 	}
@@ -280,7 +280,7 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *homefsv1alph
 	if err := r.DRBD.ResumeIO(ctx, vol.Name); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *homefsv1alpha1.HomefsSnapshot) {
+	return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
 		s.Status.IOSuspended = false
 		if done == len(vol.Spec.Replicas) {
 			s.Status.SizeBytes = vol.Spec.SizeBytes
@@ -290,9 +290,9 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *homefsv1alph
 			// Every leg of this round is void, Done ones included: they
 			// were cut under a barrier that failed. The retry recuts.
 			for _, rep := range vol.Spec.Replicas {
-				s.Status.PerNode[rep.Node] = homefsv1alpha1.SnapshotPending
+				s.Status.PerNode[rep.Node] = miroirv1alpha1.SnapshotPending
 			}
-			s.Status.PerNode[r.NodeName] = homefsv1alpha1.SnapshotError
+			s.Status.PerNode[r.NodeName] = miroirv1alpha1.SnapshotError
 			// Restamp so the retry backoff counts from this failure —
 			// from round start it would always read past the deadline.
 			now := metav1.Now()
@@ -303,10 +303,10 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *homefsv1alph
 
 // allSuspended reports whether every replica has raised its write
 // barrier (Done implies it did).
-func allSuspended(vol *homefsv1alpha1.HomefsVolume, snap *homefsv1alpha1.HomefsSnapshot) bool {
+func allSuspended(vol *miroirv1alpha1.MiroirVolume, snap *miroirv1alpha1.MiroirSnapshot) bool {
 	for _, rep := range vol.Spec.Replicas {
 		st := snap.Status.PerNode[rep.Node]
-		if st != homefsv1alpha1.SnapshotSuspended && st != homefsv1alpha1.SnapshotDone {
+		if st != miroirv1alpha1.SnapshotSuspended && st != miroirv1alpha1.SnapshotDone {
 			return false
 		}
 	}
@@ -322,7 +322,7 @@ func allSuspended(vol *homefsv1alpha1.HomefsVolume, snap *homefsv1alpha1.HomefsS
 // still briefly yield two coordinators — recoverable by construction:
 // suspend-io is idempotent, the backends treat an existing snapshot as
 // success, and both sides resume.
-func (r *SnapshotReconciler) isCoordinator(vol *homefsv1alpha1.HomefsVolume, st drbd.Status) bool {
+func (r *SnapshotReconciler) isCoordinator(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
 	if st.Primary {
 		return true
 	}
@@ -332,7 +332,7 @@ func (r *SnapshotReconciler) isCoordinator(vol *homefsv1alpha1.HomefsVolume, st 
 	return len(vol.Spec.Replicas) > 0 && vol.Spec.Replicas[0].Node == r.NodeName
 }
 
-func replicaOn(vol *homefsv1alpha1.HomefsVolume, node string) bool {
+func replicaOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == node {
 			return true
@@ -341,16 +341,16 @@ func replicaOn(vol *homefsv1alpha1.HomefsVolume, node string) bool {
 	return false
 }
 
-func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot, mutate func(*homefsv1alpha1.HomefsSnapshot)) error {
+func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, mutate func(*miroirv1alpha1.MiroirSnapshot)) error {
 	mutate(snap)
-	snap.SetGroupVersionKind(homefsv1alpha1.GroupVersion.WithKind("HomefsSnapshot"))
+	snap.SetGroupVersionKind(miroirv1alpha1.GroupVersion.WithKind("MiroirSnapshot"))
 	snap.ManagedFields = nil
 	return r.Status().Patch(ctx, snap, client.Apply, //nolint:staticcheck
 		client.FieldOwner("agent-snapshot-"+r.NodeName),
 		client.ForceOwnership)
 }
 
-func (r *SnapshotReconciler) removeFinalizer(ctx context.Context, snap *homefsv1alpha1.HomefsSnapshot) error {
+func (r *SnapshotReconciler) removeFinalizer(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) error {
 	finalizer := constants.FinalizerPrefix + r.NodeName
 	if !controllerutil.ContainsFinalizer(snap, finalizer) {
 		return nil
@@ -365,7 +365,7 @@ func (r *SnapshotReconciler) removeFinalizer(ctx context.Context, snap *homefsv1
 // SetupWithManager registers the reconciler.
 func (r *SnapshotReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&homefsv1alpha1.HomefsSnapshot{}).
+		For(&miroirv1alpha1.MiroirSnapshot{}).
 		Named("agent-snapshot").
 		Complete(r)
 }

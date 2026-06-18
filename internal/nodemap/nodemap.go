@@ -26,7 +26,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
 // Node describes one storage node's backend. Replication addresses are
@@ -34,7 +34,7 @@ import (
 // from its Node object at volume creation and persists it in the CRD.
 type Node struct {
 	// Backend selects the storage implementation: "lvmthin" | "zfs".
-	Backend homefsv1alpha1.BackendType `json:"backend"`
+	Backend miroirv1alpha1.BackendType `json:"backend"`
 	// Device is the block device backing the LVM VG (lvmthin).
 	Device string `json:"device,omitempty"`
 	// ZFSDataset is the parent dataset for zvols (zfs).
@@ -43,7 +43,7 @@ type Node struct {
 	// empty claims all free VG space.
 	ThinPoolSize string `json:"thinPoolSize,omitempty"`
 	// BaseDir is the directory on the node's existing filesystem holding the
-	// loop-backed sparse files (loopfile), e.g. "/var/lib/homefs".
+	// loop-backed sparse files (loopfile), e.g. "/var/lib/miroir".
 	BaseDir string `json:"baseDir,omitempty"`
 }
 
@@ -63,14 +63,14 @@ func Load(path string) (Map, error) {
 	}
 	for name, n := range m {
 		switch n.Backend {
-		case homefsv1alpha1.BackendLVMThin, homefsv1alpha1.BackendZFS, homefsv1alpha1.BackendLoopfile:
+		case miroirv1alpha1.BackendLVMThin, miroirv1alpha1.BackendZFS, miroirv1alpha1.BackendLoopfile:
 		default:
 			return nil, fmt.Errorf("node %s: invalid backend %q", name, n.Backend)
 		}
-		if n.Backend == homefsv1alpha1.BackendZFS && n.ZFSDataset == "" {
+		if n.Backend == miroirv1alpha1.BackendZFS && n.ZFSDataset == "" {
 			return nil, fmt.Errorf("node %s: zfs backend requires zfsDataset", name)
 		}
-		if n.Backend == homefsv1alpha1.BackendLoopfile && n.BaseDir == "" {
+		if n.Backend == miroirv1alpha1.BackendLoopfile && n.BaseDir == "" {
 			return nil, fmt.Errorf("node %s: loopfile backend requires baseDir", name)
 		}
 	}

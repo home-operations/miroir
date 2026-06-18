@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/eleboucher/homefs
+  repository: ghcr.io/home-operations/miroir
   # Every main push publishes :main (and the 0.0.0-main chart); releases
   # publish immutable version tags.
   tag: main
@@ -22,16 +22,16 @@ sidecars:
 kubeletDir: /var/lib/kubelet
 
 # Per-node storage topology — the single source of truth for which nodes
-# hold volumes and how. Rendered into the homefs-nodes ConfigMap, read by
+# hold volumes and how. Rendered into the miroir-nodes ConfigMap, read by
 # the controller (placement) and each agent (backend selection).
 # nodes:
 #   kharkiv:
 #     backend: lvmthin
-#     device: /dev/disk/by-partlabel/r-homefs
+#     device: /dev/disk/by-partlabel/r-miroir
 #     # thinPoolSize: 400g   # bound the pool when sharing the VG
 #   paris:
 #     backend: zfs
-#     zfsDataset: data-pool/homefs
+#     zfsDataset: data-pool/miroir
 #   le-havre:
 #     # loopfile: sparse files on the node's existing filesystem — no
 #     # dedicated disk or pool. baseDir must be reflink-capable (XFS
@@ -39,7 +39,7 @@ kubeletDir: /var/lib/kubelet
 #     # refuses to start otherwise. The dir is hostPath-mounted into the
 #     # agent at the same path.
 #     backend: loopfile
-#     baseDir: /var/lib/homefs
+#     baseDir: /var/lib/miroir
 nodes: {}
 
 controller:
@@ -53,10 +53,10 @@ controller:
 
 agent:
   # Per-node backend selection comes from node annotations:
-  #   homefs.io/backend: lvmthin | zfs
-  #   homefs.io/device: /dev/disk/by-partlabel/r-homefs   (lvmthin)
-  #   homefs.io/zfs-dataset: data-pool/homefs              (zfs)
-  # Nodes also need the label homefs.io/storage: "true" to receive replicas.
+  #   miroir.io/backend: lvmthin | zfs
+  #   miroir.io/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)
+  #   miroir.io/zfs-dataset: data-pool/miroir              (zfs)
+  # Nodes also need the label miroir.io/storage: "true" to receive replicas.
   resources:
     requests:
       cpu: 10m
@@ -66,7 +66,7 @@ agent:
 
 storageClass:
   create: true
-  name: homefs-local
+  name: miroir-local
   # Coexists with OpenEBS: openebs-zfs stays the cluster default.
   isDefault: false
   fsType: ext4
@@ -75,7 +75,7 @@ storageClass:
 
 replicatedStorageClass:
   create: true
-  name: homefs-replicated
+  name: miroir-replicated
   isDefault: false
   fsType: ext4
   quorum: last-man-standing # | freeze
@@ -85,5 +85,5 @@ replicatedStorageClass:
 # separately; kube-system/snapshot-controller in the homelab).
 volumeSnapshotClass:
   create: true
-  name: homefs-snap
+  name: miroir-snap
   deletionPolicy: Delete

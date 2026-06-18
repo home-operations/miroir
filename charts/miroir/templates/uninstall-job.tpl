@@ -1,10 +1,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: homefs-uninstall
+  name: miroir-uninstall
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: homefs
+    app.kubernetes.io/name: miroir
     app.kubernetes.io/component: uninstall
   annotations:
     helm.sh/hook: pre-delete
@@ -13,7 +13,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: homefs-uninstall
+      serviceAccountName: miroir-uninstall
       restartPolicy: Never
       containers:
         - name: kubectl
@@ -22,5 +22,5 @@ spec:
             - /bin/sh
             - -c
             - |
-              kubectl delete homefssnapshots --all --ignore-not-found
-              kubectl delete homefsvolumes --all --ignore-not-found
+              kubectl delete miroirsnapshots --all --ignore-not-found
+              kubectl delete miroirvolumes --all --ignore-not-found

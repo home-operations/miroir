@@ -5,12 +5,12 @@ metadata:
   name: {{ .Values.storageClass.name }}
   annotations:
     storageclass.kubernetes.io/is-default-class: {{ .Values.storageClass.isDefault | quote }}
-provisioner: homefs.io
+provisioner: miroir.io
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
 parameters:
-  homefs.io/replicas: {{ .Values.storageClass.replicas | quote }}
+  miroir.io/replicas: {{ .Values.storageClass.replicas | quote }}
   csi.storage.k8s.io/fstype: {{ .Values.storageClass.fsType }}
 {{- end }}
 {{- if .Values.replicatedStorageClass.create }}
@@ -21,15 +21,15 @@ metadata:
   name: {{ .Values.replicatedStorageClass.name }}
   annotations:
     storageclass.kubernetes.io/is-default-class: {{ .Values.replicatedStorageClass.isDefault | quote }}
-provisioner: homefs.io
+provisioner: miroir.io
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.replicatedStorageClass.reclaimPolicy }}
 parameters:
-  homefs.io/replicas: "2"
+  miroir.io/replicas: "2"
   # last-man-standing: survivor keeps writing on node loss, split-brain
   # alerts on reconnect; freeze: never diverges, halts on any disconnect.
-  homefs.io/quorum: {{ .Values.replicatedStorageClass.quorum }}
+  miroir.io/quorum: {{ .Values.replicatedStorageClass.quorum }}
   csi.storage.k8s.io/fstype: {{ .Values.replicatedStorageClass.fsType }}
 {{- end }}
 {{- if .Values.volumeSnapshotClass.create }}
@@ -38,6 +38,6 @@ apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: {{ .Values.volumeSnapshotClass.name }}
-driver: homefs.io
+driver: miroir.io
 deletionPolicy: {{ .Values.volumeSnapshotClass.deletionPolicy }}
 {{- end }}

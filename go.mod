@@ -1,4 +1,4 @@
-module github.com/eleboucher/homefs
+module github.com/home-operations/miroir
 
 go 1.26.3
 

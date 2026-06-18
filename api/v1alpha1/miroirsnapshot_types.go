@@ -16,17 +16,17 @@ const (
 	SnapshotError     SnapshotNodeState = "Error"
 )
 
-// HomefsSnapshotSpec is the desired state, created by the controller on
+// MiroirSnapshotSpec is the desired state, created by the controller on
 // CSI CreateSnapshot.
-type HomefsSnapshotSpec struct {
-	// VolumeName references the HomefsVolume this snapshot captures.
+type MiroirSnapshotSpec struct {
+	// VolumeName references the MiroirVolume this snapshot captures.
 	VolumeName string `json:"volumeName"`
 }
 
-// HomefsSnapshotStatus is the observed state aggregated from node agents.
+// MiroirSnapshotStatus is the observed state aggregated from node agents.
 // The snapshot exists as a backend CoW snapshot on every replica of the
 // source volume (DESIGN.md §4.5.4).
-type HomefsSnapshotStatus struct {
+type MiroirSnapshotStatus struct {
 	// ReadyToUse is true once every replica holds the snapshot.
 	// +optional
 	ReadyToUse bool `json:"readyToUse"`
@@ -57,27 +57,27 @@ type HomefsSnapshotStatus struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=hfs
+// +kubebuilder:resource:scope=Cluster,shortName=mis
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Volume",type=string,JSONPath=`.spec.volumeName`
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.readyToUse`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// HomefsSnapshot is one crash-consistent point-in-time snapshot of a
-// HomefsVolume (1:1 with a VolumeSnapshotContent).
-type HomefsSnapshot struct {
+// MiroirSnapshot is one crash-consistent point-in-time snapshot of a
+// MiroirVolume (1:1 with a VolumeSnapshotContent).
+type MiroirSnapshot struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   HomefsSnapshotSpec   `json:"spec"`
-	Status HomefsSnapshotStatus `json:"status,omitempty"`
+	Spec   MiroirSnapshotSpec   `json:"spec"`
+	Status MiroirSnapshotStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// HomefsSnapshotList contains a list of HomefsSnapshot.
-type HomefsSnapshotList struct {
+// MiroirSnapshotList contains a list of MiroirSnapshot.
+type MiroirSnapshotList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []HomefsSnapshot `json:"items"`
+	Items           []MiroirSnapshot `json:"items"`
 }

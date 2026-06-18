@@ -24,7 +24,7 @@ import (
 	"context"
 	"fmt"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
 // PoolStats reports capacity of the node-local pool backing this Backend.
@@ -73,13 +73,13 @@ type Backend interface {
 }
 
 // New returns the Backend implementation selected by typ.
-func New(typ homefsv1alpha1.BackendType, cfg Config, exec Exec) (Backend, error) {
+func New(typ miroirv1alpha1.BackendType, cfg Config, exec Exec) (Backend, error) {
 	switch typ {
-	case homefsv1alpha1.BackendLVMThin:
+	case miroirv1alpha1.BackendLVMThin:
 		return newLVMThin(cfg, exec), nil
-	case homefsv1alpha1.BackendZFS:
+	case miroirv1alpha1.BackendZFS:
 		return newZFS(cfg, exec), nil
-	case homefsv1alpha1.BackendLoopfile:
+	case miroirv1alpha1.BackendLoopfile:
 		return newLoopfile(cfg, exec), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type %q", typ)
@@ -95,17 +95,17 @@ type Config struct {
 	// ThinPool is the thin pool LV name inside VolumeGroup (lvmthin).
 	ThinPool string
 	// Device is the block device backing the VG (lvmthin), e.g.
-	// /dev/disk/by-partlabel/r-homefs (Talos RawVolumeConfig partition).
+	// /dev/disk/by-partlabel/r-miroir (Talos RawVolumeConfig partition).
 	// Required only for Setup when the VG does not exist yet.
 	Device string
 	// PoolSize bounds the thin pool created by Setup (lvm size spec,
 	// e.g. "400g"). Empty means all free space — set it when the VG is
 	// shared with another provisioner (e.g. OpenEBS LVM-LocalPV).
 	PoolSize string
-	// Dataset is the parent ZFS dataset for zvols (zfs), e.g. "tank/homefs".
+	// Dataset is the parent ZFS dataset for zvols (zfs), e.g. "tank/miroir".
 	Dataset string
 	// BaseDir is the directory on the node's existing filesystem under which
 	// the loopfile backend stores backing files, snapshots, and device
-	// symlinks (loopfile), e.g. "/var/lib/homefs". Must be reflink-capable.
+	// symlinks (loopfile), e.g. "/var/lib/miroir". Must be reflink-capable.
 	BaseDir string
 }

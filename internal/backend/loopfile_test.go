@@ -22,11 +22,11 @@ import (
 	"testing"
 )
 
-var lcfg = Config{BaseDir: "/var/lib/homefs"}
+var lcfg = Config{BaseDir: "/var/lib/miroir"}
 
 func TestLoopfileCreateAttachesNewFile(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("stat /var/lib/homefs/volumes/pvc-1.img", "",
+	fe.respond("stat /var/lib/miroir/volumes/pvc-1.img", "",
 		errors.New("stat: cannot stat: No such file or directory"))
 	fe.respond("losetup -j", "", nil) // not yet attached
 	fe.respond("losetup --find --show", "/dev/loop0\n", nil)
@@ -36,12 +36,12 @@ func TestLoopfileCreateAttachesNewFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/var/lib/homefs/dev/pvc-1" {
+	if dev != "/var/lib/miroir/dev/pvc-1" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
-	fe.calledWith(t, "truncate -s 10737418240 /var/lib/homefs/volumes/pvc-1.img")
-	fe.calledWith(t, "losetup --find --show /var/lib/homefs/volumes/pvc-1.img")
-	fe.calledWith(t, "ln -sfn /dev/loop0 /var/lib/homefs/dev/pvc-1")
+	fe.calledWith(t, "truncate -s 10737418240 /var/lib/miroir/volumes/pvc-1.img")
+	fe.calledWith(t, "losetup --find --show /var/lib/miroir/volumes/pvc-1.img")
+	fe.calledWith(t, "ln -sfn /dev/loop0 /var/lib/miroir/dev/pvc-1")
 }
 
 func TestLoopfileCreateIdempotentReusesLoop(t *testing.T) {
@@ -53,7 +53,7 @@ func TestLoopfileCreateIdempotentReusesLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/var/lib/homefs/dev/pvc-1" {
+	if dev != "/var/lib/miroir/dev/pvc-1" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
 	// Existing file is not recreated, and the existing loop is reused
@@ -61,7 +61,7 @@ func TestLoopfileCreateIdempotentReusesLoop(t *testing.T) {
 	// what makes Create idempotent across reboots.
 	fe.notCalledWith(t, "truncate")
 	fe.notCalledWith(t, "losetup --find")
-	fe.calledWith(t, "ln -sfn /dev/loop3 /var/lib/homefs/dev/pvc-1")
+	fe.calledWith(t, "ln -sfn /dev/loop3 /var/lib/miroir/dev/pvc-1")
 }
 
 func TestLoopfileResizeGrowsAndRefreshesLoop(t *testing.T) {
@@ -73,7 +73,7 @@ func TestLoopfileResizeGrowsAndRefreshesLoop(t *testing.T) {
 	if err := b.Resize(context.Background(), "pvc-1", 10<<30); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "truncate -s 10737418240 /var/lib/homefs/volumes/pvc-1.img")
+	fe.calledWith(t, "truncate -s 10737418240 /var/lib/miroir/volumes/pvc-1.img")
 	fe.calledWith(t, "losetup -c /dev/loop3")
 }
 
@@ -91,14 +91,14 @@ func TestLoopfileResizeSkipsWhenBigEnough(t *testing.T) {
 
 func TestLoopfileSnapshotReflinks(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("stat /var/lib/homefs/snapshots/snap-1.img", "",
+	fe.respond("stat /var/lib/miroir/snapshots/snap-1.img", "",
 		errors.New("No such file or directory"))
 	b := newLoopfile(lcfg, fe.run)
 
 	if err := b.Snapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "cp --reflink=always /var/lib/homefs/volumes/pvc-1.img /var/lib/homefs/snapshots/snap-1.img")
+	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/volumes/pvc-1.img /var/lib/miroir/snapshots/snap-1.img")
 }
 
 func TestLoopfileSnapshotIdempotent(t *testing.T) {
@@ -113,7 +113,7 @@ func TestLoopfileSnapshotIdempotent(t *testing.T) {
 
 func TestLoopfileCreateFromSnapshot(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("stat /var/lib/homefs/volumes/pvc-2.img", "",
+	fe.respond("stat /var/lib/miroir/volumes/pvc-2.img", "",
 		errors.New("No such file or directory"))
 	fe.respond("losetup -j", "", nil)
 	fe.respond("losetup --find --show", "/dev/loop0\n", nil)
@@ -123,10 +123,10 @@ func TestLoopfileCreateFromSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/var/lib/homefs/dev/pvc-2" {
+	if dev != "/var/lib/miroir/dev/pvc-2" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
-	fe.calledWith(t, "cp --reflink=always /var/lib/homefs/snapshots/snap-1.img /var/lib/homefs/volumes/pvc-2.img")
+	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/snapshots/snap-1.img /var/lib/miroir/volumes/pvc-2.img")
 }
 
 func TestLoopfileDeleteDetachesAndRemoves(t *testing.T) {
@@ -138,13 +138,13 @@ func TestLoopfileDeleteDetachesAndRemoves(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "losetup -d /dev/loop3")
-	fe.calledWith(t, "rm -f /var/lib/homefs/dev/pvc-1")
-	fe.calledWith(t, "rm -f /var/lib/homefs/volumes/pvc-1.img")
+	fe.calledWith(t, "rm -f /var/lib/miroir/dev/pvc-1")
+	fe.calledWith(t, "rm -f /var/lib/miroir/volumes/pvc-1.img")
 }
 
 func TestLoopfileDeleteAbsentIsNoop(t *testing.T) {
 	fe := &fakeExec{}
-	fe.respond("stat /var/lib/homefs/volumes/pvc-1.img", "",
+	fe.respond("stat /var/lib/miroir/volumes/pvc-1.img", "",
 		errors.New("No such file or directory"))
 	b := newLoopfile(lcfg, fe.run)
 
@@ -152,7 +152,7 @@ func TestLoopfileDeleteAbsentIsNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "losetup -d")
-	fe.notCalledWith(t, "rm -f /var/lib/homefs/volumes/pvc-1.img")
+	fe.notCalledWith(t, "rm -f /var/lib/miroir/volumes/pvc-1.img")
 }
 
 func TestLoopfileSetupProbesReflink(t *testing.T) {
@@ -162,10 +162,10 @@ func TestLoopfileSetupProbesReflink(t *testing.T) {
 	if err := b.Setup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "mkdir -p /var/lib/homefs/volumes")
-	fe.calledWith(t, "mkdir -p /var/lib/homefs/snapshots")
-	fe.calledWith(t, "mkdir -p /var/lib/homefs/dev")
-	fe.calledWith(t, "cp --reflink=always /var/lib/homefs/.reflink-probe /var/lib/homefs/.reflink-probe.clone")
+	fe.calledWith(t, "mkdir -p /var/lib/miroir/volumes")
+	fe.calledWith(t, "mkdir -p /var/lib/miroir/snapshots")
+	fe.calledWith(t, "mkdir -p /var/lib/miroir/dev")
+	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/.reflink-probe /var/lib/miroir/.reflink-probe.clone")
 }
 
 func TestLoopfileSetupFailsWithoutReflink(t *testing.T) {
@@ -177,13 +177,13 @@ func TestLoopfileSetupFailsWithoutReflink(t *testing.T) {
 		t.Fatal("expected Setup to fail on a non-reflink filesystem")
 	}
 	// The probe must be cleaned up even when the clone fails.
-	fe.calledWith(t, "rm -f /var/lib/homefs/.reflink-probe /var/lib/homefs/.reflink-probe.clone")
+	fe.calledWith(t, "rm -f /var/lib/miroir/.reflink-probe /var/lib/miroir/.reflink-probe.clone")
 }
 
 func TestLoopfileStats(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("df -B1 -P", "Filesystem 1B-blocks Used Available Capacity Mounted on\n"+
-		"/dev/sda2 2000000000000 500000000000 1500000000000 25% /var/lib/homefs\n", nil)
+		"/dev/sda2 2000000000000 500000000000 1500000000000 25% /var/lib/miroir\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
 	s, err := b.Stats(context.Background())

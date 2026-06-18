@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package csi implements the homefs.io CSI driver services (notes/DESIGN.md §6).
+// Package csi implements the miroir.io CSI driver services (notes/DESIGN.md §6).
 package csi
 
 import (

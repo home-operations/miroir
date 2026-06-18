@@ -32,10 +32,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/backend"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/drbd"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/backend"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/drbd"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -96,34 +96,34 @@ func (f *fakeBackend) Stats(context.Context) (backend.PoolStats, error) {
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
-	if err := homefsv1alpha1.AddToScheme(s); err != nil {
+	if err := miroirv1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	return s
 }
 
 //nolint:unparam // future tests will vary the name
-func vol(name string, nodes ...string) *homefsv1alpha1.HomefsVolume {
-	replicas := make([]homefsv1alpha1.Replica, 0, len(nodes))
+func vol(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
+	replicas := make([]miroirv1alpha1.Replica, 0, len(nodes))
 	for _, n := range nodes {
-		replicas = append(replicas, homefsv1alpha1.Replica{
-			Node: n, Backend: homefsv1alpha1.BackendLVMThin,
+		replicas = append(replicas, miroirv1alpha1.Replica{
+			Node: n, Backend: miroirv1alpha1.BackendLVMThin,
 		})
 	}
 	finalizers := make([]string, 0, len(nodes))
 	for _, n := range nodes {
 		finalizers = append(finalizers, constants.FinalizerPrefix+n)
 	}
-	return &homefsv1alpha1.HomefsVolume{
+	return &miroirv1alpha1.MiroirVolume{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: homefsv1alpha1.GroupVersion.String(),
-			Kind:       "HomefsVolume",
+			APIVersion: miroirv1alpha1.GroupVersion.String(),
+			Kind:       "MiroirVolume",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       name,
 			Finalizers: finalizers,
 		},
-		Spec: homefsv1alpha1.HomefsVolumeSpec{SizeBytes: 1 << 30, Replicas: replicas},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30, Replicas: replicas},
 	}
 }
 
@@ -142,7 +142,7 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(vol("pvc-1", "kharkiv")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
 
@@ -151,11 +151,11 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	if fb.created["pvc-1"] != 1<<30 {
 		t.Fatalf("device not created: %+v", fb.created)
 	}
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != homefsv1alpha1.VolumeReady {
+	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
 	}
 	if got.Status.PerNode["kharkiv"].DevicePath != "/dev/fake/pvc-1" {
@@ -168,7 +168,7 @@ func TestReconcileIgnoresForeignVolume(t *testing.T) {
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(vol("pvc-1", "paris")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
 
@@ -185,7 +185,7 @@ func TestReconcileReportsBackendError(t *testing.T) {
 	fb.failOn = "create"
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(vol("pvc-1", "kharkiv")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
 
@@ -195,11 +195,11 @@ func TestReconcileReportsBackendError(t *testing.T) {
 		t.Fatal("expected error to requeue")
 	}
 
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != homefsv1alpha1.VolumeFailed {
+	if got.Status.Phase != miroirv1alpha1.VolumeFailed {
 		t.Fatalf("phase = %s, want Failed", got.Status.Phase)
 	}
 	if got.Status.PerNode["kharkiv"].Message == "" {
@@ -211,8 +211,8 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.QuorumPolicy = homefsv1alpha1.QuorumLastManStanding
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
 	v.Spec.Replicas[0].Address = "192.168.1.41"
 	v.Spec.Replicas[1].NodeID = 1
@@ -235,7 +235,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		"connections":[{"connection-state":"Connected"}]}]`}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
 		Client: c, NodeName: "kharkiv", Backend: fb,
@@ -255,7 +255,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	}
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	// Peer reports its leg; the next coordinator pass grows DRBD and
 	// publishes the size.
 	base := got.DeepCopy()
-	got.Status.PerNode["paris"] = homefsv1alpha1.ReplicaStatus{
+	got.Status.PerNode["paris"] = miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "UpToDate", Connected: true,
 	}
 	if err := c.Status().Patch(context.Background(), got, client.MergeFrom(base)); err != nil {
@@ -294,7 +294,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	if got.Status.PerNode["kharkiv"].SizeBytes != 1<<30 {
 		t.Fatalf("size must publish after DRBD resize, got %d", got.Status.PerNode["kharkiv"].SizeBytes)
 	}
-	if got.Status.Phase != homefsv1alpha1.VolumeReady {
+	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready with both legs UpToDate", got.Status.Phase)
 	}
 }
@@ -347,13 +347,13 @@ func TestReconcileForeignAgentLeavesFinalizerOnDelete(t *testing.T) {
 	v.DeletionTimestamp = &now
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb} // ...agent on kharkiv
 
 	reconcile(t, r, "pvc-1")
 
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
 		t.Fatalf("volume must still exist (finalizer held): %v", err)
 	}
@@ -370,7 +370,7 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 	v.DeletionTimestamp = &now
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
 
@@ -385,7 +385,7 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 		t.Fatalf("device must be deleted: %+v", fb.created)
 	}
 	// Finalizer removed → fake client garbage-collects the object.
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got)
 	if err == nil {
 		t.Fatalf("volume should be gone, still has finalizers %v", got.Finalizers)
@@ -398,90 +398,90 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 func TestComputePhaseMixing(t *testing.T) {
 	cases := []struct {
 		name string
-		vol  *homefsv1alpha1.HomefsVolume
-		want homefsv1alpha1.VolumePhase
+		vol  *miroirv1alpha1.MiroirVolume
+		want miroirv1alpha1.VolumePhase
 	}{
 		{
 			name: "all replicas ready (unreplicated)",
-			vol: &homefsv1alpha1.HomefsVolume{
-				Spec: homefsv1alpha1.HomefsVolumeSpec{
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
 					SizeBytes: 1 << 30,
-					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}},
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
 				},
-				Status: homefsv1alpha1.HomefsVolumeStatus{
-					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
 						"a": {DeviceCreated: true, SizeBytes: 1 << 30},
 					},
 				},
 			},
-			want: homefsv1alpha1.VolumeReady,
+			want: miroirv1alpha1.VolumeReady,
 		},
 		{
 			name: "one ready, one not (replicated, degraded)",
-			vol: &homefsv1alpha1.HomefsVolume{
-				Spec: homefsv1alpha1.HomefsVolumeSpec{
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
 					SizeBytes: 1 << 30,
-					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
-					DRBD:      &homefsv1alpha1.DRBDSpec{Port: 7000},
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
 				},
-				Status: homefsv1alpha1.HomefsVolumeStatus{
-					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
 						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "UpToDate"},
 						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Inconsistent"},
 					},
 				},
 			},
-			want: homefsv1alpha1.VolumeDegraded,
+			want: miroirv1alpha1.VolumeDegraded,
 		},
 		{
 			name: "all replicas Inconsistent (creating)",
-			vol: &homefsv1alpha1.HomefsVolume{
-				Spec: homefsv1alpha1.HomefsVolumeSpec{
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
 					SizeBytes: 1 << 30,
-					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
-					DRBD:      &homefsv1alpha1.DRBDSpec{Port: 7000},
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
 				},
-				Status: homefsv1alpha1.HomefsVolumeStatus{
-					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
 						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Inconsistent"},
 						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Inconsistent"},
 					},
 				},
 			},
-			want: homefsv1alpha1.VolumeCreating,
+			want: miroirv1alpha1.VolumeCreating,
 		},
 		{
 			name: "hard failure (no device, message set)",
-			vol: &homefsv1alpha1.HomefsVolume{
-				Spec: homefsv1alpha1.HomefsVolumeSpec{
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
 					SizeBytes: 1 << 30,
-					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
 				},
-				Status: homefsv1alpha1.HomefsVolumeStatus{
-					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
 						"a": {DeviceCreated: false, Message: "pool exploded"},
 						"b": {DeviceCreated: true, SizeBytes: 1 << 30},
 					},
 				},
 			},
-			want: homefsv1alpha1.VolumeFailed,
+			want: miroirv1alpha1.VolumeFailed,
 		},
 		{
 			name: "transient error after device exists (stays Degraded, not Failed)",
-			vol: &homefsv1alpha1.HomefsVolume{
-				Spec: homefsv1alpha1.HomefsVolumeSpec{
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
 					SizeBytes: 1 << 30,
-					Replicas:  []homefsv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
-					DRBD:      &homefsv1alpha1.DRBDSpec{Port: 7000},
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
 				},
-				Status: homefsv1alpha1.HomefsVolumeStatus{
-					PerNode: map[string]homefsv1alpha1.ReplicaStatus{
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
 						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "UpToDate"},
 						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Outdated", Message: "peer not yet up"},
 					},
 				},
 			},
-			want: homefsv1alpha1.VolumeDegraded,
+			want: miroirv1alpha1.VolumeDegraded,
 		},
 	}
 	for _, tc := range cases {
@@ -499,10 +499,10 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(vol("pvc-1", "kharkiv")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
-	if err := c.Status().Patch(context.Background(), &homefsv1alpha1.HomefsVolume{
+	if err := c.Status().Patch(context.Background(), &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-1"},
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {"kharkiv": {
@@ -511,7 +511,7 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 	}`))); err != nil {
 		t.Fatal(err)
 	}
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -532,10 +532,10 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 
 // removedReplicaVol builds a 2-replica volume on paris+oslo whose kharkiv
 // leg was just removed from spec.replicas (finalizer still held).
-func removedReplicaVol() *homefsv1alpha1.HomefsVolume {
+func removedReplicaVol() *miroirv1alpha1.MiroirVolume {
 	v := vol("pvc-1", "paris", "oslo")
 	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+"kharkiv")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	for i := range v.Spec.Replicas {
 		v.Spec.Replicas[i].NodeID = int32(i)
 		v.Spec.Replicas[i].Address = "192.168.1.4" + string(rune('1'+i))
@@ -545,7 +545,7 @@ func removedReplicaVol() *homefsv1alpha1.HomefsVolume {
 
 func patchPeersUpToDate(t *testing.T, c client.Client, diskState string) {
 	t.Helper()
-	err := c.Status().Patch(context.Background(), &homefsv1alpha1.HomefsVolume{
+	err := c.Status().Patch(context.Background(), &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-1"},
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {
@@ -570,7 +570,7 @@ func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
 	fe := &fakeDRBDExec{}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(removedReplicaVol()).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, "UpToDate")
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb,
@@ -582,7 +582,7 @@ func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
 		t.Fatal("backing device not deleted")
 	}
 	fe.calledWith(t, "drbdsetup down pvc-1")
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -601,11 +601,11 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 	fb := newFakeBackend()
 	fb.created["pvc-1"] = 1 << 30
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(removedReplicaVol(), &homefsv1alpha1.HomefsSnapshot{
+		WithObjects(removedReplicaVol(), &miroirv1alpha1.MiroirSnapshot{
 			ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-			Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: "pvc-1"},
+			Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-1"},
 		}).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, "UpToDate")
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
@@ -621,7 +621,7 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 	if _, ok := fb.created["pvc-1"]; !ok {
 		t.Fatal("must not tear down while a snapshot references the volume")
 	}
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -636,7 +636,7 @@ func TestReconcileRemovalBlockedByDegradedPeer(t *testing.T) {
 	fb.created["pvc-1"] = 1 << 30
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(removedReplicaVol()).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, "Inconsistent") // paris still syncing
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
@@ -658,13 +658,13 @@ func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[1].NodeID = 1
 	v.Spec.Replicas[1].Address = "192.168.1.42"
 	// kharkiv's entry was just added by an operator: no address yet.
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
-		WithStatusSubresource(&homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
 

@@ -1,4 +1,4 @@
-# homefs
+# miroir
 
 Low-resource replicated block storage CSI driver for small Talos Linux
 clusters. Control plane in Go; data path delegated to in-kernel primitives
@@ -12,14 +12,14 @@ single-replica volumes — treat replicated volumes as experimental.
 ## How it works
 
 ```
-PVC → csi-provisioner → homefs-controller ──(HomefsVolume CR)──▶ homefs-agent
+PVC → csi-provisioner → miroir-controller ──(MiroirVolume CR)──▶ miroir-agent
                                                                     │
 pod ← kubelet mount ← CSI node service ← /dev/<vg>/<vol> ←─ lvm/zfs ┘
 ```
 
 The controller places volumes on storage nodes and records desired state in
 cluster-scoped CRs; per-node agents realize them with `lvm`/`zfs` and report
-status back. The data path never depends on homefs processes.
+status back. The data path never depends on miroir processes.
 
 ## Requirements
 
@@ -28,10 +28,10 @@ status back. The data path never depends on homefs processes.
   extension (zfs nodes), loaded via machine config
 - One of, per storage node:
     - an unformatted partition/disk for LVM (e.g. a Talos `RawVolumeConfig`
-      partition labeled `r-homefs`), or
+      partition labeled `r-miroir`), or
     - an existing ZFS pool, or
     - nothing extra — the `loopfile` backend stores loop-backed sparse files
-      on the node's existing filesystem (`baseDir`, e.g. `/var/lib/homefs`).
+      on the node's existing filesystem (`baseDir`, e.g. `/var/lib/miroir`).
       The filesystem must support reflink for CoW snapshots (XFS `reflink=1`,
       the Talos `/var` default, or btrfs); the agent refuses to start
       otherwise. Needs the `loop` kernel module.
@@ -46,17 +46,17 @@ annotations to manage:
 nodes:
     kharkiv:
         backend: lvmthin
-        device: /dev/disk/by-partlabel/r-homefs
+        device: /dev/disk/by-partlabel/r-miroir
     paris:
         backend: zfs
-        zfsDataset: data-pool/homefs
+        zfsDataset: data-pool/miroir
     le-havre:
         backend: loopfile
-        baseDir: /var/lib/homefs
+        baseDir: /var/lib/miroir
 ```
 
 ```bash
-helm install homefs charts/homefs -n homefs-system --create-namespace -f values.yaml
+helm install miroir charts/miroir -n miroir-system --create-namespace -f values.yaml
 ```
 
 Each agent bootstraps its pool on first start (PV → VG → thin pool, the
@@ -64,7 +64,7 @@ parent ZFS dataset, or the loopfile `baseDir` layout). Existing pools and
 datasets are reused, never wiped.
 
 Sharing storage with other provisioners works on both backends: on ZFS,
-homefs confines itself to its parent dataset (e.g. in a pool OpenEBS
+miroir confines itself to its parent dataset (e.g. in a pool OpenEBS
 LocalPV-ZFS also uses); on LVM, bound the thin pool with `thinPoolSize`
 (default claims all free space) and let the co-tenant allocate from the
 VG's remainder.
@@ -77,7 +77,7 @@ kind: PersistentVolumeClaim
 metadata:
     name: test
 spec:
-    storageClassName: homefs-local
+    storageClassName: miroir-local
     accessModes: [ReadWriteOnce]
     resources:
         requests:
@@ -93,7 +93,7 @@ spec:
       (`xfs_info <baseDir> | grep reflink` shows `reflink=1`) and the `loop`
       module is present (`talosctl read /proc/modules | grep loop`)
 - [ ] every storage node present in the Helm `nodes` values with correct backend/device
-- [ ] `openebs-zfs` remains the default StorageClass (homefs-local is opt-in)
+- [ ] `openebs-zfs` remains the default StorageClass (miroir-local is opt-in)
 
 ## Development
 

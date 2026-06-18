@@ -26,24 +26,24 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/drbd"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/drbd"
 )
 
 //nolint:unparam // future tests will vary the volume
-func snapObj(name, volume string, nodes ...string) *homefsv1alpha1.HomefsSnapshot {
+func snapObj(name, volume string, nodes ...string) *miroirv1alpha1.MiroirSnapshot {
 	finalizers := make([]string, 0, len(nodes))
 	for _, n := range nodes {
 		finalizers = append(finalizers, constants.FinalizerPrefix+n)
 	}
-	return &homefsv1alpha1.HomefsSnapshot{
+	return &miroirv1alpha1.MiroirSnapshot{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: homefsv1alpha1.GroupVersion.String(),
-			Kind:       "HomefsSnapshot",
+			APIVersion: miroirv1alpha1.GroupVersion.String(),
+			Kind:       "MiroirSnapshot",
 		},
 		ObjectMeta: metav1.ObjectMeta{Name: name, Finalizers: finalizers},
-		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: volume},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volume},
 	}
 }
 
@@ -63,13 +63,13 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(vol("pvc-1", "kharkiv"), snapObj("snap-1", "pvc-1", "kharkiv")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
 
 	reconcileSnap(t, r, "snap-1")
 
-	got := &homefsv1alpha1.HomefsSnapshot{}
+	got := &miroirv1alpha1.MiroirSnapshot{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -81,14 +81,14 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 func TestSnapshotReplicatedBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
-	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
 		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// kharkiv is Primary → coordinator: raises its barrier first.
@@ -101,9 +101,9 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	reconcileSnap(t, rK, "snap-1")
 	feK.calledWith(t, "drbdadm suspend-io pvc-1")
 
-	got := &homefsv1alpha1.HomefsSnapshot{}
+	got := &miroirv1alpha1.MiroirSnapshot{}
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
-	if !got.Status.IOSuspended || got.Status.PerNode["kharkiv"] != homefsv1alpha1.SnapshotSuspended {
+	if !got.Status.IOSuspended || got.Status.PerNode["kharkiv"] != miroirv1alpha1.SnapshotSuspended {
 		t.Fatalf("coordinator must raise the barrier before cutting: %+v", got.Status)
 	}
 	if len(fbK.snapCalls) != 0 {
@@ -152,14 +152,14 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 func TestSnapshotSecondaryDefersToPeerPrimary(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "paris", "kharkiv") // paris is replicas[0]...
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
-	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
 		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj("snap-1", "pvc-1", "paris", "kharkiv")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// ...but kharkiv holds the device open: the barrier only blocks
@@ -181,8 +181,8 @@ func TestSnapshotSecondaryDefersToPeerPrimary(t *testing.T) {
 func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
-	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
 		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
 	}
@@ -190,12 +190,12 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	expired := metav1.NewTime(time.Now().Add(-2 * SuspendDeadline))
 	snap.Status.IOSuspended = true
 	snap.Status.SuspendedAt = &expired
-	snap.Status.PerNode = map[string]homefsv1alpha1.SnapshotNodeState{
-		"kharkiv": homefsv1alpha1.SnapshotDone, // cut under the dead barrier
+	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+		"kharkiv": miroirv1alpha1.SnapshotDone, // cut under the dead barrier
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snap).
-		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Primary",
@@ -208,15 +208,15 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	// Expiry: resume, void every leg, mark the coordinator Error.
 	reconcileSnap(t, r, "snap-1")
 	fe.calledWith(t, "drbdadm resume-io pvc-1")
-	got := &homefsv1alpha1.HomefsSnapshot{}
+	got := &miroirv1alpha1.MiroirSnapshot{}
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.IOSuspended || got.Status.ReadyToUse {
 		t.Fatalf("expired round must resume without going ready: %+v", got.Status)
 	}
-	if got.Status.PerNode["paris"] != homefsv1alpha1.SnapshotPending ||
-		got.Status.PerNode["kharkiv"] != homefsv1alpha1.SnapshotError {
+	if got.Status.PerNode["paris"] != miroirv1alpha1.SnapshotPending ||
+		got.Status.PerNode["kharkiv"] != miroirv1alpha1.SnapshotError {
 		t.Fatalf("expired legs must be voided: %+v", got.Status.PerNode)
 	}
 
@@ -232,7 +232,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	// lands late and must be voided again when the next round opens.
 	aged := metav1.NewTime(time.Now().Add(-2 * suspendRetryBackoff))
 	got.Status.SuspendedAt = &aged
-	got.Status.PerNode["paris"] = homefsv1alpha1.SnapshotDone
+	got.Status.PerNode["paris"] = miroirv1alpha1.SnapshotDone
 	if err := c.Status().Update(context.Background(), got); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 		t.Fatalf("no recut before every barrier is up: %v", fb.snapCalls)
 	}
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
-	if got.Status.PerNode["paris"] != homefsv1alpha1.SnapshotPending {
+	if got.Status.PerNode["paris"] != miroirv1alpha1.SnapshotPending {
 		t.Fatalf("opening a round must void stale peer legs: %+v", got.Status.PerNode)
 	}
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Secondary",
@@ -264,14 +264,14 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
-	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
 		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// Primary and locally UpToDate, but the peer link is still down.
@@ -294,14 +294,14 @@ func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	snap := snapObj("snap-del", "pvc-1", "kharkiv")
 	now := metav1.NewTime(time.Now())
 	snap.DeletionTimestamp = &now
 	snap.Status.IOSuspended = true
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snap).
-		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	fe := &fakeDRBDExec{}
@@ -316,14 +316,14 @@ func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol("pvc-1", "kharkiv", "paris")
-	v.Spec.DRBD = &homefsv1alpha1.DRBDSpec{Port: 7000}
-	v.Status.PerNode = map[string]homefsv1alpha1.ReplicaStatus{
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
 		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
-		WithStatusSubresource(&homefsv1alpha1.HomefsSnapshot{}, &homefsv1alpha1.HomefsVolume{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// paris, Secondary, barrier not raised → must not snapshot yet.
@@ -335,9 +335,9 @@ func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-1")
 
-	got := &homefsv1alpha1.HomefsSnapshot{}
+	got := &miroirv1alpha1.MiroirSnapshot{}
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
-	if got.Status.PerNode["paris"] == homefsv1alpha1.SnapshotDone {
+	if got.Status.PerNode["paris"] == miroirv1alpha1.SnapshotDone {
 		t.Fatal("peer must wait for the IO barrier")
 	}
 }

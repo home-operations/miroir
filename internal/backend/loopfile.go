@@ -272,7 +272,7 @@ func (lf *loopfile) sizeOf(ctx context.Context, file string) (int64, error) {
 
 func (lf *loopfile) Stats(ctx context.Context) (PoolStats, error) {
 	// The "pool" is the filesystem holding the base directory; headroom must
-	// account for everything on it, not only homefs files (notes/DESIGN.md §4.6).
+	// account for everything on it, not only miroir files (notes/DESIGN.md §4.6).
 	out, err := lf.exec(ctx, "df", "-B1", "-P", lf.baseDir)
 	if err != nil {
 		return PoolStats{}, err

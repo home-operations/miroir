@@ -35,8 +35,8 @@ func newZFS(cfg Config, e Exec) *zfsBackend {
 	return &zfsBackend{dataset: cfg.Dataset, exec: e}
 }
 
-// Setup creates the parent dataset (e.g. tank/homefs) if absent — the
-// namespace separating homefs zvols from OpenEBS datasets in the shared
+// Setup creates the parent dataset (e.g. tank/miroir) if absent — the
+// namespace separating miroir zvols from OpenEBS datasets in the shared
 // pool (notes/DESIGN.md §4.1a).
 func (z *zfsBackend) Setup(ctx context.Context) error {
 	ok, err := z.exists(ctx, z.dataset)
@@ -202,7 +202,7 @@ func (z *zfsBackend) volSize(ctx context.Context, vol string) (int64, error) {
 
 func (z *zfsBackend) Stats(ctx context.Context) (PoolStats, error) {
 	// Pool-level stats: the pool is shared with OpenEBS, so headroom must
-	// account for everything in it, not only homefs zvols (notes/DESIGN.md §4.6).
+	// account for everything in it, not only miroir zvols (notes/DESIGN.md §4.6).
 	pool := strings.SplitN(z.dataset, "/", 2)[0]
 	out, err := z.exec(ctx, "zpool", "get", "-Hpo", "value", "size,allocated", pool)
 	if err != nil {

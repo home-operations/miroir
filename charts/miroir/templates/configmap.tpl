@@ -4,7 +4,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: homefs-nodes
+  name: miroir-nodes
   namespace: {{ .Release.Namespace }}
 data:
   nodes.yaml: |
@@ -15,7 +15,7 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: homefs-drbd-conf
+  name: miroir-drbd-conf
   namespace: {{ .Release.Namespace }}
 data:
   global_common.conf: |

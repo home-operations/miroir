@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: homefs-setup
+  name: miroir-setup
   namespace: {{ .Release.Namespace }}
   annotations:
     helm.sh/hook: post-install,post-upgrade
@@ -11,7 +11,7 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: homefs-uninstall
+  name: miroir-uninstall
   namespace: {{ .Release.Namespace }}
   annotations:
     helm.sh/hook: pre-delete
@@ -21,20 +21,20 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: homefs-uninstall
+  name: miroir-uninstall
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "5"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 rules:
-  - apiGroups: ["homefs.io"]
-    resources: ["homefsvolumes", "homefssnapshots"]
+  - apiGroups: ["miroir.io"]
+    resources: ["miroirvolumes", "miroirsnapshots"]
     verbs: ["get", "list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: homefs-uninstall
+  name: miroir-uninstall
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "5"
@@ -42,8 +42,8 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: homefs-uninstall
+  name: miroir-uninstall
 subjects:
   - kind: ServiceAccount
-    name: homefs-uninstall
+    name: miroir-uninstall
     namespace: {{ .Release.Namespace }}

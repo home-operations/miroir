@@ -40,13 +40,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/nodemap"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/nodemap"
 )
 
 // Controller implements csi.ControllerServer (notes/DESIGN.md §6.1). It translates
-// CSI RPCs into HomefsVolume objects and waits for node agents to realize
+// CSI RPCs into MiroirVolume objects and waits for node agents to realize
 // them — the Kubernetes API is the only channel to the data plane (§4.2).
 type Controller struct {
 	csi.UnimplementedControllerServer
@@ -95,7 +95,7 @@ func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.Control
 	return resp, nil
 }
 
-// CreateVolume provisions a HomefsVolume and waits until its agents report
+// CreateVolume provisions a MiroirVolume and waits until its agents report
 // Ready (notes/DESIGN.md §4.5.1). Idempotent by volume name.
 func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	if req.GetName() == "" {
@@ -127,8 +127,8 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	var source *homefsv1alpha1.VolumeSource
-	var placed []homefsv1alpha1.Replica
+	var source *miroirv1alpha1.VolumeSource
+	var placed []miroirv1alpha1.Replica
 	var sourceFormatted bool
 	if snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId(); snapID != "" {
 		// Restore: clones are local CoW, so replicas must live on the
@@ -147,7 +147,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 				"restore replica count %d must match source %d",
 				replicas, len(srcVol.Spec.Replicas))
 		}
-		source = &homefsv1alpha1.VolumeSource{SnapshotName: snapID}
+		source = &miroirv1alpha1.VolumeSource{SnapshotName: snapID}
 		placed = srcVol.Spec.Replicas
 	} else {
 		placed, err = c.place(ctx, req.GetAccessibilityRequirements(), replicas)
@@ -156,11 +156,11 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		}
 	}
 
-	vol := &homefsv1alpha1.HomefsVolume{
+	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: req.GetName(),
 		},
-		Spec: homefsv1alpha1.HomefsVolumeSpec{
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: sizeBytes,
 			Replicas:  placed,
 			Source:    source,
@@ -234,17 +234,17 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}, nil
 }
 
-// DeleteVolume removes the HomefsVolume; agents tear down local state via
+// DeleteVolume removes the MiroirVolume; agents tear down local state via
 // the finalizer before it disappears (notes/DESIGN.md §4.5.7). Idempotent.
 func (c *Controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
-	vol := &homefsv1alpha1.HomefsVolume{
+	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: req.GetVolumeId()},
 	}
 	if err := c.Client.Delete(ctx, vol); err != nil && !apierrors.IsNotFound(err) {
-		return nil, status.Errorf(codes.Internal, "delete HomefsVolume: %v", err)
+		return nil, status.Errorf(codes.Internal, "delete MiroirVolume: %v", err)
 	}
 	return &csi.DeleteVolumeResponse{}, nil
 }
@@ -254,12 +254,12 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
 		}
-		return nil, status.Errorf(codes.Internal, "get HomefsVolume: %v", err)
+		return nil, status.Errorf(codes.Internal, "get MiroirVolume: %v", err)
 	}
 	if err := validateCapabilities(req.GetVolumeCapabilities()); err != nil {
 		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil //nolint:nilerr
@@ -276,7 +276,7 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 // (capacity-aware spread is future work). For replicated volumes it
 // resolves each node's InternalIP and assigns DRBD node ids by slice
 // position — replicas[0] is the GI-seed winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int) ([]homefsv1alpha1.Replica, error) {
+func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int) ([]miroirv1alpha1.Replica, error) {
 	if len(c.Nodes) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"need %d storage nodes, have %d (Helm values: nodes)", count, len(c.Nodes))
@@ -302,9 +302,9 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 	}
 	ordered = ordered[:count]
 
-	replicas := make([]homefsv1alpha1.Replica, 0, count)
+	replicas := make([]miroirv1alpha1.Replica, 0, count)
 	for i, name := range ordered {
-		r := homefsv1alpha1.Replica{Node: name, Backend: c.Nodes[name].Backend}
+		r := miroirv1alpha1.Replica{Node: name, Backend: c.Nodes[name].Backend}
 		if count > 1 {
 			addr, err := c.nodeInternalIP(ctx, name)
 			if err != nil {
@@ -338,13 +338,13 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 // allocMu across allocate+Create — CreateVolume RPCs run concurrently
 // within the pod. The minor is per-node and allocated locally by each
 // agent.
-func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec, error) {
+func (c *Controller) allocateDRBD(ctx context.Context) (*miroirv1alpha1.DRBDSpec, error) {
 	const portBase = 7000
 	reader := c.APIReader
 	if reader == nil {
 		reader = c.Client
 	}
-	vols := &homefsv1alpha1.HomefsVolumeList{}
+	vols := &miroirv1alpha1.MiroirVolumeList{}
 	if err := reader.List(ctx, vols); err != nil {
 		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
 	}
@@ -354,7 +354,7 @@ func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec
 			usedPort[v.Spec.DRBD.Port] = true
 		}
 	}
-	spec := &homefsv1alpha1.DRBDSpec{Port: portBase}
+	spec := &miroirv1alpha1.DRBDSpec{Port: portBase}
 	for usedPort[spec.Port] {
 		spec.Port++
 	}
@@ -370,16 +370,16 @@ func (c *Controller) allocateDRBD(ctx context.Context) (*homefsv1alpha1.DRBDSpec
 // handleCreateErr resolves Create conflicts: nil for success, nil after a
 // compatible AlreadyExists (mutating vol to the existing object), and a
 // gRPC error otherwise. Idempotency: same name must mean same request.
-func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *homefsv1alpha1.HomefsVolume, sizeBytes int64, replicas int, quorum homefsv1alpha1.QuorumPolicy, sourceSnapshot string) error {
+func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroirv1alpha1.MiroirVolume, sizeBytes int64, replicas int, quorum miroirv1alpha1.QuorumPolicy, sourceSnapshot string) error {
 	if err == nil {
 		return nil
 	}
 	if !apierrors.IsAlreadyExists(err) {
-		return status.Errorf(codes.Internal, "create HomefsVolume: %v", err)
+		return status.Errorf(codes.Internal, "create MiroirVolume: %v", err)
 	}
-	existing := &homefsv1alpha1.HomefsVolume{}
+	existing := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: vol.Name}, existing); err != nil {
-		return status.Errorf(codes.Internal, "get existing HomefsVolume: %v", err)
+		return status.Errorf(codes.Internal, "get existing MiroirVolume: %v", err)
 	}
 	existingSource := ""
 	if existing.Spec.Source != nil {
@@ -414,7 +414,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 
 	err := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true,
 		func(ctx context.Context) (bool, error) {
-			vol := &homefsv1alpha1.HomefsVolume{}
+			vol := &miroirv1alpha1.MiroirVolume{}
 			if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 				if apierrors.IsNotFound(err) {
 					return false, nil // informer cache not warm yet; retry
@@ -422,9 +422,9 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 				return false, err
 			}
 			switch vol.Status.Phase {
-			case homefsv1alpha1.VolumeReady:
+			case miroirv1alpha1.VolumeReady:
 				return true, nil
-			case homefsv1alpha1.VolumeFailed:
+			case miroirv1alpha1.VolumeFailed:
 				return false, &errVolumeFailed{detail: fmt.Sprintf("%+v", vol.Status.PerNode)}
 			default:
 				return false, nil
@@ -456,7 +456,7 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	}
 	nodeExpansion := req.GetVolumeCapability().GetBlock() == nil
 
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
@@ -487,7 +487,7 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	defer cancel()
 	err := wait.PollUntilContextCancel(waitCtx, 500*time.Millisecond, true,
 		func(ctx context.Context) (bool, error) {
-			v := &homefsv1alpha1.HomefsVolume{}
+			v := &miroirv1alpha1.MiroirVolume{}
 			if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, v); err != nil {
 				return false, client.IgnoreNotFound(err) // cache lag → retry
 			}
@@ -507,13 +507,13 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	}, nil
 }
 
-// CreateSnapshot provisions a HomefsSnapshot and reports readiness as-is:
+// CreateSnapshot provisions a MiroirSnapshot and reports readiness as-is:
 // the external-snapshotter polls until ready_to_use. Idempotent by name.
 func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
 	if req.GetName() == "" || req.GetSourceVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "snapshot name and source volume are required")
 	}
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetSourceVolumeId()}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetSourceVolumeId())
@@ -521,18 +521,18 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
 	}
 
-	snap := &homefsv1alpha1.HomefsSnapshot{
+	snap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
-		Spec:       homefsv1alpha1.HomefsSnapshotSpec{VolumeName: req.GetSourceVolumeId()},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: req.GetSourceVolumeId()},
 	}
 	for _, rep := range vol.Spec.Replicas {
 		snap.Finalizers = append(snap.Finalizers, constants.FinalizerPrefix+rep.Node)
 	}
 	if err := c.Client.Create(ctx, snap); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
-			return nil, status.Errorf(codes.Internal, "create HomefsSnapshot: %v", err)
+			return nil, status.Errorf(codes.Internal, "create MiroirSnapshot: %v", err)
 		}
-		existing := &homefsv1alpha1.HomefsSnapshot{}
+		existing := &miroirv1alpha1.MiroirSnapshot{}
 		if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetName()}, existing); err != nil {
 			return nil, status.Errorf(codes.Internal, "get existing snapshot: %v", err)
 		}
@@ -551,22 +551,22 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 	return &csi.CreateSnapshotResponse{Snapshot: csiSnapshot(snap, size)}, nil
 }
 
-// DeleteSnapshot removes the HomefsSnapshot; agents drop the backend
+// DeleteSnapshot removes the MiroirSnapshot; agents drop the backend
 // snapshots via finalizers. Idempotent.
 func (c *Controller) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
 	if req.GetSnapshotId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "snapshot id is required")
 	}
-	snap := &homefsv1alpha1.HomefsSnapshot{ObjectMeta: metav1.ObjectMeta{Name: req.GetSnapshotId()}}
+	snap := &miroirv1alpha1.MiroirSnapshot{ObjectMeta: metav1.ObjectMeta{Name: req.GetSnapshotId()}}
 	if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
-		return nil, status.Errorf(codes.Internal, "delete HomefsSnapshot: %v", err)
+		return nil, status.Errorf(codes.Internal, "delete MiroirSnapshot: %v", err)
 	}
 	return &csi.DeleteSnapshotResponse{}, nil
 }
 
 // ListSnapshots reports existing snapshots (no pagination: home scale).
 func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
-	snaps := &homefsv1alpha1.HomefsSnapshotList{}
+	snaps := &miroirv1alpha1.MiroirSnapshotList{}
 	if err := c.Client.List(ctx, snaps); err != nil {
 		return nil, status.Errorf(codes.Internal, "list snapshots: %v", err)
 	}
@@ -588,13 +588,13 @@ func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRe
 
 // ListVolumes returns all provisioned volumes for external-provisioner reconciliation.
 func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
-	vols := &homefsv1alpha1.HomefsVolumeList{}
+	vols := &miroirv1alpha1.MiroirVolumeList{}
 	if err := c.Client.List(ctx, vols); err != nil {
 		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
 	}
 	// Tokens are positional; the listing order must be stable across calls
 	// or pages skip and duplicate entries.
-	slices.SortFunc(vols.Items, func(a, b homefsv1alpha1.HomefsVolume) int {
+	slices.SortFunc(vols.Items, func(a, b miroirv1alpha1.MiroirVolume) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 
@@ -639,7 +639,7 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 	return resp, nil
 }
 
-func csiSnapshot(snap *homefsv1alpha1.HomefsSnapshot, sizeBytes int64) *csi.Snapshot {
+func csiSnapshot(snap *miroirv1alpha1.MiroirSnapshot, sizeBytes int64) *csi.Snapshot {
 	return &csi.Snapshot{
 		SnapshotId:     snap.Name,
 		SourceVolumeId: snap.Spec.VolumeName,
@@ -650,8 +650,8 @@ func csiSnapshot(snap *homefsv1alpha1.HomefsSnapshot, sizeBytes int64) *csi.Snap
 }
 
 // snapshotSource resolves a ready snapshot and its source volume.
-func (c *Controller) snapshotSource(ctx context.Context, snapID string) (*homefsv1alpha1.HomefsVolume, *homefsv1alpha1.HomefsSnapshot, error) {
-	snap := &homefsv1alpha1.HomefsSnapshot{}
+func (c *Controller) snapshotSource(ctx context.Context, snapID string) (*miroirv1alpha1.MiroirVolume, *miroirv1alpha1.MiroirSnapshot, error) {
+	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: snapID}, snap); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil, status.Errorf(codes.NotFound, "snapshot %s not found", snapID)
@@ -661,7 +661,7 @@ func (c *Controller) snapshotSource(ctx context.Context, snapID string) (*homefs
 	if !snap.Status.ReadyToUse {
 		return nil, nil, status.Errorf(codes.FailedPrecondition, "snapshot %s not ready", snapID)
 	}
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: snap.Spec.VolumeName}, vol); err != nil {
 		return nil, nil, status.Errorf(codes.Internal, "get snapshot source volume: %v", err)
 	}
@@ -672,7 +672,7 @@ func (c *Controller) snapshotSource(ctx context.Context, snapID string) (*homefs
 // fresh and patches so it works for both just-created and pre-existing
 // volumes (idempotent CreateVolume retries).
 func (c *Controller) markVolumeFormatted(ctx context.Context, name string) error {
-	vol := &homefsv1alpha1.HomefsVolume{}
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 		return err
 	}
@@ -699,12 +699,12 @@ func parseReplicas(params map[string]string) (int, error) {
 	return n, nil
 }
 
-func parseQuorum(params map[string]string) (homefsv1alpha1.QuorumPolicy, error) {
+func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) {
 	switch raw := params[constants.ParamQuorum]; raw {
-	case "", string(homefsv1alpha1.QuorumLastManStanding):
-		return homefsv1alpha1.QuorumLastManStanding, nil
-	case string(homefsv1alpha1.QuorumFreeze):
-		return homefsv1alpha1.QuorumFreeze, nil
+	case "", string(miroirv1alpha1.QuorumLastManStanding):
+		return miroirv1alpha1.QuorumLastManStanding, nil
+	case string(miroirv1alpha1.QuorumFreeze):
+		return miroirv1alpha1.QuorumFreeze, nil
 	default:
 		return "", status.Errorf(codes.InvalidArgument,
 			"invalid %s=%q (want last-man-standing | freeze)", constants.ParamQuorum, raw)
@@ -723,7 +723,7 @@ func validateCapabilities(caps []*csi.VolumeCapability) error {
 			csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY:
 		default:
 			return status.Errorf(codes.InvalidArgument,
-				"unsupported access mode %s (homefs is RWO/RWOP only)",
+				"unsupported access mode %s (miroir is RWO/RWOP only)",
 				c.GetAccessMode().GetMode())
 		}
 		if c.GetMount() == nil && c.GetBlock() == nil {

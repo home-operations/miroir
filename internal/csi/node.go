@@ -33,9 +33,9 @@ import (
 	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/drbd"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/drbd"
 )
 
 // DRBDStatus reports this node's live view of a DRBD resource.
@@ -98,15 +98,15 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 
 // devicePath resolves the volume's local device from the CRD and verifies
 // this node holds a replica with current data.
-func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *homefsv1alpha1.HomefsVolume, error) {
-	vol := &homefsv1alpha1.HomefsVolume{}
+func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroirv1alpha1.MiroirVolume, error) {
+	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
 		}
 		return "", nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
 	}
-	if !slices.ContainsFunc(vol.Spec.Replicas, func(r homefsv1alpha1.Replica) bool {
+	if !slices.ContainsFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
 		return r.Node == n.NodeName
 	}) {
 		return "", nil, status.Errorf(codes.FailedPrecondition,
@@ -248,7 +248,7 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 
 // markFormatted records that the volume carries a filesystem. No-op when
 // already recorded.
-func (n *Node) markFormatted(ctx context.Context, vol *homefsv1alpha1.HomefsVolume) error {
+func (n *Node) markFormatted(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
 	if vol.Status.Formatted {
 		return nil
 	}

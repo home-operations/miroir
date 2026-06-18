@@ -29,9 +29,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	homefsv1alpha1 "github.com/eleboucher/homefs/api/v1alpha1"
-	"github.com/eleboucher/homefs/internal/constants"
-	"github.com/eleboucher/homefs/internal/nodemap"
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/nodemap"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -40,7 +40,7 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	if err := clientgoscheme.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
-	if err := homefsv1alpha1.AddToScheme(s); err != nil {
+	if err := miroirv1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -57,8 +57,8 @@ func node(name, ip string) *corev1.Node {
 
 // replicatedVol is a 2-replica volume on kharkiv+paris with an
 // operator-added oslo entry awaiting completion.
-func replicatedVol() *homefsv1alpha1.HomefsVolume {
-	return &homefsv1alpha1.HomefsVolume{
+func replicatedVol() *miroirv1alpha1.MiroirVolume {
+	return &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "pvc-1",
 			Finalizers: []string{
@@ -66,13 +66,13 @@ func replicatedVol() *homefsv1alpha1.HomefsVolume {
 				constants.FinalizerPrefix + "paris",
 			},
 		},
-		Spec: homefsv1alpha1.HomefsVolumeSpec{
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
-			DRBD:      &homefsv1alpha1.DRBDSpec{Port: 7000},
-			Replicas: []homefsv1alpha1.Replica{
-				{Node: "kharkiv", Backend: homefsv1alpha1.BackendZFS, NodeID: 0, Address: "192.168.1.41"},
-				{Node: "paris", Backend: homefsv1alpha1.BackendZFS, NodeID: 1, Address: "192.168.1.42"},
-				{Node: "oslo", Backend: homefsv1alpha1.BackendZFS},
+			DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: "kharkiv", Backend: miroirv1alpha1.BackendZFS, NodeID: 0, Address: "192.168.1.41"},
+				{Node: "paris", Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "192.168.1.42"},
+				{Node: "oslo", Backend: miroirv1alpha1.BackendZFS},
 			},
 		},
 	}
@@ -88,9 +88,9 @@ func reconcile(t *testing.T, r *Reconciler, name string) {
 }
 
 //nolint:unparam // future tests will vary the name
-func get(t *testing.T, r *Reconciler, name string) *homefsv1alpha1.HomefsVolume {
+func get(t *testing.T, r *Reconciler, name string) *miroirv1alpha1.MiroirVolume {
 	t.Helper()
-	got := &homefsv1alpha1.HomefsVolume{}
+	got := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(context.Background(), types.NamespacedName{Name: name}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestCompletesAddedReplica(t *testing.T) {
 		WithObjects(replicatedVol(), node("oslo", "192.168.1.43")).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		"oslo": {Backend: homefsv1alpha1.BackendLVMThin},
+		"oslo": {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
 	reconcile(t, r, "pvc-1")
@@ -116,7 +116,7 @@ func TestCompletesAddedReplica(t *testing.T) {
 		t.Fatal("late joiner must be marked FullSync — day0 seeding it corrupts data")
 	}
 	// The node map, not the operator's edit, decides the backend.
-	if rep.Backend != homefsv1alpha1.BackendLVMThin {
+	if rep.Backend != miroirv1alpha1.BackendLVMThin {
 		t.Fatalf("backend not taken from the node map: %s", rep.Backend)
 	}
 	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+"oslo") {
@@ -131,7 +131,7 @@ func TestReusesLowestFreeNodeID(t *testing.T) {
 		WithObjects(v, node("oslo", "192.168.1.43")).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		"oslo": {Backend: homefsv1alpha1.BackendZFS},
+		"oslo": {Backend: miroirv1alpha1.BackendZFS},
 	}}
 
 	reconcile(t, r, "pvc-1")
@@ -161,7 +161,7 @@ func TestIgnoresUnreplicatedVolume(t *testing.T) {
 		WithObjects(v, node("oslo", "192.168.1.43")).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		"oslo": {Backend: homefsv1alpha1.BackendZFS},
+		"oslo": {Backend: miroirv1alpha1.BackendZFS},
 	}}
 
 	reconcile(t, r, "pvc-1")

@@ -10,7 +10,7 @@ ARG VERSION=dev
 ARG REVISION=unknown
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags "-X main.version=${VERSION} -X main.commit=${REVISION}" \
-    -o /homefs cmd/main.go
+    -o /miroir cmd/main.go
 
 # The agent drives lvm/zfs/mkfs on the host through this container's
 # userland; the kernel modules come from the Talos kernel + extensions.
@@ -39,5 +39,5 @@ RUN apk add --no-cache \
 # state on a suspended one, wedging the reconciler and then pod shutdown.
 RUN printf 'activation { udev_sync = 0\nudev_rules = 0 }\ndevices { obtain_device_list_from_udev = 0\nglobal_filter = [ "r|^/dev/drbd|" ] }\n' \
     > /etc/lvm/lvmlocal.conf
-COPY --from=build /homefs /usr/local/bin/homefs
-ENTRYPOINT ["/usr/local/bin/homefs"]
+COPY --from=build /miroir /usr/local/bin/miroir
+ENTRYPOINT ["/usr/local/bin/miroir"]
