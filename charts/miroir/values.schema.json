@@ -205,7 +205,7 @@
         "resizer": {
           "properties": {
             "image": {
-              "default": "registry.k8s.io/sig-storage/csi-resizer:v2.1.0",
+              "default": "registry.k8s.io/sig-storage/csi-resizer:v2.2.0",
               "title": "image",
               "type": "string"
             }
