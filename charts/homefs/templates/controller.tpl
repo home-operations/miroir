@@ -33,6 +33,7 @@ spec:
             - --mode=controller
             - --csi-socket=/csi/csi.sock
             - --nodes-config=/etc/homefs/nodes.yaml
+            - --provision-timeout={{ .Values.controller.provisionTimeout }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }

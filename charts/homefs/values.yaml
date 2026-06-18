@@ -43,6 +43,7 @@ kubeletDir: /var/lib/kubelet
 nodes: {}
 
 controller:
+  provisionTimeout: 120s
   resources:
     requests:
       cpu: 10m

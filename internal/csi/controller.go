@@ -70,8 +70,8 @@ type Controller struct {
 }
 
 const (
-	defaultProvisionTimeout = 60 * time.Second
-	defaultExpandTimeout    = 10 * time.Minute // node reboots during grow
+	defaultProvisionTimeout = 120 * time.Second // matches sidecars.provisioner.timeout
+	defaultExpandTimeout    = 10 * time.Minute  // node reboots during grow
 )
 
 // ControllerGetCapabilities advertises exactly what is implemented.

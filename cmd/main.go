@@ -68,11 +68,12 @@ func init() {
 
 func main() {
 	var (
-		mode        string
-		csiSocket   string
-		metricsAddr string
-		probeAddr   string
-		nodesConfig string
+		mode             string
+		csiSocket        string
+		metricsAddr      string
+		probeAddr        string
+		nodesConfig      string
+		provisionTimeout time.Duration
 
 		// agent mode
 		nodeName     string
@@ -87,6 +88,8 @@ func main() {
 	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"), "this node's name (agent)")
 	flag.StringVar(&nodesConfig, "nodes-config", "/etc/homefs/nodes.yaml",
 		"per-node storage topology (rendered from Helm values)")
+	flag.DurationVar(&provisionTimeout, "provision-timeout", 0,
+		"wait for agents to realise a new volume (controller; 0 → default)")
 	flag.StringVar(&vg, "lvm-vg", "vg-homefs", "LVM volume group (agent, lvmthin)")
 	flag.StringVar(&thinPool, "lvm-thinpool", "thinpool", "LVM thin pool LV (agent, lvmthin)")
 	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
@@ -167,9 +170,10 @@ func main() {
 			os.Exit(1)
 		}
 		controller := &csi.Controller{
-			Client:    mgr.GetClient(),
-			APIReader: mgr.GetAPIReader(),
-			Nodes:     nodes,
+			Client:           mgr.GetClient(),
+			APIReader:        mgr.GetAPIReader(),
+			Nodes:            nodes,
+			ProvisionTimeout: provisionTimeout,
 		}
 		// Completes operator-added replica entries on live volumes
 		// (kubectl edit of spec.replicas).
