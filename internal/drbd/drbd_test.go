@@ -27,9 +27,16 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
+const (
+	volPvc1            = "pvc-1"
+	cmdDrbdsetupStatus = "drbdsetup status"
+	cmdDumpMD          = "dump-md"
+	mockCurrentUUID    = "current-uuid 0xDEADBEEF00000001;"
+)
+
 func testResource(local string) Resource {
 	return Resource{
-		Name:      "pvc-1",
+		Name:      volPvc1,
 		Minor:     1000,
 		Port:      7000,
 		Quorum:    miroirv1alpha1.QuorumLastManStanding,
@@ -77,11 +84,11 @@ func TestRenderSharedSecret(t *testing.T) {
 
 func TestParseEvent2(t *testing.T) {
 	cases := []struct{ line, want string }{
-		{"exists resource name:pvc-1 role:Secondary suspended:no", "pvc-1"},
-		{"change connection name:pvc-1 peer-node-id:1 connection:StandAlone", "pvc-1"},
+		{"exists resource name:pvc-1 role:Secondary suspended:no", volPvc1},
+		{"change connection name:pvc-1 peer-node-id:1 connection:StandAlone", volPvc1},
 		{"change device name:pvc-2 volume:0 minor:1000 disk:UpToDate", "pvc-2"},
 		{"destroy resource name:pvc-3", "pvc-3"},
-		{"change peer-device name:pvc-1 peer-node-id:1 replication:SyncTarget", "pvc-1"},
+		{"change peer-device name:pvc-1 peer-node-id:1 replication:SyncTarget", volPvc1},
 		{"exists -", ""},
 		{"call helper name:pvc-1 helper:before-resync-target", ""},
 		{"", ""},
@@ -117,7 +124,7 @@ func TestRenderNoAutoSplitBrainResolution(t *testing.T) {
 }
 
 func TestDay0GIDeterministicAndEven(t *testing.T) {
-	a, b := Day0GI("pvc-1"), Day0GI("pvc-1")
+	a, b := Day0GI(volPvc1), Day0GI(volPvc1)
 	if a != b || len(a) != 16 {
 		t.Fatalf("unstable or malformed day0 GI: %q %q", a, b)
 	}
@@ -158,7 +165,7 @@ func (f *fakeExec) run(_ context.Context, name string, args ...string) (string, 
 			return out, nil
 		}
 	}
-	if strings.Contains(line, "dump-md") {
+	if strings.Contains(line, cmdDumpMD) {
 		// Fresh backing device by default.
 		return "", errors.New("Exclusive open failed. no valid meta data")
 	}
@@ -196,9 +203,9 @@ func TestApplyFreshResource(t *testing.T) {
 	// Winner seeds Consistent+UpToDate flags into EVERY slot, its own
 	// included — partial seeding leaves the local current-UUID random and
 	// the first handshake aborts with "unrelated data" (blockstor Bug 284).
-	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI("pvc-1")+":0:0:0:1:1")
-	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI("pvc-1")+":0:0:0:1:1")
-	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI("pvc-1")+":0:0:0:1:1")
+	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI(volPvc1)+":0:0:0:1:1")
+	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1)+":0:0:0:1:1")
+	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI(volPvc1)+":0:0:0:1:1")
 	// drbdmeta is addressed by minor: the resource/volume form is drbdadm
 	// syntax and makes drbdmeta consult kernel state through a malformed
 	// drbdsetup invocation with undefined output.
@@ -224,8 +231,8 @@ func TestApplyNonWinnerSeedsBareGI(t *testing.T) {
 	}
 	// Non-winner seeds the bare day0 GI (no flags) into every slot and
 	// reaches UpToDate at the first handshake.
-	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI("pvc-1")+":0:0:0")
-	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI("pvc-1")+":0:0:0")
+	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI(volPvc1)+":0:0:0")
+	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1)+":0:0:0")
 	fe.notCalledWith(t, ":1:1")
 }
 
@@ -289,13 +296,13 @@ func TestApplyReseedsAfterMidSeedCrash(t *testing.T) {
 	// deliberately non-virgin so only the sentinel can explain the
 	// re-seed.
 	fe.errOn = nil
-	fe.responses = map[string]string{"dump-md": "current-uuid 0xDEADBEEF00000001;"}
+	fe.responses = map[string]string{cmdDumpMD: mockCurrentUUID}
 	fe.calls = nil
 	if err := d.Apply(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI("pvc-1"))
-	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI("pvc-1"))
+	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1))
+	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI(volPvc1))
 	fe.notCalledWith(t, "create-md")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
 		t.Fatal("marker not written after successful re-seed")
@@ -315,10 +322,10 @@ func TestApplyAdoptsAttachedDevice(t *testing.T) {
 			"drbdsetup status pvc-1": "pvc-1 role:Secondary\n  disk:Inconsistent",
 		}},
 		"stale warning": {responses: map[string]string{
-			"dump-md": "# Output might be stale, since minor 1000 is attached\ncurrent-uuid 0x0000000000000004;",
+			cmdDumpMD: "# Output might be stale, since minor 1000 is attached\ncurrent-uuid 0x0000000000000004;",
 		}},
 		"configured refusal": {errOn: map[string]error{
-			"dump-md": errors.New("Device 'pvc-1' is configured!"),
+			cmdDumpMD: errors.New("Device 'pvc-1' is configured!"),
 		}},
 	} {
 		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
@@ -343,9 +350,9 @@ func TestApplyAppliesALOnUncleanClone(t *testing.T) {
 	// adopted, never re-seeded.
 	fe := &fakeExec{
 		errOnce: map[string]error{
-			"dump-md": errors.New(`Found meta data is "unclean", please apply-al first`),
+			cmdDumpMD: errors.New(`Found meta data is "unclean", please apply-al first`),
 		},
-		responses: map[string]string{"dump-md": "current-uuid 0xDEADBEEF00000001;"},
+		responses: map[string]string{cmdDumpMD: mockCurrentUUID},
 	}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
@@ -364,7 +371,7 @@ func TestApplySurfacesNonDRBDBusyDevice(t *testing.T) {
 	// A backing device held open by something other than DRBD (stale
 	// mount, LVM) is not an attachment — it must error, not adopt.
 	fe := &fakeExec{errOn: map[string]error{
-		"dump-md": errors.New("open(/dev/vg-miroir/pvc-1) failed: Device or resource busy\n" +
+		cmdDumpMD: errors.New("open(/dev/vg-miroir/pvc-1) failed: Device or resource busy\n" +
 			"Exclusive open failed. Do it anyways?\nOperation canceled."),
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
@@ -403,7 +410,7 @@ func TestApplyAdoptsLiveMetadataWithoutMarkers(t *testing.T) {
 	// Markers lost, device detached, but the GI shows a Primary wrote
 	// (current UUID moved off day0): live volume — adopt, no re-seed.
 	fe := &fakeExec{responses: map[string]string{
-		"dump-md": "current-uuid 0xDEADBEEF00000001;\nbitmap-uuid 0x0000000000000000;",
+		cmdDumpMD: "current-uuid 0xDEADBEEF00000001;\nbitmap-uuid 0x0000000000000000;",
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
@@ -422,7 +429,7 @@ func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
 	// bitmaps: provably no data — re-seeding is safe and unsticks a
 	// partially seeded volume.
 	fe := &fakeExec{responses: map[string]string{
-		"dump-md": "current-uuid 0x" + Day0GI("pvc-1") + ";\nbitmap-uuid 0x0000000000000000;",
+		cmdDumpMD: "current-uuid 0x" + Day0GI(volPvc1) + ";\nbitmap-uuid 0x0000000000000000;",
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
@@ -434,20 +441,20 @@ func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
 }
 
 func TestVirginMetadata(t *testing.T) {
-	day0 := "current-uuid 0x" + Day0GI("pvc-1") + ";"
+	day0 := "current-uuid 0x" + Day0GI(volPvc1) + ";"
 	cases := []struct {
 		name, dump string
 		want       bool
 	}{
 		{"day0 seed", day0, true},
 		{"just created", "current-uuid 0x0000000000000004;", true},
-		{"primary wrote", "current-uuid 0xDEADBEEF00000001;", false},
+		{"primary wrote", mockCurrentUUID, false},
 		{"divergence tracked", day0 + "\n    bitmap-uuid 0x00000000DEAD0000;", false},
 		{"unparseable", "garbage", false},
 		{"empty", "", false},
 	}
 	for _, tc := range cases {
-		if got := virginMetadata(tc.dump, "pvc-1"); got != tc.want {
+		if got := virginMetadata(tc.dump, volPvc1); got != tc.want {
 			t.Errorf("%s: virginMetadata = %v, want %v", tc.name, got, tc.want)
 		}
 	}
@@ -461,7 +468,7 @@ func TestDownRemovesState(t *testing.T) {
 	if err := d.Apply(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Down(context.Background(), "pvc-1"); err != nil {
+	if err := d.Down(context.Background(), volPvc1); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdsetup down pvc-1")
@@ -481,13 +488,13 @@ func TestDownRemovesState(t *testing.T) {
 
 func TestStatusParsing(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
-		"drbdsetup status": `[{"name":"pvc-1","suspended-user":true,
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","suspended-user":true,
 			"devices":[{"disk-state":"UpToDate"}],
 			"connections":[{"connection-state":"Connected","peer-role":"Primary"}]}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	s, err := d.Status(context.Background(), "pvc-1")
+	s, err := d.Status(context.Background(), volPvc1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,8 +505,8 @@ func TestStatusParsing(t *testing.T) {
 
 func TestUserSuspendedListsFrozenResources(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
-		"drbdsetup status": `[
-			{"name":"pvc-1","suspended":true,"suspended-user":true},
+		cmdDrbdsetupStatus: `[
+			{"name":"` + volPvc1 + `","suspended":true,"suspended-user":true},
 			{"name":"pvc-2","suspended":false,"suspended-user":false}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
@@ -508,20 +515,20 @@ func TestUserSuspendedListsFrozenResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != "pvc-1" {
+	if len(got) != 1 || got[0] != volPvc1 {
 		t.Fatalf("want [pvc-1], got %v", got)
 	}
 }
 
 func TestStatusSplitBrain(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
-		"drbdsetup status": `[{"name":"pvc-1",
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
 			"devices":[{"disk-state":"UpToDate"}],
 			"connections":[{"connection-state":"StandAlone"}]}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	s, err := d.Status(context.Background(), "pvc-1")
+	s, err := d.Status(context.Background(), volPvc1)
 	if err != nil {
 		t.Fatal(err)
 	}

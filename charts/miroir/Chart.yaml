@@ -7,5 +7,14 @@ type: application
 version: 0.0.1
 appVersion: 0.0.1
 kubeVersion: ">=1.31.0"
+home: https://github.com/home-operations/miroir
 sources:
   - https://github.com/home-operations/miroir
+maintainers:
+  - name: home-operations
+    email: contact@home-operations.com
+keywords:
+  - storage
+  - kubernetes
+annotations:
+  category: Infrastructure

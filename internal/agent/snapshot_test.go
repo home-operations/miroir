@@ -31,6 +31,8 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
+const snapCallSnapshot = "snapshot " + volPvc1 + "@" + snapSnap1
+
 //nolint:unparam // future tests will vary the volume
 func snapObj(name, volume string, nodes ...string) *miroirv1alpha1.MiroirSnapshot {
 	finalizers := make([]string, 0, len(nodes))
@@ -62,15 +64,15 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(vol("pvc-1", "kharkiv"), snapObj("snap-1", "pvc-1", "kharkiv")).
+		WithObjects(vol(volPvc1, nodeKharkiv), snapObj(snapSnap1, volPvc1, nodeKharkiv)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fb}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
-	reconcileSnap(t, r, "snap-1")
+	reconcileSnap(t, r, snapSnap1)
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Status.ReadyToUse {
@@ -80,30 +82,30 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 
 func TestSnapshotReplicatedBarrier(t *testing.T) {
 	s := newScheme(t)
-	v := vol("pvc-1", "kharkiv", "paris")
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
-		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// kharkiv is Primary → coordinator: raises its barrier first.
-	feK := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Primary",
-		"devices":[{"disk-state":"UpToDate"}],
+	feK := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fbK := newFakeBackend()
-	rK := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fbK,
+	rK := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: fbK,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
-	reconcileSnap(t, rK, "snap-1")
+	reconcileSnap(t, rK, snapSnap1)
 	feK.calledWith(t, "drbdadm suspend-io pvc-1")
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
-	if !got.Status.IOSuspended || got.Status.PerNode["kharkiv"] != miroirv1alpha1.SnapshotSuspended {
+	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	if !got.Status.IOSuspended || got.Status.PerNode[nodeKharkiv] != miroirv1alpha1.SnapshotSuspended {
 		t.Fatalf("coordinator must raise the barrier before cutting: %+v", got.Status)
 	}
 	if len(fbK.snapCalls) != 0 {
@@ -111,39 +113,39 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	}
 
 	// paris (Secondary peer) raises its own barrier too.
-	feP := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Secondary","suspended-user":true,
-		"devices":[{"disk-state":"UpToDate"}],
+	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fbP := newFakeBackend()
-	rP := &SnapshotReconciler{Client: c, NodeName: "paris", Backend: fbP,
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: fbP,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
-	reconcileSnap(t, rP, "snap-1")
+	reconcileSnap(t, rP, snapSnap1)
 	feP.calledWith(t, "drbdadm suspend-io pvc-1")
 
 	// All barriers up → each node cuts its leg.
-	reconcileSnap(t, rK, "snap-1")
-	if len(fbK.snapCalls) != 2 || fbK.snapCalls[1] != "snapshot pvc-1@snap-1" {
+	reconcileSnap(t, rK, snapSnap1)
+	if len(fbK.snapCalls) != 2 || fbK.snapCalls[1] != snapCallSnapshot {
 		t.Fatalf("coordinator must cut once all barriers are up: %v", fbK.snapCalls)
 	}
-	reconcileSnap(t, rP, "snap-1")
-	if len(fbP.snapCalls) != 2 || fbP.snapCalls[1] != "snapshot pvc-1@snap-1" {
+	reconcileSnap(t, rP, snapSnap1)
+	if len(fbP.snapCalls) != 2 || fbP.snapCalls[1] != snapCallSnapshot {
 		t.Fatalf("peer must cut once all barriers are up: %v", fbP.snapCalls)
 	}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
+	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
 	if got.Status.ReadyToUse {
 		t.Fatal("snapshot must not be ready before the coordinator collects")
 	}
 
 	// Coordinator sees both Done → resumes and marks ready.
-	reconcileSnap(t, rK, "snap-1")
+	reconcileSnap(t, rK, snapSnap1)
 	feK.calledWith(t, "drbdadm resume-io pvc-1")
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
+	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
 	if !got.Status.ReadyToUse || got.Status.IOSuspended {
 		t.Fatalf("snapshot must be ready with IO resumed: %+v", got.Status)
 	}
 
 	// The peer's device is still suspended; readyToUse lifts it.
-	reconcileSnap(t, rP, "snap-1")
+	reconcileSnap(t, rP, snapSnap1)
 	feP.calledWith(t, "drbdadm resume-io pvc-1")
 }
 
@@ -151,26 +153,26 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 // Primary — two coordinators livelock the snapshot.
 func TestSnapshotSecondaryDefersToPeerPrimary(t *testing.T) {
 	s := newScheme(t)
-	v := vol("pvc-1", "paris", "kharkiv") // paris is replicas[0]...
+	v := vol(volPvc1, nodeParis, nodeKharkiv) // paris is replicas[0]...
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
-		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(v, snapObj("snap-1", "pvc-1", "paris", "kharkiv")).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeParis, nodeKharkiv)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// ...but kharkiv holds the device open: the barrier only blocks
 	// writes where they originate, so kharkiv owns it.
-	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Secondary",
-		"devices":[{"disk-state":"UpToDate"}],
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected","peer-role":"Primary"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: "paris", Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
-	reconcileSnap(t, r, "snap-1")
+	reconcileSnap(t, r, snapSnap1)
 
 	fe.notCalledWith(t, "suspend-io")
 }
@@ -180,50 +182,50 @@ func TestSnapshotSecondaryDefersToPeerPrimary(t *testing.T) {
 // stale legs must never pair with fresh ones.
 func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	s := newScheme(t)
-	v := vol("pvc-1", "kharkiv", "paris")
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
-		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
 	}
-	snap := snapObj("snap-1", "pvc-1", "kharkiv", "paris")
+	snap := snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)
 	expired := metav1.NewTime(time.Now().Add(-2 * SuspendDeadline))
 	snap.Status.IOSuspended = true
 	snap.Status.SuspendedAt = &expired
 	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
-		"kharkiv": miroirv1alpha1.SnapshotDone, // cut under the dead barrier
+		nodeKharkiv: miroirv1alpha1.SnapshotDone, // cut under the dead barrier
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snap).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
-	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Primary",
-		"devices":[{"disk-state":"UpToDate"}],
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 
 	// Expiry: resume, void every leg, mark the coordinator Error.
-	reconcileSnap(t, r, "snap-1")
+	reconcileSnap(t, r, snapSnap1)
 	fe.calledWith(t, "drbdadm resume-io pvc-1")
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got); err != nil {
+	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.IOSuspended || got.Status.ReadyToUse {
 		t.Fatalf("expired round must resume without going ready: %+v", got.Status)
 	}
-	if got.Status.PerNode["paris"] != miroirv1alpha1.SnapshotPending ||
-		got.Status.PerNode["kharkiv"] != miroirv1alpha1.SnapshotError {
+	if got.Status.PerNode[nodeParis] != miroirv1alpha1.SnapshotPending ||
+		got.Status.PerNode[nodeKharkiv] != miroirv1alpha1.SnapshotError {
 		t.Fatalf("expired legs must be voided: %+v", got.Status.PerNode)
 	}
 
 	// The void restamps suspendedAt so the retry backoff is real: an
 	// immediate reconcile must not re-raise the barrier.
-	reconcileSnap(t, r, "snap-1")
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
+	reconcileSnap(t, r, snapSnap1)
+	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
 	if got.Status.IOSuspended {
 		t.Fatalf("retry must back off before re-raising the barrier: %+v", got.Status)
 	}
@@ -232,28 +234,28 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	// lands late and must be voided again when the next round opens.
 	aged := metav1.NewTime(time.Now().Add(-2 * suspendRetryBackoff))
 	got.Status.SuspendedAt = &aged
-	got.Status.PerNode["paris"] = miroirv1alpha1.SnapshotDone
+	got.Status.PerNode[nodeParis] = miroirv1alpha1.SnapshotDone
 	if err := c.Status().Update(context.Background(), got); err != nil {
 		t.Fatal(err)
 	}
 
 	// Retry: re-raise (no cut, peers reset) → peer raises → recut.
-	reconcileSnap(t, r, "snap-1")
+	reconcileSnap(t, r, snapSnap1)
 	if len(fb.snapCalls) != 0 {
 		t.Fatalf("no recut before every barrier is up: %v", fb.snapCalls)
 	}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
-	if got.Status.PerNode["paris"] != miroirv1alpha1.SnapshotPending {
+	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	if got.Status.PerNode[nodeParis] != miroirv1alpha1.SnapshotPending {
 		t.Fatalf("opening a round must void stale peer legs: %+v", got.Status.PerNode)
 	}
-	feP := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Secondary",
-		"devices":[{"disk-state":"UpToDate"}],
+	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
-	rP := &SnapshotReconciler{Client: c, NodeName: "paris", Backend: newFakeBackend(),
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: newFakeBackend(),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
-	reconcileSnap(t, rP, "snap-1")
-	reconcileSnap(t, r, "snap-1")
-	want := []string{"delete pvc-1@snap-1", "snapshot pvc-1@snap-1"}
+	reconcileSnap(t, rP, snapSnap1)
+	reconcileSnap(t, r, snapSnap1)
+	want := []string{"delete pvc-1@snap-1", snapCallSnapshot}
 	if len(fb.snapCalls) != 2 || fb.snapCalls[0] != want[0] || fb.snapCalls[1] != want[1] {
 		t.Fatalf("retry must delete before recutting, got %v", fb.snapCalls)
 	}
@@ -263,25 +265,25 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 // off) — no barrier and no cut until replication is healthy again.
 func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 	s := newScheme(t)
-	v := vol("pvc-1", "kharkiv", "paris")
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
-		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// Primary and locally UpToDate, but the peer link is still down.
-	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Primary",
-		"devices":[{"disk-state":"UpToDate"}],
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connecting"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
-	reconcileSnap(t, r, "snap-1")
+	reconcileSnap(t, r, snapSnap1)
 
 	fe.notCalledWith(t, "suspend-io")
 	if len(fb.snapCalls) != 0 {
@@ -293,9 +295,9 @@ func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 // on the way out — nothing else ever would.
 func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 	s := newScheme(t)
-	v := vol("pvc-1", "kharkiv", "paris")
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	snap := snapObj("snap-del", "pvc-1", "kharkiv")
+	snap := snapObj("snap-del", volPvc1, nodeKharkiv)
 	now := metav1.NewTime(time.Now())
 	snap.DeletionTimestamp = &now
 	snap.Status.IOSuspended = true
@@ -306,7 +308,7 @@ func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 
 	fe := &fakeDRBDExec{}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: "kharkiv", Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
@@ -315,29 +317,29 @@ func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 
 func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 	s := newScheme(t)
-	v := vol("pvc-1", "kharkiv", "paris")
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		"kharkiv": {DeviceCreated: true, DiskState: "UpToDate"},
-		"paris":   {DeviceCreated: true, DiskState: "UpToDate"},
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(v, snapObj("snap-1", "pvc-1", "kharkiv", "paris")).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
 	// paris, Secondary, barrier not raised → must not snapshot yet.
-	fe := &fakeDRBDExec{statusJSON: `[{"name":"pvc-1","role":"Secondary",
-		"devices":[{"disk-state":"UpToDate"}],
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: "paris", Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
-	reconcileSnap(t, r, "snap-1")
+	reconcileSnap(t, r, snapSnap1)
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "snap-1"}, got)
-	if got.Status.PerNode["paris"] == miroirv1alpha1.SnapshotDone {
+	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	if got.Status.PerNode[nodeParis] == miroirv1alpha1.SnapshotDone {
 		t.Fatal("peer must wait for the IO barrier")
 	}
 }

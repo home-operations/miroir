@@ -76,7 +76,12 @@ func (f *fakeExec) notCalledWith(t *testing.T, substr string) {
 	}
 }
 
-var cfg = Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool", Dataset: "tank/miroir"}
+const (
+	thinPoolName = "thinpool"
+	volumeGroup  = "vg-miroir"
+)
+
+var cfg = Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName, Dataset: "tank/miroir"}
 
 func TestLVMThinCreate(t *testing.T) {
 	fe := &fakeExec{}
@@ -287,7 +292,7 @@ func TestLVMThinSetupBootstrapsPool(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("vgs vg-miroir", "", errors.New("Volume group \"vg-miroir\" not found"))
 	fe.respond("lvs vg-miroir/thinpool", "", errors.New("Failed to find logical volume"))
-	b := newLVMThin(Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool",
+	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName,
 		Device: "/dev/disk/by-partlabel/r-miroir"}, fe.run)
 
 	if err := b.Setup(context.Background()); err != nil {
@@ -304,7 +309,7 @@ func TestLVMThinSetupBoundedPoolSize(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("vgs vg-miroir", "", errors.New("Volume group \"vg-miroir\" not found"))
 	fe.respond("lvs vg-miroir/thinpool", "", errors.New("Failed to find logical volume"))
-	b := newLVMThin(Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool",
+	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName,
 		Device: "/dev/disk/by-partlabel/r-miroir", PoolSize: "400g"}, fe.run)
 
 	if err := b.Setup(context.Background()); err != nil {
@@ -328,7 +333,7 @@ func TestLVMThinSetupIdempotent(t *testing.T) {
 func TestLVMThinSetupNoDeviceFails(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("vgs vg-miroir", "", errors.New("Volume group \"vg-miroir\" not found"))
-	b := newLVMThin(Config{VolumeGroup: "vg-miroir", ThinPool: "thinpool"}, fe.run)
+	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName}, fe.run)
 
 	if err := b.Setup(context.Background()); err == nil {
 		t.Fatal("expected error when VG absent and no device configured")

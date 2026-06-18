@@ -30,9 +30,6 @@ linters:
     generated: lax
     rules:
       - linters:
-          - goconst
-        path: _test\.go$
-      - linters:
           - lll
         path: api/*
       - linters:

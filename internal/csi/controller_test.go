@@ -38,6 +38,15 @@ import (
 	"github.com/home-operations/miroir/internal/nodemap"
 )
 
+const (
+	nodeKharkiv = "kharkiv"
+	nodeParis   = "paris"
+	volPvc1     = "pvc-1"
+	volSrc      = "pvc-src"
+	volNew      = "pvc-new"
+	snapSnap1   = "snap-1"
+)
+
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -51,8 +60,8 @@ func newScheme(t *testing.T) *runtime.Scheme {
 }
 
 var testNodes = nodemap.Map{
-	"kharkiv": nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-miroir"},
-	"paris":   nodemap.Node{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
+	nodeKharkiv: nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-miroir"},
+	nodeParis:   nodemap.Node{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
 }
 
 // readyOnGet flips a created volume to Ready, simulating the agent.
@@ -89,28 +98,28 @@ func TestCreateVolumePlacesOnPreferredNode(t *testing.T) {
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
 	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
-		Name:               "pvc-1",
+		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
-				{Segments: map[string]string{constants.TopologyKey: "kharkiv"}},
+				{Segments: map[string]string{constants.TopologyKey: nodeKharkiv}},
 			},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Volume.VolumeId != "pvc-1" || resp.Volume.CapacityBytes != 5<<30 {
+	if resp.Volume.VolumeId != volPvc1 || resp.Volume.CapacityBytes != 5<<30 {
 		t.Fatalf("unexpected volume %+v", resp.Volume)
 	}
-	if got := resp.Volume.AccessibleTopology[0].Segments[constants.TopologyKey]; got != "kharkiv" {
+	if got := resp.Volume.AccessibleTopology[0].Segments[constants.TopologyKey]; got != nodeKharkiv {
 		t.Fatalf("expected placement on kharkiv, got %s", got)
 	}
 
 	// The CR must exist with the right backend for the chosen node.
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-1"}, vol); err != nil {
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: volPvc1}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if vol.Spec.Replicas[0].Backend != miroirv1alpha1.BackendLVMThin {
@@ -122,7 +131,7 @@ func TestCreateVolumeIdempotent(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 	req := &csi.CreateVolumeRequest{
-		Name:               "pvc-1",
+		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 	}
@@ -146,7 +155,7 @@ func TestCreateVolumeRejectsRWX(t *testing.T) {
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes}
 
 	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
-		Name: "pvc-1",
+		Name: volPvc1,
 		VolumeCapabilities: []*csi.VolumeCapability{{
 			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
 			AccessMode: &csi.VolumeCapability_AccessMode{
@@ -181,7 +190,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj("kharkiv", "192.168.1.41"), nodeObj("paris", "192.168.1.42")).
+			WithObjects(nodeObj(nodeKharkiv, "192.168.1.41"), nodeObj(nodeParis, "192.168.1.42")).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {
@@ -207,7 +216,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
-				{Segments: map[string]string{constants.TopologyKey: "paris"}},
+				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
 			},
 		},
 	})
@@ -226,7 +235,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		t.Fatalf("replicas = %d", len(vol.Spec.Replicas))
 	}
 	// Scheduler preference first → paris is replicas[0] (the GI winner).
-	if vol.Spec.Replicas[0].Node != "paris" || vol.Spec.Replicas[0].NodeID != 0 {
+	if vol.Spec.Replicas[0].Node != nodeParis || vol.Spec.Replicas[0].NodeID != 0 {
 		t.Fatalf("unexpected first replica %+v", vol.Spec.Replicas[0])
 	}
 	if vol.Spec.Replicas[0].Address != "192.168.1.42" ||
@@ -265,7 +274,7 @@ func TestPickNodeNoStorageNodes(t *testing.T) {
 	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).Build(), Nodes: nodemap.Map{}}
 
 	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
-		Name:               "pvc-1",
+		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 	})
 	if status.Code(err) != codes.ResourceExhausted {
@@ -276,15 +285,15 @@ func TestPickNodeNoStorageNodes(t *testing.T) {
 func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: "kharkiv", Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	cl := readyOnGet(s)
@@ -301,12 +310,12 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
 	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
-		Name:               "pvc-new",
+		Name:               volNew,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 		VolumeContentSource: &csi.VolumeContentSource{
 			Type: &csi.VolumeContentSource_Snapshot{
-				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: "snap-1"},
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapSnap1},
 			},
 		},
 	})
@@ -316,17 +325,17 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	if resp.Volume.ContentSource == nil {
 		t.Fatal("ContentSource must be set on snapshot-restore responses")
 	}
-	if got := resp.Volume.ContentSource.GetSnapshot().GetSnapshotId(); got != "snap-1" {
+	if got := resp.Volume.ContentSource.GetSnapshot().GetSnapshotId(); got != snapSnap1 {
 		t.Fatalf("ContentSource.Snapshot.SnapshotId = %q, want snap-1", got)
 	}
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-new"}, vol); err != nil {
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: volNew}, vol); err != nil {
 		t.Fatal(err)
 	}
-	if vol.Spec.Source == nil || vol.Spec.Source.SnapshotName != "snap-1" {
+	if vol.Spec.Source == nil || vol.Spec.Source.SnapshotName != snapSnap1 {
 		t.Fatalf("new volume must record source snapshot, got %+v", vol.Spec.Source)
 	}
-	if len(vol.Spec.Replicas) != 1 || vol.Spec.Replicas[0].Node != "kharkiv" {
+	if len(vol.Spec.Replicas) != 1 || vol.Spec.Replicas[0].Node != nodeKharkiv {
 		t.Fatalf("placement must follow source volume, got %+v", vol.Spec.Replicas)
 	}
 }
@@ -336,15 +345,15 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: "kharkiv", Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{
 			ReadyToUse: true, SizeBytes: 5 << 30, SourceFormatted: true,
 		},
@@ -363,12 +372,12 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
 	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
-		Name:               "pvc-new",
+		Name:               volNew,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 		VolumeContentSource: &csi.VolumeContentSource{
 			Type: &csi.VolumeContentSource_Snapshot{
-				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: "snap-1"},
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapSnap1},
 			},
 		},
 	})
@@ -376,7 +385,7 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 		t.Fatal(err)
 	}
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-new"}, vol); err != nil {
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: volNew}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if !vol.Status.Formatted {
@@ -389,7 +398,7 @@ func TestCreateVolumeRejectsFourReplicas(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
-		Name:               "pvc-1",
+		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 		Parameters:         map[string]string{constants.ParamReplicas: "4"},
 	})
@@ -403,10 +412,10 @@ func TestCreateVolumeRejectsFourReplicas(t *testing.T) {
 func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-src"},
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: "kharkiv", Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	cl := readyOnGet(s)
@@ -414,13 +423,13 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap1 := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	snap2 := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-2"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-src"},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	if err := cl.Create(context.Background(), snap1); err != nil {
@@ -448,7 +457,7 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 			},
 		}
 	}
-	if _, err := c.CreateVolume(context.Background(), mk("snap-1")); err != nil {
+	if _, err := c.CreateVolume(context.Background(), mk(snapSnap1)); err != nil {
 		t.Fatal(err)
 	}
 	// Same name, different source snapshot → ALREADY_EXISTS, not silent

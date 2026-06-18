@@ -1,0 +1,298 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "agent": {
+      "properties": {
+        "resources": {
+          "description": "Per-node backend selection comes from node annotations:\n  miroir.io/backend: lvmthin | zfs\n  miroir.io/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)\n  miroir.io/zfs-dataset: data-pool/miroir              (zfs)\nNodes also need the label miroir.io/storage: \"true\" to receive replicas.",
+          "properties": {
+            "limits": {
+              "properties": {
+                "memory": {
+                  "default": "128Mi",
+                  "title": "memory",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "limits",
+              "type": "object"
+            },
+            "requests": {
+              "properties": {
+                "cpu": {
+                  "default": "10m",
+                  "title": "cpu",
+                  "type": "string"
+                },
+                "memory": {
+                  "default": "32Mi",
+                  "title": "memory",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "requests",
+              "type": "object"
+            }
+          },
+          "required": [],
+          "title": "resources",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "agent",
+      "type": "object"
+    },
+    "controller": {
+      "properties": {
+        "provisionTimeout": {
+          "default": "120s",
+          "title": "provisionTimeout",
+          "type": "string"
+        },
+        "resources": {
+          "properties": {
+            "limits": {
+              "properties": {
+                "memory": {
+                  "default": "128Mi",
+                  "title": "memory",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "limits",
+              "type": "object"
+            },
+            "requests": {
+              "properties": {
+                "cpu": {
+                  "default": "10m",
+                  "title": "cpu",
+                  "type": "string"
+                },
+                "memory": {
+                  "default": "32Mi",
+                  "title": "memory",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "requests",
+              "type": "object"
+            }
+          },
+          "required": [],
+          "title": "resources",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "controller",
+      "type": "object"
+    },
+    "global": {
+      "description": "Global values are values that can be accessed from any chart or subchart by exactly the same name.",
+      "required": [],
+      "title": "global",
+      "type": "object"
+    },
+    "image": {
+      "properties": {
+        "pullPolicy": {
+          "default": "IfNotPresent",
+          "title": "pullPolicy",
+          "type": "string"
+        },
+        "repository": {
+          "default": "ghcr.io/home-operations/miroir",
+          "title": "repository",
+          "type": "string"
+        },
+        "tag": {
+          "default": "main",
+          "description": "Every main push publishes :main (and the 0.0.0-main chart); releases\npublish immutable version tags.",
+          "title": "tag",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "image",
+      "type": "object"
+    },
+    "kubeletDir": {
+      "default": "/var/lib/kubelet",
+      "title": "kubeletDir",
+      "type": "string"
+    },
+    "nodes": {
+      "description": "Per-node storage topology — the single source of truth for which nodes\nhold volumes and how. Rendered into the miroir-nodes ConfigMap, read by\nthe controller (placement) and each agent (backend selection).\nnodes:\n  kharkiv:\n    backend: lvmthin\n    device: /dev/disk/by-partlabel/r-miroir\n    # thinPoolSize: 400g   # bound the pool when sharing the VG\n  paris:\n    backend: zfs\n    zfsDataset: data-pool/miroir\n  le-havre:\n    # loopfile: sparse files on the node's existing filesystem — no\n    # dedicated disk or pool. baseDir must be reflink-capable (XFS\n    # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the agent\n    # refuses to start otherwise. The dir is hostPath-mounted into the\n    # agent at the same path.\n    backend: loopfile\n    baseDir: /var/lib/miroir",
+      "required": [],
+      "title": "nodes",
+      "type": "object"
+    },
+    "replicatedStorageClass": {
+      "properties": {
+        "create": {
+          "default": true,
+          "title": "create",
+          "type": "boolean"
+        },
+        "fsType": {
+          "default": "ext4",
+          "title": "fsType",
+          "type": "string"
+        },
+        "isDefault": {
+          "default": false,
+          "title": "isDefault",
+          "type": "boolean"
+        },
+        "name": {
+          "default": "miroir-replicated",
+          "title": "name",
+          "type": "string"
+        },
+        "quorum": {
+          "default": "last-man-standing",
+          "title": "quorum",
+          "type": "string"
+        },
+        "reclaimPolicy": {
+          "default": "Delete",
+          "title": "reclaimPolicy",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "replicatedStorageClass",
+      "type": "object"
+    },
+    "sidecars": {
+      "properties": {
+        "provisioner": {
+          "properties": {
+            "image": {
+              "default": "registry.k8s.io/sig-storage/csi-provisioner:v6.2.0",
+              "title": "image",
+              "type": "string"
+            },
+            "timeout": {
+              "default": "120s",
+              "description": "LVM/ZFS provisioning on a cold node can exceed the 10s sidecar\ndefault; the driver returns DeadlineExceeded and the provisioner\nretries, but a roomier timeout avoids churn.",
+              "title": "timeout",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "provisioner",
+          "type": "object"
+        },
+        "registrar": {
+          "properties": {
+            "image": {
+              "default": "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0",
+              "title": "image",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "registrar",
+          "type": "object"
+        },
+        "resizer": {
+          "properties": {
+            "image": {
+              "default": "registry.k8s.io/sig-storage/csi-resizer:v2.1.0",
+              "title": "image",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "resizer",
+          "type": "object"
+        },
+        "snapshotter": {
+          "properties": {
+            "image": {
+              "default": "registry.k8s.io/sig-storage/csi-snapshotter:v8.5.0",
+              "title": "image",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "snapshotter",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "sidecars",
+      "type": "object"
+    },
+    "storageClass": {
+      "properties": {
+        "create": {
+          "default": true,
+          "title": "create",
+          "type": "boolean"
+        },
+        "fsType": {
+          "default": "ext4",
+          "title": "fsType",
+          "type": "string"
+        },
+        "isDefault": {
+          "default": false,
+          "description": "Coexists with OpenEBS: openebs-zfs stays the cluster default.",
+          "title": "isDefault",
+          "type": "boolean"
+        },
+        "name": {
+          "default": "miroir-local",
+          "title": "name",
+          "type": "string"
+        },
+        "reclaimPolicy": {
+          "default": "Delete",
+          "title": "reclaimPolicy",
+          "type": "string"
+        },
+        "replicas": {
+          "default": 1,
+          "title": "replicas",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "title": "storageClass",
+      "type": "object"
+    },
+    "volumeSnapshotClass": {
+      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).",
+      "properties": {
+        "create": {
+          "default": true,
+          "title": "create",
+          "type": "boolean"
+        },
+        "deletionPolicy": {
+          "default": "Delete",
+          "title": "deletionPolicy",
+          "type": "string"
+        },
+        "name": {
+          "default": "miroir-snap",
+          "title": "name",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "volumeSnapshotClass",
+      "type": "object"
+    }
+  },
+  "required": [],
+  "type": "object"
+}

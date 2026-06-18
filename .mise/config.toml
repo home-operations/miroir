@@ -1,18 +1,23 @@
 [tools]
-go = "1.26.3"
+go = "1.26.4"
 golangci-lint = "2.12.2"
+hcloud = "1.65.0"
 helm = "4.2.0"
+cosign = "3.1.1"
+helm-docs = "1.14.2"
 jq = "1.8.1"
 kind = "0.32.0"
 kube-controller-tools = "0.21.0"
-kubectl = "1.35.1"
+kubectl = "1.36.2"
 lefthook = "2.1.9"
-oxfmt = "0.53.0"
+opentofu = "1.12.1"
+oxfmt = "0.54.0"
 setup-envtest = "0.24.1"
-shellcheck = "latest"
-stern = "1.33.1"
-talosctl = "1.12.4"
+stern = "1.34.0"
+talosctl = "1.13.4"
 zizmor = "1.25.2"
+"aqua:dadav/helm-schema" = "0.23.4"
+yq = "4.53.3"
 
 [tasks.manifests]
 description = "Generate CRD and RBAC manifests"
@@ -41,6 +46,16 @@ run = "golangci-lint run --fix"
 [tasks.helm-lint]
 description = "Run helm lint"
 run = "helm lint charts/miroir"
+
+[tasks.helm-docs]
+description = "Generate the chart README + values.schema.json from Chart.yaml + values.yaml"
+run = """
+helm-docs --chart-search-root=charts --log-level=warn
+# required/additionalProperties are skipped so the schema stays permissive: values.yaml
+# supplies every default and the free-form maps stay open. --append-newline gives a
+# clean EOF; the file is .prettierignore'd (a generated artifact), so oxfmt skips it.
+helm-schema --chart-search-root charts/miroir --skip-auto-generation required,additionalProperties --append-newline
+"""
 
 [tasks.helm-crds]
 description = "Generate CRDs and copy them into the Helm chart"
