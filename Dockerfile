@@ -18,7 +18,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpat
 # siderolabs/zfs extension's module — verify on upgrades.
 # drbd-utils is pinned: GI seeding depends on drbdmeta CLI behavior that
 # was validated against this version — re-validate before bumping.
-FROM alpine:3.23
+FROM alpine:3.24
 RUN apk add --no-cache \
     lvm2 \
     zfs \
