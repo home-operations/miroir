@@ -3,10 +3,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: miroir-setup-{{ $name }}
+  name: {{ include "miroir.fullname" $ }}-setup-{{ $name }}
   namespace: {{ $.Release.Namespace }}
   labels:
-    app.kubernetes.io/name: miroir
+    {{- include "miroir.labels" $ | nindent 4 }}
     app.kubernetes.io/component: setup
   annotations:
     helm.sh/hook: post-install,post-upgrade
@@ -15,7 +15,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: miroir-setup
+      serviceAccountName: {{ include "miroir.setupServiceAccountName" $ }}
       nodeName: {{ $name }}
       restartPolicy: Never
       hostNetwork: true
@@ -53,7 +53,7 @@ spec:
       volumes:
         - name: nodes
           configMap:
-            name: miroir-nodes
+            name: {{ include "miroir.nodesConfigName" $ }}
         - name: dev
           hostPath:
             path: /dev
@@ -75,4 +75,4 @@ spec:
             path: {{ $node.baseDir }}
             type: DirectoryOrCreate
 {{- end }}
-{{ end }}
+{{- end }}

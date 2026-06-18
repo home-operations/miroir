@@ -4,8 +4,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: miroir-nodes
+  name: {{ include "miroir.nodesConfigName" . }}
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 data:
   nodes.yaml: |
     {{- .Values.nodes | toYaml | nindent 4 }}
@@ -15,8 +17,10 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: miroir-drbd-conf
+  name: {{ include "miroir.drbdConfigName" . }}
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 data:
   global_common.conf: |
     global {

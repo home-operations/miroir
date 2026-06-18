@@ -1,0 +1,232 @@
+suite: test agent
+templates:
+  - agent.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: renders a DaemonSet with the agent + node-driver-registrar
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    asserts:
+      - hasDocuments:
+          count: 1
+      - documentIndex: 0
+        equal:
+          path: kind
+          value: DaemonSet
+      - documentIndex: 0
+        equal:
+          path: apiVersion
+          value: apps/v1
+      - documentIndex: 0
+        equal:
+          path: metadata.name
+          value: miroir-agent
+      - documentIndex: 0
+        lengthEqual:
+          path: spec.template.spec.containers
+          count: 2
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.containers[0].name
+          value: agent
+      - documentIndex: 0
+        equal:
+          path: spec.template.spec.containers[1].name
+          value: node-driver-registrar
+
+  - it: agent container runs with mode=agent and a privileged securityContext
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/home-operations/miroir:main"
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: IfNotPresent
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--mode=agent"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--csi-socket=/csi/csi.sock"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--nodes-config=/etc/miroir/nodes.yaml"
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.privileged
+          value: true
+      - lengthEqual:
+          path: spec.template.spec.containers[0].ports
+          count: 2
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].name
+          value: healthz
+      - equal:
+          path: spec.template.spec.containers[0].ports[0].containerPort
+          value: 9811
+      - equal:
+          path: spec.template.spec.containers[0].ports[1].name
+          value: metrics
+      - equal:
+          path: spec.template.spec.containers[0].ports[1].containerPort
+          value: 9810
+
+  - it: pod runs with hostNetwork, hostPID and ClusterFirstWithHostNet
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.hostPID
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 10
+      - lengthEqual:
+          path: spec.template.spec.tolerations
+          count: 1
+      - contains:
+          any: true
+          path: spec.template.spec.tolerations
+          content:
+            operator: Exists
+
+  - it: binds /var/lib/kubelet at kubeletDir with Bidirectional propagation
+    set:
+      kubeletDir: /var/snap/kubelet
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    documentIndex: 0
+    asserts:
+      - contains:
+          any: true
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: kubelet
+            mountPath: /var/snap/kubelet
+            mountPropagation: Bidirectional
+      - contains:
+          any: true
+          path: spec.template.spec.volumes
+          content:
+            name: kubelet
+            hostPath:
+              path: /var/snap/kubelet
+              type: Directory
+
+  - it: with no loopfile nodes, no loopfile mount or volume is rendered
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+        paris:
+          backend: zfs
+          zfsDataset: data-pool/miroir
+    documentIndex: 0
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 9
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 10
+
+  - it: adds one identity-mounted loopfile mount and hostPath volume per baseDir
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+        paris:
+          backend: zfs
+          zfsDataset: data-pool/miroir
+        le-havre:
+          backend: loopfile
+          baseDir: /var/lib/miroir
+        backup:
+          backend: loopfile
+          baseDir: /srv/miroir
+    documentIndex: 0
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 11
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 12
+      - contains:
+          any: true
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            mountPath: /var/lib/miroir
+      - contains:
+          any: true
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            mountPath: /srv/miroir
+      - contains:
+          any: true
+          path: spec.template.spec.volumes
+          content:
+            hostPath:
+              path: /var/lib/miroir
+              type: DirectoryOrCreate
+      - contains:
+          any: true
+          path: spec.template.spec.volumes
+          content:
+            hostPath:
+              path: /srv/miroir
+              type: DirectoryOrCreate
+
+  - it: dedups loopfile mounts when two nodes share a baseDir
+    set:
+      nodes:
+        a:
+          backend: loopfile
+          baseDir: /var/lib/miroir
+        b:
+          backend: loopfile
+          baseDir: /var/lib/miroir
+    documentIndex: 0
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 10
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 11
+      - contains:
+          any: true
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            mountPath: /var/lib/miroir
+      - contains:
+          any: true
+          path: spec.template.spec.volumes
+          content:
+            hostPath:
+              path: /var/lib/miroir
+              type: DirectoryOrCreate

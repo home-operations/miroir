@@ -1,10 +1,10 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: miroir-controller
+  name: {{ include "miroir.controllerName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: miroir
+    {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
 spec:
   replicas: 1
@@ -12,15 +12,15 @@ spec:
     type: Recreate # one writer for allocations; no leader election
   selector:
     matchLabels:
-      app.kubernetes.io/name: miroir
+      {{- include "miroir.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: controller
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: miroir
+        {{- include "miroir.labels" . | nindent 8 }}
         app.kubernetes.io/component: controller
     spec:
-      serviceAccountName: miroir-controller
+      serviceAccountName: {{ include "miroir.controllerName" . }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -96,4 +96,4 @@ spec:
           emptyDir: {}
         - name: nodes
           configMap:
-            name: miroir-nodes
+            name: {{ include "miroir.nodesConfigName" . }}

@@ -1,10 +1,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: miroir-uninstall
+  name: {{ include "miroir.uninstallServiceAccountName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: miroir
+    {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: uninstall
   annotations:
     helm.sh/hook: pre-delete
@@ -13,7 +13,7 @@ metadata:
 spec:
   template:
     spec:
-      serviceAccountName: miroir-uninstall
+      serviceAccountName: {{ include "miroir.uninstallServiceAccountName" . }}
       restartPolicy: Never
       containers:
         - name: kubectl

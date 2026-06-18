@@ -1,0 +1,34 @@
+{{- /* NOTE: this file is rendered by `helm install`. Variables come from the chart's
+       standard root context (.Chart, .Release, .Values) — no helper merging. */ -}}
+miroir {{ .Chart.AppVersion }} has been installed in namespace "{{ .Release.Namespace }}".
+
+Workloads:
+  controller  Deployment/{{ include "miroir.controllerName" . }}        1 replica
+  agent       DaemonSet/{{ include "miroir.agentName" . }}            one per schedulable node
+
+Storage classes:
+{{- if .Values.storageClass.create }}
+  - {{ .Values.storageClass.name }}         provisioner={{ include "miroir.csiDriverName" . }}, replicas={{ .Values.storageClass.replicas }}, fsType={{ .Values.storageClass.fsType }}
+{{- end }}
+{{- if .Values.replicatedStorageClass.create }}
+  - {{ .Values.replicatedStorageClass.name }}     provisioner={{ include "miroir.csiDriverName" . }}, replicas=2, quorum={{ .Values.replicatedStorageClass.quorum }}, fsType={{ .Values.replicatedStorageClass.fsType }}
+{{- end }}
+{{- if .Values.volumeSnapshotClass.create }}
+Snapshot class:
+  - {{ .Values.volumeSnapshotClass.name }}       driver={{ include "miroir.csiDriverName" . }}, deletionPolicy={{ .Values.volumeSnapshotClass.deletionPolicy }}
+{{- end }}
+
+Before provisioning volumes, every storage node needs:
+  1. Label    miroir.io/storage=true
+  2. Backend  miroir.io/backend=lvmthin | zfs | loopfile
+  3. For lvmthin:   miroir.io/device=/dev/disk/by-partlabel/r-miroir
+  4. For zfs:       miroir.io/zfs-dataset=pool/miroir
+  5. For loopfile:  defined under nodes[].baseDir in values.yaml (reflink-capable FS required)
+
+Verify the rollout:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "miroir.name" . }}
+  kubectl -n {{ .Release.Namespace }} get daemonset {{ include "miroir.agentName" . }}
+  kubectl get csidriver {{ include "miroir.csiDriverName" . }}
+
+Smoke test (creates a PVC, writes/reads data, exercises a snapshot + failover):
+  ./test/smoke/smoke.sh

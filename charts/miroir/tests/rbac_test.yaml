@@ -1,0 +1,133 @@
+suite: test rbac
+templates:
+  - rbac.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: emits two ServiceAccounts, two ClusterRoles, two ClusterRoleBindings
+    asserts:
+      - hasDocuments:
+          count: 6
+      - documentIndex: 0
+        equal:
+          path: kind
+          value: ServiceAccount
+      - documentIndex: 1
+        equal:
+          path: kind
+          value: ServiceAccount
+      - documentIndex: 2
+        equal:
+          path: kind
+          value: ClusterRole
+      - documentIndex: 3
+        equal:
+          path: kind
+          value: ClusterRoleBinding
+      - documentIndex: 4
+        equal:
+          path: kind
+          value: ClusterRole
+      - documentIndex: 5
+        equal:
+          path: kind
+          value: ClusterRoleBinding
+
+  - it: places both ServiceAccounts in the Release namespace
+    asserts:
+      - documentIndex: 0
+        equal:
+          path: metadata.namespace
+          value: miroir-system
+      - documentIndex: 1
+        equal:
+          path: metadata.namespace
+          value: miroir-system
+
+  - it: controller ClusterRole grants full CRUD on miroir CRDs
+    documentIndex: 2
+    asserts:
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: ["miroir.io"]
+            resources: ["miroirvolumes", "miroirsnapshots"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: ["snapshot.storage.k8s.io"]
+            resources: ["volumesnapshotclasses", "volumesnapshots"]
+            verbs: ["get", "list", "watch"]
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["persistentvolumes"]
+            verbs: ["get", "list", "watch", "create", "delete", "patch"]
+
+  - it: agent ClusterRole only updates mirror CRDs and patches their status
+    documentIndex: 4
+    asserts:
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: ["miroir.io"]
+            resources: ["miroirvolumes", "miroirsnapshots"]
+            verbs: ["get", "list", "watch", "update"]
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: ["miroir.io"]
+            resources: ["miroirvolumes/status", "miroirsnapshots/status"]
+            verbs: ["get", "patch"]
+
+  - it: controller ClusterRoleBinding binds to miroir-controller ServiceAccount
+    documentIndex: 3
+    asserts:
+      - equal:
+          path: kind
+          value: ClusterRoleBinding
+      - equal:
+          path: roleRef.kind
+          value: ClusterRole
+      - equal:
+          path: roleRef.name
+          value: miroir-controller
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].name
+          value: miroir-controller
+      - equal:
+          path: subjects[0].namespace
+          value: miroir-system
+
+  - it: agent ClusterRoleBinding binds to miroir-agent ServiceAccount
+    documentIndex: 5
+    asserts:
+      - equal:
+          path: kind
+          value: ClusterRoleBinding
+      - equal:
+          path: roleRef.kind
+          value: ClusterRole
+      - equal:
+          path: roleRef.name
+          value: miroir-agent
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].name
+          value: miroir-agent
+      - equal:
+          path: subjects[0].namespace
+          value: miroir-system

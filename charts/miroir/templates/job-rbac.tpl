@@ -1,8 +1,11 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: miroir-setup
+  name: {{ include "miroir.setupServiceAccountName" . }}
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: setup
   annotations:
     helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "-10"
@@ -11,8 +14,11 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: miroir-uninstall
+  name: {{ include "miroir.uninstallServiceAccountName" . }}
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: uninstall
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "5"
@@ -21,7 +27,10 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: miroir-uninstall
+  name: {{ include "miroir.uninstallServiceAccountName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: uninstall
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "5"
@@ -34,7 +43,10 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: miroir-uninstall
+  name: {{ include "miroir.uninstallServiceAccountName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: uninstall
   annotations:
     helm.sh/hook: pre-delete
     helm.sh/hook-weight: "5"
@@ -42,8 +54,8 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: miroir-uninstall
+  name: {{ include "miroir.uninstallServiceAccountName" . }}
 subjects:
   - kind: ServiceAccount
-    name: miroir-uninstall
+    name: {{ include "miroir.uninstallServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}

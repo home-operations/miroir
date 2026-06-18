@@ -47,6 +47,18 @@ run = "golangci-lint run --fix"
 description = "Run helm lint"
 run = "helm lint charts/miroir"
 
+[tasks.helm-test]
+description = "Run helm-unittest against the chart templates"
+run = "helm unittest charts/miroir"
+
+[tasks.helm-docs-check]
+description = "Verify chart README + values.schema.json are in sync with values.yaml"
+run = '''
+helm-docs --chart-search-root=charts --log-level=warn
+helm-schema --chart-search-root charts/miroir --skip-auto-generation required,additionalProperties --append-newline
+git diff --exit-code charts/miroir/README.md charts/miroir/values.schema.json
+'''
+
 [tasks.helm-docs]
 description = "Generate the chart README + values.schema.json from Chart.yaml + values.yaml"
 run = """

@@ -1,19 +1,25 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: miroir-controller
+  name: {{ include "miroir.controllerName" . }}
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: miroir-agent
+  name: {{ include "miroir.agentName" . }}
   namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: miroir-controller
+  name: {{ include "miroir.controllerName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 rules:
   # miroir desired state
   - apiGroups: ["miroir.io"]
@@ -68,20 +74,24 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: miroir-controller
+  name: {{ include "miroir.controllerName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: miroir-controller
+  name: {{ include "miroir.controllerName" . }}
 subjects:
   - kind: ServiceAccount
-    name: miroir-controller
+    name: {{ include "miroir.controllerName" . }}
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: miroir-agent
+  name: {{ include "miroir.agentName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["miroir.io"]
     resources: ["miroirvolumes", "miroirsnapshots"]
@@ -93,12 +103,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: miroir-agent
+  name: {{ include "miroir.agentName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: miroir-agent
+  name: {{ include "miroir.agentName" . }}
 subjects:
   - kind: ServiceAccount
-    name: miroir-agent
+    name: {{ include "miroir.agentName" . }}
     namespace: {{ .Release.Namespace }}

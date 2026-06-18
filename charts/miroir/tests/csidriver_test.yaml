@@ -1,0 +1,30 @@
+suite: test csidriver
+templates:
+  - csidriver.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: renders a single CSIDriver named miroir.io with the expected capabilities
+    asserts:
+      - hasDocuments:
+          count: 1
+      - containsDocument:
+          kind: CSIDriver
+          name: miroir.io
+          apiVersion: storage.k8s.io/v1
+      - equal:
+          path: spec.attachRequired
+          value: false
+      - equal:
+          path: spec.podInfoOnMount
+          value: false
+      - equal:
+          path: spec.fsGroupPolicy
+          value: ReadWriteOnceWithFSType
+      - equal:
+          path: spec.storageCapacity
+          value: false
+      - contains:
+          path: spec.volumeLifecycleModes
+          content: Persistent

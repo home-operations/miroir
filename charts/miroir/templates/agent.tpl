@@ -12,23 +12,23 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: miroir-agent
+  name: {{ include "miroir.agentName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    app.kubernetes.io/name: miroir
+    {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: agent
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: miroir
+      {{- include "miroir.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: agent
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: miroir
+        {{- include "miroir.labels" . | nindent 8 }}
         app.kubernetes.io/component: agent
     spec:
-      serviceAccountName: miroir-agent
+      serviceAccountName: {{ include "miroir.agentName" . }}
       # hostNetwork so the pod IP is the node IP and the container
       # hostname matches the node — DRBD peers dial the host IP and
       # match `on <hostname>` blocks; agent ports must be host-unique.
@@ -134,7 +134,7 @@ spec:
       volumes:
         - name: nodes
           configMap:
-            name: miroir-nodes
+            name: {{ include "miroir.nodesConfigName" . }}
         - name: socket-dir
           hostPath:
             path: {{ .Values.kubeletDir }}/plugins/miroir.io
@@ -168,7 +168,7 @@ spec:
             type: DirectoryOrCreate
         - name: drbd-global-conf
           configMap:
-            name: miroir-drbd-conf
+            name: {{ include "miroir.drbdConfigName" . }}
             items:
               - key: global_common.conf
                 path: global_common.conf

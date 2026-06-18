@@ -1,7 +1,7 @@
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver
 metadata:
-  name: miroir.io
+  name: {{ include "miroir.csiDriverName" . }}
 spec:
   attachRequired: false
   podInfoOnMount: false

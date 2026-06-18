@@ -1,0 +1,168 @@
+suite: test helpers
+templates:
+  - csidriver.tpl
+  - controller.tpl
+  - agent.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: nameOverride renames controller but leaves CSI driver as .Chart.Name
+    set:
+      nameOverride: alt
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: csidriver.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: miroir.io
+
+  - it: nameOverride flows through to the controller Deployment
+    set:
+      nameOverride: alt
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: controller.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: miroir-alt-controller
+
+  - it: nameOverride flows through to the agent DaemonSet
+    set:
+      nameOverride: alt
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: agent.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: miroir-alt-agent
+
+  - it: fullnameOverride replaces the chart-name portion for the controller
+    set:
+      fullnameOverride: storage
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: controller.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: storage-controller
+
+  - it: fullnameOverride replaces the chart-name portion for the agent
+    set:
+      fullnameOverride: storage
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: agent.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: storage-agent
+
+  - it: fullnameOverride does not affect the CSI driver name
+    set:
+      fullnameOverride: storage
+    template: csidriver.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: miroir.io
+
+  - it: release names that already contain the chart name are not prefixed twice (controller)
+    release:
+      name: miroir-prod
+      namespace: miroir-system
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: controller.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: miroir-prod-controller
+
+  - it: release names that already contain the chart name are not prefixed twice (agent)
+    release:
+      name: miroir-prod
+      namespace: miroir-system
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: agent.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: miroir-prod-agent
+
+  - it: every workload carries the standard label set
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: controller.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: miroir
+      - equal:
+          path: metadata.labels["app.kubernetes.io/instance"]
+          value: miroir
+      - equal:
+          path: metadata.labels["app.kubernetes.io/managed-by"]
+          value: Helm
+      - equal:
+          path: metadata.labels["helm.sh/chart"]
+          value: miroir-0.0.1
+      - equal:
+          path: metadata.labels["app.kubernetes.io/component"]
+          value: controller
+
+  - it: Deployment matchLabels only carry the immutable selector set
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    template: controller.tpl
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: miroir
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: miroir
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/component"]
+          value: controller
+      - notExists:
+          path: spec.selector.matchLabels["helm.sh/chart"]
+      - notExists:
+          path: spec.selector.matchLabels["app.kubernetes.io/version"]

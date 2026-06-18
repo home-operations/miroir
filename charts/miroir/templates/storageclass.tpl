@@ -5,7 +5,7 @@ metadata:
   name: {{ .Values.storageClass.name }}
   annotations:
     storageclass.kubernetes.io/is-default-class: {{ .Values.storageClass.isDefault | quote }}
-provisioner: miroir.io
+provisioner: {{ include "miroir.csiDriverName" . }}
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
@@ -21,7 +21,7 @@ metadata:
   name: {{ .Values.replicatedStorageClass.name }}
   annotations:
     storageclass.kubernetes.io/is-default-class: {{ .Values.replicatedStorageClass.isDefault | quote }}
-provisioner: miroir.io
+provisioner: {{ include "miroir.csiDriverName" . }}
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.replicatedStorageClass.reclaimPolicy }}
@@ -38,6 +38,6 @@ apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: {{ .Values.volumeSnapshotClass.name }}
-driver: miroir.io
+driver: {{ include "miroir.csiDriverName" . }}
 deletionPolicy: {{ .Values.volumeSnapshotClass.deletionPolicy }}
 {{- end }}
