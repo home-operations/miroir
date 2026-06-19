@@ -17,10 +17,9 @@ spec:
       restartPolicy: Never
       containers:
         - name: kubectl
-          image: bitnami/kubectl:1.31
-          command:
-            - /bin/sh
-            - -c
-            - |
-              kubectl delete miroirsnapshots --all --ignore-not-found
-              kubectl delete miroirvolumes --all --ignore-not-found
+          image: {{ .Values.uninstall.image }}
+          args:
+            - delete
+            - miroirsnapshots,miroirvolumes
+            - --all
+            - --ignore-not-found

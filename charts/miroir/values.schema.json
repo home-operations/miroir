@@ -269,6 +269,19 @@
       "title": "storageClass",
       "type": "object"
     },
+    "uninstall": {
+      "description": "Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent\ntears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.",
+      "properties": {
+        "image": {
+          "default": "registry.k8s.io/kubectl:v1.31.0",
+          "title": "image",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "uninstall",
+      "type": "object"
+    },
     "volumeSnapshotClass": {
       "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).",
       "properties": {
