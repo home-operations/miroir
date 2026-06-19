@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/container-storage-interface/spec v1.12.0
 	github.com/onsi/ginkgo/v2 v2.31.0
-	github.com/onsi/gomega v1.40.0
+	github.com/onsi/gomega v1.42.0
 	github.com/prometheus/client_golang v1.23.2
 	golang.org/x/sys v0.46.0
 	google.golang.org/grpc v1.81.1
