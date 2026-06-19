@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/home-operations/miroir/compare/0.1.1...0.1.2) (2026-06-19)
+
+
+### Bug Fixes
+
+* **chart:** use maintained kubectl image for the uninstall hook ([#18](https://github.com/home-operations/miroir/issues/18)) ([62f34cc](https://github.com/home-operations/miroir/commit/62f34ccbeff7d26c0fc9ee498166d92d6033d28e))
+
 ## [0.1.1](https://github.com/home-operations/miroir/compare/0.1.0...0.1.1) (2026-06-19)
 
 
