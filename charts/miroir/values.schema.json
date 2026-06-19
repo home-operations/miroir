@@ -217,7 +217,7 @@
         "snapshotter": {
           "properties": {
             "image": {
-              "default": "registry.k8s.io/sig-storage/csi-snapshotter:v8.5.0",
+              "default": "registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0",
               "title": "image",
               "type": "string"
             }
