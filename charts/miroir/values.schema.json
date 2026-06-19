@@ -284,7 +284,7 @@
       "description": "Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent\ntears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.",
       "properties": {
         "image": {
-          "default": "registry.k8s.io/kubectl:v1.31.0",
+          "default": "registry.k8s.io/kubectl:v1.36.2",
           "title": "image",
           "type": "string"
         }
