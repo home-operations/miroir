@@ -196,7 +196,6 @@ the exact `drbdsetup` / `lvremove` / `zfs destroy` calls needed.
 
 **Should land soon**
 
-- [ ] In-place snapshot rollback
 - [ ] Capacity-aware placement
 - [ ] CSI `CSIStorageCapacity` reporting per pool
 - [ ] Per-volume Prometheus metrics (IOPS, latency, DRBD resync
