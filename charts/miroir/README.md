@@ -64,6 +64,7 @@ Kubernetes: `>=1.31.0`
 | storageClass.name | string | `"miroir-local"` |  |
 | storageClass.reclaimPolicy | string | `"Delete"` |  |
 | storageClass.replicas | int | `1` |  |
+| uninstall.image | string | `"registry.k8s.io/kubectl:v1.31.0"` |  |
 | volumeSnapshotClass.create | bool | `true` |  |
 | volumeSnapshotClass.deletionPolicy | string | `"Delete"` |  |
 | volumeSnapshotClass.name | string | `"miroir-snap"` |  |

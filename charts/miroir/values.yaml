@@ -19,6 +19,11 @@ sidecars:
   resizer:
     image: registry.k8s.io/sig-storage/csi-resizer:v2.2.0
 
+# Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
+# tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
+uninstall:
+  image: registry.k8s.io/kubectl:v1.31.0
+
 kubeletDir: /var/lib/kubelet
 
 # Per-node storage topology — the single source of truth for which nodes
