@@ -49,6 +49,11 @@ nodes: {}
 
 controller:
   provisionTimeout: 120s
+  # Thin-provisioning overcommit guardrail: CreateVolume is refused when a
+  # node's provisioned total would exceed capacity × this ratio. 2× is the
+  # classic CoW headroom; raise it only if you trust your usage to stay
+  # sparse, lower it toward 1 to provision conservatively.
+  overcommitRatio: 2
   resources:
     requests:
       cpu: 10m
@@ -62,6 +67,10 @@ agent:
   #   miroir.io/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)
   #   miroir.io/zfs-dataset: data-pool/miroir              (zfs)
   # Nodes also need the label miroir.io/storage: "true" to receive replicas.
+  #
+  # How often each agent republishes its pool capacity to its MiroirNode
+  # (read by the controller for capacity-aware placement).
+  poolStatsInterval: 60s
   resources:
     requests:
       cpu: 10m

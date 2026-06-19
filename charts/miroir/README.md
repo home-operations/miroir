@@ -35,9 +35,11 @@ Kubernetes: `>=1.31.0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| agent.poolStatsInterval | string | `"60s"` |  |
 | agent.resources.limits.memory | string | `"128Mi"` |  |
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
+| controller.overcommitRatio | int | `2` |  |
 | controller.provisionTimeout | string | `"120s"` |  |
 | controller.resources.limits.memory | string | `"128Mi"` |  |
 | controller.resources.requests.cpu | string | `"10m"` |  |

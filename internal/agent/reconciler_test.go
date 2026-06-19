@@ -55,10 +55,15 @@ type fakeBackend struct {
 	snapCalls   []string
 	fromSnapVol []string
 	createVol   []string
+	stats       backend.PoolStats
 }
 
 func newFakeBackend() *fakeBackend {
-	return &fakeBackend{created: map[string]int64{}, existing: map[string]bool{}}
+	return &fakeBackend{
+		created:  map[string]int64{},
+		existing: map[string]bool{},
+		stats:    backend.PoolStats{SizeBytes: 1 << 40},
+	}
 }
 
 func (f *fakeBackend) Exists(_ context.Context, vol string) (bool, error) {
@@ -113,7 +118,7 @@ func (f *fakeBackend) DeleteSnapshot(_ context.Context, vol, snap string) error 
 func (f *fakeBackend) DevicePath(vol string) string { return "/dev/fake/" + vol }
 
 func (f *fakeBackend) Stats(context.Context) (backend.PoolStats, error) {
-	return backend.PoolStats{SizeBytes: 1 << 40}, nil
+	return f.stats, nil
 }
 
 func newScheme(t *testing.T) *runtime.Scheme {

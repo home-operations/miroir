@@ -17,12 +17,12 @@ limitations under the License.
 package csi
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -61,6 +61,10 @@ type Controller struct {
 	Nodes nodemap.Map
 	// ProvisionTimeout bounds the wait for agents to realize a volume.
 	ProvisionTimeout time.Duration
+	// OvercommitRatio bounds thin-provisioning overcommit: CreateVolume is
+	// refused when a node's provisioned total would exceed
+	// capacity×ratio (notes/DESIGN.md §4.6). Zero → defaultOvercommitRatio.
+	OvercommitRatio float64
 
 	// allocMu serialises CreateVolume RPCs that run concurrently within
 	// the single controller pod: two interleaved List→Create spans would
@@ -72,6 +76,13 @@ type Controller struct {
 const (
 	defaultProvisionTimeout = 120 * time.Second // matches sidecars.provisioner.timeout
 	defaultExpandTimeout    = 10 * time.Minute  // node reboots during grow
+	// defaultOvercommitRatio caps provisioned-over-capacity per pool
+	// (notes/DESIGN.md §4.6); 2× is the documented default.
+	defaultOvercommitRatio = 2.0
+	// statsStaleAfter ignores MiroirNode figures older than this as
+	// unknown — the agent republishes every ~60s, so a few missed polls
+	// mean the node is down and its stats can't be trusted for placement.
+	statsStaleAfter = 5 * time.Minute
 )
 
 // ControllerGetCapabilities advertises exactly what is implemented.
@@ -150,7 +161,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		source = &miroirv1alpha1.VolumeSource{SnapshotName: snapID}
 		placed = srcVol.Spec.Replicas
 	} else {
-		placed, err = c.place(ctx, req.GetAccessibilityRequirements(), replicas)
+		placed, err = c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName())
 		if err != nil {
 			return nil, err
 		}
@@ -272,22 +283,63 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 }
 
 // place selects count replica nodes: the scheduler's preference first
-// (WaitForFirstConsumer), then the remaining storage nodes by name
-// (capacity-aware spread is future work). For replicated volumes it
-// resolves each node's InternalIP and assigns DRBD node ids by slice
-// position — replicas[0] is the GI-seed winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int) ([]miroirv1alpha1.Replica, error) {
+// (WaitForFirstConsumer), then the remaining eligible storage nodes by
+// free space — capacity-aware spread (notes/DESIGN.md §4.6). Nodes whose
+// projected provisioned total would breach the overcommit ratio are
+// excluded, and a chosen node breaching it (e.g. a topology-pinned one)
+// fails the request so the scheduler retries elsewhere. Pools without
+// fresh stats are treated as unknown and allowed, so a cold cluster still
+// provisions. For replicated volumes it resolves each node's InternalIP
+// and assigns DRBD node ids by slice position — replicas[0] is the GI-seed
+// winner (internal/drbd).
+func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string) ([]miroirv1alpha1.Replica, error) {
 	if len(c.Nodes) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"need %d storage nodes, have %d (Helm values: nodes)", count, len(c.Nodes))
 	}
 
+	stats, err := c.poolStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	provisioned, err := c.provisionedPerNode(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	ratio := c.OvercommitRatio
+	if ratio <= 0 {
+		ratio = defaultOvercommitRatio
+	}
+	// overcommitted reports whether placing sizeBytes on node would push
+	// its provisioned total past capacity×ratio, using fresh stats only.
+	overcommitted := func(node string) bool {
+		st, ok := stats[node]
+		if !ok || st.CapacityBytes <= 0 {
+			return false
+		}
+		return float64(provisioned[node]+sizeBytes) > float64(st.CapacityBytes)*ratio
+	}
+	// freeBytes is the pool headroom used to rank candidates; 0 (sorts
+	// last) when stats are unknown.
+	freeBytes := func(node string) int64 {
+		st, ok := stats[node]
+		if !ok {
+			return 0
+		}
+		if free := st.CapacityBytes - st.AllocatedBytes; free > 0 {
+			return free
+		}
+		return 0
+	}
+
 	ordered := make([]string, 0, len(c.Nodes))
-	// Scheduler-selected topology first.
+	// Scheduler-selected topology first — kept in place even if it later
+	// fails the overcommit guard, so a topology-pinned volume refuses
+	// rather than silently landing on a node the pod can't reach.
 	for _, t := range append(reqs.GetPreferred(), reqs.GetRequisite()...) {
-		if name, ok := t.GetSegments()[constants.TopologyKey]; ok {
-			if _, ok := c.Nodes[name]; ok && !slices.Contains(ordered, name) {
-				ordered = append(ordered, name)
+		if n, ok := t.GetSegments()[constants.TopologyKey]; ok {
+			if _, ok := c.Nodes[n]; ok && !slices.Contains(ordered, n) {
+				ordered = append(ordered, n)
 			}
 		}
 	}
@@ -295,12 +347,33 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 		return nil, status.Error(codes.ResourceExhausted,
 			"no storage node satisfies the requested topology")
 	}
-	for _, name := range slices.Sorted(maps.Keys(c.Nodes)) {
-		if !slices.Contains(ordered, name) {
-			ordered = append(ordered, name)
+	// Remaining eligible nodes, most free space first (ties by name).
+	rest := make([]string, 0, len(c.Nodes))
+	for n := range c.Nodes {
+		if slices.Contains(ordered, n) || overcommitted(n) {
+			continue
 		}
+		rest = append(rest, n)
+	}
+	slices.SortFunc(rest, func(a, b string) int {
+		if d := cmp.Compare(freeBytes(b), freeBytes(a)); d != 0 {
+			return d
+		}
+		return cmp.Compare(a, b)
+	})
+	ordered = append(ordered, rest...)
+	if len(ordered) < count {
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"only %d of %d storage nodes can host a %d-byte volume within the %gx overcommit ratio",
+			len(ordered), len(c.Nodes), sizeBytes, ratio)
 	}
 	ordered = ordered[:count]
+	for _, n := range ordered {
+		if overcommitted(n) {
+			return nil, status.Errorf(codes.ResourceExhausted,
+				"node %s would exceed the %gx overcommit ratio for a %d-byte volume", n, ratio, sizeBytes)
+		}
+	}
 
 	replicas := make([]miroirv1alpha1.Replica, 0, count)
 	for i, name := range ordered {
@@ -331,6 +404,46 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 		}
 	}
 	return "", status.Errorf(codes.Internal, "node %s has no InternalIP", name)
+}
+
+// poolStats returns the fresh pool capacity each storage node's agent
+// published (notes/DESIGN.md §4.6). Stale or never-published nodes are
+// omitted — placement treats them as unknown (eligible, no free-space
+// signal) so a cold cluster still provisions.
+func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.MiroirNodeStatus, error) {
+	list := &miroirv1alpha1.MiroirNodeList{}
+	if err := c.Client.List(ctx, list); err != nil {
+		return nil, status.Errorf(codes.Internal, "list MiroirNodes: %v", err)
+	}
+	out := make(map[string]miroirv1alpha1.MiroirNodeStatus, len(list.Items))
+	for _, n := range list.Items {
+		if n.Status.ObservedAt == nil || time.Since(n.Status.ObservedAt.Time) > statsStaleAfter {
+			continue
+		}
+		out[n.Name] = n.Status
+	}
+	return out, nil
+}
+
+// provisionedPerNode sums the provisioned (virtual) size of every volume
+// with a replica on each node, excluding exclude (the volume being
+// (re)created, so an idempotent retry does not count itself). Clones share
+// backing on disk but are counted in full — a conservative overcommit guard.
+func (c *Controller) provisionedPerNode(ctx context.Context, exclude string) (map[string]int64, error) {
+	list := &miroirv1alpha1.MiroirVolumeList{}
+	if err := c.Client.List(ctx, list); err != nil {
+		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
+	}
+	out := map[string]int64{}
+	for _, v := range list.Items {
+		if v.Name == exclude {
+			continue
+		}
+		for _, r := range v.Spec.Replicas {
+			out[r.Node] += v.Spec.SizeBytes
+		}
+	}
+	return out, nil
 }
 
 // allocateDRBD picks the lowest free TCP port by scanning existing

@@ -53,6 +53,7 @@ spec:
             - --nodes-config=/etc/miroir/nodes.yaml
             - --metrics-bind-address=:9810
             - --health-probe-bind-address=:9811
+            - --pool-stats-interval={{ .Values.agent.poolStatsInterval }}
           env:
             - name: NODE_NAME
               valueFrom:
