@@ -16,13 +16,15 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpat
 # userland; the kernel modules come from the Talos kernel + extensions.
 # Alpine's zfs userland (2.4.x) must share a minor version with the
 # siderolabs/zfs extension's module — verify on upgrades.
-# drbd-utils is pinned: GI seeding depends on drbdmeta CLI behavior that
-# was validated against this version — re-validate before bumping.
+# drbd-utils is pinned to the Alpine 3.24 series (bumped 9.33 → 9.34 with
+# the repo): GI seeding depends on drbdmeta CLI behavior — re-validate
+# against smoke.sh + conformance (the kind e2e does not exercise DRBD)
+# before bumping further.
 FROM alpine:3.24
 RUN apk add --no-cache \
     lvm2 \
     zfs \
-    'drbd-utils=~9.33' \
+    'drbd-utils=~9.34' \
     e2fsprogs \
     e2fsprogs-extra \
     xfsprogs \
