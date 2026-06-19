@@ -3,8 +3,13 @@
   "properties": {
     "agent": {
       "properties": {
+        "poolStatsInterval": {
+          "default": "60s",
+          "description": "Per-node backend selection comes from node annotations:\n  miroir.io/backend: lvmthin | zfs\n  miroir.io/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)\n  miroir.io/zfs-dataset: data-pool/miroir              (zfs)\nNodes also need the label miroir.io/storage: \"true\" to receive replicas.\n\nHow often each agent republishes its pool capacity to its MiroirNode\n(read by the controller for capacity-aware placement).",
+          "title": "poolStatsInterval",
+          "type": "string"
+        },
         "resources": {
-          "description": "Per-node backend selection comes from node annotations:\n  miroir.io/backend: lvmthin | zfs\n  miroir.io/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)\n  miroir.io/zfs-dataset: data-pool/miroir              (zfs)\nNodes also need the label miroir.io/storage: \"true\" to receive replicas.",
           "properties": {
             "limits": {
               "properties": {
@@ -47,6 +52,12 @@
     },
     "controller": {
       "properties": {
+        "overcommitRatio": {
+          "default": 2,
+          "description": "Thin-provisioning overcommit guardrail: CreateVolume is refused when a\nnode's provisioned total would exceed capacity × this ratio. 2× is the\nclassic CoW headroom; raise it only if you trust your usage to stay\nsparse, lower it toward 1 to provision conservatively.",
+          "title": "overcommitRatio",
+          "type": "integer"
+        },
         "provisionTimeout": {
           "default": "120s",
           "title": "provisionTimeout",

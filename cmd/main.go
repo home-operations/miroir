@@ -74,12 +74,14 @@ func main() {
 		probeAddr        string
 		nodesConfig      string
 		provisionTimeout time.Duration
+		overcommitRatio  float64
 
 		// agent mode
-		nodeName     string
-		vg           string
-		thinPool     string
-		drbdStateDir string
+		nodeName          string
+		vg                string
+		thinPool          string
+		drbdStateDir      string
+		poolStatsInterval time.Duration
 	)
 	flag.StringVar(&mode, "mode", "", "controller | agent")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
@@ -90,6 +92,10 @@ func main() {
 		"per-node storage topology (rendered from Helm values)")
 	flag.DurationVar(&provisionTimeout, "provision-timeout", 0,
 		"wait for agents to realise a new volume (controller; 0 → default)")
+	flag.Float64Var(&overcommitRatio, "overcommit-ratio", 0,
+		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
+	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
+		"how often the agent republishes pool capacity (agent; 0 → default 60s)")
 	flag.StringVar(&vg, "lvm-vg", "vg-miroir", "LVM volume group (agent, lvmthin)")
 	flag.StringVar(&thinPool, "lvm-thinpool", "thinpool", "LVM thin pool LV (agent, lvmthin)")
 	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
@@ -174,6 +180,7 @@ func main() {
 			APIReader:        mgr.GetAPIReader(),
 			Nodes:            nodes,
 			ProvisionTimeout: provisionTimeout,
+			OvercommitRatio:  overcommitRatio,
 		}
 		// Completes operator-added replica entries on live volumes
 		// (kubectl edit of spec.replicas).
@@ -272,6 +279,19 @@ func main() {
 		}
 		if err := snapReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up snapshot reconciler")
+			os.Exit(1)
+		}
+		// Publishes this node's pool capacity for capacity-aware placement
+		// (notes/DESIGN.md §4.6).
+		if err := mgr.Add(&agent.PoolStatsPublisher{
+			Client:      mgr.GetClient(),
+			NodeName:    nodeName,
+			Backend:     be,
+			BackendType: entry.Backend,
+			Interval:    poolStatsInterval,
+			Recorder:    mgr.GetEventRecorder("miroir-agent"),
+		}); err != nil {
+			setupLog.Error(err, "unable to add pool stats publisher")
 			os.Exit(1)
 		}
 		node := csi.NewNode(mgr.GetClient(), nodeName, drbdDriver)

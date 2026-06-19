@@ -34,6 +34,7 @@ spec:
             - --csi-socket=/csi/csi.sock
             - --nodes-config=/etc/miroir/nodes.yaml
             - --provision-timeout={{ .Values.controller.provisionTimeout }}
+            - --overcommit-ratio={{ .Values.controller.overcommitRatio }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
