@@ -69,6 +69,15 @@ tests:
             apiGroups: [""]
             resources: ["persistentvolumes"]
             verbs: ["get", "list", "watch", "create", "delete", "patch"]
+      # The controller patches miroirvolumes/status to record the Formatted
+      # flag on a restored (clone-from-snapshot) volume.
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: ["miroir.io"]
+            resources: ["miroirvolumes/status", "miroirsnapshots/status"]
+            verbs: ["get", "update", "patch"]
 
   - it: agent ClusterRole only updates mirror CRDs and patches their status
     documentIndex: 4

@@ -27,7 +27,9 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["miroir.io"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
-    verbs: ["get"]
+    # patch: the controller records the Formatted flag on a restored
+    # (clone-from-snapshot) volume so the agent skips mkfs.
+    verbs: ["get", "update", "patch"]
   # external-provisioner sidecar (topology needs nodes + csinodes)
   - apiGroups: [""]
     resources: ["nodes"]
