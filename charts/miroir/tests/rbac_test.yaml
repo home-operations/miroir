@@ -52,7 +52,7 @@ tests:
           any: true
           path: rules
           content:
-            apiGroups: ["miroir.io"]
+            apiGroups: ["miroir.home-operations.com"]
             resources: ["miroirvolumes", "miroirsnapshots"]
             verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
       - contains:
@@ -75,7 +75,7 @@ tests:
           any: true
           path: rules
           content:
-            apiGroups: ["miroir.io"]
+            apiGroups: ["miroir.home-operations.com"]
             resources: ["miroirvolumes/status", "miroirsnapshots/status"]
             verbs: ["get", "update", "patch"]
 
@@ -86,14 +86,14 @@ tests:
           any: true
           path: rules
           content:
-            apiGroups: ["miroir.io"]
+            apiGroups: ["miroir.home-operations.com"]
             resources: ["miroirvolumes", "miroirsnapshots"]
             verbs: ["get", "list", "watch", "update"]
       - contains:
           any: true
           path: rules
           content:
-            apiGroups: ["miroir.io"]
+            apiGroups: ["miroir.home-operations.com"]
             resources: ["miroirvolumes/status", "miroirsnapshots/status"]
             verbs: ["get", "patch"]
 

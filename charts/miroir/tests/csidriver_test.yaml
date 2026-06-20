@@ -5,13 +5,13 @@ release:
   name: miroir
   namespace: miroir-system
 tests:
-  - it: renders a single CSIDriver named miroir.io with the expected capabilities
+  - it: renders a single CSIDriver named miroir.home-operations.com with the expected capabilities
     asserts:
       - hasDocuments:
           count: 1
       - containsDocument:
           kind: CSIDriver
-          name: miroir.io
+          name: miroir.home-operations.com
           apiVersion: storage.k8s.io/v1
       - equal:
           path: spec.attachRequired

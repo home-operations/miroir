@@ -79,5 +79,5 @@ CSI driver name — also the StorageClass provisioner and VolumeSnapshotClass dr
 Always pinned to .Chart.Name so a nameOverride can't break volume provisioning.
 */}}
 {{- define "miroir.csiDriverName" -}}
-{{- .Chart.Name }}.io
+{{- .Chart.Name }}.home-operations.com
 {{- end -}}

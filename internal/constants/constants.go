@@ -19,20 +19,20 @@ package constants
 
 const (
 	// DriverName is the CSI driver name, also the CRD API group.
-	DriverName = "miroir.io"
+	DriverName = "miroir.home-operations.com"
 
 	// TopologyKey is the CSI topology key reported by NodeGetInfo; its
 	// value is the Kubernetes node name (notes/DESIGN.md §6.5).
-	TopologyKey = "miroir.io/node"
+	TopologyKey = "miroir.home-operations.com/node"
 
 	// FinalizerPrefix + node name blocks MiroirVolume deletion until that
 	// node's agent has torn down its local state. One finalizer per
 	// replica: each agent releases exactly its own.
-	FinalizerPrefix = "miroir.io/teardown-"
+	FinalizerPrefix = "miroir.home-operations.com/teardown-"
 
 	// ParamReplicas is the StorageClass parameter for the replica count.
-	ParamReplicas = "miroir.io/replicas"
+	ParamReplicas = "miroir.home-operations.com/replicas"
 
 	// ParamQuorum is the StorageClass parameter for the 2-node policy.
-	ParamQuorum = "miroir.io/quorum"
+	ParamQuorum = "miroir.home-operations.com/quorum"
 )

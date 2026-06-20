@@ -63,10 +63,10 @@ controller:
 
 agent:
   # Per-node backend selection comes from node annotations:
-  #   miroir.io/backend: lvmthin | zfs
-  #   miroir.io/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)
-  #   miroir.io/zfs-dataset: data-pool/miroir              (zfs)
-  # Nodes also need the label miroir.io/storage: "true" to receive replicas.
+  #   miroir.home-operations.com/backend: lvmthin | zfs
+  #   miroir.home-operations.com/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)
+  #   miroir.home-operations.com/zfs-dataset: data-pool/miroir              (zfs)
+  # Nodes also need the label miroir.home-operations.com/storage: "true" to receive replicas.
   #
   # How often each agent republishes its pool capacity to its MiroirNode
   # (read by the controller for capacity-aware placement).

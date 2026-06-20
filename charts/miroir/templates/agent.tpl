@@ -123,7 +123,7 @@ spec:
           image: {{ .Values.sidecars.registrar.image }}
           args:
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path={{ .Values.kubeletDir }}/plugins/miroir.io/csi.sock
+            - --kubelet-registration-path={{ .Values.kubeletDir }}/plugins/miroir.home-operations.com/csi.sock
           resources:
             requests: { cpu: 5m, memory: 16Mi }
             limits: { memory: 64Mi }
@@ -138,7 +138,7 @@ spec:
             name: {{ include "miroir.nodesConfigName" . }}
         - name: socket-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins/miroir.io
+            path: {{ .Values.kubeletDir }}/plugins/miroir.home-operations.com
             type: DirectoryOrCreate
         - name: registration
           hostPath:

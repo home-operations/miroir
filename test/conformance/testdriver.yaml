@@ -8,7 +8,7 @@ StorageClass:
 SnapshotClass:
   FromExistingClassName: miroir-snap
 DriverInfo:
-  Name: miroir.io
+  Name: miroir.home-operations.com
   SupportedSizeRange:
     Min: 1Gi
     Max: 10Gi

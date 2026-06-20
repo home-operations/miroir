@@ -53,7 +53,7 @@ tests:
     asserts:
       - equal:
           path: provisioner
-          value: miroir.io
+          value: miroir.home-operations.com
       - equal:
           path: volumeBindingMode
           value: WaitForFirstConsumer
@@ -64,7 +64,7 @@ tests:
           path: reclaimPolicy
           value: Delete
       - equal:
-          path: parameters["miroir.io/replicas"]
+          path: parameters["miroir.home-operations.com/replicas"]
           value: "1"
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
@@ -79,23 +79,23 @@ tests:
       value: miroir-replicated
     asserts:
       - equal:
-          path: parameters["miroir.io/replicas"]
+          path: parameters["miroir.home-operations.com/replicas"]
           value: "2"
       - equal:
-          path: parameters["miroir.io/quorum"]
+          path: parameters["miroir.home-operations.com/quorum"]
           value: last-man-standing
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
           value: ext4
 
-  - it: miroir-snap is a Delete snapshot class bound to miroir.io
+  - it: miroir-snap is a Delete snapshot class bound to miroir.home-operations.com
     documentSelector:
       path: metadata.name
       value: miroir-snap
     asserts:
       - equal:
           path: driver
-          value: miroir.io
+          value: miroir.home-operations.com
       - equal:
           path: deletionPolicy
           value: Delete
@@ -123,7 +123,7 @@ tests:
           path: metadata.annotations["storageclass.kubernetes.io/is-default-class"]
           value: "true"
       - equal:
-          path: parameters["miroir.io/replicas"]
+          path: parameters["miroir.home-operations.com/replicas"]
           value: "3"
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
@@ -147,7 +147,7 @@ tests:
           path: kind
           value: StorageClass
       - equal:
-          path: parameters["miroir.io/quorum"]
+          path: parameters["miroir.home-operations.com/quorum"]
           value: freeze
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
