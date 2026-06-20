@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/home-operations/miroir/compare/0.2.0...0.2.1) (2026-06-20)
+
+
+### Features
+
+* **chart:** pin image to chart version with digest override ([f833f0e](https://github.com/home-operations/miroir/commit/f833f0e9372082ed4c8fb851b28d920dfce3bcb3))
+
+
+### Bug Fixes
+
+* **agent:** defer DRBD resize while a peer is resyncing ([223f71e](https://github.com/home-operations/miroir/commit/223f71e551b8aff3fe8b1cb75fa03a7ac3abf26a))
+
 ## [0.2.0](https://github.com/home-operations/miroir/compare/0.1.2...0.2.0) (2026-06-20)
 
 
