@@ -19,7 +19,7 @@ tests:
     asserts:
       - equal:
           path: metadata.name
-          value: miroir.io
+          value: miroir.home-operations.com
 
   - it: nameOverride flows through to the controller Deployment
     set:
@@ -85,7 +85,7 @@ tests:
     asserts:
       - equal:
           path: metadata.name
-          value: miroir.io
+          value: miroir.home-operations.com
 
   - it: release names that already contain the chart name are not prefixed twice (controller)
     release:

@@ -107,9 +107,9 @@ spec:
             storage: 10Gi
 ```
 
-| Parameter          | Values                        | Default             |
-| ------------------ | ----------------------------- | ------------------- |
-| `miroir.io/quorum` | `last-man-standing`, `freeze` | `last-man-standing` |
+| Parameter                           | Values                        | Default             |
+| ----------------------------------- | ----------------------------- | ------------------- |
+| `miroir.home-operations.com/quorum` | `last-man-standing`, `freeze` | `last-man-standing` |
 
 ### 4. Snapshot and restore
 

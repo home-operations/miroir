@@ -22,16 +22,16 @@ metadata:
     {{- include "miroir.labels" . | nindent 4 }}
 rules:
   # miroir desired state
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes", "miroirsnapshots"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     # patch: the controller records the Formatted flag on a restored
     # (clone-from-snapshot) volume so the agent skips mkfs.
     verbs: ["get", "update", "patch"]
   # capacity-aware placement reads the pool stats agents publish
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
     verbs: ["get", "list", "watch"]
   # external-provisioner sidecar (topology needs nodes + csinodes)
@@ -99,17 +99,17 @@ metadata:
   labels:
     {{- include "miroir.labels" . | nindent 4 }}
 rules:
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes", "miroirsnapshots"]
     verbs: ["get", "list", "watch", "update"] # update releases finalizers
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     verbs: ["get", "patch"]
   # each agent owns its own MiroirNode, publishing pool capacity
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes/status"]
     verbs: ["get", "update", "patch"]
   # PoolUsageHigh events at the 80% capacity warn line

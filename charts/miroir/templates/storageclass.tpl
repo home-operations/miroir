@@ -10,7 +10,7 @@ volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
 parameters:
-  miroir.io/replicas: {{ .Values.storageClass.replicas | quote }}
+  miroir.home-operations.com/replicas: {{ .Values.storageClass.replicas | quote }}
   csi.storage.k8s.io/fstype: {{ .Values.storageClass.fsType }}
 {{- end }}
 {{- if .Values.replicatedStorageClass.create }}
@@ -26,10 +26,10 @@ volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: {{ .Values.replicatedStorageClass.reclaimPolicy }}
 parameters:
-  miroir.io/replicas: "2"
+  miroir.home-operations.com/replicas: "2"
   # last-man-standing: survivor keeps writing on node loss, split-brain
   # alerts on reconnect; freeze: never diverges, halts on any disconnect.
-  miroir.io/quorum: {{ .Values.replicatedStorageClass.quorum }}
+  miroir.home-operations.com/quorum: {{ .Values.replicatedStorageClass.quorum }}
   csi.storage.k8s.io/fstype: {{ .Values.replicatedStorageClass.fsType }}
 {{- end }}
 {{- if .Values.volumeSnapshotClass.create }}

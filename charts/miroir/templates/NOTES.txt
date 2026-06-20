@@ -19,10 +19,10 @@ Snapshot class:
 {{- end }}
 
 Before provisioning volumes, every storage node needs:
-  1. Label    miroir.io/storage=true
-  2. Backend  miroir.io/backend=lvmthin | zfs | loopfile
-  3. For lvmthin:   miroir.io/device=/dev/disk/by-partlabel/r-miroir
-  4. For zfs:       miroir.io/zfs-dataset=pool/miroir
+  1. Label    miroir.home-operations.com/storage=true
+  2. Backend  miroir.home-operations.com/backend=lvmthin | zfs | loopfile
+  3. For lvmthin:   miroir.home-operations.com/device=/dev/disk/by-partlabel/r-miroir
+  4. For zfs:       miroir.home-operations.com/zfs-dataset=pool/miroir
   5. For loopfile:  defined under nodes[].baseDir in values.yaml (reflink-capable FS required)
 
 Verify the rollout:

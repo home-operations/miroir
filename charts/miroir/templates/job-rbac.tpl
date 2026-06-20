@@ -36,7 +36,7 @@ metadata:
     helm.sh/hook-weight: "5"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 rules:
-  - apiGroups: ["miroir.io"]
+  - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes", "miroirsnapshots"]
     verbs: ["get", "list", "delete"]
 ---
