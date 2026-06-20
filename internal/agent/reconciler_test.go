@@ -386,6 +386,79 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	}
 }
 
+func TestReconcile_SkipResizeDuringResync(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, "paris")
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = "192.168.1.41"
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = "192.168.1.42"
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	// Peer backing grown so peerBackingsGrown is true — only the in-flight
+	// sync should withhold the resize.
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected","replication-state":"SyncSource"}]}]`}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	base := got.DeepCopy()
+	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		"paris": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+	}
+	if err := c.Status().Patch(context.Background(), got, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatalf("a resync in progress must not surface as a reconcile error: %v", err)
+	}
+	fe.notCalledWith(t, "drbdadm resize")
+	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.PerNode[nodeKharkiv].SizeBytes != 0 {
+		t.Fatalf("size must be withheld while resyncing, got %d", got.Status.PerNode[nodeKharkiv].SizeBytes)
+	}
+
+	// Resync completes: the next pass grows DRBD and publishes the size.
+	fe.statusJSON = `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected","replication-state":"Established"}]}]`
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm resize pvc-1")
+	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.PerNode[nodeKharkiv].SizeBytes != 1<<30 {
+		t.Fatalf("size must publish once the resync clears, got %d", got.Status.PerNode[nodeKharkiv].SizeBytes)
+	}
+}
+
 type fakeDRBDExec struct {
 	calls      []string
 	statusJSON string

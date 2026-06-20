@@ -536,3 +536,41 @@ func TestStatusSplitBrain(t *testing.T) {
 		t.Fatalf("StandAlone must surface as split-brain: %+v", s)
 	}
 }
+
+func TestStatusResyncing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		repl  string
+		wantR bool
+	}{
+		{"established", "Established", false},
+		{"absent", "", false},
+		{"sync-target", "SyncTarget", true},
+		{"sync-source", "SyncSource", true},
+		{"paused", "PausedSyncT", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repl := ""
+			if tc.repl != "" {
+				repl = `,"replication-state":"` + tc.repl + `"`
+			}
+			fe := &fakeExec{responses: map[string]string{
+				cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+					"devices":[{"disk-state":"UpToDate"}],
+					"connections":[{"connection-state":"Connected"` + repl + `}]}]`,
+			}}
+			d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+			s, err := d.Status(context.Background(), volPvc1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Resyncing != tc.wantR {
+				t.Fatalf("replication-state %q: Resyncing = %v, want %v", tc.repl, s.Resyncing, tc.wantR)
+			}
+			if !s.Connected {
+				t.Fatalf("a connected peer must stay Connected: %+v", s)
+			}
+		})
+	}
+}

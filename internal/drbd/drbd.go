@@ -533,6 +533,9 @@ type Status struct {
 	// SplitBrain is true when a connection is StandAlone — DRBD refused
 	// to reconnect after detecting divergent data.
 	SplitBrain bool
+	// Resyncing is true while a peer connection is mid-resync; drbdadm
+	// resize is refused in this window.
+	Resyncing bool
 }
 
 // drbdsetup status --json shapes (the fields miroir reads).
@@ -544,8 +547,9 @@ type jsonStatus struct {
 		DiskState string `json:"disk-state"`
 	} `json:"devices"`
 	Connections []struct {
-		ConnectionState string `json:"connection-state"`
-		PeerRole        string `json:"peer-role"`
+		ConnectionState  string `json:"connection-state"`
+		PeerRole         string `json:"peer-role"`
+		ReplicationState string `json:"replication-state"`
 	} `json:"connections"`
 }
 
@@ -571,6 +575,10 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	for _, c := range res.Connections {
 		if c.PeerRole == "Primary" {
 			s.PeerPrimary = true
+		}
+		// Anything other than Established/Off is an active resync.
+		if rs := c.ReplicationState; rs != "" && rs != "Established" && rs != "Off" {
+			s.Resyncing = true
 		}
 		switch c.ConnectionState {
 		case "Connected":
@@ -621,8 +629,8 @@ func (d *Driver) ResumeIO(ctx context.Context, name string) error {
 }
 
 // Resize grows the DRBD device to the (already grown) backing devices.
-// Safe to call before the peer's backing grew — DRBD refuses and the
-// reconciler retries.
+// Callers must gate it on Status().Resyncing == false: DRBD refuses a
+// resize mid-resync.
 func (d *Driver) Resize(ctx context.Context, name string) error {
 	_, err := d.adm(ctx, "resize", name)
 	return err

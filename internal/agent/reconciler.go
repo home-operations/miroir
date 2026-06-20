@@ -170,10 +170,16 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// device over them. It withholds the new size from its status until
 	// then — the CSI expansion wait keys on status, and the filesystem
 	// must not grow against a still-small DRBD device.
+	st, err := r.DRBD.Status(ctx, vol.Name)
+	if err != nil {
+		return ctrl.Result{}, r.reportError(ctx, vol, err)
+	}
 	reportSize := vol.Spec.SizeBytes
 	requeue := drbdPollInterval
 	if vol.Spec.Replicas[0].Node == r.NodeName {
-		if peerBackingsGrown(vol, r.NodeName) {
+		// drbdadm resize is refused mid-resync, so withhold the size and
+		// retry on the next poll instead of failing the reconcile.
+		if peerBackingsGrown(vol, r.NodeName) && !st.Resyncing {
 			if err := r.DRBD.Resize(ctx, vol.Name); err != nil {
 				return ctrl.Result{}, r.reportError(ctx, vol, err)
 			}
@@ -181,10 +187,6 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			reportSize = vol.Status.PerNode[r.NodeName].SizeBytes
 			requeue = 5 * time.Second
 		}
-	}
-	st, err := r.DRBD.Status(ctx, vol.Name)
-	if err != nil {
-		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	if st.SplitBrain && !vol.Status.PerNode[r.NodeName].SplitBrain {
 		log.Error(errSplitBrain,
