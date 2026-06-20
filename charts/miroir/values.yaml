@@ -1,8 +1,11 @@
 image:
   repository: ghcr.io/home-operations/miroir
-  # Every main push publishes :main (and the 0.0.0-main chart); releases
-  # publish immutable version tags.
-  tag: main
+  # Overrides the image tag; defaults to the chart appVersion so the chart and
+  # image versions stay in lock-step (set to e.g. "main" to track the rolling tag).
+  tag: ""
+  # Pins the image by digest (sha256:…); when set it takes precedence over the tag.
+  # The release pipeline fills this with the published image's digest.
+  digest: ""
   pullPolicy: IfNotPresent
 
 sidecars:

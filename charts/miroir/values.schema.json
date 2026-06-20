@@ -112,6 +112,12 @@
     },
     "image": {
       "properties": {
+        "digest": {
+          "default": "",
+          "description": "Pins the image by digest (sha256:…); when set it takes precedence over the tag.\nThe release pipeline fills this with the published image's digest.",
+          "title": "digest",
+          "type": "string"
+        },
         "pullPolicy": {
           "default": "IfNotPresent",
           "title": "pullPolicy",
@@ -123,8 +129,8 @@
           "type": "string"
         },
         "tag": {
-          "default": "main",
-          "description": "Every main push publishes :main (and the 0.0.0-main chart); releases\npublish immutable version tags.",
+          "default": "",
+          "description": "Overrides the image tag; defaults to the chart appVersion so the chart and\nimage versions stay in lock-step (set to e.g. \"main\" to track the rolling tag).",
           "title": "tag",
           "type": "string"
         }

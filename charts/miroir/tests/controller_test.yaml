@@ -67,7 +67,7 @@ tests:
           value: controller
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/home-operations/miroir:main"
+          value: "ghcr.io/home-operations/miroir:0.0.1"
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: IfNotPresent
@@ -165,6 +165,17 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: Always
+
+  - it: pins the image by digest when set, overriding the tag
+    set:
+      image:
+        tag: 1.2.3
+        digest: sha256:abc123
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/home-operations/miroir@sha256:abc123"
 
   - it: respects a non-default Release namespace
     release:

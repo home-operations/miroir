@@ -32,6 +32,26 @@ labels must be DNS-1123 compliant.
 {{- end -}}
 
 {{/*
+Controller/agent image reference. A digest pins the image immutably and wins over
+the tag (the release pipeline fills it with the published image's digest); otherwise
+the tag is used, defaulting to .Chart.AppVersion so the chart and image versions match.
+*/}}
+{{- define "miroir.image" -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Return the image pull policy, defaulting to IfNotPresent.
+*/}}
+{{- define "miroir.imagePullPolicy" -}}
+{{- .Values.image.pullPolicy | default "IfNotPresent" -}}
+{{- end -}}
+
+{{/*
 Standard labels applied to every resource this chart produces. Component is added at the
 call site so each workload remains self-describing ("controller", "agent", "setup",
 "uninstall").

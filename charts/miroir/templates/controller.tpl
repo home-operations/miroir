@@ -27,8 +27,8 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: controller
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ include "miroir.image" . }}
+          imagePullPolicy: {{ include "miroir.imagePullPolicy" . }}
           args:
             - --mode=controller
             - --csi-socket=/csi/csi.sock

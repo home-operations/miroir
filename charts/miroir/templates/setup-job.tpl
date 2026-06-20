@@ -24,8 +24,8 @@ spec:
         - operator: Exists
       containers:
         - name: setup
-          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
-          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          image: {{ include "miroir.image" $ }}
+          imagePullPolicy: {{ include "miroir.imagePullPolicy" $ }}
           args:
             - --mode=setup
             - --node-name={{ $name }}

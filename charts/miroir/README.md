@@ -44,9 +44,10 @@ Kubernetes: `>=1.31.0`
 | controller.resources.limits.memory | string | `"128Mi"` |  |
 | controller.resources.requests.cpu | string | `"10m"` |  |
 | controller.resources.requests.memory | string | `"32Mi"` |  |
+| image.digest | string | `""` |  |
 | image.pullPolicy | string | `"IfNotPresent"` |  |
 | image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
-| image.tag | string | `"main"` |  |
+| image.tag | string | `""` |  |
 | kubeletDir | string | `"/var/lib/kubelet"` |  |
 | nodes | object | `{}` |  |
 | replicatedStorageClass.create | bool | `true` |  |
