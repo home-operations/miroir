@@ -41,6 +41,8 @@ import (
 const (
 	nodeKharkiv           = "kharkiv"
 	nodeParis             = "paris"
+	addrKharkiv           = "192.168.1.41"
+	addrParis             = "192.168.1.42"
 	volPvc1               = "pvc-1"
 	snapSnap1             = "snap-1"
 	diskStateUpToDate     = "UpToDate"
@@ -301,9 +303,9 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = "192.168.1.41"
+	v.Spec.Replicas[0].Address = addrKharkiv
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = "192.168.1.42"
+	v.Spec.Replicas[1].Address = addrParis
 
 	stateDir := t.TempDir()
 	// Pre-seed .res so assignMinor → AllocateMinor picks minor 1000.
@@ -393,9 +395,9 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = "192.168.1.41"
+	v.Spec.Replicas[0].Address = addrKharkiv
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = "192.168.1.42"
+	v.Spec.Replicas[1].Address = addrParis
 
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
@@ -820,7 +822,7 @@ func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 	v := vol(volPvc1, nodeKharkiv, "paris")
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = "192.168.1.42"
+	v.Spec.Replicas[1].Address = addrParis
 	// kharkiv's entry was just added by an operator: no address yet.
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
