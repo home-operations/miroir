@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/home-operations/miroir/compare/0.2.1...0.2.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* **csi:** treat Degraded as provisioned so large replicated volumes bind ([4b38e97](https://github.com/home-operations/miroir/commit/4b38e9775f4b203cf9a0d115f9d77a2f66914014))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool zizmor (1.25.2 → 1.26.1) ([#29](https://github.com/home-operations/miroir/issues/29)) ([11d2527](https://github.com/home-operations/miroir/commit/11d25276847e74bd20efd7248c8d93757671c058))
+
 ## [0.2.1](https://github.com/home-operations/miroir/compare/0.2.0...0.2.1) (2026-06-20)
 
 
