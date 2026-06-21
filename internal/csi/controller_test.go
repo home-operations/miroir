@@ -84,6 +84,27 @@ func readyOnGet(s *runtime.Scheme) client.WithWatch {
 		Build()
 }
 
+// degradedOnGet flips a created volume to Degraded, simulating a replicated
+// volume whose primary is UpToDate while a secondary still runs its initial
+// sync. NB: depends on the fake client returning the same object pointer.
+func degradedOnGet(s *runtime.Scheme) client.WithWatch {
+	return fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
+					vol.Status.Phase = miroirv1alpha1.VolumeDegraded
+				}
+				return nil
+			},
+		}).
+		Build()
+}
+
 func volCaps() []*csi.VolumeCapability {
 	return []*csi.VolumeCapability{{
 		AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
@@ -147,6 +168,25 @@ func TestCreateVolumeIdempotent(t *testing.T) {
 	_, err := c.CreateVolume(context.Background(), req)
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("size mismatch must be ALREADY_EXISTS, got %v", err)
+	}
+}
+
+func TestCreateVolumeSucceedsWhenDegraded(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: degradedOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	// Degraded means the primary is UpToDate and serving; CreateVolume must
+	// return without waiting for the secondary's initial sync.
+	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+	})
+	if err != nil {
+		t.Fatalf("Degraded volume must provision successfully: %v", err)
+	}
+	if resp.Volume.VolumeId != volPvc1 {
+		t.Fatalf("unexpected volume %+v", resp.Volume)
 	}
 }
 

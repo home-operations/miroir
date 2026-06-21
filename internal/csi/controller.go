@@ -516,7 +516,12 @@ type errVolumeFailed struct{ detail string }
 
 func (e *errVolumeFailed) Error() string { return e.detail }
 
-// waitReady polls the volume status until agents report Ready.
+// waitReady blocks until the volume is usable. Degraded counts as success: one
+// replica is UpToDate and serving while the rest finish their initial sync in
+// the background. Requiring full redundancy would blow the sidecar timeout on
+// large volumes (a 50Gi initial sync far exceeds the 120s deadline, so the call
+// retries forever and the PVC never binds). devicePath/NodeStage separately
+// refuses an Inconsistent local replica, so no pod lands on stale data.
 func (c *Controller) waitReady(ctx context.Context, name string) error {
 	timeout := c.ProvisionTimeout
 	if timeout == 0 {
@@ -535,7 +540,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 				return false, err
 			}
 			switch vol.Status.Phase {
-			case miroirv1alpha1.VolumeReady:
+			case miroirv1alpha1.VolumeReady, miroirv1alpha1.VolumeDegraded:
 				return true, nil
 			case miroirv1alpha1.VolumeFailed:
 				return false, &errVolumeFailed{detail: fmt.Sprintf("%+v", vol.Status.PerNode)}
