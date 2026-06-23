@@ -179,11 +179,18 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if vol.Spec.Replicas[0].Node == r.NodeName {
 		// drbdadm resize is refused mid-resync, so withhold the size and
 		// retry on the next poll instead of failing the reconcile.
-		if peerBackingsGrown(vol, r.NodeName) && !st.Resyncing {
+		switch {
+		case peerBackingsGrown(vol, r.NodeName) && !st.Resyncing:
 			if err := r.DRBD.Resize(ctx, vol.Name); err != nil {
-				return ctrl.Result{}, r.reportError(ctx, vol, err)
+				if !drbd.IsResizeDuringResync(err) {
+					return ctrl.Result{}, r.reportError(ctx, vol, err)
+				}
+				// A resync started between the status read and the resize:
+				// withhold and retry, same as the pre-checked branch below.
+				reportSize = vol.Status.PerNode[r.NodeName].SizeBytes
+				requeue = 5 * time.Second
 			}
-		} else {
+		default:
 			reportSize = vol.Status.PerNode[r.NodeName].SizeBytes
 			requeue = 5 * time.Second
 		}

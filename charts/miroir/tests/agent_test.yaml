@@ -100,7 +100,10 @@ tests:
           value: ClusterFirstWithHostNet
       - equal:
           path: spec.template.spec.terminationGracePeriodSeconds
-          value: 10
+          value: 60
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: system-node-critical
       - lengthEqual:
           path: spec.template.spec.tolerations
           count: 1

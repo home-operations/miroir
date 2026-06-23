@@ -503,6 +503,53 @@ func TestStatusParsing(t *testing.T) {
 	}
 }
 
+func TestDownSecondariesSkipsPrimary(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Primary"},
+			{"name":"pvc-2","role":"Secondary"}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.DownSecondaries(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Primary legs are still open — skipped.
+	fe.notCalledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, "drbdsetup down pvc-2")
+}
+
+func TestDownSecondariesContinuesOnError(t *testing.T) {
+	fe := &fakeExec{
+		responses: map[string]string{
+			cmdDrbdsetupStatus: `[
+				{"name":"pvc-2","role":"Secondary"},
+				{"name":"pvc-3","role":"Secondary"}]`,
+		},
+		errOn: map[string]error{"down pvc-2": errors.New("Device is held open by someone")},
+	}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	err := d.DownSecondaries(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "pvc-2") {
+		t.Fatalf("want a joined error naming pvc-2, got %v", err)
+	}
+	// One stuck resource must not strand the rest of the sweep.
+	fe.calledWith(t, "drbdsetup down pvc-3")
+}
+
+func TestIsResizeDuringResync(t *testing.T) {
+	if !IsResizeDuringResync(errors.New("exit status 10: Resize not allowed during resync.")) {
+		t.Fatal("must match DRBD's resync refusal")
+	}
+	if IsResizeDuringResync(errors.New("some other drbd failure")) {
+		t.Fatal("must not match unrelated errors")
+	}
+	if IsResizeDuringResync(nil) {
+		t.Fatal("nil is not a resync refusal")
+	}
+}
+
 func TestUserSuspendedListsFrozenResources(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[

@@ -461,14 +461,86 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	}
 }
 
+func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, "paris")
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-check sees no resync (Established), but the resize itself races one
+	// and DRBD refuses it — must be a transient withhold, not a hard error.
+	fe := &fakeDRBDExec{
+		statusJSON: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+			"connections":[{"connection-state":"Connected","replication-state":"Established"}]}]`,
+		errOn: map[string]error{
+			"drbdadm resize": errors.New("exit status 10: Resize not allowed during resync."),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	base := got.DeepCopy()
+	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		"paris": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+	}
+	if err := c.Status().Patch(context.Background(), got, client.MergeFrom(base)); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	if err != nil {
+		t.Fatalf("a resize that raced a resync must not fail the reconcile: %v", err)
+	}
+	fe.calledWith(t, "drbdadm resize pvc-1") // it was attempted
+	if res.RequeueAfter != 5*time.Second {
+		t.Fatalf("must requeue soon to retry the resize, got %v", res.RequeueAfter)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.PerNode[nodeKharkiv].SizeBytes != 0 {
+		t.Fatalf("size must be withheld until the resize succeeds, got %d", got.Status.PerNode[nodeKharkiv].SizeBytes)
+	}
+}
+
 type fakeDRBDExec struct {
 	calls      []string
 	statusJSON string
+	errOn      map[string]error
 }
 
 func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (string, error) {
 	line := name + " " + strings.Join(args, " ")
 	f.calls = append(f.calls, line)
+	for key, err := range f.errOn {
+		if strings.Contains(line, key) {
+			return "", err
+		}
+	}
 	if strings.HasPrefix(line, "drbdsetup status") {
 		return f.statusJSON, nil
 	}

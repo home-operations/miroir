@@ -37,10 +37,14 @@ spec:
       # drbdadm/drbdsetup need the host PID namespace for /proc access
       # to the kernel module's worker threads.
       hostPID: true
-      # No teardown hooks: kernel-side storage state is host-scoped and
-      # survives the pod; reconcile converges on next start. A short
-      # grace period keeps DaemonSet rollouts unblocked.
-      terminationGracePeriodSeconds: 10
+      # system-node-critical so kubelet graceful shutdown stops the agent
+      # after workloads — their DRBD legs are then Secondary and safe to
+      # release (see agentShutdownSweep). Needs Talos
+      # shutdownGracePeriodCriticalPods >= the grace period below (see README).
+      priorityClassName: system-node-critical
+      # Longer grace lets the cordon-gated DRBD teardown finish before SIGKILL;
+      # routine restarts stay schedulable and skip it.
+      terminationGracePeriodSeconds: 60
       tolerations:
         - operator: Exists # CSI node service must run on every schedulable node
       containers:
