@@ -28,9 +28,11 @@ import (
 	"os"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -129,10 +131,10 @@ func main() {
 
 	identity := &csi.Identity{Version: version, WithController: mode == "controller"}
 
-	// Agent mode only, run after the manager stops: a write barrier is
-	// kernel state and outlives the process — never leave one behind for
-	// the successor.
-	var shutdownSweep func() error
+	// Agent mode only, run after the manager stops (SIGTERM): release DRBD
+	// backings when the node is going down and lift any leftover write
+	// barrier — both are kernel state that outlives the process.
+	var shutdownSweep func()
 
 	switch mode {
 	case "setup":
@@ -243,7 +245,14 @@ func main() {
 			setupLog.Error(err, "barrier resume sweep failed")
 			os.Exit(1)
 		}
-		shutdownSweep = func() error { return resumeStaleBarriers(drbdDriver) }
+		// Tracks this node's cordon state so shutdownSweep can tell a node
+		// reboot/upgrade (drained, so cordoned) from a routine pod restart.
+		cordon := &agent.CordonWatcher{Client: mgr.GetClient(), NodeName: nodeName}
+		if err := cordon.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to set up cordon watcher")
+			os.Exit(1)
+		}
+		shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver) }
 		// events2 turns kernel state changes into immediate reconciles;
 		// the 30s poll remains as the safety net.
 		drbdEvents := make(chan event.GenericEvent, 64)
@@ -308,9 +317,75 @@ func main() {
 		os.Exit(1)
 	}
 	if shutdownSweep != nil {
-		if err := shutdownSweep(); err != nil {
-			setupLog.Error(err, "shutdown barrier sweep failed")
+		shutdownSweep()
+	}
+}
+
+// apiStartupWait bounds how long the startup sweeps wait for the API server,
+// so a reboot that races control-plane recovery does not exit on the first
+// dial error and churn through CrashLoopBackOff. Kept under the liveness
+// kill window: the probe server is not up until the manager starts.
+const apiStartupWait = 45 * time.Second
+
+// drbdShutdownTimeout bounds the Secondary-teardown sweep at shutdown.
+const drbdShutdownTimeout = 15 * time.Second
+
+// listWithRetry retries an API list until it succeeds, hits a terminal
+// (non-transient) error, or apiStartupWait elapses — so a control plane still
+// coming back up does not crash the agent on startup.
+func listWithRetry(c client.Client, list client.ObjectList) error {
+	var lastErr error
+	waitErr := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, apiStartupWait, true,
+		func(ctx context.Context) (bool, error) {
+			lastErr = c.List(ctx, list)
+			if lastErr == nil {
+				return true, nil
+			}
+			if !transientAPIError(lastErr) {
+				return false, lastErr
+			}
+			setupLog.Info("API server not ready; retrying", "error", lastErr.Error())
+			return false, nil
+		})
+	if waitErr != nil && lastErr != nil {
+		return lastErr
+	}
+	return waitErr
+}
+
+// transientAPIError reports whether an API error is worth retrying. Dial
+// failures during control-plane recovery (connection refused, no route to
+// host) arrive as non-APIStatus errors; only explicit terminal statuses
+// (auth, not-found, invalid) are treated as permanent.
+func transientAPIError(err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case apierrors.IsUnauthorized(err), apierrors.IsForbidden(err),
+		apierrors.IsNotFound(err), apierrors.IsInvalid(err):
+		return false
+	default:
+		return true
+	}
+}
+
+// agentShutdownSweep runs after the agent's manager stops (SIGTERM). A
+// cordoned node is being drained for a reboot or upgrade: release Secondary
+// backings so the backend pool can export. Gated on cordon because an
+// ungated teardown would disconnect idle replicas on every pod rollout. A
+// leftover write barrier is also kernel state that must not outlive the
+// process.
+func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver) {
+	if cordon.Cordoned() {
+		ctx, cancel := context.WithTimeout(context.Background(), drbdShutdownTimeout)
+		defer cancel()
+		setupLog.Info("node cordoned; releasing Secondary DRBD backings for shutdown")
+		if err := driver.DownSecondaries(ctx); err != nil {
+			setupLog.Error(err, "DRBD shutdown teardown failed; node reboot may stall")
 		}
+	}
+	if err := resumeStaleBarriers(driver); err != nil {
+		setupLog.Error(err, "shutdown barrier sweep failed")
 	}
 }
 
@@ -322,7 +397,7 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 		return err
 	}
 	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := c.List(context.Background(), vols); err != nil {
+	if err := listWithRetry(c, vols); err != nil {
 		return err
 	}
 	owned := map[string]bool{}
@@ -355,7 +430,7 @@ func resumeStaleBarriers(driver *drbd.Driver) error {
 		return err
 	}
 	snaps := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := c.List(context.Background(), snaps); err != nil {
+	if err := listWithRetry(c, snaps); err != nil {
 		return err
 	}
 	fresh := map[string]bool{}

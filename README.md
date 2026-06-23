@@ -36,6 +36,15 @@ synchronous 2-node replication via DRBD9.
       for `baseDir` (XFS `reflink=1`, e.g. Talos `/var`, or btrfs).
 - For DRBD9 replication: `drbd` and `drbd_transport_tcp` kernel
   modules, plus `drbd-utils` (`drbdadm`, `drbdsetup`, `drbdmeta`).
+- Kubelet [graceful node shutdown][gns] so the agent (a
+  `system-node-critical` pod) is stopped _after_ workloads on reboot
+  and can release DRBD backings before the backend pool exports —
+  otherwise a node reboot can wedge unmounting the pool. On Talos it
+  is on by default; give critical pods enough of the window via
+  `machine.kubelet.extraConfig.shutdownGracePeriodCriticalPods` (≥ the
+  agent's `terminationGracePeriodSeconds`, default 60s).
+
+[gns]: https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/#graceful-node-shutdown
 
 Talos Linux is the primary target because it ships these modules
 ready to go, but nothing in the controller or agent is

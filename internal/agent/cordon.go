@@ -1,0 +1,64 @@
+/*
+Copyright 2026.
+
+Licensed under the GNU Affero General Public License, Version 3 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.gnu.org/licenses/agpl-3.0.html
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package agent
+
+import (
+	"context"
+	"sync/atomic"
+
+	corev1 "k8s.io/api/core/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+)
+
+// CordonWatcher caches whether this node is cordoned (unschedulable), read by
+// the agent at shutdown. Cached from a watch, not fetched on demand: by
+// shutdown the API server may be gone (a whole-cluster reboot takes etcd with
+// it), but the cordon was observed earlier while it was still up.
+type CordonWatcher struct {
+	client.Client
+	NodeName string
+	cordoned atomic.Bool
+}
+
+// Cordoned reports this node's last observed unschedulable state.
+func (w *CordonWatcher) Cordoned() bool {
+	return w.cordoned.Load()
+}
+
+// Reconcile refreshes the cached cordon state from the node object.
+func (w *CordonWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	node := &corev1.Node{}
+	if err := w.Get(ctx, req.NamespacedName, node); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	w.cordoned.Store(node.Spec.Unschedulable)
+	return ctrl.Result{}, nil
+}
+
+// SetupWithManager registers the watch, filtered to this node's own object.
+func (w *CordonWatcher) SetupWithManager(mgr ctrl.Manager) error {
+	thisNode := predicate.NewPredicateFuncs(func(o client.Object) bool {
+		return o.GetName() == w.NodeName
+	})
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&corev1.Node{}, builder.WithPredicates(thisNode)).
+		Named("agent-cordon").
+		Complete(w)
+}

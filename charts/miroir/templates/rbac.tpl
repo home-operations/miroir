@@ -116,6 +116,11 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # reads its own Node's cordon state to distinguish a node shutdown
+  # (release DRBD backings so the pool can export) from a routine pod restart
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

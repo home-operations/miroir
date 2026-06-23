@@ -96,6 +96,14 @@ tests:
             apiGroups: ["miroir.home-operations.com"]
             resources: ["miroirvolumes/status", "miroirsnapshots/status"]
             verbs: ["get", "patch"]
+      # reads its own Node's cordon state to gate DRBD shutdown teardown
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["nodes"]
+            verbs: ["get", "list", "watch"]
 
   - it: controller ClusterRoleBinding binds to miroir-controller ServiceAccount
     documentIndex: 3

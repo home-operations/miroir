@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -272,6 +273,34 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 	return nil
 }
 
+// DownSecondaries brings down every resource this node holds Secondary,
+// releasing its backing device so the backend pool can export on shutdown.
+// Primary (open) resources are skipped: drbdsetup down refuses an open
+// device, and downing a leg a workload still holds — here, or on a peer this
+// node feeds as SyncSource — would drop live redundancy. Rendered config
+// stays so the successor re-ups. Best effort: errors are joined so one stuck
+// resource cannot strand the rest.
+func (d *Driver) DownSecondaries(ctx context.Context) error {
+	out, err := d.Exec(ctx, "drbdsetup", "status", "--json")
+	if err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
+	var parsed []jsonStatus
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		return fmt.Errorf("parse status: %w", err)
+	}
+	var errs []error
+	for _, res := range parsed {
+		if res.Role == rolePrimary {
+			continue
+		}
+		if _, err := d.Exec(ctx, "drbdsetup", "down", res.Name); err != nil {
+			errs = append(errs, fmt.Errorf("down %s: %w", res.Name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // drbdMajor is DRBD's fixed block-device major number.
 const drbdMajor = 147
 
@@ -516,6 +545,9 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 // DiskUpToDate is the disk state of a replica holding current data.
 const DiskUpToDate = "UpToDate"
 
+// rolePrimary is the DRBD role of a node that holds the device open.
+const rolePrimary = "Primary"
+
 // Status reports this node's view of one resource.
 type Status struct {
 	// DiskState: UpToDate, Inconsistent, Outdated, Consistent, Diskless…
@@ -634,6 +666,13 @@ func (d *Driver) ResumeIO(ctx context.Context, name string) error {
 func (d *Driver) Resize(ctx context.Context, name string) error {
 	_, err := d.adm(ctx, "resize", name)
 	return err
+}
+
+// IsResizeDuringResync reports whether a Resize failed only because a resync
+// was in flight — DRBD refuses resize then, and the caller retries instead
+// of failing the reconcile.
+func IsResizeDuringResync(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "Resize not allowed during resync")
 }
 
 func (d *Driver) writeConfig(r Resource) (bool, error) {
