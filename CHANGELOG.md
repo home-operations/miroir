@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.3](https://github.com/home-operations/miroir/compare/0.2.2...0.2.3) (2026-06-23)
+
+
+### Features
+
+* **deps:** update module github.com/onsi/ginkgo/v2 (v2.31.0 → v2.32.0) ([#34](https://github.com/home-operations/miroir/issues/34)) ([0cf5bfd](https://github.com/home-operations/miroir/commit/0cf5bfd064363807bdcda6ae0b71575cb1504a6c))
+
+
+### Bug Fixes
+
+* **agent:** release DRBD backings on node shutdown to unblock reboots ([#35](https://github.com/home-operations/miroir/issues/35)) ([578c22b](https://github.com/home-operations/miroir/commit/578c22b9272c0f91c6139682a5979f30c9982c86))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool jq (1.8.1 → 1.8.2) ([#28](https://github.com/home-operations/miroir/issues/28)) ([33c2566](https://github.com/home-operations/miroir/commit/33c2566a5e5c9cb34ec42b1d376072c54112da65))
+* **mise:** Update tool talosctl (1.13.4 → 1.13.5) ([#33](https://github.com/home-operations/miroir/issues/33)) ([ae44890](https://github.com/home-operations/miroir/commit/ae44890a00b3e2dca7c63e59da384f4be51987ed))
+
 ## [0.2.2](https://github.com/home-operations/miroir/compare/0.2.1...0.2.2) (2026-06-21)
 
 
