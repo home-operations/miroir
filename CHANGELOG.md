@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.4](https://github.com/home-operations/miroir/compare/0.2.3...0.2.4) (2026-06-26)
+
+
+### Bug Fixes
+
+* **deps:** update k8s.io/utils digest (a95e086 → be93311) ([#40](https://github.com/home-operations/miroir/issues/40)) ([93c6504](https://github.com/home-operations/miroir/commit/93c6504b4844f1ff8be036c3445de2c7d2513db8))
+* **deps:** update module github.com/onsi/gomega (v1.42.0 → v1.42.1) ([#38](https://github.com/home-operations/miroir/issues/38)) ([f1d8fd0](https://github.com/home-operations/miroir/commit/f1d8fd03c2f26e21a7e4706c8635e0e106484cd1))
+
+
+### Miscellaneous Chores
+
+* add minimumGroupSize to Go toolchain configuration ([3cbffe4](https://github.com/home-operations/miroir/commit/3cbffe460d3e59a932dfba2706cf2e4761f2f612))
+* **mise:** Update tool hcloud (1.65.0 → 1.66.0) ([#39](https://github.com/home-operations/miroir/issues/39)) ([6774b20](https://github.com/home-operations/miroir/commit/6774b204e38a9591176c3882681ac323f5691133))
+* **mise:** Update tool oxfmt (0.55.0 → 0.56.0) ([#32](https://github.com/home-operations/miroir/issues/32)) ([14da7d5](https://github.com/home-operations/miroir/commit/14da7d5b41820476f349614fc7588bb9cdb92fcd))
+
 ## [0.2.3](https://github.com/home-operations/miroir/compare/0.2.2...0.2.3) (2026-06-23)
 
 
