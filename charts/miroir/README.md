@@ -59,7 +59,7 @@ Kubernetes: `>=1.31.0`
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
 | sidecars.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |
-| sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.2.0"` |  |
+| sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.2.1"` |  |
 | sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0"` |  |
 | storageClass.create | bool | `true` |  |
 | storageClass.fsType | string | `"ext4"` |  |

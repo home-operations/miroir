@@ -20,7 +20,7 @@ sidecars:
   snapshotter:
     image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
   resizer:
-    image: registry.k8s.io/sig-storage/csi-resizer:v2.2.0
+    image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
 
 # Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
 # tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
