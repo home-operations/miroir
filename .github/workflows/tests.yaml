@@ -94,7 +94,6 @@ jobs:
             ~/go/pkg/mod
           key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
           restore-keys: ${{ runner.os }}-go-
-      # lvmthin needs dm_thin_pool on the shared kernel.
       - name: Load kernel modules
         run: sudo modprobe dm_thin_pool loop
       - name: Run e2e (miroir-local / lvmthin / replicas:1)
