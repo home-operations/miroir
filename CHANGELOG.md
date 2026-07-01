@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.5](https://github.com/home-operations/miroir/compare/0.2.4...0.2.5) (2026-07-01)
+
+
+### Bug Fixes
+
+* **container:** update image registry.k8s.io/sig-storage/csi-resizer (v2.2.0 → v2.2.1) ([#43](https://github.com/home-operations/miroir/issues/43)) ([b63ebb6](https://github.com/home-operations/miroir/commit/b63ebb6173f0fb2301c7c6c9f504505f420eef7c))
+
+
+### Miscellaneous Chores
+
+* **mise:** Lock file maintenance tool ([#46](https://github.com/home-operations/miroir/issues/46)) ([0d05c1a](https://github.com/home-operations/miroir/commit/0d05c1ae036e53a91651851667f2857775676a49))
+* **mise:** Update tool oxfmt (0.56.0 → 0.57.0) ([#44](https://github.com/home-operations/miroir/issues/44)) ([81dcae8](https://github.com/home-operations/miroir/commit/81dcae8cd6178a75577e798514aaaf829e61993d))
+* **renovate:** inherit shared toolchain + chart-docs presets ([b135a75](https://github.com/home-operations/miroir/commit/b135a75106f39eb736f34ad6c4381eb020f541be))
+
 ## [0.2.4](https://github.com/home-operations/miroir/compare/0.2.3...0.2.4) (2026-06-26)
 
 
