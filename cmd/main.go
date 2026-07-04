@@ -73,7 +73,6 @@ func main() {
 		mode             string
 		csiSocket        string
 		metricsAddr      string
-		probeAddr        string
 		nodesConfig      string
 		provisionTimeout time.Duration
 		overcommitRatio  float64
@@ -87,8 +86,8 @@ func main() {
 	)
 	flag.StringVar(&mode, "mode", "", "controller | agent")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint (0 to disable)")
-	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081",
+		"single operational endpoint: /metrics plus the /healthz and /readyz probes (org port standard)")
 	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"), "this node's name (agent)")
 	flag.StringVar(&nodesConfig, "nodes-config", "/etc/miroir/nodes.yaml",
 		"per-node storage topology (rendered from Helm values)")
@@ -110,9 +109,13 @@ func main() {
 	setupLog.Info("starting miroir", "mode", mode, "version", version, "commit", commit)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress: probeAddr,
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: metricsAddr},
+		// The dedicated health-probe server is disabled; the probes are
+		// co-hosted on the (plain HTTP) metrics listener so each workload
+		// exposes a single operational port — the agent runs hostNetwork,
+		// so every listener occupies a real node port.
+		HealthProbeBindAddress: "0",
 		// No leader election: the controller is a 1-replica Deployment and
 		// agents are per-node singletons (notes/DESIGN.md §4.2).
 	})
@@ -120,11 +123,13 @@ func main() {
 		setupLog.Error(err, "unable to create manager")
 		os.Exit(1)
 	}
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+	// healthz.CheckHandler returns 200 when the checker passes and 500
+	// otherwise — the contract a kubelet HTTP probe expects.
+	if err := mgr.AddMetricsServerExtraHandler("/healthz", healthz.CheckHandler{Checker: healthz.Ping}); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddMetricsServerExtraHandler("/readyz", healthz.CheckHandler{Checker: healthz.Ping}); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
@@ -324,7 +329,7 @@ func main() {
 // apiStartupWait bounds how long the startup sweeps wait for the API server,
 // so a reboot that races control-plane recovery does not exit on the first
 // dial error and churn through CrashLoopBackOff. Kept under the liveness
-// kill window: the probe server is not up until the manager starts.
+// kill window: the probe endpoints are not up until the manager starts.
 const apiStartupWait = 45 * time.Second
 
 // drbdShutdownTimeout bounds the Secondary-teardown sweep at shutdown.

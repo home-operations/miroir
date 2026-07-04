@@ -39,15 +39,15 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
           ports:
-            - name: healthz
-              containerPort: 8081
+            # Serves /metrics plus the /healthz and /readyz probes (single
+            # operational port; see cmd/main.go).
             - name: metrics
-              containerPort: 8080
+              containerPort: 8081
           livenessProbe:
-            httpGet: { path: /healthz, port: healthz }
+            httpGet: { path: /healthz, port: metrics }
             initialDelaySeconds: 10
           readinessProbe:
-            httpGet: { path: /readyz, port: healthz }
+            httpGet: { path: /readyz, port: metrics }
           resources: {{- toYaml .Values.controller.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir

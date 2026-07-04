@@ -56,7 +56,6 @@ spec:
             - --csi-socket=/csi/csi.sock
             - --nodes-config=/etc/miroir/nodes.yaml
             - --metrics-bind-address=:9810
-            - --health-probe-bind-address=:9811
             - --pool-stats-interval={{ .Values.agent.poolStatsInterval }}
           env:
             - name: NODE_NAME
@@ -66,16 +65,18 @@ spec:
           securityContext:
             privileged: true
           ports:
-            - name: healthz
-              containerPort: 9811
+            # Serves /metrics plus the /healthz and /readyz probes (single
+            # operational port; see cmd/main.go). Stays in the agent's 98xx
+            # host-port range: hostNetwork means this binds on the node, and
+            # :8081 is the org-standard pod port other workloads use.
             - name: metrics
               containerPort: 9810
           livenessProbe:
-            httpGet: { path: /healthz, port: healthz }
+            httpGet: { path: /healthz, port: metrics }
             initialDelaySeconds: 15
             periodSeconds: 20
           readinessProbe:
-            httpGet: { path: /readyz, port: healthz }
+            httpGet: { path: /readyz, port: metrics }
             initialDelaySeconds: 5
             periodSeconds: 10
           resources: {{- toYaml .Values.agent.resources | nindent 12 }}
