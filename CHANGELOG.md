@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.6](https://github.com/home-operations/miroir/compare/0.2.5...0.2.6) (2026-07-04)
+
+
+### Features
+
+* consolidate on a single operational port per workload (org standard) ([#47](https://github.com/home-operations/miroir/issues/47)) ([3e724d8](https://github.com/home-operations/miroir/commit/3e724d847bc012f19ca8ccdc559a705edca5de74))
+* **deps:** update module google.golang.org/grpc (v1.81.1 → v1.82.0) ([#45](https://github.com/home-operations/miroir/issues/45)) ([55e4b3b](https://github.com/home-operations/miroir/commit/55e4b3b493a5bbf75d5a202ce211271b5a1daa61))
+
 ## [0.2.5](https://github.com/home-operations/miroir/compare/0.2.4...0.2.5) (2026-07-02)
 
 
