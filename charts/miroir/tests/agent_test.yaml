@@ -67,19 +67,19 @@ tests:
           value: true
       - lengthEqual:
           path: spec.template.spec.containers[0].ports
-          count: 2
+          count: 1
       - equal:
           path: spec.template.spec.containers[0].ports[0].name
-          value: healthz
-      - equal:
-          path: spec.template.spec.containers[0].ports[0].containerPort
-          value: 9811
-      - equal:
-          path: spec.template.spec.containers[0].ports[1].name
           value: metrics
       - equal:
-          path: spec.template.spec.containers[0].ports[1].containerPort
+          path: spec.template.spec.containers[0].ports[0].containerPort
           value: 9810
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
+          value: metrics
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: metrics
 
   - it: pod runs with hostNetwork, hostPID and ClusterFirstWithHostNet
     set:

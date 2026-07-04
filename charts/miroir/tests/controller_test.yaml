@@ -88,19 +88,19 @@ tests:
           value: ALL
       - lengthEqual:
           path: spec.template.spec.containers[0].ports
-          count: 2
+          count: 1
       - equal:
           path: spec.template.spec.containers[0].ports[0].name
-          value: healthz
+          value: metrics
       - equal:
           path: spec.template.spec.containers[0].ports[0].containerPort
           value: 8081
       - equal:
-          path: spec.template.spec.containers[0].ports[1].name
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.port
           value: metrics
       - equal:
-          path: spec.template.spec.containers[0].ports[1].containerPort
-          value: 8080
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.port
+          value: metrics
 
   - it: flows controller.provisionTimeout into the controller args
     set:
