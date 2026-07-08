@@ -104,6 +104,57 @@
       "title": "controller",
       "type": "object"
     },
+    "drbd": {
+      "description": "DRBD replication tuning applied cluster-wide through the common{} section of\nglobal_common.conf; every resource inherits it. Leave a value empty to use\nDRBD's built-in default. Tune to your replication network — see the LINBIT\n\"Tuning the DRBD Resync Controller\" guide.",
+      "properties": {
+        "resync": {
+          "properties": {
+            "fillTarget": {
+              "default": "",
+              "description": "c-fill-target, the resync controller's target fill level (e.g. \"1M\").",
+              "title": "fillTarget",
+              "type": "string"
+            },
+            "maxBuffers": {
+              "default": "",
+              "description": "max-buffers, the DRBD receive-buffer count in the net{} section (e.g. \"36864\").",
+              "title": "maxBuffers",
+              "type": "string"
+            },
+            "maxRate": {
+              "default": "",
+              "description": "c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. \"720M\").",
+              "title": "maxRate",
+              "type": "string"
+            },
+            "minRate": {
+              "default": "",
+              "description": "c-min-rate, the resync floor guaranteed even under application I/O (e.g. \"20M\"); keep low on shared links.",
+              "title": "minRate",
+              "type": "string"
+            },
+            "planAhead": {
+              "default": "",
+              "description": "c-plan-ahead in 0.1s units; a value \u003e 0 enables DRBD's variable-rate resync controller.",
+              "title": "planAhead",
+              "type": "string"
+            },
+            "rate": {
+              "default": "",
+              "description": "resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0).",
+              "title": "rate",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "resync",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "drbd",
+      "type": "object"
+    },
     "global": {
       "description": "Global values are values that can be accessed from any chart or subchart by exactly the same name.",
       "required": [],
