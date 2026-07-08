@@ -200,12 +200,13 @@ func TestApplyFreshResource(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
-	// Winner seeds Consistent+UpToDate flags into EVERY slot, its own
-	// included — partial seeding leaves the local current-UUID random and
-	// the first handshake aborts with "unrelated data" (blockstor Bug 284).
+	// Winner seeds Consistent+UpToDate flags into the local slot and
+	// every peer slot — partial seeding leaves the local current-UUID
+	// random and the first handshake aborts "unrelated data".
 	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI(volPvc1)+":0:0:0:1:1")
 	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1)+":0:0:0:1:1")
-	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI(volPvc1)+":0:0:0:1:1")
+	// Only actual peer slots are seeded, not all 32 metadata slots.
+	fe.notCalledWith(t, "set-gi --node-id 31")
 	// drbdmeta is addressed by minor: the resource/volume form is drbdadm
 	// syntax and makes drbdmeta consult kernel state through a malformed
 	// drbdsetup invocation with undefined output.
@@ -221,7 +222,7 @@ func TestApplyFreshResource(t *testing.T) {
 	}
 }
 
-func TestApplyNonWinnerSeedsBareGI(t *testing.T) {
+func TestApplyNonWinnerSeedsWasUpToDate(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource("paris") // node-id 1 → not winner
@@ -229,11 +230,13 @@ func TestApplyNonWinnerSeedsBareGI(t *testing.T) {
 	if err := d.Apply(context.Background(), r); err != nil {
 		t.Fatal(err)
 	}
-	// Non-winner seeds the bare day0 GI (no flags) into every slot and
-	// reaches UpToDate at the first handshake.
-	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI(volPvc1)+":0:0:0")
-	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1)+":0:0:0")
+	// Non-winner seeds WasUpToDate (without Consistent): attaches
+	// Inconsistent but keeps the bitmap clean so no full resync fires.
+	// Reaches UpToDate at the first handshake.
+	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI(volPvc1)+":0:0:0:0:1")
+	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1)+":0:0:0:0:1")
 	fe.notCalledWith(t, ":1:1")
+	fe.notCalledWith(t, "set-gi --node-id 31")
 }
 
 func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
@@ -302,7 +305,7 @@ func TestApplyReseedsAfterMidSeedCrash(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1))
-	fe.calledWith(t, "set-gi --node-id 31 "+Day0GI(volPvc1))
+	fe.notCalledWith(t, "set-gi --node-id 31")
 	fe.notCalledWith(t, "create-md")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
 		t.Fatal("marker not written after successful re-seed")
@@ -436,7 +439,8 @@ func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
 	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "set-gi --node-id 31")
+	fe.calledWith(t, "set-gi --node-id 1")
+	fe.notCalledWith(t, "set-gi --node-id 31")
 	fe.notCalledWith(t, "create-md")
 }
 
