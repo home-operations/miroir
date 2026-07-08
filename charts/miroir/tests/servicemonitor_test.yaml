@@ -1,0 +1,63 @@
+suite: servicemonitor
+templates:
+  - servicemonitor.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: should not create a ServiceMonitor by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should create a ServiceMonitor when enabled
+    set:
+      monitoring.serviceMonitor.enabled: true
+    asserts:
+      - isKind:
+          of: ServiceMonitor
+      - equal:
+          path: metadata.name
+          value: miroir
+      - equal:
+          path: metadata.namespace
+          value: miroir-system
+
+  - it: should use a custom scrape interval
+    set:
+      monitoring.serviceMonitor.enabled: true
+      monitoring.serviceMonitor.interval: 15s
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 15s
+
+  - it: should add extra labels to the ServiceMonitor
+    set:
+      monitoring.serviceMonitor.enabled: true
+      monitoring.serviceMonitor.labels:
+        prometheus: kube-prometheus
+    asserts:
+      - equal:
+          path: metadata.labels.prometheus
+          value: kube-prometheus
+
+  - it: should select the controller metrics Service on the metrics port
+    set:
+      monitoring.serviceMonitor.enabled: true
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/component"]
+          value: controller
+      - equal:
+          path: spec.endpoints[0].port
+          value: metrics
+      - equal:
+          path: spec.endpoints[0].path
+          value: /metrics
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 30s
+      - equal:
+          path: spec.endpoints[0].scrapeTimeout
+          value: 10s

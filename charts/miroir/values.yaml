@@ -104,3 +104,28 @@ volumeSnapshotClass:
   create: true
   name: miroir-snap
   deletionPolicy: Delete
+
+# Requires the Prometheus Operator CRDs (deployed separately).
+monitoring:
+  serviceMonitor:
+    # -- Create a Prometheus Operator ServiceMonitor (requires its CRDs).
+    # Enabling this also creates the metrics Service the ServiceMonitor scrapes.
+    enabled: false
+    # -- Scrape interval.
+    interval: 30s
+    # -- Scrape timeout.
+    scrapeTimeout: 10s
+    # -- Metrics path.
+    path: /metrics
+    # -- ServiceMonitor labels.
+    labels: {}
+    # -- ServiceMonitor annotations.
+    annotations: {}
+    # -- Prometheus metric relabelings.
+    metricRelabelings: []
+    # -- Prometheus relabelings (applied before scraping).
+    relabelings: []
+    # -- Target labels to copy from the Service.
+    targetLabels: []
+    # -- Pod target labels to copy from pods.
+    podTargetLabels: []

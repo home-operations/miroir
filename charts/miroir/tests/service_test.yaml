@@ -1,0 +1,39 @@
+suite: service
+templates:
+  - service.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: should not create the metrics Service by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should create a ClusterIP Service targeting the controller metrics port
+    set:
+      monitoring.serviceMonitor.enabled: true
+    asserts:
+      - isKind:
+          of: Service
+      - equal:
+          path: metadata.name
+          value: miroir-metrics
+      - equal:
+          path: metadata.namespace
+          value: miroir-system
+      - equal:
+          path: spec.type
+          value: ClusterIP
+      - equal:
+          path: spec.ports[0].port
+          value: 8081
+      - equal:
+          path: spec.ports[0].targetPort
+          value: metrics
+      - equal:
+          path: spec.ports[0].name
+          value: metrics
+      - equal:
+          path: spec.selector["app.kubernetes.io/component"]
+          value: controller

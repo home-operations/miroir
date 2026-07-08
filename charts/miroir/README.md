@@ -49,6 +49,16 @@ Kubernetes: `>=1.31.0`
 | image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
 | image.tag | string | `""` |  |
 | kubeletDir | string | `"/var/lib/kubelet"` |  |
+| monitoring.serviceMonitor.annotations | object | `{}` | ServiceMonitor annotations. |
+| monitoring.serviceMonitor.enabled | bool | `false` | Create a Prometheus Operator ServiceMonitor (requires its CRDs). Enabling this also creates the metrics Service the ServiceMonitor scrapes. |
+| monitoring.serviceMonitor.interval | string | `"30s"` | Scrape interval. |
+| monitoring.serviceMonitor.labels | object | `{}` | ServiceMonitor labels. |
+| monitoring.serviceMonitor.metricRelabelings | list | `[]` | Prometheus metric relabelings. |
+| monitoring.serviceMonitor.path | string | `"/metrics"` | Metrics path. |
+| monitoring.serviceMonitor.podTargetLabels | list | `[]` | Pod target labels to copy from pods. |
+| monitoring.serviceMonitor.relabelings | list | `[]` | Prometheus relabelings (applied before scraping). |
+| monitoring.serviceMonitor.scrapeTimeout | string | `"10s"` | Scrape timeout. |
+| monitoring.serviceMonitor.targetLabels | list | `[]` | Target labels to copy from the Service. |
 | nodes | object | `{}` |  |
 | replicatedStorageClass.create | bool | `true` |  |
 | replicatedStorageClass.fsType | string | `"ext4"` |  |

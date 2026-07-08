@@ -101,3 +101,10 @@ Always pinned to .Chart.Name so a nameOverride can't break volume provisioning.
 {{- define "miroir.csiDriverName" -}}
 {{- .Chart.Name }}.home-operations.com
 {{- end -}}
+
+{{/*
+Metrics Service name — the controller's scrape endpoint.
+*/}}
+{{- define "miroir.metricsServiceName" -}}
+{{- printf "%s-metrics" (include "miroir.fullname" .) -}}
+{{- end -}}

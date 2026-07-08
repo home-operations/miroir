@@ -144,6 +144,89 @@
       "title": "kubeletDir",
       "type": "string"
     },
+    "monitoring": {
+      "description": "Requires the Prometheus Operator CRDs (deployed separately).",
+      "properties": {
+        "serviceMonitor": {
+          "properties": {
+            "annotations": {
+              "description": "ServiceMonitor annotations.",
+              "required": [],
+              "title": "annotations",
+              "type": "object"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Create a Prometheus Operator ServiceMonitor (requires its CRDs).\nEnabling this also creates the metrics Service the ServiceMonitor scrapes.",
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "interval": {
+              "default": "30s",
+              "description": "Scrape interval.",
+              "title": "interval",
+              "type": "string"
+            },
+            "labels": {
+              "description": "ServiceMonitor labels.",
+              "required": [],
+              "title": "labels",
+              "type": "object"
+            },
+            "metricRelabelings": {
+              "description": "Prometheus metric relabelings.",
+              "items": {
+                "required": []
+              },
+              "title": "metricRelabelings",
+              "type": "array"
+            },
+            "path": {
+              "default": "/metrics",
+              "description": "Metrics path.",
+              "title": "path",
+              "type": "string"
+            },
+            "podTargetLabels": {
+              "description": "Pod target labels to copy from pods.",
+              "items": {
+                "required": []
+              },
+              "title": "podTargetLabels",
+              "type": "array"
+            },
+            "relabelings": {
+              "description": "Prometheus relabelings (applied before scraping).",
+              "items": {
+                "required": []
+              },
+              "title": "relabelings",
+              "type": "array"
+            },
+            "scrapeTimeout": {
+              "default": "10s",
+              "description": "Scrape timeout.",
+              "title": "scrapeTimeout",
+              "type": "string"
+            },
+            "targetLabels": {
+              "description": "Target labels to copy from the Service.",
+              "items": {
+                "required": []
+              },
+              "title": "targetLabels",
+              "type": "array"
+            }
+          },
+          "required": [],
+          "title": "serviceMonitor",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "monitoring",
+      "type": "object"
+    },
     "nodes": {
       "description": "Per-node storage topology — the single source of truth for which nodes\nhold volumes and how. Rendered into the miroir-nodes ConfigMap, read by\nthe controller (placement) and each agent (backend selection).\nnodes:\n  kharkiv:\n    backend: lvmthin\n    device: /dev/disk/by-partlabel/r-miroir\n    # thinPoolSize: 400g   # bound the pool when sharing the VG\n  paris:\n    backend: zfs\n    zfsDataset: data-pool/miroir\n  le-havre:\n    # loopfile: sparse files on the node's existing filesystem — no\n    # dedicated disk or pool. baseDir must be reflink-capable (XFS\n    # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the agent\n    # refuses to start otherwise. The dir is hostPath-mounted into the\n    # agent at the same path.\n    backend: loopfile\n    baseDir: /var/lib/miroir",
       "required": [],
