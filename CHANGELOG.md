@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.10](https://github.com/home-operations/miroir/compare/0.2.9...0.2.10) (2026-07-08)
+
+
+### Features
+
+* **chart:** expose cluster-wide DRBD resync tuning ([#67](https://github.com/home-operations/miroir/issues/67)) ([d80b043](https://github.com/home-operations/miroir/commit/d80b043725db93b870138ab9c718159066c85c62))
+* **csi:** spread replicas across failure-domain zones ([#69](https://github.com/home-operations/miroir/issues/69)) ([286c1df](https://github.com/home-operations/miroir/commit/286c1df1580a8905bb94e434b006f52049587d53))
+
 ## [0.2.9](https://github.com/home-operations/miroir/compare/0.2.8...0.2.9) (2026-07-08)
 
 
