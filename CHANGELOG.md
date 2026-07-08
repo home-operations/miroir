@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.7](https://github.com/home-operations/miroir/compare/0.2.6...0.2.7) (2026-07-08)
+
+
+### Features
+
+* **chart:** add Prometheus Operator ServiceMonitor ([1cb6b63](https://github.com/home-operations/miroir/commit/1cb6b635c53f624c9521d7f21c17019c01c03482))
+
+
+### Bug Fixes
+
+* **deps:** update k8s.io/utils digest (be93311 → cf1189d) ([#50](https://github.com/home-operations/miroir/issues/50)) ([48eaa78](https://github.com/home-operations/miroir/commit/48eaa7848f86f97a41554ce0d714e6b5a7602b08))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool oxfmt (0.57.0 → 0.58.0) ([#49](https://github.com/home-operations/miroir/issues/49)) ([fbaa871](https://github.com/home-operations/miroir/commit/fbaa871ea6c6dc900b948c05255a32d75cbcd5a8))
+
 ## [0.2.6](https://github.com/home-operations/miroir/compare/0.2.5...0.2.6) (2026-07-04)
 
 
