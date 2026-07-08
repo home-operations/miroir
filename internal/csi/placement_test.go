@@ -18,6 +18,7 @@ package csi
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -30,6 +31,7 @@ import (
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/nodemap"
 )
 
 const gib = 1 << 30
@@ -152,5 +154,88 @@ func TestPlaceHonoursConfiguredRatio(t *testing.T) {
 	_, err := c.place(context.Background(), nil, 1, 11*gib, volNew)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("1x ratio must refuse an over-capacity volume, got %v", err)
+	}
+}
+
+func TestSpreadByZone(t *testing.T) {
+	zoneOf := func(m map[string]string) func(string) string {
+		return func(n string) string { return m[n] }
+	}
+	cases := []struct {
+		name    string
+		ordered []string
+		zones   map[string]string
+		pinned  int
+		count   int
+		want    []string
+	}{{
+		name:    "no zones declared keeps the ranked prefix",
+		ordered: []string{"a", "b", "c"},
+		count:   2,
+		want:    []string{"a", "b"},
+	}, {
+		name:    "prefers a distinct zone over rank",
+		ordered: []string{"a", "b", "c"},
+		zones:   map[string]string{"a": "z1", "b": "z1", "c": "z2"},
+		count:   2,
+		want:    []string{"a", "c"},
+	}, {
+		name:    "falls back to a used zone when zones run short",
+		ordered: []string{"a", "b", "c"},
+		zones:   map[string]string{"a": "z1", "b": "z1", "c": "z1"},
+		count:   2,
+		want:    []string{"a", "b"},
+	}, {
+		name:    "topology-pinned nodes are kept even in a used zone",
+		ordered: []string{"a", "b", "c"},
+		zones:   map[string]string{"a": "z1", "b": "z1", "c": "z2"},
+		pinned:  2,
+		count:   2,
+		want:    []string{"a", "b"},
+	}, {
+		name:    "an empty zone is unconstrained",
+		ordered: []string{"a", "b", "c"},
+		zones:   map[string]string{"a": "z1", "c": "z1"},
+		count:   2,
+		want:    []string{"a", "b"},
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := spreadByZone(tc.ordered, tc.pinned, tc.count, zoneOf(tc.zones)); !slices.Equal(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// kharkiv and paris share zone a with the most free space; oslo is alone in
+// zone b with the least. Free-space ranking alone picks kharkiv+paris — zone
+// spread must instead reach into zone b so the replicas span failure domains.
+func TestPlaceSpreadsAcrossZones(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib), // 90 free, zone a
+			miroirNodeObj(nodeParis, 100*gib, 20*gib),   // 80 free, zone a
+			miroirNodeObj("oslo", 100*gib, 90*gib),      // 10 free, zone b
+			nodeObj(nodeKharkiv, "192.168.1.41"),
+			nodeObj(nodeParis, "192.168.1.42"),
+			nodeObj("oslo", "192.168.1.43"),
+		),
+		Nodes: nodemap.Map{
+			nodeKharkiv: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "a", Device: "/dev/x"},
+			nodeParis:   {Backend: miroirv1alpha1.BackendZFS, Zone: "a", ZFSDataset: "p/m"},
+			"oslo":      {Backend: miroirv1alpha1.BackendLVMThin, Zone: "b", Device: "/dev/y"},
+		},
+	}
+
+	got, err := c.place(context.Background(), nil, 2, 5*gib, volNew)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes := []string{got[0].Node, got[1].Node}
+	slices.Sort(nodes)
+	if !slices.Equal(nodes, []string{nodeKharkiv, "oslo"}) {
+		t.Fatalf("replicas must span zones a and b (kharkiv+oslo), got %v", nodes)
 	}
 }
