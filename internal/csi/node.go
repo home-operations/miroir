@@ -174,65 +174,67 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 	} else if err != nil {
 		return nil, status.Errorf(codes.Internal, "inspect staging path: %v", err)
 	}
-	if !notMnt {
+	if notMnt {
+		fsType := req.GetVolumeCapability().GetMount().GetFsType()
+		if fsType == "" {
+			fsType = "ext4"
+		}
+		mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
+
+		// Open-for-write probe: the first open(2) auto-promotes DRBD, and a
+		// refused promotion (peer already Primary) otherwise surfaces as
+		// mkfs "Wrong medium type".
+		f, err := os.OpenFile(dev, os.O_RDWR, 0)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable,
+				"device %s not writable (is the volume in use on another node?): %v", dev, err)
+		}
+		_ = f.Close()
+
+		// mkfs-if-blank is allowed exactly once per volume: a blank device on
+		// a volume that ever carried a filesystem is data loss (diverged
+		// replica, torn clone), and reformatting would silently finish it.
+		format, err := n.Mounter.GetDiskFormat(dev)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "probe filesystem on %s: %v", dev, err)
+		}
+		if format == "" && vol.Status.Formatted {
+			return nil, status.Errorf(codes.DataLoss,
+				"volume %s was formatted before but %s reads blank — refusing to reformat", req.GetVolumeId(), dev)
+		}
+		if format != "" {
+			// Record before mounting so a clone that arrived with a
+			// filesystem is protected from then on.
+			if err := n.markFormatted(ctx, vol); err != nil {
+				return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
+			}
+		}
+
+		// FormatAndMount formats only when the device has no filesystem —
+		// the mkfs-if-blank step of notes/DESIGN.md §4.5.2.
+		if err := n.Mounter.FormatAndMount(dev, req.GetStagingTargetPath(), fsType, mountFlags); err != nil {
+			return nil, status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
+		}
+		if format == "" {
+			// First mkfs. A failed patch fails the stage; the retry lands in
+			// the format != "" path above and records it then.
+			if err := n.markFormatted(ctx, vol); err != nil {
+				return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
+			}
+		}
+	} else {
 		// Already staged: a mounted device carries a filesystem, so a
 		// missed Formatted patch from an earlier stage heals here.
 		if err := n.markFormatted(ctx, vol); err != nil {
 			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
 		}
-		return &csi.NodeStageVolumeResponse{}, nil // idempotent
 	}
 
-	fsType := req.GetVolumeCapability().GetMount().GetFsType()
-	if fsType == "" {
-		fsType = "ext4"
-	}
-	mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
-
-	// Open-for-write probe: the first open(2) auto-promotes DRBD, and a
-	// refused promotion (peer already Primary) otherwise surfaces as
-	// mkfs "Wrong medium type".
-	f, err := os.OpenFile(dev, os.O_RDWR, 0)
-	if err != nil {
-		return nil, status.Errorf(codes.Unavailable,
-			"device %s not writable (is the volume in use on another node?): %v", dev, err)
-	}
-	_ = f.Close()
-
-	// mkfs-if-blank is allowed exactly once per volume: a blank device on
-	// a volume that ever carried a filesystem is data loss (diverged
-	// replica, torn clone), and reformatting would silently finish it.
-	format, err := n.Mounter.GetDiskFormat(dev)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "probe filesystem on %s: %v", dev, err)
-	}
-	if format == "" && vol.Status.Formatted {
-		return nil, status.Errorf(codes.DataLoss,
-			"volume %s was formatted before but %s reads blank — refusing to reformat", req.GetVolumeId(), dev)
-	}
-	if format != "" {
-		// Record before mounting so a clone that arrived with a
-		// filesystem is protected from then on.
-		if err := n.markFormatted(ctx, vol); err != nil {
-			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-		}
-	}
-
-	// FormatAndMount formats only when the device has no filesystem —
-	// the mkfs-if-blank step of notes/DESIGN.md §4.5.2.
-	if err := n.Mounter.FormatAndMount(dev, req.GetStagingTargetPath(), fsType, mountFlags); err != nil {
-		return nil, status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
-	}
-	if format == "" {
-		// First mkfs. A failed patch fails the stage; the retry lands in
-		// the format != "" path above and records it then.
-		if err := n.markFormatted(ctx, vol); err != nil {
-			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-		}
-	}
-
-	// A restored clone carries the snapshot's filesystem, which is smaller
-	// than the device when the new PVC asked for more — grow it to fill.
+	// Grow-to-fill runs on every stage, not only a fresh mount: a restored
+	// clone carries the snapshot's smaller filesystem, and a resize that
+	// failed after the mount already succeeded must be retried on the next
+	// stage, not skipped by the already-staged fast path. NeedResize is a
+	// no-op once the filesystem fills the device.
 	resizer := mount.NewResizeFs(n.Mounter.Exec)
 	need, err := resizer.NeedResize(dev, req.GetStagingTargetPath())
 	if err != nil {
