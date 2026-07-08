@@ -108,6 +108,44 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog.Info("starting miroir", "mode", mode, "version", version, "commit", commit)
 
+	// Setup mode provisions the node-local pool and exits. It reads the node
+	// map from a file and drives lvm/zfs directly, so it needs neither the
+	// controller-runtime manager nor an API connection — build neither.
+	if mode == "setup" {
+		if nodeName == "" {
+			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
+			os.Exit(1)
+		}
+		nodes, err := nodemap.Load(nodesConfig)
+		if err != nil {
+			setupLog.Error(err, "unable to load node map")
+			os.Exit(1)
+		}
+		entry, ok := nodes[nodeName]
+		if !ok {
+			setupLog.Error(nil, "node absent from the node map", "node", nodeName)
+			os.Exit(1)
+		}
+		be, err := backend.New(entry.Backend, backend.Config{
+			VolumeGroup: vg,
+			ThinPool:    thinPool,
+			Device:      entry.Device,
+			Dataset:     entry.ZFSDataset,
+			PoolSize:    entry.ThinPoolSize,
+			BaseDir:     entry.BaseDir,
+		}, backend.RealExec)
+		if err != nil {
+			setupLog.Error(err, "invalid backend for node", "node", nodeName)
+			os.Exit(1)
+		}
+		if err := be.Setup(context.Background()); err != nil {
+			setupLog.Error(err, "backend pool setup failed", "node", nodeName)
+			os.Exit(1)
+		}
+		setupLog.Info("pool ready", "node", nodeName)
+		return
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: metricsAddr},
@@ -142,40 +180,6 @@ func main() {
 	var shutdownSweep func()
 
 	switch mode {
-	case "setup":
-		if nodeName == "" {
-			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
-			os.Exit(1)
-		}
-		nodes, err := nodemap.Load(nodesConfig)
-		if err != nil {
-			setupLog.Error(err, "unable to load node map")
-			os.Exit(1)
-		}
-		entry, ok := nodes[nodeName]
-		if !ok {
-			setupLog.Error(nil, "node absent from the node map", "node", nodeName)
-			os.Exit(1)
-		}
-		be, err := backend.New(entry.Backend, backend.Config{
-			VolumeGroup: vg,
-			ThinPool:    thinPool,
-			Device:      entry.Device,
-			Dataset:     entry.ZFSDataset,
-			PoolSize:    entry.ThinPoolSize,
-			BaseDir:     entry.BaseDir,
-		}, backend.RealExec)
-		if err != nil {
-			setupLog.Error(err, "invalid backend for node", "node", nodeName)
-			os.Exit(1)
-		}
-		if err := be.Setup(context.Background()); err != nil {
-			setupLog.Error(err, "backend pool setup failed", "node", nodeName)
-			os.Exit(1)
-		}
-		setupLog.Info("pool ready", "node", nodeName)
-		return
-
 	case "controller":
 		nodes, err := nodemap.Load(nodesConfig)
 		if err != nil {

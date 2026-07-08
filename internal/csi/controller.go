@@ -562,8 +562,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 	if err == nil {
 		return nil
 	}
-	failed := &errVolumeFailed{}
-	if errors.As(err, &failed) {
+	if failed, ok := errors.AsType[*errVolumeFailed](err); ok {
 		// Hard agent failure (e.g. pool out of space). DeadlineExceeded
 		// would make the provisioner retry forever.
 		return status.Errorf(codes.ResourceExhausted, "volume %s failed: %s", name, failed.detail)
