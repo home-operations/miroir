@@ -12,8 +12,9 @@ data:
   nodes.yaml: |
     {{- .Values.nodes | toYaml | nindent 4 }}
 ---
-# Minimal drbd-utils global config: the drbd.d hostPath bind shadows the
-# image-baked copy. Per-resource settings live in rendered .res files.
+# drbd-utils global config: the drbd.d hostPath bind shadows the image-baked
+# copy. Cluster-wide resync tuning goes in common{} (inherited by every
+# resource); per-resource settings live in the rendered .res files.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -31,6 +32,30 @@ data:
         handlers {}
         startup {}
         options {}
-        disk {}
-        net {}
+        disk {
+        {{- with .Values.drbd.resync }}
+        {{- if .planAhead }}
+            c-plan-ahead {{ .planAhead }};
+        {{- end }}
+        {{- if .fillTarget }}
+            c-fill-target {{ .fillTarget }};
+        {{- end }}
+        {{- if .maxRate }}
+            c-max-rate {{ .maxRate }};
+        {{- end }}
+        {{- if .minRate }}
+            c-min-rate {{ .minRate }};
+        {{- end }}
+        {{- if .rate }}
+            resync-rate {{ .rate }};
+        {{- end }}
+        {{- end }}
+        }
+        net {
+        {{- with .Values.drbd.resync }}
+        {{- if .maxBuffers }}
+            max-buffers {{ .maxBuffers }};
+        {{- end }}
+        {{- end }}
+        }
     }

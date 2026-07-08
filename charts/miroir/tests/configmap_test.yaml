@@ -90,6 +90,37 @@ tests:
       - matchRegex:
           path: data["global_common.conf"]
           pattern: "handlers \\{\\}"
+      # Default emits no resync options — common{} keeps DRBD's built-ins.
+      - notMatchRegex:
+          path: data["global_common.conf"]
+          pattern: "c-max-rate"
+
+  - it: renders cluster-wide resync tuning into common{} when set
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      drbd:
+        resync:
+          planAhead: "20"
+          maxRate: 720M
+          minRate: 20M
+          maxBuffers: "36864"
+    documentIndex: 1
+    asserts:
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "c-plan-ahead 20;"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "c-max-rate 720M;"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "c-min-rate 20M;"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "max-buffers 36864;"
 
   - it: honours a non-default Release namespace for both ConfigMaps
     release:

@@ -44,6 +44,12 @@ Kubernetes: `>=1.31.0`
 | controller.resources.limits.memory | string | `"128Mi"` |  |
 | controller.resources.requests.cpu | string | `"10m"` |  |
 | controller.resources.requests.memory | string | `"32Mi"` |  |
+| drbd.resync.fillTarget | string | `""` | c-fill-target, the resync controller's target fill level (e.g. "1M"). |
+| drbd.resync.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864"). |
+| drbd.resync.maxRate | string | `""` | c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M"). |
+| drbd.resync.minRate | string | `""` | c-min-rate, the resync floor guaranteed even under application I/O (e.g. "20M"); keep low on shared links. |
+| drbd.resync.planAhead | string | `""` | c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller. |
+| drbd.resync.rate | string | `""` | resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0). |
 | image.digest | string | `""` |  |
 | image.pullPolicy | string | `"IfNotPresent"` |  |
 | image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
