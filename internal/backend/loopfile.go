@@ -243,7 +243,7 @@ func (lf *loopfile) Delete(ctx context.Context, vol string) error {
 	}
 	if dev != "" {
 		if _, err := lf.exec(ctx, "losetup", "-d", dev); err != nil {
-			return fmt.Errorf("detach %s: %w", dev, err)
+			return busy(fmt.Errorf("detach %s: %w", dev, err))
 		}
 	}
 	if _, err := lf.exec(ctx, "rm", "-f", lf.DevicePath(vol)); err != nil {

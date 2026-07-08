@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -96,9 +97,9 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 		}
 		if err := r.Backend.DeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
-			if isDeviceBusy(err) {
-				// ZFS refuses to destroy an origin with live clones;
-				// retry until restored volumes are gone.
+			if errors.Is(err, backend.ErrBusy) {
+				// The snapshot device is still open (e.g. a restore in
+				// progress); retry until it is released.
 				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 			}
 			return ctrl.Result{}, err

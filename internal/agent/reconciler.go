@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -63,18 +62,6 @@ const drbdPollInterval = 30 * time.Second
 // errSplitBrain gives the split-brain transition log a real error value.
 var errSplitBrain = errors.New("DRBD split-brain detected")
 
-// isDeviceBusy matches failures that resolve themselves once something
-// else goes away: an open device (force-deleted pod), an LVM origin with
-// snapshot children, a ZFS origin with clones.
-func isDeviceBusy(err error) bool {
-	s := err.Error()
-	return strings.Contains(s, "held open") || strings.Contains(s, "busy") ||
-		strings.Contains(s, "in use") ||
-		strings.Contains(s, "snapshot") || // lvremove: origin contains snapshots
-		strings.Contains(s, "has children") || // zfs destroy: snapshots exist
-		strings.Contains(s, "dependent clones") // zfs destroy: restore clones exist
-}
-
 // Reconcile realizes (or tears down) this node's replica of one volume.
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -98,9 +85,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if !mine && !controllerutil.ContainsFinalizer(vol, constants.FinalizerPrefix+r.NodeName) {
 			return ctrl.Result{}, nil
 		}
-		dropVolumeMetrics(vol.Name)
 		if err := r.teardown(ctx, vol); err != nil {
-			if isDeviceBusy(err) {
+			if errors.Is(err, backend.ErrBusy) {
 				// A force-deleted pod can leave the device open past
 				// NodeUnstage; retry until the mount goes away.
 				log.Info("device busy during teardown, retrying", "volume", vol.Name)
@@ -108,6 +94,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			}
 			return ctrl.Result{}, err
 		}
+		// Drop metrics only once the device is gone: a retrying teardown
+		// must not blank a volume that still exists.
+		dropVolumeMetrics(vol.Name)
 		return ctrl.Result{}, r.removeFinalizer(ctx, vol)
 	}
 	if !mine {
@@ -313,9 +302,8 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	dropVolumeMetrics(vol.Name)
 	if err := r.teardown(ctx, vol); err != nil {
-		if isDeviceBusy(err) {
+		if errors.Is(err, backend.ErrBusy) {
 			// A pod still staged here holds the device open; it has to
 			// move off this node before the leg can go.
 			log.Info("device busy during replica removal, retrying", "volume", vol.Name)
@@ -323,6 +311,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		}
 		return ctrl.Result{}, err
 	}
+	dropVolumeMetrics(vol.Name)
 	// Drop this node's status slot — merge-patch null deletes the key.
 	// Best-effort ordering: a crash here leaves a stale slot, which
 	// nothing reads (phase and growth iterate spec.replicas only).
