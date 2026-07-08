@@ -35,6 +35,10 @@ import (
 type Node struct {
 	// Backend selects the storage implementation: "lvmthin" | "zfs".
 	Backend miroirv1alpha1.BackendType `json:"backend"`
+	// Zone is an optional failure domain (rack, host group, AZ). When set,
+	// the controller spreads a volume's replicas across distinct zones;
+	// empty means unconstrained.
+	Zone string `json:"zone,omitempty"`
 	// Device is the block device backing the LVM VG (lvmthin).
 	Device string `json:"device,omitempty"`
 	// ZFSDataset is the parent dataset for zvols (zfs).

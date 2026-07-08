@@ -39,6 +39,7 @@ kharkiv:
   backend: lvmthin
   device: /dev/disk/by-partlabel/r-miroir
   thinPoolSize: 400g
+  zone: rack-1
 paris:
   backend: zfs
   zfsDataset: tank/miroir
@@ -54,6 +55,9 @@ oslo:
 	}
 	if m["kharkiv"].Backend != miroirv1alpha1.BackendLVMThin || m["kharkiv"].ThinPoolSize != "400g" {
 		t.Fatalf("kharkiv parsed wrong: %+v", m["kharkiv"])
+	}
+	if m["kharkiv"].Zone != "rack-1" {
+		t.Fatalf("kharkiv zone not parsed: %+v", m["kharkiv"])
 	}
 	if m["paris"].ZFSDataset != "tank/miroir" {
 		t.Fatalf("paris dataset wrong: %+v", m["paris"])

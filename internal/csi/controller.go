@@ -361,13 +361,14 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 		}
 		return cmp.Compare(a, b)
 	})
+	pinned := len(ordered) // topology-selected nodes, honored unconditionally
 	ordered = append(ordered, rest...)
 	if len(ordered) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"only %d of %d storage nodes can host a %d-byte volume within the %gx overcommit ratio",
 			len(ordered), len(c.Nodes), sizeBytes, ratio)
 	}
-	ordered = ordered[:count]
+	ordered = spreadByZone(ordered, pinned, count, func(n string) string { return c.Nodes[n].Zone })
 	for _, n := range ordered {
 		if overcommitted(n) {
 			return nil, status.Errorf(codes.ResourceExhausted,
@@ -389,6 +390,38 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 		replicas = append(replicas, r)
 	}
 	return replicas, nil
+}
+
+// spreadByZone selects count nodes from ordered (already ranked by topology
+// then free space), preferring distinct failure domains. The first `pinned`
+// entries are topology-selected and taken unconditionally; the rest fill
+// remaining slots, nodes in a not-yet-used zone first, then — only if zones
+// run short — the leftovers in rank order. A node with an empty zone is
+// unconstrained, so when no node declares a zone this returns ordered[:count]
+// unchanged. Callers guarantee len(ordered) >= count.
+func spreadByZone(ordered []string, pinned, count int, zoneOf func(string) string) []string {
+	picked := make([]string, 0, count)
+	used := map[string]bool{}
+	take := func(n string) {
+		picked = append(picked, n)
+		if z := zoneOf(n); z != "" {
+			used[z] = true
+		}
+	}
+	for i := 0; i < pinned && len(picked) < count; i++ {
+		take(ordered[i])
+	}
+	for i := pinned; i < len(ordered) && len(picked) < count; i++ {
+		if z := zoneOf(ordered[i]); z == "" || !used[z] {
+			take(ordered[i])
+		}
+	}
+	for i := pinned; i < len(ordered) && len(picked) < count; i++ {
+		if !slices.Contains(picked, ordered[i]) {
+			take(ordered[i])
+		}
+	}
+	return picked
 }
 
 // nodeInternalIP resolves a node's replication endpoint from its Node
