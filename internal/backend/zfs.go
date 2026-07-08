@@ -51,6 +51,13 @@ func (z *zfsBackend) name(vol string) string {
 	return z.dataset + "/" + vol
 }
 
+// pool is the top-level zpool of the dataset (tank/miroir → tank): the scope
+// whose capacity the overcommit guard reads, since it is shared with OpenEBS.
+func (z *zfsBackend) pool() string {
+	p, _, _ := strings.Cut(z.dataset, "/")
+	return p
+}
+
 func (z *zfsBackend) DevicePath(vol string) string {
 	return "/dev/zvol/" + z.name(vol)
 }
@@ -111,7 +118,7 @@ func (z *zfsBackend) Sync(ctx context.Context, vol string) error {
 		return fmt.Errorf("flush %s: %w", vol, err)
 	}
 	// Commit pending transaction groups before the snapshot dataset is cut.
-	pool := strings.SplitN(z.dataset, "/", 2)[0]
+	pool := z.pool()
 	if _, err := z.exec(ctx, "zpool", "sync", pool); err != nil {
 		return fmt.Errorf("zpool sync: %w", err)
 	}
@@ -207,7 +214,7 @@ func (z *zfsBackend) volSize(ctx context.Context, vol string) (int64, error) {
 func (z *zfsBackend) Stats(ctx context.Context) (PoolStats, error) {
 	// Pool-level stats: the pool is shared with OpenEBS, so headroom must
 	// account for everything in it, not only miroir zvols (notes/DESIGN.md §4.6).
-	pool := strings.SplitN(z.dataset, "/", 2)[0]
+	pool := z.pool()
 	out, err := z.exec(ctx, "zpool", "get", "-Hpo", "value", "size,allocated", pool)
 	if err != nil {
 		return PoolStats{}, err
