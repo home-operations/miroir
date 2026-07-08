@@ -98,7 +98,8 @@ func TestLoopfileSnapshotReflinks(t *testing.T) {
 	if err := b.Snapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/volumes/pvc-1.img /var/lib/miroir/snapshots/snap-1.img")
+	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/volumes/pvc-1.img /var/lib/miroir/snapshots/snap-1.img.tmp")
+	fe.calledWith(t, "mv /var/lib/miroir/snapshots/snap-1.img.tmp /var/lib/miroir/snapshots/snap-1.img")
 }
 
 func TestLoopfileSnapshotIdempotent(t *testing.T) {
@@ -126,7 +127,8 @@ func TestLoopfileCreateFromSnapshot(t *testing.T) {
 	if dev != "/var/lib/miroir/dev/pvc-2" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
-	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/snapshots/snap-1.img /var/lib/miroir/volumes/pvc-2.img")
+	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/snapshots/snap-1.img /var/lib/miroir/volumes/pvc-2.img.tmp")
+	fe.calledWith(t, "mv /var/lib/miroir/volumes/pvc-2.img.tmp /var/lib/miroir/volumes/pvc-2.img")
 }
 
 func TestLoopfileDeleteDetachesAndRemoves(t *testing.T) {

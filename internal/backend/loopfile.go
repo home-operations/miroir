@@ -204,12 +204,27 @@ func (lf *loopfile) Sync(_ context.Context, vol string) error {
 	return nil
 }
 
+// reflinkAtomic clones src to dst through a temp path and an atomic rename,
+// so a crash mid-copy never leaves a short image at dst that exists() would
+// accept as complete. Reflink keeps it an instant per-extent CoW copy.
+func (lf *loopfile) reflinkAtomic(ctx context.Context, src, dst string) error {
+	tmp := dst + ".tmp"
+	if _, err := lf.exec(ctx, "cp", "--reflink=always", src, tmp); err != nil {
+		return err
+	}
+	// Same directory, same filesystem: mv is a rename(2), atomic.
+	if _, err := lf.exec(ctx, "mv", tmp, dst); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (lf *loopfile) Snapshot(ctx context.Context, vol, snap string) error {
 	ok, err := lf.exists(ctx, lf.snapPath(snap))
 	if err != nil || ok {
 		return err
 	}
-	if _, err := lf.exec(ctx, "cp", "--reflink=always", lf.imgPath(vol), lf.snapPath(snap)); err != nil {
+	if err := lf.reflinkAtomic(ctx, lf.imgPath(vol), lf.snapPath(snap)); err != nil {
 		return fmt.Errorf("reflink snapshot %s of %s: %w", snap, vol, err)
 	}
 	return nil
@@ -224,7 +239,7 @@ func (lf *loopfile) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol 
 	if !ok {
 		// A reflink copy of the snapshot is the clone: instant CoW within
 		// the same filesystem, writes break sharing per-extent.
-		if _, err := lf.exec(ctx, "cp", "--reflink=always", lf.snapPath(snap), file); err != nil {
+		if err := lf.reflinkAtomic(ctx, lf.snapPath(snap), file); err != nil {
 			return "", fmt.Errorf("reflink clone %s from %s: %w", vol, snap, err)
 		}
 	}

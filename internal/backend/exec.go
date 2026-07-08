@@ -19,6 +19,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -30,7 +31,11 @@ type Exec func(ctx context.Context, name string, args ...string) (string, error)
 // RealExec executes commands on the host. The agent container runs with the
 // host namespaces, so lvm/zfs act on the node's devices directly.
 func RealExec(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// Force the C locale: the delete/exists classifiers match lvm/zfs error
+	// text ("in use", "Failed to find", …), which the tools localise.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w: %s",
 			name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

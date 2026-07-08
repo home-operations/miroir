@@ -94,8 +94,13 @@ func (l *lvmThin) DevicePath(vol string) string {
 	return fmt.Sprintf("/dev/%s/%s", l.vg, vol)
 }
 
+// ref is the "vg/lv" reference lvm commands take for a logical volume.
+func (l *lvmThin) ref(lv string) string {
+	return fmt.Sprintf("%s/%s", l.vg, lv)
+}
+
 func (l *lvmThin) exists(ctx context.Context, lv string) (bool, error) {
-	_, err := l.lvm(ctx, "lvs", fmt.Sprintf("%s/%s", l.vg, lv))
+	_, err := l.lvm(ctx, "lvs", l.ref(lv))
 	if err != nil {
 		if strings.Contains(err.Error(), "Failed to find") ||
 			strings.Contains(err.Error(), "not found") {
@@ -132,7 +137,7 @@ func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (stri
 	// node reboot exists in metadata but has no device node until
 	// activated. Idempotent on an already-active LV.
 	if _, err := l.lvm(ctx, "lvchange", "--activate", "y",
-		fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
+		l.ref(vol)); err != nil {
 		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
 	return l.DevicePath(vol), nil
@@ -148,7 +153,7 @@ func (l *lvmThin) Resize(ctx context.Context, vol string, sizeBytes int64) error
 	}
 	if _, err := l.lvm(ctx, "lvextend",
 		"--size", fmt.Sprintf("%db", sizeBytes),
-		fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
+		l.ref(vol)); err != nil {
 		return fmt.Errorf("lvextend %s to %d: %w", vol, sizeBytes, err)
 	}
 	return nil
@@ -174,7 +179,7 @@ func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
 		"--snapshot",
 		"--name", snapLV(snap),
 		"--setactivationskip", "n",
-		fmt.Sprintf("%s/%s", l.vg, vol))
+		l.ref(vol))
 	if err != nil {
 		return fmt.Errorf("snapshot %s of %s: %w", snap, vol, err)
 	}
@@ -193,7 +198,7 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 			"--snapshot",
 			"--name", vol,
 			"--setactivationskip", "n",
-			fmt.Sprintf("%s/%s", l.vg, snapLV(snap)))
+			l.ref(snapLV(snap)))
 		if err != nil {
 			return "", err
 		}
@@ -202,7 +207,7 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 	// Same reboot gap as Create: the clone survives in LVM metadata but
 	// inactive, with no device node until activated.
 	if _, err := l.lvm(ctx, "lvchange", "--activate", "y",
-		fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
+		l.ref(vol)); err != nil {
 		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
 	return l.DevicePath(vol), nil
@@ -213,7 +218,7 @@ func (l *lvmThin) Delete(ctx context.Context, vol string) error {
 	if err != nil || !ok {
 		return err
 	}
-	if _, err := l.lvm(ctx, "lvremove", "--yes", fmt.Sprintf("%s/%s", l.vg, vol)); err != nil {
+	if _, err := l.lvm(ctx, "lvremove", "--yes", l.ref(vol)); err != nil {
 		return busy(fmt.Errorf("lvremove %s: %w", vol, err))
 	}
 	return nil
@@ -225,7 +230,7 @@ func (l *lvmThin) DeleteSnapshot(ctx context.Context, _ /* vol */, snap string) 
 
 func (l *lvmThin) sizeOf(ctx context.Context, lv string) (int64, error) {
 	out, err := l.lvm(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix",
-		"-o", "lv_size", fmt.Sprintf("%s/%s", l.vg, lv))
+		"-o", "lv_size", l.ref(lv))
 	if err != nil {
 		return 0, err
 	}
@@ -236,7 +241,7 @@ func (l *lvmThin) Stats(ctx context.Context) (PoolStats, error) {
 	out, err := l.lvm(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix",
 		"--separator", "|",
 		"-o", "lv_size,data_percent,metadata_percent",
-		fmt.Sprintf("%s/%s", l.vg, l.pool))
+		l.ref(l.pool))
 	if err != nil {
 		return PoolStats{}, err
 	}
