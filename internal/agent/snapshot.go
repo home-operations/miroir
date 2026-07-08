@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -205,12 +206,15 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
 		return ctrl.Result{}, err
 	}
-	now := metav1.Now()
-	err := r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
-		if s.Status.PerNode == nil {
-			s.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{}
-		}
-		if opensRound {
+	var err error
+	if opensRound {
+		// The coordinator owns the round: it sets the barrier fields and
+		// resets peers, so it applies the whole status.
+		now := metav1.Now()
+		err = r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
+			if s.Status.PerNode == nil {
+				s.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{}
+			}
 			s.Status.IOSuspended = true
 			s.Status.SuspendedAt = &now
 			// Reset peers: a slow peer's Done from the voided round can
@@ -221,9 +225,14 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 					s.Status.PerNode[rep.Node] = miroirv1alpha1.SnapshotPending
 				}
 			}
-		}
-		s.Status.PerNode[r.NodeName] = miroirv1alpha1.SnapshotSuspended
-	})
+			s.Status.PerNode[r.NodeName] = miroirv1alpha1.SnapshotSuspended
+		})
+	} else {
+		// A peer records only its own slot. A full-status apply would
+		// force-own the coordinator's barrier fields (ioSuspended,
+		// suspendedAt) and revert a resume or void it raced.
+		err = r.patchOwnState(ctx, snap, miroirv1alpha1.SnapshotSuspended)
+	}
 	if err != nil {
 		// The barrier is only real once recorded; a failed patch must
 		// not leave IO frozen until the retry.
@@ -259,9 +268,7 @@ func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.Mi
 	if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: time.Second}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
-		s.Status.PerNode[r.NodeName] = miroirv1alpha1.SnapshotDone
-	})
+	return ctrl.Result{RequeueAfter: time.Second}, r.patchOwnState(ctx, snap, miroirv1alpha1.SnapshotDone)
 }
 
 // collectLegs is the coordinator's last phase: all legs Done → resume and
@@ -340,6 +347,15 @@ func replicaOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {
 		}
 	}
 	return false
+}
+
+// patchOwnState records only this node's slot in the snapshot barrier via a
+// merge patch. A peer must not apply the whole status: that would force-own
+// the coordinator's round fields (ioSuspended, suspendedAt) and could revert
+// a resume or void it raced. The merge patch touches nothing else.
+func (r *SnapshotReconciler) patchOwnState(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, state miroirv1alpha1.SnapshotNodeState) error {
+	patch := fmt.Appendf(nil, `{"status":{"perNode":{%q:%q}}}`, r.NodeName, state)
+	return r.Status().Patch(ctx, snap, client.RawPatch(types.MergePatchType, patch))
 }
 
 func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, mutate func(*miroirv1alpha1.MiroirSnapshot)) error {

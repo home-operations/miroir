@@ -18,13 +18,16 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
@@ -147,6 +150,80 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	// The peer's device is still suspended; readyToUse lifts it.
 	reconcileSnap(t, rP, snapSnap1)
 	feP.calledWith(t, "drbdadm resume-io pvc-1")
+}
+
+// A peer raising its barrier must record only its own slot, never the
+// coordinator's round fields: a full-status apply could revert a resume or
+// void the coordinator raced, re-freezing IO or resurrecting a stale leg.
+func TestSnapshotPeerRecordsOnlyOwnSlot(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	// The coordinator has opened the round; paris has not raised its barrier.
+	snap := snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)
+	now := metav1.Now()
+	snap.Status.IOSuspended = true
+	snap.Status.SuspendedAt = &now
+	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+		nodeKharkiv: miroirv1alpha1.SnapshotSuspended,
+		nodeParis:   miroirv1alpha1.SnapshotPending,
+	}
+
+	var patchTypes []types.PatchType
+	var patchData []string
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, cl client.Client, sub string,
+				obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				data, _ := patch.Data(obj)
+				patchTypes = append(patchTypes, patch.Type())
+				patchData = append(patchData, string(data))
+				return cl.Status().Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+
+	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
+
+	reconcileSnap(t, rP, snapSnap1)
+	feP.calledWith(t, "drbdadm suspend-io pvc-1")
+
+	if len(patchData) == 0 {
+		t.Fatal("expected a status patch from the peer")
+	}
+	for i, data := range patchData {
+		if patchTypes[i] != types.MergePatchType {
+			t.Errorf("patch %d is %q, want a merge patch (a peer must not apply the whole status)", i, patchTypes[i])
+		}
+		if strings.Contains(data, "ioSuspended") || strings.Contains(data, "suspendedAt") {
+			t.Errorf("patch %d touches the coordinator's barrier fields: %s", i, data)
+		}
+		if !strings.Contains(data, nodeParis) {
+			t.Errorf("patch %d does not record this node's slot: %s", i, data)
+		}
+	}
+
+	// The coordinator's barrier survives the peer's write.
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.IOSuspended {
+		t.Fatal("peer must not clear the coordinator's barrier")
+	}
+	if got.Status.PerNode[nodeParis] != miroirv1alpha1.SnapshotSuspended {
+		t.Fatalf("peer's own slot not recorded: %+v", got.Status.PerNode)
+	}
 }
 
 // Regression: a Secondary that is replicas[0] must defer to a peer
