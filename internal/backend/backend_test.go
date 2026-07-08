@@ -273,6 +273,51 @@ func TestZFSDeleteWithoutClonesDoesNotPromote(t *testing.T) {
 	fe.notCalledWith(t, "zfs get -Hpo value clones")
 }
 
+func TestZFSDeleteBusyWhileSnapshotsPresent(t *testing.T) {
+	// Snapshots (children, not clones) block destroy and cannot be
+	// promoted away: the volume must report ErrBusy so the agent retries
+	// until its snapshots are deleted, not fail teardown permanently.
+	fe := &fakeExec{}
+	fe.respond("zfs destroy tank/miroir/pvc-1",
+		"", errors.New("cannot destroy 'tank/miroir/pvc-1': filesystem has children"))
+	fe.respond("zfs get -Hpo value clones", "-\n", nil) // no clones to promote
+	b := newZFS(cfg, fe.run)
+
+	if err := b.Delete(context.Background(), "pvc-1"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("want ErrBusy while snapshots pin the volume, got %v", err)
+	}
+}
+
+func TestZFSDeleteSnapshotSurfacesPermanentError(t *testing.T) {
+	// Deferred destroy (-d) never blocks on clones, so a DeleteSnapshot
+	// error is permanent and must surface — never ErrBusy, or the agent
+	// would silently retry it forever. The message contains "snapshot",
+	// which the old substring matcher wrongly treated as busy.
+	fe := &fakeExec{}
+	fe.respond("zfs destroy -d tank/miroir/pvc-1@snap-1", "",
+		errors.New("cannot destroy snapshot tank/miroir/pvc-1@snap-1: permission denied"))
+	b := newZFS(cfg, fe.run)
+
+	err := b.DeleteSnapshot(context.Background(), "pvc-1", "snap-1")
+	if err == nil {
+		t.Fatal("a permanent DeleteSnapshot error must surface")
+	}
+	if errors.Is(err, ErrBusy) {
+		t.Fatalf("permanent snapshot error must not be ErrBusy, got %v", err)
+	}
+}
+
+func TestLVMThinDeleteBusyWhenInUse(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvremove --yes vg-miroir/pvc-1", "",
+		errors.New("Logical volume vg-miroir/pvc-1 in use."))
+	b := newLVMThin(cfg, fe.run)
+
+	if err := b.Delete(context.Background(), "pvc-1"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("want ErrBusy while the LV is open, got %v", err)
+	}
+}
+
 func TestZFSStatsUsesPool(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("zpool get", "2000000000000\n500000000000\n", nil)

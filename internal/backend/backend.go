@@ -22,10 +22,17 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
+
+// ErrBusy marks a Delete or DeleteSnapshot that cannot finish yet because
+// the resource is still held: an open device, or dependents (snapshots,
+// restore clones) that must be removed first. Callers retry on ErrBusy and
+// treat any other error as permanent.
+var ErrBusy = errors.New("backend resource busy")
 
 // PoolStats reports capacity of the node-local pool backing this Backend.
 type PoolStats struct {
@@ -64,9 +71,11 @@ type Backend interface {
 	CreateFromSnapshot(ctx context.Context, vol, sourceVol, snap string) (devPath string, err error)
 	// Exists reports whether a device for vol is present on this node.
 	Exists(ctx context.Context, vol string) (bool, error)
-	// Delete removes the device. Succeeds if already absent.
+	// Delete removes the device. Succeeds if already absent; returns a
+	// wrapped ErrBusy while the device is still held or has dependents.
 	Delete(ctx context.Context, vol string) error
-	// DeleteSnapshot removes a snapshot. Succeeds if already absent.
+	// DeleteSnapshot removes a snapshot. Succeeds if already absent;
+	// returns a wrapped ErrBusy while the snapshot is still held.
 	DeleteSnapshot(ctx context.Context, vol, snap string) error
 	// DevicePath returns the path the device has (or would have).
 	DevicePath(vol string) string

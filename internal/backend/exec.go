@@ -37,3 +37,23 @@ func RealExec(ctx context.Context, name string, args ...string) (string, error) 
 	}
 	return string(out), nil
 }
+
+// busy classifies a delete/destroy failure: it wraps err as ErrBusy when the
+// cause clears on its own — the device is still open, or (zfs) snapshots or
+// restore clones must go first — so the caller retries. Other errors pass
+// through unchanged and are treated as permanent. Returns nil for nil.
+func busy(err error) error {
+	if err == nil {
+		return nil
+	}
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "held open"),
+		strings.Contains(s, "busy"),
+		strings.Contains(s, "in use"),
+		strings.Contains(s, "has children"),     // zfs: snapshots exist
+		strings.Contains(s, "dependent clones"): // zfs: restore clones exist
+		return fmt.Errorf("%w: %v", ErrBusy, err)
+	}
+	return err
+}

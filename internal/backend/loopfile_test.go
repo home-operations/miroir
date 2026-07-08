@@ -142,6 +142,18 @@ func TestLoopfileDeleteDetachesAndRemoves(t *testing.T) {
 	fe.calledWith(t, "rm -f /var/lib/miroir/volumes/pvc-1.img")
 }
 
+func TestLoopfileDeleteBusyWhenAttached(t *testing.T) {
+	fe := &fakeExec{} // stat succeeds → file exists
+	fe.respond("losetup -j", "/dev/loop3\n", nil)
+	fe.respond("losetup -d /dev/loop3", "",
+		errors.New("losetup: /dev/loop3: detach failed: Device or resource busy"))
+	b := newLoopfile(lcfg, fe.run)
+
+	if err := b.Delete(context.Background(), "pvc-1"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("want ErrBusy while the loop device is attached, got %v", err)
+	}
+}
+
 func TestLoopfileDeleteAbsentIsNoop(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("stat /var/lib/miroir/volumes/pvc-1.img", "",
