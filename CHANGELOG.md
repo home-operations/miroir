@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.8](https://github.com/home-operations/miroir/compare/0.2.7...0.2.8) (2026-07-08)
+
+
+### Bug Fixes
+
+* **drbd:** stamp WasUpToDate on non-winner seed and seed per-peer ([#54](https://github.com/home-operations/miroir/issues/54)) ([b925da4](https://github.com/home-operations/miroir/commit/b925da404cb94a2dcb76d33931cb7b3c6407bb76))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool lefthook (2.1.9 → 2.1.10) ([#52](https://github.com/home-operations/miroir/issues/52)) ([cf74d94](https://github.com/home-operations/miroir/commit/cf74d9476d1ae480611d81c569a4eac36083a5a8))
+
 ## [0.2.7](https://github.com/home-operations/miroir/compare/0.2.6...0.2.7) (2026-07-08)
 
 
