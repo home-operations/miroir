@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.2.9](https://github.com/home-operations/miroir/compare/0.2.8...0.2.9) (2026-07-08)
+
+
+### Features
+
+* **deps:** update module golang.org/x/sys (v0.46.0 → v0.47.0) ([#53](https://github.com/home-operations/miroir/issues/53)) ([b1bd566](https://github.com/home-operations/miroir/commit/b1bd56673ee27008412c603d61b9c094a64d2ea8))
+
+
+### Bug Fixes
+
+* **agent:** scope a snapshot peer's barrier write to its own slot ([#66](https://github.com/home-operations/miroir/issues/66)) ([b6189d6](https://github.com/home-operations/miroir/commit/b6189d6b530909e3bd46ce9eecb7cb09d5bf4e16))
+* **agent:** scope volume status apply to this node's slot ([#60](https://github.com/home-operations/miroir/issues/60)) ([74cd98e](https://github.com/home-operations/miroir/commit/74cd98e31e206aac749af5cc76e7ef0e4295bba3))
+* **backend:** crash-safe reflink clones, locale-stable exec ([#64](https://github.com/home-operations/miroir/issues/64)) ([68e5012](https://github.com/home-operations/miroir/commit/68e501243a957ff7f40bd28a70c06e15dd1bae34))
+* **backend:** typed ErrBusy for retryable teardown failures ([#61](https://github.com/home-operations/miroir/issues/61)) ([d3b8eb2](https://github.com/home-operations/miroir/commit/d3b8eb23bb880338fd8b8339f2ee699e1028d94e))
+* **csi:** grow filesystem on every stage, not only a fresh mount ([#62](https://github.com/home-operations/miroir/issues/62)) ([5c4d43f](https://github.com/home-operations/miroir/commit/5c4d43fbf3a2d9677b33f04a8f8dd9629ee847ff))
+* **csi:** serialize CreateVolume placement with allocation ([#63](https://github.com/home-operations/miroir/issues/63)) ([8e39dca](https://github.com/home-operations/miroir/commit/8e39dca393de9a123ba742b0575d5636fd6d36b2))
+* **drbd:** crash-safe minor allocation, atomic config writes, robust event scan ([#58](https://github.com/home-operations/miroir/issues/58)) ([670071f](https://github.com/home-operations/miroir/commit/670071f3741733342182f2c2a094dcef1fd130cd))
+* **membership:** requeue transient replica-completion failures ([#59](https://github.com/home-operations/miroir/issues/59)) ([bac65bf](https://github.com/home-operations/miroir/commit/bac65bfa0031f5b886f08169976a4fa83c08e8f5))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool go (1.26.4 → 1.26.5) ([#57](https://github.com/home-operations/miroir/issues/57)) ([9190fb5](https://github.com/home-operations/miroir/commit/9190fb50b0a214e3ae6b0b350d834ecedf9d08c6))
+* skip the manager in setup mode; nodemap tests; errors.AsType ([#65](https://github.com/home-operations/miroir/issues/65)) ([75ca29c](https://github.com/home-operations/miroir/commit/75ca29c23b27e8192200de72dbcd42173ee48c16))
+
 ## [0.2.8](https://github.com/home-operations/miroir/compare/0.2.7...0.2.8) (2026-07-08)
 
 
