@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -153,6 +154,39 @@ func TestUnknownNodeLeavesSpecUntouched(t *testing.T) {
 
 	if got := get(t, r, "pvc-1").Spec.Replicas[2]; got.Address != "" {
 		t.Fatalf("must not complete an entry for a non-storage node: %+v", got)
+	}
+}
+
+// A replica on a real storage node whose Node object is not ready yet
+// (unregistered, or InternalIP not posted) is transient: Reconcile must
+// return an error so it requeues. A Node gaining its InternalIP does not
+// wake this generation-filtered controller, so swallowing the error would
+// wedge the entry at Address="" until the next spec edit.
+func TestRequeuesWhenNodeNotReady(t *testing.T) {
+	cases := map[string]*corev1.Node{
+		"node not registered":     nil,
+		"node without InternalIP": {ObjectMeta: metav1.ObjectMeta{Name: nodeOslo}},
+	}
+	for name, n := range cases {
+		t.Run(name, func(t *testing.T) {
+			objs := []client.Object{replicatedVol()}
+			if n != nil {
+				objs = append(objs, n)
+			}
+			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+				WithObjects(objs...).Build()
+			r := &Reconciler{Client: c, Nodes: nodemap.Map{
+				nodeOslo: {Backend: miroirv1alpha1.BackendZFS},
+			}}
+
+			if _, err := r.Reconcile(context.Background(),
+				ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}}); err == nil {
+				t.Fatal("transient completion failure must return an error to requeue")
+			}
+			if got := get(t, r, "pvc-1").Spec.Replicas[2]; got.Address != "" {
+				t.Fatalf("entry must stay incomplete: %+v", got)
+			}
+		})
 	}
 }
 
