@@ -55,8 +55,10 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 			}
 		}
 		if err == nil {
-			w.scan(ctx, out)
-			err = cmd.Wait()
+			err = w.scan(ctx, out)
+			if werr := cmd.Wait(); err == nil {
+				err = werr
+			}
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -71,13 +73,19 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
-func (w *EventWatcher) scan(ctx context.Context, r io.Reader) {
+// scan reads events2 lines until EOF and returns the scanner error, if any.
+// The 1 MiB buffer lifts bufio.Scanner's 64 KiB default token cap so an
+// unusually long line cannot silently end the stream; a surfaced error lets
+// Start log it and respawn rather than the pipe filling and wedging Wait.
+func (w *EventWatcher) scan(ctx context.Context, r io.Reader) error {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		if name := parseEvent2(scanner.Text()); name != "" {
 			w.Notify(ctx, name)
 		}
 	}
+	return scanner.Err()
 }
 
 // parseEvent2 extracts the resource name from one events2 line, or ""
