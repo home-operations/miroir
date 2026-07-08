@@ -309,44 +309,41 @@ const drbdMajor = 147
 const minorBase int32 = 1000
 
 // AllocateMinor assigns a DRBD minor to a volume, returning the same
-// minor on future calls. Thread-safe via lock file + atomic rename.
+// minor on future calls. Serialised by an advisory flock the kernel
+// releases on close or process death, then persisted via atomic rename.
 func (d *Driver) AllocateMinor(volume string) (int32, error) {
-	lockPath := d.path("minor.lock")
-	for tries := 0; tries < 10; tries++ {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
-		if err != nil {
-			if os.IsExist(err) {
-				continue
-			}
-			return 0, err
-		}
-		assigned, err := d.readAssignments()
-		if err != nil {
-			_ = f.Close()
-			_ = os.Remove(lockPath)
-			return 0, err
-		}
-		if m, ok := assigned[volume]; ok {
-			_ = f.Close()
-			_ = os.Remove(lockPath)
-			return m, nil
-		}
-		used := d.scanUsedMinors(assigned)
-		m := minorBase
-		for used[m] {
-			m++
-		}
-		assigned[volume] = m
-		if err := d.writeAssignments(assigned); err != nil {
-			_ = f.Close()
-			_ = os.Remove(lockPath)
-			return 0, err
-		}
-		_ = f.Close()
-		_ = os.Remove(lockPath)
+	// flock, not an O_EXCL sentinel: a sentinel orphaned by a crash between
+	// create and remove would deadlock every future allocation (nothing
+	// sweeps minor.lock). LOCK_EX blocks until acquired and the kernel drops
+	// it when the fd closes — including on SIGKILL/OOM — so a crash cannot
+	// wedge allocation. The file is intentionally left on disk as the stable
+	// lock target.
+	f, err := os.OpenFile(d.path("minor.lock"), os.O_CREATE|os.O_RDWR, 0o640)
+	if err != nil {
+		return 0, fmt.Errorf("open minor lock: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+		return 0, fmt.Errorf("lock minor allocation: %w", err)
+	}
+
+	assigned, err := d.readAssignments()
+	if err != nil {
+		return 0, err
+	}
+	if m, ok := assigned[volume]; ok {
 		return m, nil
 	}
-	return 0, fmt.Errorf("minor lock held after 10 retries")
+	used := d.scanUsedMinors(assigned)
+	m := minorBase
+	for used[m] {
+		m++
+	}
+	assigned[volume] = m
+	if err := d.writeAssignments(assigned); err != nil {
+		return 0, err
+	}
+	return m, nil
 }
 
 func (d *Driver) readAssignments() (map[string]int32, error) {
@@ -433,7 +430,10 @@ func (d *Driver) ensureDeviceNode(minor int32) error {
 	var st unix.Stat_t
 	err := unix.Stat(path, &st)
 	if err == nil {
-		if st.Mode&unix.S_IFMT == unix.S_IFBLK && st.Rdev == want {
+		// unix.Stat_t.Rdev is uint64 on linux but int32 on darwin; the cast is a
+		// no-op on linux (hence the nolint) but required for the package to build
+		// on a macOS dev host.
+		if st.Mode&unix.S_IFMT == unix.S_IFBLK && uint64(st.Rdev) == want { //nolint:unconvert
 			return nil
 		}
 		// Wrong rdev or a leftover regular file (e.g. a pre-mknod open
@@ -710,7 +710,32 @@ func (d *Driver) writeConfig(r Resource) (bool, error) {
 	if err := os.MkdirAll(d.StateDir, 0o750); err != nil {
 		return false, err
 	}
-	return true, os.WriteFile(path, rendered, 0o640)
+	// Atomic write: StateDir is drbdadm's include directory, and a crash
+	// mid-write would leave a truncated .res that makes drbdadm adjust fail
+	// for EVERY resource on the node, not just this one. Same tmp+sync+rename
+	// as writeAssignments.
+	return true, writeFileAtomic(path, rendered, 0o640)
+}
+
+// writeFileAtomic writes data to path via a temp file, fsync, and rename, so a
+// crash never leaves a partially-written file at path.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }() // no-op after the explicit Close below; guards early returns
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (d *Driver) path(file string) string {
