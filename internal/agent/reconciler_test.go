@@ -31,6 +31,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
@@ -385,6 +386,78 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	}
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready with both legs UpToDate", got.Status.Phase)
+	}
+}
+
+// Every status apply must name only this node's slot and the phase — never a
+// peer's slot or Formatted (a CSI-owned field). A full-status apply would
+// force-own those and revert them to this agent's stale read, hot-looping the
+// agents against each other; reverting Formatted risks re-mkfs of live data.
+// Asserting on the wire payload proves the scope regardless of how faithfully
+// the fake client models server-side apply ownership.
+func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
+	// A peer slot and a CSI-owned Formatted flag this agent must not touch.
+	v.Status.Formatted = true
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeParis: {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+	}
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+
+	var applies []miroirv1alpha1.MiroirVolumeStatus
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, cl client.Client, sub string,
+				obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				if patch.Type() == types.ApplyPatchType {
+					applies = append(applies, obj.(*miroirv1alpha1.MiroirVolume).Status)
+				}
+				return cl.Status().Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	if _, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(applies) == 0 {
+		t.Fatal("expected at least one server-side apply of status")
+	}
+	for i, st := range applies {
+		if _, ok := st.PerNode[nodeKharkiv]; !ok {
+			t.Errorf("apply %d omits this node's slot: %+v", i, st.PerNode)
+		}
+		if _, ok := st.PerNode[nodeParis]; ok {
+			t.Errorf("apply %d names the peer's slot (would force-own it): %+v", i, st.PerNode)
+		}
+		if st.Formatted {
+			t.Errorf("apply %d sets Formatted (would force-own a CSI field)", i)
+		}
 	}
 }
 
