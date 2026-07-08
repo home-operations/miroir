@@ -139,9 +139,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 
 	var source *miroirv1alpha1.VolumeSource
-	var placed []miroirv1alpha1.Replica
 	var sourceFormatted bool
-	if snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId(); snapID != "" {
+	var srcReplicas []miroirv1alpha1.Replica
+	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
+	if snapID != "" {
 		// Restore: clones are local CoW, so replicas must live on the
 		// nodes holding the snapshot — placement follows the source.
 		srcVol, snap, err := c.snapshotSource(ctx, snapID)
@@ -159,18 +160,26 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 				replicas, len(srcVol.Spec.Replicas))
 		}
 		source = &miroirv1alpha1.VolumeSource{SnapshotName: snapID}
-		placed = srcVol.Spec.Replicas
-	} else {
-		placed, err = c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName())
-		if err != nil {
-			return nil, err
-		}
+		srcReplicas = srcVol.Spec.Replicas
 	}
 
+	// Serialise placement, port allocation, and Create as one critical
+	// section: the overcommit guard and the DRBD port scan read fresh
+	// cluster state, and a concurrent CreateVolume that has not committed
+	// yet would otherwise be invisible to both — two RPCs could pass the
+	// guard or claim the same port. waitReady is deliberately left outside.
+	c.allocMu.Lock()
+	placed := srcReplicas
+	if snapID == "" {
+		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName())
+		if err != nil {
+			c.allocMu.Unlock()
+			return nil, err
+		}
+		placed = p
+	}
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: req.GetName(),
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: sizeBytes,
 			Replicas:  placed,
@@ -182,31 +191,22 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 	if replicas > 1 {
 		vol.Spec.QuorumPolicy = quorum
-		c.allocMu.Lock()
 		drbdSpec, err := c.allocateDRBD(ctx)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
 		}
 		vol.Spec.DRBD = drbdSpec
-		err = c.Client.Create(ctx, vol)
-		c.allocMu.Unlock()
-		sourceSnapshot := ""
-		if source != nil {
-			sourceSnapshot = source.SnapshotName
-		}
-		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum, sourceSnapshot); err2 != nil {
-			return nil, err2
-		}
-	} else {
-		err := c.Client.Create(ctx, vol)
-		sourceSnapshot := ""
-		if source != nil {
-			sourceSnapshot = source.SnapshotName
-		}
-		if err2 := c.handleCreateErr(ctx, err, vol, sizeBytes, replicas, quorum, sourceSnapshot); err2 != nil {
-			return nil, err2
-		}
+	}
+	createErr := c.Client.Create(ctx, vol)
+	c.allocMu.Unlock()
+
+	sourceSnapshot := ""
+	if source != nil {
+		sourceSnapshot = source.SnapshotName
+	}
+	if err := c.handleCreateErr(ctx, createErr, vol, sizeBytes, replicas, quorum, sourceSnapshot); err != nil {
+		return nil, err
 	}
 	// A clone carries the source's filesystem: inherit Formatted before
 	// any pod stages it, so a blank clone is refused instead of mkfs'd.
@@ -406,13 +406,24 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 	return "", status.Errorf(codes.Internal, "node %s has no InternalIP", name)
 }
 
+// reader returns the API-server reader for read-your-writes, falling back
+// to the cached client (in tests, or before the manager wires APIReader).
+// The overcommit guard and DRBD port scan run under allocMu and must see a
+// concurrent CreateVolume's just-committed object, which the cache can lag.
+func (c *Controller) reader() client.Reader {
+	if c.APIReader != nil {
+		return c.APIReader
+	}
+	return c.Client
+}
+
 // poolStats returns the fresh pool capacity each storage node's agent
 // published (notes/DESIGN.md §4.6). Stale or never-published nodes are
 // omitted — placement treats them as unknown (eligible, no free-space
 // signal) so a cold cluster still provisions.
 func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.MiroirNodeStatus, error) {
 	list := &miroirv1alpha1.MiroirNodeList{}
-	if err := c.Client.List(ctx, list); err != nil {
+	if err := c.reader().List(ctx, list); err != nil {
 		return nil, status.Errorf(codes.Internal, "list MiroirNodes: %v", err)
 	}
 	out := make(map[string]miroirv1alpha1.MiroirNodeStatus, len(list.Items))
@@ -431,7 +442,7 @@ func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.M
 // backing on disk but are counted in full — a conservative overcommit guard.
 func (c *Controller) provisionedPerNode(ctx context.Context, exclude string) (map[string]int64, error) {
 	list := &miroirv1alpha1.MiroirVolumeList{}
-	if err := c.Client.List(ctx, list); err != nil {
+	if err := c.reader().List(ctx, list); err != nil {
 		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
 	}
 	out := map[string]int64{}
@@ -718,9 +729,11 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 
 	start := 0
 	if req.GetStartingToken() != "" {
-		if _, err := fmt.Sscanf(req.GetStartingToken(), "%d", &start); err != nil || start < 0 || start >= len(vols.Items) {
+		n, err := strconv.Atoi(req.GetStartingToken())
+		if err != nil || n < 0 || n >= len(vols.Items) {
 			return nil, status.Errorf(codes.Aborted, "invalid starting_token: %s", req.GetStartingToken())
 		}
+		start = n
 	}
 
 	maxEntries := int(req.GetMaxEntries())
