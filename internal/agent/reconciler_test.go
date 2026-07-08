@@ -376,7 +376,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "drbdadm resize pvc-1")
+	fe.calledWith(t, "drbdadm resize --assume-clean pvc-1")
 	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "drbdadm resize pvc-1")
+	fe.calledWith(t, "drbdadm resize --assume-clean pvc-1")
 	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a resize that raced a resync must not fail the reconcile: %v", err)
 	}
-	fe.calledWith(t, "drbdadm resize pvc-1") // it was attempted
+	fe.calledWith(t, "drbdadm resize --assume-clean pvc-1") // it was attempted
 	if res.RequeueAfter != 5*time.Second {
 		t.Fatalf("must requeue soon to retry the resize, got %v", res.RequeueAfter)
 	}

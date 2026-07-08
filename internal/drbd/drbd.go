@@ -468,19 +468,29 @@ func Day0GI(name string) string {
 	return strings.ToUpper(hex.EncodeToString(h[:8]))
 }
 
-// maxNodeID is DRBD9's highest metadata node-id slot.
-const maxNodeID = 31
-
 // seedGI lets fresh volumes skip the initial sync: every replica stamps
-// the same deterministic day0 generation identifier into all slots — the
-// winner node (lowest node id) with Consistent+UpToDate flags, every
-// other node bare — so the first handshake sees identical generations
-// and clean bitmaps. Valid because thin backings read zeros.
+// the same deterministic day0 generation identifier into the metadata
+// slots of the local node and every peer — the winner node (lowest node
+// id) with Consistent+UpToDate flags, every other node with
+// WasUpToDate — so the first handshake sees identical generations and
+// clean bitmaps. Valid because thin backings read zeros.
 //
-// Runs between create-md and the first adjust, into every node-id slot
-// (0..maxNodeID, own slot included): seeding only peer slots would leave
-// the local current-UUID at create-md's random value and the handshake
-// aborts "unrelated data" → permanent StandAlone.
+// The non-winner stamps WasUpToDate (MDF_WAS_UP_TO_DATE) without
+// Consistent: the kernel's attach-time "new region assumed zeroed" path
+// requires either WasUpToDate or a non-zero rs-discard-granularity to
+// keep the bitmap clean on a freshly-grown thin device. A flagless seed
+// attaches with the full device marked out-of-sync, triggering a full
+// initial sync. WasUpToDate without Consistent still attaches
+// Inconsistent (cannot be promoted); it reaches UpToDate at the first
+// handshake with zero resync.
+//
+// Only the local node's slot and actual peer slots are seeded (not all
+// 32 metadata slots): unoccupied slots are never read during the
+// handshake, and 32 subprocess calls add unnecessary cold-start
+// latency. The local slot MUST be included: seeding only peer slots
+// leaves the local current-UUID at create-md's random value and the
+// handshake aborts "unrelated data" → permanent StandAlone. Peers
+// includes the local node, so iterating r.Peers covers both.
 //
 // GI string is positional: current:bitmap:hist0:hist1[:consistent:uptodate].
 // Bitmap base stays 0 ("no out-of-sync bits") — a non-zero base reads as
@@ -491,6 +501,12 @@ func (d *Driver) seedGI(ctx context.Context, r Resource) error {
 		// The winner is UpToDate from metadata alone; everyone else
 		// reaches it at the first handshake.
 		gi += ":1:1"
+	} else {
+		// WasUpToDate without Consistent: attaches Inconsistent
+		// (safe — cannot be promoted), but the kernel's "new region
+		// assumed zeroed" attach path keeps the bitmap clean so no
+		// full resync is triggered.
+		gi += ":0:1"
 	}
 	// drbdmeta's DEVICE argument is the minor — resource/volume syntax
 	// is drbdadm-only. Fed a name, the shipped utils derive minor -1 and
@@ -499,12 +515,12 @@ func (d *Driver) seedGI(ctx context.Context, r Resource) error {
 	// hardware). The real minor keeps the in-use probe well-defined:
 	// unconfigured proceeds, configured refuses.
 	minor := strconv.Itoa(int(r.Minor))
-	for nodeID := 0; nodeID <= maxNodeID; nodeID++ {
+	for _, p := range r.Peers {
 		_, err := d.Exec(ctx, "drbdmeta", "--force", minor, "v09",
 			r.LocalDisk, "internal",
-			"set-gi", "--node-id", strconv.Itoa(nodeID), gi)
+			"set-gi", "--node-id", strconv.Itoa(int(p.NodeID)), gi)
 		if err != nil {
-			return fmt.Errorf("set-gi %s node-id %d: %w", r.Name, nodeID, err)
+			return fmt.Errorf("set-gi %s node-id %d: %w", r.Name, p.NodeID, err)
 		}
 	}
 	return nil
@@ -662,8 +678,14 @@ func (d *Driver) ResumeIO(ctx context.Context, name string) error {
 
 // Resize grows the DRBD device to the (already grown) backing devices.
 // Callers must gate it on Status().Resyncing == false: DRBD refuses a
-// resize mid-resync.
-func (d *Driver) Resize(ctx context.Context, name string) error {
+// resize mid-resync. assumeClean passes --assume-clean so DRBD marks the
+// grown region UpToDate on every replica without a resync — correct for
+// thin/sparse backends where the grown bytes are deterministically zeroed.
+func (d *Driver) Resize(ctx context.Context, name string, assumeClean bool) error {
+	if assumeClean {
+		_, err := d.adm(ctx, "resize", "--assume-clean", name)
+		return err
+	}
 	_, err := d.adm(ctx, "resize", name)
 	return err
 }

@@ -181,7 +181,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// retry on the next poll instead of failing the reconcile.
 		switch {
 		case peerBackingsGrown(vol, r.NodeName) && !st.Resyncing:
-			if err := r.DRBD.Resize(ctx, vol.Name); err != nil {
+			// assumeClean=true: all miroir backends are thin/sparse, so
+			// the grown region is zeroed on every replica and a resync
+			// of the new extents is unnecessary.
+			if err := r.DRBD.Resize(ctx, vol.Name, true); err != nil {
 				if !drbd.IsResizeDuringResync(err) {
 					return ctrl.Result{}, r.reportError(ctx, vol, err)
 				}
