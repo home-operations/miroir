@@ -25,6 +25,7 @@ package membership
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -73,11 +74,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			continue
 		}
 		if err := r.complete(ctx, vol, rep); err != nil {
-			// Misplacement (unknown node, duplicate) only resolves by
-			// another spec edit — surface it and stop without requeueing.
-			log.Error(err, "cannot complete added replica",
-				"volume", vol.Name, "node", rep.Node)
-			return ctrl.Result{}, nil
+			if errors.Is(err, errBadPlacement) {
+				// Unknown node or duplicate: no Node update or poll
+				// re-triggers this generation-filtered controller, but only
+				// a spec edit could fix it anyway, so stop without requeue.
+				log.Error(err, "cannot complete added replica",
+					"volume", vol.Name, "node", rep.Node)
+				return ctrl.Result{}, nil
+			}
+			// Transient (Node not registered yet, InternalIP not posted):
+			// requeue with backoff — nothing else wakes this controller.
+			return ctrl.Result{}, err
 		}
 		changed = true
 	}
@@ -96,6 +103,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, nil
 }
 
+// errBadPlacement marks a completion failure that only a spec edit can fix
+// (unknown node, duplicate), as opposed to a transient one (Node not
+// registered yet) that must be retried.
+var errBadPlacement = errors.New("replica placement is invalid")
+
 // complete fills one added entry in place. NodeID takes the lowest id not
 // used by the other entries — freed ids may be reused; the joiner's
 // just-created metadata forces a full sync either way, so a stale bitmap
@@ -103,7 +115,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, rep *miroirv1alpha1.Replica) error {
 	entry, ok := r.Nodes[rep.Node]
 	if !ok {
-		return fmt.Errorf("node %s is not in the storage node map", rep.Node)
+		return fmt.Errorf("%w: node %s is not in the storage node map", errBadPlacement, rep.Node)
 	}
 	dup := 0
 	for _, other := range vol.Spec.Replicas {
@@ -112,7 +124,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 		}
 	}
 	if dup > 1 {
-		return fmt.Errorf("node %s appears %d times in spec.replicas", rep.Node, dup)
+		return fmt.Errorf("%w: node %s appears %d times in spec.replicas", errBadPlacement, rep.Node, dup)
 	}
 	node := &corev1.Node{}
 	if err := r.Get(ctx, types.NamespacedName{Name: rep.Node}, node); err != nil {
