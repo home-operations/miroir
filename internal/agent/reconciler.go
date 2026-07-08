@@ -28,6 +28,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -134,7 +135,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 			DeviceCreated: true,
 			DevicePath:    dev,
-		}); err != nil && !apierrors.IsConflict(err) {
+		}); err != nil {
 			return ctrl.Result{}, err
 		}
 		vol.Status.PerNode[r.NodeName] = miroirv1alpha1.ReplicaStatus{
@@ -209,7 +210,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		splitBrain: st.SplitBrain,
 		suspended:  st.Suspended,
 	})
-	err = r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
+	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: true,
 		DevicePath:    drbd.DevicePath(minor),
 		DRBDMinor:     minor,
@@ -217,14 +218,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		DiskState:     st.DiskState,
 		Connected:     st.Connected,
 		SplitBrain:    st.SplitBrain,
-	})
-	if apierrors.IsConflict(err) {
-		// Both agents poll the same volume; a lost optimistic-lock race
-		// is routine. A fixed requeue keeps the poll interval bounded
-		// instead of growing exponential backoff (and stale DiskState).
-		return ctrl.Result{RequeueAfter: requeue}, nil
-	}
-	if err != nil {
+	}); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
@@ -314,7 +308,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		log.Info("replica removal blocked", "volume", vol.Name, "reason", reason)
 		st := vol.Status.PerNode[r.NodeName]
 		st.Message = "replica removal blocked: " + reason
-		if err := r.patchStatus(ctx, vol, st); err != nil && !apierrors.IsConflict(err) {
+		if err := r.patchStatus(ctx, vol, st); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -404,16 +398,21 @@ func (r *VolumeReconciler) reportError(ctx context.Context, vol *miroirv1alpha1.
 	return cause // requeue with backoff
 }
 
-// patchStatus updates this node's slot in status and recomputes the phase.
+// patchStatus applies only this node's slot and the derived phase. A
+// full-status apply would force-own peers' slots and Formatted (a CSI
+// field) and revert them to this agent's stale read.
 func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, mine miroirv1alpha1.ReplicaStatus) error {
 	if vol.Status.PerNode == nil {
 		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
 	}
 	vol.Status.PerNode[r.NodeName] = mine
 	vol.Status.Phase = computePhase(vol)
-	vol.SetGroupVersionKind(miroirv1alpha1.GroupVersion.WithKind("MiroirVolume"))
-	vol.ManagedFields = nil
-	return r.Status().Patch(ctx, vol, client.Apply, //nolint:staticcheck
+
+	patch := &miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: vol.Name}}
+	patch.SetGroupVersionKind(miroirv1alpha1.GroupVersion.WithKind("MiroirVolume"))
+	patch.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{r.NodeName: mine}
+	patch.Status.Phase = vol.Status.Phase
+	return r.Status().Patch(ctx, patch, client.Apply, //nolint:staticcheck
 		client.FieldOwner("agent-volume-"+r.NodeName),
 		client.ForceOwnership)
 }
