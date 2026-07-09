@@ -258,8 +258,11 @@ spec:
                   properties:
                     connected:
                       description: |-
-                        Connected is true when all replication links from this node are
-                        established. Always true for unreplicated volumes.
+                        Connected is true when this node's replication links to every
+                        diskful peer are established. A diskless tie-breaker's link state
+                        is deliberately excluded: it holds no data leg, so its downtime
+                        must not read as degraded replication (it would block snapshots
+                        and replica removal). Always true for unreplicated volumes.
                       type: boolean
                     deviceCreated:
                       description: DeviceCreated is true once the backing device exists
@@ -275,6 +278,12 @@ spec:
                         DiskState is the DRBD disk state on this node (UpToDate,
                         Inconsistent, Outdated, Diskless, …). Empty for unreplicated volumes.
                       type: string
+                    diskless:
+                      description: |-
+                        Diskless records that this node's replica is a quorum-only
+                        tie-breaker. Self-reported by the agent so removal handling still
+                        knows after the entry has left spec.replicas.
+                      type: boolean
                     drbdMinor:
                       description: |-
                         DRBDMinor is the DRBD device minor assigned locally by the agent.

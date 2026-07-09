@@ -595,6 +595,11 @@ type Status struct {
 	Suspended bool
 	// Connected is true when every peer connection is established.
 	Connected bool
+	// PeerConnected maps each peer's DRBD node id to whether its
+	// connection is established — consumers that must ignore a diskless
+	// tie-breaker's link state (snapshot barrier, removal gating) filter
+	// by the spec's diskful node ids instead of using the aggregate.
+	PeerConnected map[int32]bool
 	// SplitBrain is true when a connection is StandAlone — DRBD refused
 	// to reconnect after detecting divergent data.
 	SplitBrain bool
@@ -612,6 +617,7 @@ type jsonStatus struct {
 		DiskState string `json:"disk-state"`
 	} `json:"devices"`
 	Connections []struct {
+		PeerNodeID       int32  `json:"peer-node-id"`
 		ConnectionState  string `json:"connection-state"`
 		PeerRole         string `json:"peer-role"`
 		ReplicationState string `json:"replication-state"`
@@ -633,7 +639,12 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	}
 	res := parsed[0]
 
-	s := Status{Connected: true, Primary: res.Role == "Primary", Suspended: res.SuspendedUser}
+	s := Status{
+		Connected:     true,
+		Primary:       res.Role == "Primary",
+		Suspended:     res.SuspendedUser,
+		PeerConnected: make(map[int32]bool, len(res.Connections)),
+	}
 	if len(res.Devices) > 0 {
 		s.DiskState = res.Devices[0].DiskState
 	}
@@ -645,6 +656,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		if rs := c.ReplicationState; rs != "" && rs != "Established" && rs != "Off" {
 			s.Resyncing = true
 		}
+		s.PeerConnected[c.PeerNodeID] = c.ConnectionState == "Connected"
 		switch c.ConnectionState {
 		case "Connected":
 		case "StandAlone":
