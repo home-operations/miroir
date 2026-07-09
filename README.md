@@ -256,6 +256,31 @@ whatever `quorumPolicy` is stored in their spec — nothing is
 rewritten on upgrade; the new default only applies to volumes created
 after it.
 
+### Disk failures, node rebuilds, and verification
+
+A failing **disk** is not a failing node. Since v0.3 the global DRBD
+config defaults to `on-io-error detach` (`drbd.onIoError`): a leg
+whose backing device errors drops to Diskless and the volume keeps
+serving through the peer instead of surfacing EIO into the pod. The
+detached leg shows as `DiskState: Diskless` in
+`kubectl describe miroirvolume` and `miroir_volume_up_to_date` goes 0
+for that node — replace the disk, then remove and re-add the replica.
+
+**Rebuilding a node is safe.** A reinstall (e.g. Talos wipe) destroys
+the backing devices and miroir's node-local state together; when the
+node rejoins, the agent detects the wipe and makes each recreated leg
+a full sync target rather than trusting its empty disk. Set
+`drbd.resync.discardGranularity` (lvmthin/zfs only) to keep those
+full syncs thin — zero runs are sent as discards, so a re-synced leg
+consumes what the data needs, not the volume's virtual size.
+
+**Verification** is the only cross-leg integrity check (a ZFS scrub
+validates one leg against itself). Set `drbd.verifyAlg` (e.g.
+`crc32c`) and run `drbdadm verify <resource>` on a storage node
+during quiet hours — cron is the DRBD-documented pattern.
+Out-of-sync blocks are reported in the kernel log and
+`drbdsetup status`.
+
 ## Coexistence with other provisioners
 
 - **OpenEBS LocalPV-ZFS**: keep your pool and let `openebs-zfs` stay
