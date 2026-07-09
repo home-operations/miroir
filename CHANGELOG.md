@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.3.0](https://github.com/home-operations/miroir/compare/0.2.11...0.3.0) (2026-07-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* overlap kind boot with the e2e image build ([#84](https://github.com/home-operations/miroir/issues/84))
+
+### Features
+
+* auto-place diskless tie-breakers and default quorum to freeze ([#81](https://github.com/home-operations/miroir/issues/81)) ([9439d2a](https://github.com/home-operations/miroir/commit/9439d2abb39a97b937d930f583ee4fc423c04b92))
+* **drbd:** diskless tie-breaker for 2-replica quorum ([#70](https://github.com/home-operations/miroir/issues/70)) ([#74](https://github.com/home-operations/miroir/issues/74)) ([a9ed1fb](https://github.com/home-operations/miroir/commit/a9ed1fba5cb286c116b540a68bd252a840a0f623))
+* opt-in rs-discard-granularity and verify-alg chart knobs ([#93](https://github.com/home-operations/miroir/issues/93)) ([16bbed8](https://github.com/home-operations/miroir/commit/16bbed867c32dc64f0af6f05895d794cd3a96ea7))
+
+
+### Bug Fixes
+
+* **agent:** emit the pool-usage Warning once per transition ([#80](https://github.com/home-operations/miroir/issues/80)) ([fe0812e](https://github.com/home-operations/miroir/commit/fe0812ed1ea36820d1dfa92917b6e640c30afcfd))
+* **agent:** gate snapshots and removal on diskful peers only ([#78](https://github.com/home-operations/miroir/issues/78)) ([5fec68c](https://github.com/home-operations/miroir/commit/5fec68c83794515a427a81eb2c18ad9e27a1ded0))
+* **cmd:** run the shutdown sweep on error exit, bound its budgets ([#79](https://github.com/home-operations/miroir/issues/79)) ([cb8367f](https://github.com/home-operations/miroir/commit/cb8367ff6b2d10e7f67ebae4423ba28baaa69894))
+* drbd and backend robustness batch ([#90](https://github.com/home-operations/miroir/issues/90)) ([2bc5778](https://github.com/home-operations/miroir/commit/2bc5778d9e7b9264c37c36441484057e777cf1e3))
+* **drbd:** harden the diskless tie-breaker ([#74](https://github.com/home-operations/miroir/issues/74) follow-up) ([#77](https://github.com/home-operations/miroir/issues/77)) ([a0d8c9d](https://github.com/home-operations/miroir/commit/a0d8c9dfc36bd09e16d7970223d9eb961c2c2ae9))
+* expand retries wait for realization; restores clean replica entries ([#89](https://github.com/home-operations/miroir/issues/89)) ([b9c0afe](https://github.com/home-operations/miroir/commit/b9c0afea82f2bdb4d81331a52870f02b0b4577f2))
+* guard the day0 re-seed after a node wipe; default on-io-error detach ([#88](https://github.com/home-operations/miroir/issues/88)) ([56a2a09](https://github.com/home-operations/miroir/commit/56a2a09ecf8db39ad4a378e4b6da50cdca754afd))
+* pin spec.drbd presence with a CEL transition rule ([#87](https://github.com/home-operations/miroir/issues/87)) ([b0a7f7f](https://github.com/home-operations/miroir/commit/b0a7f7f9c489bed51ce33162785d0b77fc1c779b))
+* serialize snapshot rounds per volume and harden deletion ([#85](https://github.com/home-operations/miroir/issues/85)) ([a93ada4](https://github.com/home-operations/miroir/commit/a93ada4d7ef0b22d9830b9840985255340e58bf7))
+* tie-breaker retrofit must not re-add a node mid-removal ([#86](https://github.com/home-operations/miroir/issues/86)) ([ab6d224](https://github.com/home-operations/miroir/commit/ab6d224f0cf58a1abec521c12002aead37046357))
+
+
+### Documentation
+
+* explain quorum policies and the diskless tie-breaker ([#82](https://github.com/home-operations/miroir/issues/82)) ([6be7157](https://github.com/home-operations/miroir/commit/6be715772c1c8a29e77f6f7d821139299564542e))
+* failure modes + how miroir compares to LINSTOR and blockstor ([#95](https://github.com/home-operations/miroir/issues/95)) ([841bceb](https://github.com/home-operations/miroir/commit/841bcebe90bf7a3f3445620b92d3e35bfa4ca004))
+* fix stale README claims ([#83](https://github.com/home-operations/miroir/issues/83)) ([fd52775](https://github.com/home-operations/miroir/commit/fd5277586fc58e2a16db257f19b635941de75d0b))
+
+
+### Miscellaneous Chores
+
+* review sweep — dedup, dead code, Go 1.26 idioms ([#91](https://github.com/home-operations/miroir/issues/91)) ([92491ab](https://github.com/home-operations/miroir/commit/92491abd9c9b63c456b775fd372e84c114d6d62b))
+* update mise tools ([c3e3c54](https://github.com/home-operations/miroir/commit/c3e3c54d9445facf11ed878e4b431a6a4ddce236))
+
+
+### Continuous Integration
+
+* overlap kind boot with the e2e image build ([#84](https://github.com/home-operations/miroir/issues/84)) ([c8a16a4](https://github.com/home-operations/miroir/commit/c8a16a41537c1e89e258ff2d91feadddee5182d0))
+
 ## [0.2.11](https://github.com/home-operations/miroir/compare/0.2.10...0.2.11) (2026-07-09)
 
 
