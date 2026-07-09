@@ -22,6 +22,45 @@ synchronous replication (2–3 replicas) via DRBD9.
 - You need `RWX`. Volumes are `ReadWriteOnce`.
 - You need iSCSI/NFS exports. Block devices only.
 
+## How it compares to LINSTOR and blockstor
+
+miroir runs the same data plane as [LINSTOR][linstor] and
+[blockstor][blockstor]: DRBD 9 replicating thin LVM or ZFS volumes,
+synchronous protocol C, quorum with diskless tie-breakers. The
+difference is the control plane.
+
+- **LINSTOR** is the reference DRBD orchestrator and the right choice
+  at fleet scale: resource groups with placement counts, automatic
+  eviction and rebalancing, many storage backends, WAN replication via
+  DRBD Proxy. That power rides on a Java controller with its own
+  database and a satellite RPC protocol; on Kubernetes the Piraeus
+  stack adds an operator, controller, per-node satellites, CSI
+  controller and node drivers, and an HA controller — each its own
+  workload to run and upgrade.
+- **blockstor** is a clean-room Go reimplementation of the LINSTOR
+  model for Cozystack: it keeps the resource-definition /
+  resource-group abstractions (plus auto-evict and rebalancing) while
+  replacing the JVM and database with CRDs. Architecturally it is
+  miroir's closest relative.
+- **miroir** cuts the scope to what 2–3 nodes actually need. The
+  Kubernetes API is the *only* control plane: the controller writes
+  MiroirVolume objects, node agents watch and realize them — no
+  controller database, no inter-node RPC protocol, no operator
+  managing an operator. One small static image serves as both the
+  controller Deployment and the agent DaemonSet, and the Helm chart is
+  the entire configuration surface. Placement, quorum tie-breakers,
+  and barrier-consistent snapshots are automated; resource groups,
+  auto-evict, and multi-site replication deliberately are not — if
+  you need those, run LINSTOR.
+
+Where the bigger projects encode operational wisdom, miroir adopts it
+instead of relearning it: `on-io-error detach`, the resync and
+discard tuning knobs, and the majority-quorum-plus-tie-breaker
+default all follow what LINSTOR and blockstor ship.
+
+[linstor]: https://github.com/LINBIT/linstor-server
+[blockstor]: https://github.com/cozystack/blockstor
+
 ## Requirements
 
 - Kubernetes ≥ 1.31.
