@@ -118,7 +118,19 @@ replicatedStorageClass:
   name: miroir-replicated
   isDefault: false
   fsType: ext4
-  quorum: last-man-standing # | freeze
+  # freeze: never diverges; auto-adds a diskless tie-breaker for
+  # 2-replica volumes when a spare node exists. With 2 storage nodes
+  # and no spare, falls back to last-man-standing automatically.
+  quorum: freeze # | last-man-standing
+  reclaimPolicy: Delete
+
+# Explicit last-man-standing opt-out for clusters that prefer availability.
+replicatedStorageClassLMS:
+  create: false
+  name: miroir-replicated-lms
+  isDefault: false
+  fsType: ext4
+  quorum: last-man-standing
   reclaimPolicy: Delete
 
 # Requires the cluster-wide snapshot-controller + CRDs (deployed

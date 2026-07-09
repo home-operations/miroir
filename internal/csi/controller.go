@@ -133,7 +133,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if err != nil {
 		return nil, err
 	}
-	quorum, err := parseQuorum(req.GetParameters())
+	quorum, quorumExplicit, err := parseQuorum(req.GetParameters())
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +177,12 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			return nil, err
 		}
 		placed = p
+	}
+	// Auto-tie-breaker: for even-diskful replicated volumes, append a
+	// diskless peer if a spare node exists. Defaulted quorum flips to
+	// freeze when a spare is found, stays LMS otherwise.
+	if replicas > 1 && snapID == "" {
+		placed, quorum = c.maybeAddTieBreaker(ctx, placed, quorum, quorumExplicit, replicas)
 	}
 	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
@@ -440,6 +446,95 @@ func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, e
 		}
 	}
 	return "", status.Errorf(codes.Internal, "node %s has no InternalIP", name)
+}
+
+// maybeAddTieBreaker appends a diskless replica when the diskful count
+// is even and a spare node exists. Defaulted quorum flips to freeze
+// (safe+available) when a spare is found; falls back to the existing
+// policy when no spare is available. Explicit freeze keeps the policy
+// and adds the tie-breaker opportunistically. Explicit LMS is never
+// overridden.
+func (c *Controller) maybeAddTieBreaker(
+	ctx context.Context,
+	placed []miroirv1alpha1.Replica,
+	quorum miroirv1alpha1.QuorumPolicy,
+	explicit bool,
+	replicas int,
+) ([]miroirv1alpha1.Replica, miroirv1alpha1.QuorumPolicy) {
+	diskful := 0
+	for _, r := range placed {
+		if !r.Diskless {
+			diskful++
+		}
+	}
+	if diskful < 2 || diskful%2 != 0 {
+		return placed, quorum
+	}
+
+	// Try freeze+tie-breaker when explicitly freeze, or when defaulted
+	// and replicas==2 (would flip to freeze if a spare exists).
+	tryFreeze := quorum == miroirv1alpha1.QuorumFreeze ||
+		(!explicit && replicas == 2)
+	if !tryFreeze {
+		return placed, quorum
+	}
+
+	spare := c.findTieBreakerNode(placed)
+	if spare == "" {
+		// No spare: explicit freeze keeps the policy; defaulted stays
+		// LMS (freeze without a tie-breaker is strictly worse).
+		return placed, quorum
+	}
+
+	addr, err := c.nodeInternalIP(ctx, spare)
+	if err != nil {
+		return placed, quorum
+	}
+	rep := miroirv1alpha1.Replica{
+		Node:     spare,
+		Backend:  c.Nodes[spare].Backend,
+		NodeID:   int32(len(placed)), //nolint:gosec // count <= 3
+		Address:  addr,
+		Diskless: true,
+	}
+	return append(placed, rep), miroirv1alpha1.QuorumFreeze
+}
+
+// findTieBreakerNode returns a spare node from the node map not already
+// a diskful replica of this volume, preferring a zone not used by any
+// diskful replica. Returns "" if no spare exists.
+func (c *Controller) findTieBreakerNode(placed []miroirv1alpha1.Replica) string {
+	used := make(map[string]bool, len(placed))
+	usedZones := make(map[string]bool)
+	for _, r := range placed {
+		used[r.Node] = true
+		if n, ok := c.Nodes[r.Node]; ok && n.Zone != "" {
+			usedZones[n.Zone] = true
+		}
+	}
+	type candidate struct{ node string }
+	var zoneDistinct, fallback []candidate
+	for n := range c.Nodes {
+		if used[n] {
+			continue
+		}
+		zone := c.Nodes[n].Zone
+		if zone == "" || !usedZones[zone] {
+			zoneDistinct = append(zoneDistinct, candidate{n})
+		} else {
+			fallback = append(fallback, candidate{n})
+		}
+	}
+	// Sort for determinism (tests; placement is otherwise node-map order).
+	pool := zoneDistinct
+	if len(pool) == 0 {
+		pool = fallback
+	}
+	if len(pool) == 0 {
+		return ""
+	}
+	slices.SortFunc(pool, func(a, b candidate) int { return cmp.Compare(a.node, b.node) })
+	return pool[0].node
 }
 
 // reader returns the API-server reader for read-your-writes, falling back
@@ -875,14 +970,15 @@ func parseReplicas(params map[string]string) (int, error) {
 	return n, nil
 }
 
-func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) {
-	switch raw := params[constants.ParamQuorum]; raw {
+func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, bool, error) {
+	raw, explicit := params[constants.ParamQuorum]
+	switch raw {
 	case "", string(miroirv1alpha1.QuorumLastManStanding):
-		return miroirv1alpha1.QuorumLastManStanding, nil
+		return miroirv1alpha1.QuorumLastManStanding, explicit, nil
 	case string(miroirv1alpha1.QuorumFreeze):
-		return miroirv1alpha1.QuorumFreeze, nil
+		return miroirv1alpha1.QuorumFreeze, true, nil
 	default:
-		return "", status.Errorf(codes.InvalidArgument,
+		return "", false, status.Errorf(codes.InvalidArgument,
 			"invalid %s=%q (want last-man-standing | freeze)", constants.ParamQuorum, raw)
 	}
 }

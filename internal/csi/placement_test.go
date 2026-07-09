@@ -239,3 +239,160 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 		t.Fatalf("replicas must span zones a and b (kharkiv+oslo), got %v", nodes)
 	}
 }
+
+// threeNodeController builds a controller with kharkiv+paris in zone a
+// and oslo in zone b. All have fresh pool stats and node IP objects.
+func threeNodeController(s *runtime.Scheme) *Controller {
+	return &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib),
+			miroirNodeObj(nodeParis, 100*gib, 20*gib),
+			miroirNodeObj("oslo", 100*gib, 90*gib),
+			nodeObj(nodeKharkiv, "192.168.1.41"),
+			nodeObj(nodeParis, "192.168.1.42"),
+			nodeObj("oslo", "192.168.1.43"),
+		),
+		Nodes: nodemap.Map{
+			nodeKharkiv: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "a", Device: "/dev/x"},
+			nodeParis:   {Backend: miroirv1alpha1.BackendZFS, Zone: "a", ZFSDataset: "p/m"},
+			"oslo":      {Backend: miroirv1alpha1.BackendLVMThin, Zone: "b", Device: "/dev/y"},
+		},
+	}
+}
+
+func TestMaybeAddTieBreaker_freezeWithSpare(t *testing.T) {
+	s := newScheme(t)
+	c := threeNodeController(s)
+
+	placed, err := c.place(context.Background(), nil, 2, 5*gib, volNew)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2 diskful placed; defaulted LMS should flip to freeze + tie-breaker.
+	// place() zone-spreads onto kharkiv(zone a)+oslo(zone b), so paris is spare.
+	got, q := c.maybeAddTieBreaker(context.Background(), placed, miroirv1alpha1.QuorumLastManStanding, false, 2)
+	if q != miroirv1alpha1.QuorumFreeze {
+		t.Fatalf("quorum should flip to freeze, got %s", q)
+	}
+	if len(got) != 3 || !got[2].Diskless {
+		t.Fatalf("expected 3rd diskless replica, got %+v", got)
+	}
+	if got[2].Node != nodeParis {
+		t.Fatalf("tie-breaker should be paris (spare), got %s", got[2].Node)
+	}
+}
+
+func TestMaybeAddTieBreaker_explicitLMS(t *testing.T) {
+	s := newScheme(t)
+	c := threeNodeController(s)
+
+	placed, err := c.place(context.Background(), nil, 2, 5*gib, volNew)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Explicitly LMS: no tie-breaker.
+	got, q := c.maybeAddTieBreaker(context.Background(), placed, miroirv1alpha1.QuorumLastManStanding, true, 2)
+	if q != miroirv1alpha1.QuorumLastManStanding {
+		t.Fatalf("explicit LMS must stay, got %s", q)
+	}
+	if len(got) != 2 {
+		t.Fatalf("explicit LMS must not add tie-breaker, got %d replicas", len(got))
+	}
+}
+
+func TestMaybeAddTieBreaker_explicitFreezeNoSpare(t *testing.T) {
+	s := newScheme(t)
+	// Only 2 nodes — no spare for a tie-breaker.
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 10*gib, 0),
+			miroirNodeObj(nodeParis, 10*gib, 0),
+			nodeObj(nodeKharkiv, "192.168.1.41"),
+			nodeObj(nodeParis, "192.168.1.42"),
+		),
+		Nodes: testNodes,
+	}
+	placed, err := c.place(context.Background(), nil, 2, 5*gib, volNew)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, q := c.maybeAddTieBreaker(context.Background(), placed, miroirv1alpha1.QuorumFreeze, true, 2)
+	if q != miroirv1alpha1.QuorumFreeze {
+		t.Fatalf("explicit freeze must stay, got %s", q)
+	}
+	if len(got) != 2 {
+		t.Fatalf("no spare → no tie-breaker, got %d replicas", len(got))
+	}
+}
+
+func TestMaybeAddTieBreaker_defaultLMSNoSpareFallsBack(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 10*gib, 0),
+			miroirNodeObj(nodeParis, 10*gib, 0),
+			nodeObj(nodeKharkiv, "192.168.1.41"),
+			nodeObj(nodeParis, "192.168.1.42"),
+		),
+		Nodes: testNodes,
+	}
+	placed, err := c.place(context.Background(), nil, 2, 5*gib, volNew)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Defaulted LMS, no spare: stays LMS.
+	got, q := c.maybeAddTieBreaker(context.Background(), placed, miroirv1alpha1.QuorumLastManStanding, false, 2)
+	if q != miroirv1alpha1.QuorumLastManStanding {
+		t.Fatalf("no spare → stay LMS, got %s", q)
+	}
+	if len(got) != 2 {
+		t.Fatalf("no spare → no tie-breaker, got %d replicas", len(got))
+	}
+}
+
+func TestMaybeAddTieBreaker_oddDiskfulNoop(t *testing.T) {
+	// 3 diskful replicas (odd count) → no tie-breaker needed.
+	placed := []miroirv1alpha1.Replica{
+		{Node: nodeKharkiv, NodeID: 0, Address: "10.0.0.1"},
+		{Node: nodeParis, NodeID: 1, Address: "10.0.0.2"},
+		{Node: "oslo", NodeID: 2, Address: "10.0.0.3"},
+	}
+	s := newScheme(t)
+	c := threeNodeController(s)
+	got, q := c.maybeAddTieBreaker(context.Background(), placed, miroirv1alpha1.QuorumFreeze, true, 3)
+	if q != miroirv1alpha1.QuorumFreeze || len(got) != 3 {
+		t.Fatalf("odd diskful → no tie-breaker, got %d replicas quorum=%s", len(got), q)
+	}
+}
+
+func TestFindTieBreakerNode_prefersZoneDistinct(t *testing.T) {
+	c := &Controller{
+		Nodes: nodemap.Map{
+			"a1": {Backend: miroirv1alpha1.BackendLVMThin, Zone: "z1"},
+			"a2": {Backend: miroirv1alpha1.BackendLVMThin, Zone: "z1"},
+			"b1": {Backend: miroirv1alpha1.BackendLVMThin, Zone: "z2"},
+		},
+	}
+	// Both diskful in z1: must pick b1 (z2).
+	got := c.findTieBreakerNode([]miroirv1alpha1.Replica{
+		{Node: "a1"}, {Node: "a2"},
+	})
+	if got != "b1" {
+		t.Fatalf("expected zone-distinct b1, got %s", got)
+	}
+}
+
+func TestFindTieBreakerNode_noSpare(t *testing.T) {
+	c := &Controller{
+		Nodes: nodemap.Map{
+			"a": {Backend: miroirv1alpha1.BackendLVMThin, Zone: "z1"},
+			"b": {Backend: miroirv1alpha1.BackendLVMThin, Zone: "z2"},
+		},
+	}
+	got := c.findTieBreakerNode([]miroirv1alpha1.Replica{
+		{Node: "a"}, {Node: "b"},
+	})
+	if got != "" {
+		t.Fatalf("expected no spare, got %s", got)
+	}
+}
