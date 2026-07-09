@@ -645,6 +645,13 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 // DiskUpToDate is the disk state of a replica holding current data.
 const DiskUpToDate = "UpToDate"
 
+// DiskDiskless is the disk state of a replica with no attached backing
+// device — a quorum-only tie-breaker, or a diskful leg DRBD detached
+// after an I/O error (on-io-error detach). Do NOT use it to infer
+// tie-breaker-ness (that is spec-driven, see Replica.Diskless); it is
+// only meaningful for observing a detach on a leg the spec says is diskful.
+const DiskDiskless = "Diskless"
+
 // rolePrimary is the DRBD role of a node that holds the device open.
 const rolePrimary = "Primary"
 
