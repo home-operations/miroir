@@ -435,7 +435,10 @@ func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *miroirv1alph
 func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
 	if vol.Spec.DRBD != nil {
 		if err := r.DRBD.Down(ctx, vol.Name); err != nil {
-			return err
+			// A still-staged device answers "held open"; classify it as
+			// ErrBusy so teardown takes the 10s retry, not the workqueue's
+			// minutes-long backoff (NodeUnstage releases it shortly).
+			return backend.Busy(err)
 		}
 	}
 	// Backend.Delete succeeds when the device is already absent, so a

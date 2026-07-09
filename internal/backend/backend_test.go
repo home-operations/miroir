@@ -490,3 +490,23 @@ func TestLVMThinSetupSurfacesTransientVGSError(t *testing.T) {
 	}
 	fe.notCalledWith(t, "pvcreate")
 }
+
+func TestBusyClassifiesHeldOpen(t *testing.T) {
+	cases := map[string]bool{
+		"Device is held open by someone": true,
+		"volume group is in use":         true,
+		"has children":                   true,
+		"dependent clones":               true,
+		"No such file or directory":      false,
+		"":                               false, // nil in, nil out handled separately
+	}
+	for msg, wantBusy := range cases {
+		got := Busy(errors.New(msg))
+		if errors.Is(got, ErrBusy) != wantBusy {
+			t.Errorf("Busy(%q): ErrBusy=%v, want %v", msg, errors.Is(got, ErrBusy), wantBusy)
+		}
+	}
+	if Busy(nil) != nil {
+		t.Error("Busy(nil) must be nil")
+	}
+}

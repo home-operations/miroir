@@ -29,13 +29,26 @@ import (
 // backends are unit-testable without lvm/zfs installed.
 type Exec func(ctx context.Context, name string, args ...string) (string, error)
 
+// execTimeout bounds a single host command. Every miroir CLI call (lvm,
+// zfs, drbdadm, drbdsetup, losetup, blockdev) is a metadata operation
+// that completes in well under a second on healthy hardware; the only way
+// to exceed this is a genuinely wedged device or pool. Reconcile contexts
+// have no deadline of their own, so without this bound a child stuck in
+// D-state pins the single reconcile worker forever and head-of-line-blocks
+// every other volume on the node.
+const execTimeout = 2 * time.Minute
+
 // RealExec executes commands on the host. The agent container runs with the
 // host namespaces, so lvm/zfs act on the node's devices directly.
 func RealExec(ctx context.Context, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, execTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	// A child stuck in D-state (wedged pool, frozen dm device) ignores the
-	// SIGKILL from ctx cancellation and would pin CombinedOutput on its
-	// open pipes forever; WaitDelay forces Wait to give up on them.
+	// SIGKILL ctx cancellation sends and would pin CombinedOutput on its
+	// open pipes forever; WaitDelay makes Wait give up on them. It only
+	// arms once ctx is done, which is why the timeout above is required —
+	// the reconcile context is otherwise never cancelled.
 	cmd.WaitDelay = 10 * time.Second
 	// Force the C locale: the delete/exists classifiers match lvm/zfs error
 	// text ("in use", "Failed to find", …), which the tools localise.
@@ -48,11 +61,13 @@ func RealExec(ctx context.Context, name string, args ...string) (string, error) 
 	return string(out), nil
 }
 
-// busy classifies a delete/destroy failure: it wraps err as ErrBusy when the
-// cause clears on its own — the device is still open, or (zfs) snapshots or
-// restore clones must go first — so the caller retries. Other errors pass
-// through unchanged and are treated as permanent. Returns nil for nil.
-func busy(err error) error {
+// Busy classifies a delete/destroy/down failure: it wraps err as ErrBusy
+// when the cause clears on its own — the device is still open, or (zfs)
+// snapshots or restore clones must go first — so the caller retries. Other
+// errors pass through unchanged and are treated as permanent. Returns nil
+// for nil. Exported so the agent can classify drbdsetup down failures the
+// same way (a still-staged device answers "held open").
+func Busy(err error) error {
 	if err == nil {
 		return nil
 	}

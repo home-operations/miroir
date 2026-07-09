@@ -175,7 +175,7 @@ func (z *zfsBackend) Delete(ctx context.Context, vol string) error {
 	if derr == nil ||
 		(!strings.Contains(derr.Error(), "has children") &&
 			!strings.Contains(derr.Error(), "dependent clones")) {
-		return busy(derr)
+		return Busy(derr)
 	}
 	// Restore clones pin this volume's snapshot chain — promoting
 	// reparents each clone's origin snapshot onto the clone, freeing the
@@ -185,7 +185,7 @@ func (z *zfsBackend) Delete(ctx context.Context, vol string) error {
 		return err
 	}
 	_, err = z.exec(ctx, "zfs", "destroy", z.name(vol))
-	return busy(err)
+	return Busy(err)
 }
 
 func (z *zfsBackend) promoteClones(ctx context.Context, vol string) error {
