@@ -33,6 +33,9 @@ data:
         startup {}
         options {}
         disk {
+        {{- with .Values.drbd.onIoError }}
+            on-io-error {{ . }};
+        {{- end }}
         {{- with .Values.drbd.resync }}
         {{- if .planAhead }}
             c-plan-ahead {{ .planAhead }};
