@@ -1,5 +1,7 @@
+---
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Release
+
 on:
   push:
     branches:
@@ -9,9 +11,11 @@ on:
   release:
     types:
       - published
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}
+
 jobs:
   versions:
     name: Versions
@@ -21,19 +25,23 @@ jobs:
     outputs:
       go-version: ${{ steps.versions.outputs.go-version }}
     steps:
+
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
       - name: Setup Mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           cache: false
           experimental: true
           install: false
+
       - name: Resolve versions
         id: versions
         run: echo "go-version=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
+
   release:
     name: Release
     needs: versions
@@ -65,6 +73,7 @@ jobs:
         - registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
   helm:
     name: Helm
     needs: release
@@ -77,33 +86,41 @@ jobs:
     env:
       VERSION: ${{ github.event.release.tag_name }}
     steps:
+
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
       - name: Setup Mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           cache: false
           experimental: true
           install_args: --locked
+
       - name: Generate manifests and CRDs
         run: mise run helm-crds
+
       - name: Pin the released image digest into the chart
         env:
           DIGEST: ${{ needs.release.outputs.digest }}
         run: |
-          [ -n "${DIGEST}" ] || { echo "build produced no digest"; exit 1; }
+          [ -n "${DIGEST}" ] || { echo "::error::empty image digest from build job"; exit 1; }
           yq -i '.image.digest = strenv(DIGEST)' charts/miroir/values.yaml
+
       - name: Package Helm chart
         run: helm package charts/miroir --version "${VERSION}" --app-version "${VERSION}"
+
       - name: Log in to Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish Helm chart to GHCR
+
+      - name: Publish Helm chart to GHCR (OCI)
         run: helm push "miroir-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
       - name: Sign the published chart with Cosign
         run: cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/miroir:${VERSION}"
