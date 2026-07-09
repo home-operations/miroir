@@ -183,6 +183,8 @@ spec:
                 and re-add it instead
               rule: self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
                 || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))
+            - message: a volume cannot gain or lose its replication layer in place
+              rule: has(self.drbd) == has(oldSelf.drbd)
           status:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.
