@@ -122,10 +122,11 @@ replicatedStorageClass:
   name: miroir-replicated
   isDefault: false
   fsType: ext4
-  # freeze (majority quorum + suspend I/O without it) is split-brain-free;
-  # with autoTieBreaker a third node keeps volumes writable through a
-  # single node loss. last-man-standing keeps the survivor writable even
-  # without quorum, at the cost of possible divergence.
+  # freeze: refuse writes (I/O errors) without a peer majority — never
+  # diverges; with autoTieBreaker a third node keeps 2-replica volumes
+  # writable through a single node loss. last-man-standing: the survivor
+  # keeps writing even alone, at the risk of split-brain. See the root
+  # README, "Replication and quorum".
   quorum: freeze # | last-man-standing
   reclaimPolicy: Delete
 

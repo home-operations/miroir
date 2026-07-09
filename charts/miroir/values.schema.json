@@ -314,7 +314,7 @@
         },
         "quorum": {
           "default": "freeze",
-          "description": "freeze (majority quorum + suspend I/O without it) is split-brain-free;\nwith autoTieBreaker a third node keeps volumes writable through a\nsingle node loss. last-man-standing keeps the survivor writable even\nwithout quorum, at the cost of possible divergence.",
+          "description": "freeze: refuse writes (I/O errors) without a peer majority — never\ndiverges; with autoTieBreaker a third node keeps 2-replica volumes\nwritable through a single node loss. last-man-standing: the survivor\nkeeps writing even alone, at the risk of split-brain. See the root\nREADME, \"Replication and quorum\".",
           "title": "quorum",
           "type": "string"
         },
