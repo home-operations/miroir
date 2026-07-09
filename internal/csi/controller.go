@@ -78,7 +78,6 @@ type Controller struct {
 
 const (
 	defaultProvisionTimeout = 120 * time.Second // matches sidecars.provisioner.timeout
-	defaultExpandTimeout    = 10 * time.Minute  // node reboots during grow
 	// defaultOvercommitRatio caps provisioned-over-capacity per pool
 	// (notes/DESIGN.md §4.6); 2× is the documented default.
 	defaultOvercommitRatio = 2.0
@@ -163,7 +162,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 				replicas, len(srcVol.Spec.DiskfulReplicas()))
 		}
 		source = &miroirv1alpha1.VolumeSource{SnapshotName: snapID}
-		srcReplicas = srcVol.Spec.Replicas
+		srcReplicas, err = c.restoreReplicas(ctx, srcVol)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Serialise placement, port allocation, and Create as one critical
@@ -662,26 +664,24 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 		}
 		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
 	}
-	if newSize <= vol.Spec.SizeBytes {
-		// Already at or above the requested size; never shrink, and never
-		// advertise less capacity than exists.
-		return &csi.ControllerExpandVolumeResponse{
-			CapacityBytes:         vol.Spec.SizeBytes,
-			NodeExpansionRequired: nodeExpansion,
-		}, nil
+	if newSize > vol.Spec.SizeBytes {
+		base := vol.DeepCopy()
+		vol.Spec.SizeBytes = newSize
+		if err := c.Client.Patch(ctx, vol, client.MergeFrom(base)); err != nil {
+			return nil, status.Errorf(codes.Internal, "grow volume: %v", err)
+		}
 	}
-	base := vol.DeepCopy()
-	vol.Spec.SizeBytes = newSize
-	if err := c.Client.Patch(ctx, vol, client.MergeFrom(base)); err != nil {
-		return nil, status.Errorf(codes.Internal, "grow volume: %v", err)
-	}
+	// Never shrink, and never advertise less capacity than the spec holds.
+	respBytes := max(newSize, vol.Spec.SizeBytes)
 
-	// Wait for all replicas to realize the size. Use a longer timeout than
-	// provisioning: a boot-time resize blocks until the node comes back up.
-	timeout := c.ProvisionTimeout
-	if timeout == 0 {
-		timeout = defaultExpandTimeout
-	}
+	// Wait for every diskful replica to realize at least this RPC's size —
+	// including idempotent retries whose earlier attempt already patched
+	// the spec but timed out. Returning success before the device grew
+	// would let kubelet run the node expansion against the old size: the
+	// filesystem resize no-ops, the PVC is recorded expanded, and nothing
+	// ever retriggers the grow. The csi-resizer retries this RPC, so a
+	// slow grow (node rebooting) just re-waits each attempt.
+	timeout := cmp.Or(c.ProvisionTimeout, defaultProvisionTimeout)
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	err := wait.PollUntilContextCancel(waitCtx, 500*time.Millisecond, true,
@@ -704,7 +704,7 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 		return nil, status.Errorf(codes.DeadlineExceeded, "volume %s not grown yet: %v", req.GetVolumeId(), err)
 	}
 	return &csi.ControllerExpandVolumeResponse{
-		CapacityBytes:         newSize,
+		CapacityBytes:         respBytes,
 		NodeExpansionRequired: nodeExpansion,
 	}, nil
 }
@@ -854,6 +854,27 @@ func csiSnapshot(snap *miroirv1alpha1.MiroirSnapshot, sizeBytes int64) *csi.Snap
 		CreationTime:   timestamppb.New(snap.CreationTimestamp.Time),
 		ReadyToUse:     snap.Status.ReadyToUse,
 	}
+}
+
+// restoreReplicas copies the source volume's replica layout for a clone,
+// cleaned: FullSync is stripped — every leg clones its byte-identical
+// local snapshot, so a carried flag would full-resync one for nothing —
+// and replication addresses are re-resolved from the live Node objects
+// (the source's were captured at its creation and can be stale).
+func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1.MiroirVolume) ([]miroirv1alpha1.Replica, error) {
+	reps := slices.Clone(srcVol.Spec.Replicas)
+	for i := range reps {
+		reps[i].FullSync = false
+		if reps[i].Address == "" {
+			continue
+		}
+		addr, err := c.nodeInternalIP(ctx, reps[i].Node)
+		if err != nil {
+			return nil, err
+		}
+		reps[i].Address = addr
+	}
+	return reps, nil
 }
 
 // snapshotSource resolves a ready snapshot and its source volume.

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -734,6 +735,29 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 
 // A diskless tie-breaker joins DRBD for quorum only: no backend device,
 // no metadata seed, DeviceCreated stays false so CSI never stages here.
+// A FullSync joiner on a restored volume must create a fresh backing,
+// not clone: its node holds no source snapshot (the MiroirSnapshot may
+// be gone entirely), and DRBD full-syncs its content anyway.
+func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-gone"}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fb := newFakeBackend()
+	r := &VolumeReconciler{Client: c, NodeName: nodeParis, Backend: fb}
+
+	if _, _, err := r.realizeBacking(context.Background(), v, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(fb.fromSnapVol) != 0 {
+		t.Fatalf("joiner must not clone: %v", fb.fromSnapVol)
+	}
+	if !slices.Contains(fb.createVol, volPvc1) {
+		t.Fatalf("joiner must create a fresh backing: %v", fb.createVol)
+	}
+}
+
 // A backing device that vanished after this node had realized it (the
 // status slot still says DeviceCreated) is the node-wipe signature: the
 // recreated device must full-sync, never re-seed the day0 GI and pose as
