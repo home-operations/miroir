@@ -121,6 +121,12 @@
         },
         "resync": {
           "properties": {
+            "discardGranularity": {
+              "default": "",
+              "description": "rs-discard-granularity: during a full resync, runs of zeroes are\nsent as discards of this size instead of written out (e.g. \"65536\"),\nkeeping a re-added thin leg thin. lvmthin/zfs only — leave empty on\nclusters with loopfile-backed replicated volumes (loop devices\nmishandle it) or entirely to keep DRBD's default (off).",
+              "title": "discardGranularity",
+              "type": "string"
+            },
             "fillTarget": {
               "default": "",
               "description": "c-fill-target, the resync controller's target fill level (e.g. \"1M\").",
@@ -161,6 +167,12 @@
           "required": [],
           "title": "resync",
           "type": "object"
+        },
+        "verifyAlg": {
+          "default": "",
+          "description": "verify-alg enables `drbdadm verify \u003cres\u003e` — the only cross-leg\nintegrity check (zfs scrub validates one leg against itself). Set to a\nkernel digest (e.g. \"crc32c\") and run verify from cron/manually during\nquiet hours; out-of-sync blocks surface in the kernel log and\n`drbdsetup status`. Empty keeps verification unavailable.",
+          "title": "verifyAlg",
+          "type": "string"
         }
       },
       "required": [],

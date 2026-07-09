@@ -46,12 +46,14 @@ Kubernetes: `>=1.31.0`
 | controller.resources.requests.cpu | string | `"10m"` |  |
 | controller.resources.requests.memory | string | `"32Mi"` |  |
 | drbd.onIoError | string | `"detach"` |  |
+| drbd.resync.discardGranularity | string | `""` | rs-discard-granularity: during a full resync, runs of zeroes are sent as discards of this size instead of written out (e.g. "65536"), keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on clusters with loopfile-backed replicated volumes (loop devices mishandle it) or entirely to keep DRBD's default (off). |
 | drbd.resync.fillTarget | string | `""` | c-fill-target, the resync controller's target fill level (e.g. "1M"). |
 | drbd.resync.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864"). |
 | drbd.resync.maxRate | string | `""` | c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M"). |
 | drbd.resync.minRate | string | `""` | c-min-rate, the resync floor guaranteed even under application I/O (e.g. "20M"); keep low on shared links. |
 | drbd.resync.planAhead | string | `""` | c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller. |
 | drbd.resync.rate | string | `""` | resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0). |
+| drbd.verifyAlg | string | `""` | verify-alg enables `drbdadm verify <res>` — the only cross-leg integrity check (zfs scrub validates one leg against itself). Set to a kernel digest (e.g. "crc32c") and run verify from cron/manually during quiet hours; out-of-sync blocks surface in the kernel log and `drbdsetup status`. Empty keeps verification unavailable. |
 | image.digest | string | `""` |  |
 | image.pullPolicy | string | `"IfNotPresent"` |  |
 | image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
