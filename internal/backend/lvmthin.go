@@ -224,7 +224,7 @@ func (l *lvmThin) Delete(ctx context.Context, vol string) error {
 		return err
 	}
 	if _, err := l.lvm(ctx, "lvremove", "--yes", l.ref(vol)); err != nil {
-		return busy(fmt.Errorf("lvremove %s: %w", vol, err))
+		return Busy(fmt.Errorf("lvremove %s: %w", vol, err))
 	}
 	return nil
 }

@@ -57,6 +57,37 @@ func (d *Driver) Seeded(name string) bool {
 }
 
 // Apply converges the kernel state for one resource: write config when it
+// isMissingMetadata matches drbdadm's complaint when a backing device
+// carries no DRBD metadata (attach against a blank/replaced disk).
+func isMissingMetadata(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "no valid meta") || strings.Contains(s, "No valid meta")
+}
+
+// ensureMarkedMetadata creates + GI-seeds metadata once per backing device,
+// gated on the .md-created marker: the marker lands only after a fully
+// successful seed, so a retry never adopts half-seeded metadata (which
+// deadlocks the first handshake — both sides Inconsistent, no sync source).
+func (d *Driver) ensureMarkedMetadata(ctx context.Context, r Resource) error {
+	marker := d.path(r.Name + ".md-created")
+	if _, err := os.Stat(marker); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		if err := d.ensureMetadata(ctx, r); err != nil {
+			return err
+		}
+	}
+	// A sentinel must never outlive a completed seed — left stale, it
+	// would authorize re-seeding live metadata the moment the marker is
+	// lost. Removed before the marker lands so a crash in between leaves
+	// "no markers" (re-probed, re-seeded only if virgin).
+	if err := os.Remove(d.path(r.Name + ".md-seeding")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.WriteFile(marker, nil, 0o640)
+}
+
 // changed, create and GI-seed metadata once (see seedGI for how fresh
 // volumes skip the initial sync), bring the resource up / adjust.
 func (d *Driver) Apply(ctx context.Context, r Resource) error {
@@ -68,27 +99,7 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 	// device-node, no marker. It only needs the .res rendered (writeConfig
 	// above) and drbdadm up/adjust so DRBD joins the resource for quorum.
 	if !r.LocalDiskless {
-		// create-md + seed exactly once per backing device: the .md-created
-		// marker lands only after a fully successful seed, so a retry never
-		// adopts half-seeded metadata (which deadlocks the first handshake:
-		// both sides Inconsistent, no sync source).
-		marker := d.path(r.Name + ".md-created")
-		if _, err := os.Stat(marker); err != nil {
-			if !os.IsNotExist(err) {
-				return err
-			}
-			if err := d.ensureMetadata(ctx, r); err != nil {
-				return err
-			}
-		}
-		// A sentinel must never outlive a completed seed — left stale, it
-		// would authorize re-seeding live metadata the moment the marker is
-		// lost. Removed before the marker lands so a crash in between leaves
-		// "no markers" (re-probed, re-seeded only if virgin).
-		if err := os.Remove(d.path(r.Name + ".md-seeding")); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		if err := os.WriteFile(marker, nil, 0o640); err != nil {
+		if err := d.ensureMarkedMetadata(ctx, r); err != nil {
 			return err
 		}
 	}
@@ -97,6 +108,22 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 	// otherwise. A half-torn kernel slot can answer "Unknown resource"
 	// to adjust but accept a plain up — fall back rather than loop.
 	if _, err := d.adm(ctx, "adjust", r.Name); err != nil {
+		// A stale .md-created marker surviving a backing-disk replacement
+		// (data disk swapped, /etc/drbd.d intact) makes ensureMarkedMetadata
+		// skip create-md, so adjust attaches a blank device and fails "no
+		// valid meta-data". Drop the marker and re-run: probeMetadata sees
+		// no metadata and create-md + SkipSeed makes this a full SyncTarget.
+		if !r.LocalDiskless && isMissingMetadata(err) {
+			if rmErr := os.Remove(d.path(r.Name + ".md-created")); rmErr != nil && !os.IsNotExist(rmErr) {
+				return rmErr
+			}
+			if mdErr := d.ensureMarkedMetadata(ctx, r); mdErr != nil {
+				return mdErr
+			}
+			if _, err = d.adm(ctx, "adjust", r.Name); err == nil {
+				return d.ensureDeviceNode(r.Minor)
+			}
+		}
 		if !strings.Contains(err.Error(), "Unknown resource") {
 			return fmt.Errorf("adjust %s: %w", r.Name, err)
 		}

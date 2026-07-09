@@ -258,6 +258,39 @@ func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
 	}
 }
 
+// A backing disk replaced under a surviving .md-created marker makes the
+// first adjust fail "no valid meta-data"; Apply drops the stale marker,
+// recreates metadata (SkipSeed → full SyncTarget), and retries adjust.
+func TestApplyReseedsOnMissingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-existing marker from the pre-replacement life of the volume.
+	if err := os.WriteFile(filepath.Join(dir, "pvc-1.md-created"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeExec{errOnce: map[string]error{
+		"adjust pvc-1": errors.New("drbdadm: no valid meta-data found"),
+	}}
+	d := &Driver{StateDir: dir, Exec: fe.run, Mknod: fakeMknod}
+	r := testResource(nodeKharkiv)
+	r.SkipSeed = true // the recreated leg must full-sync, never re-seed day0
+
+	if err := d.Apply(t.Context(), r); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
+	fe.notCalledWith(t, "set-gi")
+	// adjust attempted twice: the failing first, the succeeding retry.
+	var adjusts int
+	for _, c := range fe.calls {
+		if strings.Contains(c, "adjust pvc-1") {
+			adjusts++
+		}
+	}
+	if adjusts != 2 {
+		t.Fatalf("want 2 adjust attempts (fail + retry), got %d: %v", adjusts, fe.calls)
+	}
+}
+
 func TestApplyIdempotent(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}

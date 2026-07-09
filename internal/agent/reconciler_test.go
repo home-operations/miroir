@@ -733,6 +733,46 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 	}
 }
 
+// Teardown behind a still-staged device: drbdsetup down answers "held
+// open"; the error must classify as ErrBusy so teardown takes the 10s
+// retry, not the workqueue's minutes-long backoff, and the finalizer
+// stays until NodeUnstage releases the device.
+func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	stateDir := t.TempDir()
+	// A .res must exist or Down short-circuits as never-configured.
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{errOn: map[string]error{
+		"drbdsetup down pvc-1": errors.New("pvc-1: State change failed: Device is held open by someone"),
+	}}
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	res, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	if err != nil {
+		t.Fatalf("held-open must be a requeue, not an error: %v", err)
+	}
+	if res.RequeueAfter != 10*time.Second {
+		t.Fatalf("want 10s busy-retry, got %v", res.RequeueAfter)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal("finalizer must be retained while the device is held open")
+	}
+}
+
 // A diskless tie-breaker joins DRBD for quorum only: no backend device,
 // no metadata seed, DeviceCreated stays false so CSI never stages here.
 // A FullSync joiner on a restored volume must create a fresh backing,
