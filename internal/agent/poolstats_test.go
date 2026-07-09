@@ -98,6 +98,50 @@ func TestPoolStatsPublisherRaisesHighDataUsage(t *testing.T) {
 	}
 }
 
+// The Warning event fires once per False→True transition, not on every
+// sample whose message differs — the message embeds the usage percentage,
+// so gating on condition change re-fired it on each percent of drift.
+func TestPoolStatsPublisherEventsOnlyOnTransition(t *testing.T) {
+	fb := newFakeBackend()
+	fb.stats = backend.PoolStats{SizeBytes: 100 * poolGiB, UsedBytes: 85 * poolGiB}
+	rec := events.NewFakeRecorder(8)
+	p, get := newPublisher(t, fb, rec)
+
+	if err := p.publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	<-rec.Events // first crossing
+
+	// Usage drifts but stays high: message changes, no new event.
+	fb.stats.UsedBytes = 86 * poolGiB
+	if err := p.publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case e := <-rec.Events:
+		t.Fatalf("no event while the condition stays True, got %q", e)
+	default:
+	}
+
+	// Recovery, then a fresh crossing: one new event.
+	fb.stats.UsedBytes = 50 * poolGiB
+	if err := p.publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c := meta.FindStatusCondition(get().Status.Conditions, ConditionPoolUsageHigh); c == nil || c.Status != metav1.ConditionFalse {
+		t.Fatalf("condition must recover to False, got %+v", c)
+	}
+	fb.stats.UsedBytes = 90 * poolGiB
+	if err := p.publish(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-rec.Events:
+	default:
+		t.Fatal("expected a new event on the next False→True crossing")
+	}
+}
+
 func TestPoolStatsPublisherRaisesHighMetadataUsage(t *testing.T) {
 	fb := newFakeBackend()
 	fb.stats = backend.PoolStats{SizeBytes: 100 * poolGiB, UsedBytes: 10 * poolGiB, MetaUsedPercent: 90}

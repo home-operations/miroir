@@ -117,7 +117,13 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 		if high {
 			condStatus = metav1.ConditionTrue
 		}
-		changed := meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
+		// Event only on the False→True transition. SetStatusCondition's
+		// changed also covers message drift, and the message embeds the
+		// usage percentage — gating on it re-fires the Warning on every
+		// percent of drift while usage stays high.
+		prev := meta.FindStatusCondition(cur.Status.Conditions, ConditionPoolUsageHigh)
+		wasHigh := prev != nil && prev.Status == metav1.ConditionTrue
+		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
 			Type:    ConditionPoolUsageHigh,
 			Status:  condStatus,
 			Reason:  reason,
@@ -126,7 +132,7 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 		if err := p.Client.Status().Update(ctx, cur); err != nil {
 			return err
 		}
-		if changed && high && p.Recorder != nil {
+		if high && !wasHigh && p.Recorder != nil {
 			p.Recorder.Eventf(cur, nil, corev1.EventTypeWarning, ConditionPoolUsageHigh, "Sample", msg)
 		}
 		return nil
