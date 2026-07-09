@@ -74,6 +74,7 @@ jobs:
   e2e:
     name: E2E (kind, local backend)
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -96,5 +97,32 @@ jobs:
           restore-keys: ${{ runner.os }}-go-
       - name: Load kernel modules
         run: sudo modprobe dm_thin_pool loop
-      - name: Run e2e (miroir-local / lvmthin / replicas:1)
-        run: mise run test-e2e
+      # Cluster boot and image build are independent — overlap them.
+      - name: Create kind cluster
+        id: kind
+        background: true
+        run: mise run e2e-cluster
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Resolve toolchain versions
+        id: tools
+        run: echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
+      - name: Build image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          tags: miroir:e2e
+          build-args: GO_VERSION=${{ steps.tools.outputs.go }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - wait: kind
+      - name: Load image into kind
+        run: kind load docker-image miroir:e2e --name miroir-test-e2e
+      - name: Provision (loop device, snapshot stack, helm install)
+        run: mise run e2e-provision
+      - name: Run e2e specs (miroir-local / lvmthin / replicas:1)
+        run: mise run e2e-run
+      - name: Diagnostics
+        if: failure()
+        run: mise run e2e-diagnostics
