@@ -132,8 +132,12 @@ type MiroirVolumeSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	SizeBytes int64 `json:"sizeBytes"`
 	// Replicas lists the placement of the volume: one entry for local
-	// volumes, two or more for DRBD-replicated ones.
+	// volumes, two or more for DRBD-replicated ones. MaxItems matches the
+	// CEL size rule and bounds the apiserver's CEL cost estimate — the
+	// diskless transition rule is nested over this list and exceeds the
+	// rule budget on an unbounded array.
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=3
 	Replicas []Replica `json:"replicas"`
 	// QuorumPolicy applies only when len(Replicas) > 1.
 	// +optional
