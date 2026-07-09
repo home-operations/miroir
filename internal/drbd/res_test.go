@@ -23,6 +23,12 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
+const (
+	nodeKharkiv = "kharkiv"
+	nodeParis   = "paris"
+	nodeOslo    = "oslo"
+)
+
 func tieBreakerResource(localNode string) Resource {
 	return Resource{
 		Name:      "pvc-1",
@@ -32,9 +38,9 @@ func tieBreakerResource(localNode string) Resource {
 		LocalNode: localNode,
 		LocalDisk: "/dev/vg-miroir/pvc-1",
 		Peers: []Peer{
-			{Node: "kharkiv", NodeID: 0, Address: "192.168.1.41"},
-			{Node: "paris", NodeID: 1, Address: "192.168.1.42"},
-			{Node: "oslo", NodeID: 2, Address: "192.168.1.43", Diskless: true},
+			{Node: nodeKharkiv, NodeID: 0, Address: "192.168.1.41"},
+			{Node: nodeParis, NodeID: 1, Address: "192.168.1.42"},
+			{Node: nodeOslo, NodeID: 2, Address: "192.168.1.43", Diskless: true},
 		},
 	}
 }
@@ -42,9 +48,9 @@ func tieBreakerResource(localNode string) Resource {
 // A diskless tie-breaker peer renders "disk none" with no meta-disk; the
 // diskful peers keep the placeholder/local-disk + internal metadata.
 func TestRenderDisklessTieBreaker(t *testing.T) {
-	out := Render(tieBreakerResource("kharkiv"))
+	out := Render(tieBreakerResource(nodeKharkiv))
 
-	oslo := out[strings.Index(out, `on "oslo"`):]
+	oslo := out[strings.Index(out, "on \""+nodeOslo+"\""):]
 	oslo = oslo[:strings.Index(oslo, "}\n    }")]
 	if !strings.Contains(oslo, "disk none;") {
 		t.Fatalf("tie-breaker peer must render disk none:\n%s", oslo)
@@ -58,7 +64,7 @@ func TestRenderDisklessTieBreaker(t *testing.T) {
 	if !strings.Contains(out, `disk "`+peerDiskPlaceholder+`";`) {
 		t.Fatal("remote diskful peer must render the placeholder")
 	}
-	if !strings.Contains(out, `hosts "kharkiv" "paris" "oslo";`) {
+	if !strings.Contains(out, "hosts \""+nodeKharkiv+"\" \""+nodeParis+"\" \""+nodeOslo+"\";") {
 		t.Fatal("the tie-breaker must be in the connection mesh")
 	}
 }
@@ -68,7 +74,7 @@ func TestRenderDisklessTieBreaker(t *testing.T) {
 // on-no-quorum suspend-io, and keying off the suspended state would
 // entangle it with the snapshot barrier's suspend-io.
 func TestRenderFreezeQuorumOptions(t *testing.T) {
-	out := Render(tieBreakerResource("kharkiv"))
+	out := Render(tieBreakerResource(nodeKharkiv))
 	if !strings.Contains(out, "quorum majority;") || !strings.Contains(out, "on-no-quorum io-error;") {
 		t.Fatal("freeze must render quorum majority + on-no-quorum io-error")
 	}
@@ -82,17 +88,17 @@ func TestRenderFreezeQuorumOptions(t *testing.T) {
 // UpToDate and the first handshake would deadlock all-Inconsistent.
 func TestSeedWinnerSkipsDiskless(t *testing.T) {
 	r := Resource{
-		LocalNode: "kharkiv",
+		LocalNode: nodeKharkiv,
 		Peers: []Peer{
-			{Node: "oslo", NodeID: 0, Diskless: true},
-			{Node: "kharkiv", NodeID: 1},
-			{Node: "paris", NodeID: 2},
+			{Node: nodeOslo, NodeID: 0, Diskless: true},
+			{Node: nodeKharkiv, NodeID: 1},
+			{Node: nodeParis, NodeID: 2},
 		},
 	}
 	if !isWinner(r) {
 		t.Fatal("kharkiv (lowest diskful id) must win, not the diskless tie-breaker")
 	}
-	r.LocalNode = "oslo"
+	r.LocalNode = nodeOslo
 	if isWinner(r) {
 		t.Fatal("a diskless tie-breaker must never be the seed winner")
 	}

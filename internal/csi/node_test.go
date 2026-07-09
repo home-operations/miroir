@@ -46,7 +46,7 @@ func stagedVolume() *miroirv1alpha1.MiroirVolume {
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Address: "192.168.1.41"}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Address: addrKharkiv}},
 		},
 	}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
@@ -115,8 +115,8 @@ func TestDevicePathRefusesDisklessNode(t *testing.T) {
 	// paris + oslo hold the data; kharkiv (this node) is the tie-breaker.
 	v.Spec.Replicas = []miroirv1alpha1.Replica{
 		{Node: nodeParis, NodeID: 0, Address: "192.168.1.42"},
-		{Node: "oslo", NodeID: 1, Address: "192.168.1.43"},
-		{Node: nodeKharkiv, NodeID: 2, Address: "192.168.1.41", Diskless: true},
+		{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
+		{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv, Diskless: true},
 	}
 	n := newNode(t, v, fakeDRBDStatus{
 		st: drbd.Status{DiskState: "Diskless", Connected: true},

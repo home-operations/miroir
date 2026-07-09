@@ -49,6 +49,7 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
+//nolint:unparam // future tests will vary the name
 func node(name, ip string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name},

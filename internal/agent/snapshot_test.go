@@ -162,15 +162,15 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: "oslo", NodeID: 2, Address: "192.168.1.43", Diskless: true,
+		Node: nodeOslo, NodeID: 2, Address: "192.168.1.43", Diskless: true,
 	})
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
 		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
-		"oslo":      {DiskState: "Diskless"},
+		nodeOslo:    {DiskState: diskStateDiskless},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis, "oslo")).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis, nodeOslo)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
@@ -186,9 +186,9 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
 	fbO := newFakeBackend()
 	feO := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
-		"devices":[{"disk-state":"Diskless"}],
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
 		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
-	rO := &SnapshotReconciler{Client: c, NodeName: "oslo", Backend: fbO,
+	rO := &SnapshotReconciler{Client: c, NodeName: nodeOslo, Backend: fbO,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feO.run}}
 
 	// Round: coordinator raises, peer raises, both cut, coordinator
@@ -223,7 +223,7 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+"oslo") {
+	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeOslo) {
 		t.Fatal("tie-breaker must release its snapshot finalizer on delete")
 	}
 	if len(fbO.snapCalls) != 0 {

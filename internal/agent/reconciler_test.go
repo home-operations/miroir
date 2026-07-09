@@ -48,6 +48,8 @@ const (
 	snapSnap1             = "snap-1"
 	diskStateUpToDate     = "UpToDate"
 	diskStateInconsistent = "Inconsistent"
+	diskStateDiskless     = "Diskless"
+	nodeOslo              = "oslo"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -700,9 +702,9 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 }
 
 // Regression for the tie-breaker teardown leak: a diskful replica whose
-// DRBD detached its backing after an I/O error reports DiskState
-// "Diskless" — teardown must still delete the backend device, or the
-// LV/zvol leaks permanently while the finalizer is released.
+// DRBD detached its backing after an I/O error reports a Diskless disk
+// state — teardown must still delete the backend device, or the LV/zvol
+// leaks permanently while the finalizer is released.
 func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
@@ -710,7 +712,7 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 	now := metav1.NewTime(time.Now())
 	v.DeletionTimestamp = &now
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: "Diskless"},
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateDiskless},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
@@ -741,19 +743,19 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	v.Spec.Replicas[1].NodeID = 1
 	v.Spec.Replicas[1].Address = addrParis
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: "oslo", NodeID: 2, Address: "192.168.1.43", Diskless: true,
+		Node: nodeOslo, NodeID: 2, Address: "192.168.1.43", Diskless: true,
 	})
-	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+"oslo")
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeOslo)
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
-		"devices":[{"disk-state":"Diskless"}],
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
 		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: "oslo", Backend: fb,
+		Client: c, NodeName: nodeOslo, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -775,11 +777,11 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	st := got.Status.PerNode["oslo"]
+	st := got.Status.PerNode[nodeOslo]
 	if st.DeviceCreated {
 		t.Fatal("tie-breaker must not report DeviceCreated (blocks CSI staging)")
 	}
-	if st.DevicePath == "" || st.DiskState != "Diskless" {
+	if st.DevicePath == "" || st.DiskState != diskStateDiskless {
 		t.Fatalf("tie-breaker status not reported: %+v", st)
 	}
 }
@@ -891,7 +893,7 @@ func TestComputePhaseMixing(t *testing.T) {
 						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
 						// The tie-breaker's slot must count toward
 						// neither ready nor failed.
-						"tb": {DiskState: "Diskless", Message: "whatever"},
+						"tb": {DiskState: diskStateDiskless, Message: "whatever"},
 					},
 				},
 			},
@@ -947,7 +949,7 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 // removedReplicaVol builds a 2-replica volume on paris+oslo whose kharkiv
 // leg was just removed from spec.replicas (finalizer still held).
 func removedReplicaVol() *miroirv1alpha1.MiroirVolume {
-	v := vol(volPvc1, "paris", "oslo")
+	v := vol(volPvc1, "paris", nodeOslo)
 	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeKharkiv)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	for i := range v.Spec.Replicas {
@@ -964,7 +966,7 @@ func patchPeersUpToDate(t *testing.T, c client.Client, diskState string) {
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {
 			"paris": {"deviceCreated": true, "diskState": "`+diskState+`", "connected": true},
-			"oslo": {"deviceCreated": true, "diskState": "`+diskStateUpToDate+`", "connected": true},
+			"`+nodeOslo+`": {"deviceCreated": true, "diskState": "`+diskStateUpToDate+`", "connected": true},
 			"`+nodeKharkiv+`": {"deviceCreated": true, "diskState": "`+diskStateUpToDate+`", "connected": true}
 		}}
 	}`)))

@@ -217,15 +217,15 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 		Client: placementClient(s,
 			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib), // 90 free, zone a
 			miroirNodeObj(nodeParis, 100*gib, 20*gib),   // 80 free, zone a
-			miroirNodeObj("oslo", 100*gib, 90*gib),      // 10 free, zone b
-			nodeObj(nodeKharkiv, "192.168.1.41"),
+			miroirNodeObj(nodeOslo, 100*gib, 90*gib),    // 10 free, zone b
+			nodeObj(nodeKharkiv, addrKharkiv),
 			nodeObj(nodeParis, "192.168.1.42"),
-			nodeObj("oslo", "192.168.1.43"),
+			nodeObj(nodeOslo, "192.168.1.43"),
 		),
 		Nodes: nodemap.Map{
 			nodeKharkiv: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "a", Device: "/dev/x"},
 			nodeParis:   {Backend: miroirv1alpha1.BackendZFS, Zone: "a", ZFSDataset: "p/m"},
-			"oslo":      {Backend: miroirv1alpha1.BackendLVMThin, Zone: "b", Device: "/dev/y"},
+			nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin, Zone: "b", Device: "/dev/y"},
 		},
 	}
 
@@ -235,7 +235,7 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 	}
 	nodes := []string{got[0].Node, got[1].Node}
 	slices.Sort(nodes)
-	if !slices.Equal(nodes, []string{nodeKharkiv, "oslo"}) {
+	if !slices.Equal(nodes, []string{nodeKharkiv, nodeOslo}) {
 		t.Fatalf("replicas must span zones a and b (kharkiv+oslo), got %v", nodes)
 	}
 }
