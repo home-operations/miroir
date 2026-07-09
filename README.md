@@ -118,7 +118,12 @@ spec:
 
 | Parameter                           | Values                        | Default             |
 | ----------------------------------- | ----------------------------- | ------------------- |
-| `miroir.home-operations.com/quorum` | `last-man-standing`, `freeze` | `last-man-standing` |
+| `miroir.home-operations.com/quorum` | `freeze`, `last-man-standing` | `freeze` |
+
+`freeze` gives 2-replica volumes majority quorum via an automatically
+placed diskless tie-breaker on a spare node (opt out with
+`controller.autoTieBreaker=false`); without a spare node — or with
+`last-man-standing` — the volume runs on the two diskful replicas alone.
 
 ### 4. Snapshot and restore
 
@@ -212,7 +217,6 @@ the exact `drbdsetup` / `lvremove` / `zfs destroy` calls needed.
 
 **Natural extensions**
 
-- [ ] 3-node topology with majority quorum
 - [ ] Online volume migration (node-to-node, backend-to-backend)
 - [ ] Thick LVM volumes
 - [ ] Read-only clones

@@ -61,6 +61,10 @@ controller:
   # classic CoW headroom; raise it only if you trust your usage to stay
   # sparse, lower it toward 1 to provision conservatively.
   overcommitRatio: 2
+  # Add a diskless tie-breaker replica to 2-replica freeze volumes when a
+  # spare storage node exists, so majority quorum survives a single node
+  # loss. Also retrofits existing freeze volumes at controller startup.
+  autoTieBreaker: true
   resources:
     requests:
       cpu: 10m
@@ -118,7 +122,11 @@ replicatedStorageClass:
   name: miroir-replicated
   isDefault: false
   fsType: ext4
-  quorum: last-man-standing # | freeze
+  # freeze (majority quorum + suspend I/O without it) is split-brain-free;
+  # with autoTieBreaker a third node keeps volumes writable through a
+  # single node loss. last-man-standing keeps the survivor writable even
+  # without quorum, at the cost of possible divergence.
+  quorum: freeze # | last-man-standing
   reclaimPolicy: Delete
 
 # Requires the cluster-wide snapshot-controller + CRDs (deployed

@@ -39,6 +39,7 @@ Kubernetes: `>=1.31.0`
 | agent.resources.limits.memory | string | `"128Mi"` |  |
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
+| controller.autoTieBreaker | bool | `true` |  |
 | controller.overcommitRatio | int | `2` |  |
 | controller.provisionTimeout | string | `"120s"` |  |
 | controller.resources.limits.memory | string | `"128Mi"` |  |
@@ -70,7 +71,7 @@ Kubernetes: `>=1.31.0`
 | replicatedStorageClass.fsType | string | `"ext4"` |  |
 | replicatedStorageClass.isDefault | bool | `false` |  |
 | replicatedStorageClass.name | string | `"miroir-replicated"` |  |
-| replicatedStorageClass.quorum | string | `"last-man-standing"` |  |
+| replicatedStorageClass.quorum | string | `"freeze"` |  |
 | replicatedStorageClass.reclaimPolicy | string | `"Delete"` |  |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |

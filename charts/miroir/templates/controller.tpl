@@ -35,6 +35,7 @@ spec:
             - --nodes-config=/etc/miroir/nodes.yaml
             - --provision-timeout={{ .Values.controller.provisionTimeout }}
             - --overcommit-ratio={{ .Values.controller.overcommitRatio }}
+            - --auto-tie-breaker={{ .Values.controller.autoTieBreaker }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }

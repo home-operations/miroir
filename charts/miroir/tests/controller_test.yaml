@@ -80,6 +80,9 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: "--nodes-config=/etc/miroir/nodes.yaml"
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--auto-tie-breaker=true"
       - equal:
           path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
           value: false
@@ -110,6 +113,15 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: "--provision-timeout=90s"
+
+  - it: controller.autoTieBreaker=false opts out of tie-breaker placement
+    set:
+      controller.autoTieBreaker: false
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--auto-tie-breaker=false"
 
   - it: sidecars pick up their image + the provisioner timeout
     set:

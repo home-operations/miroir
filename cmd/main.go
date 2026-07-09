@@ -68,6 +68,24 @@ func init() {
 	utilruntime.Must(miroirv1alpha1.AddToScheme(scheme))
 }
 
+// setupMembership registers the membership reconciler (completes
+// operator-added replica entries) and, when enabled, the tie-breaker
+// retrofit for pre-existing 2-replica freeze volumes (#70).
+func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool) error {
+	r := &membership.Reconciler{Client: mgr.GetClient(), Nodes: nodes}
+	if err := r.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("membership reconciler: %w", err)
+	}
+	if !autoTieBreaker {
+		return nil
+	}
+	tb := &membership.TieBreakerReconciler{Client: mgr.GetClient(), Nodes: nodes}
+	if err := tb.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("tie-breaker reconciler: %w", err)
+	}
+	return nil
+}
+
 func main() {
 	var (
 		mode             string
@@ -76,6 +94,7 @@ func main() {
 		nodesConfig      string
 		provisionTimeout time.Duration
 		overcommitRatio  float64
+		autoTieBreaker   bool
 
 		// agent mode
 		nodeName          string
@@ -95,6 +114,8 @@ func main() {
 		"wait for agents to realise a new volume (controller; 0 → default)")
 	flag.Float64Var(&overcommitRatio, "overcommit-ratio", 0,
 		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
+	flag.BoolVar(&autoTieBreaker, "auto-tie-breaker", true,
+		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
 	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
 		"how often the agent republishes pool capacity (agent; 0 → default 60s)")
 	flag.StringVar(&vg, "lvm-vg", "vg-miroir", "LVM volume group (agent, lvmthin)")
@@ -192,15 +213,10 @@ func main() {
 			Nodes:            nodes,
 			ProvisionTimeout: provisionTimeout,
 			OvercommitRatio:  overcommitRatio,
+			AutoTieBreaker:   autoTieBreaker,
 		}
-		// Completes operator-added replica entries on live volumes
-		// (kubectl edit of spec.replicas).
-		membershipReconciler := &membership.Reconciler{
-			Client: mgr.GetClient(),
-			Nodes:  nodes,
-		}
-		if err := membershipReconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to set up membership reconciler")
+		if err := setupMembership(mgr, nodes, autoTieBreaker); err != nil {
+			setupLog.Error(err, "unable to set up membership reconcilers")
 			os.Exit(1)
 		}
 		serveCSI(mgr, csiSocket, identity, controller, nil)

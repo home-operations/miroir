@@ -65,6 +65,9 @@ type Controller struct {
 	// refused when a node's provisioned total would exceed
 	// capacity×ratio (notes/DESIGN.md §4.6). Zero → defaultOvercommitRatio.
 	OvercommitRatio float64
+	// AutoTieBreaker adds a diskless tie-breaker replica to new 2-replica
+	// freeze volumes when a spare storage node exists (#70).
+	AutoTieBreaker bool
 
 	// allocMu serialises CreateVolume RPCs that run concurrently within
 	// the single controller pod: two interleaved List→Create spans would
@@ -176,7 +179,11 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			c.allocMu.Unlock()
 			return nil, err
 		}
-		placed = p
+		placed, err = c.withTieBreaker(ctx, p, replicas, quorum)
+		if err != nil {
+			c.allocMu.Unlock()
+			return nil, err
+		}
 	}
 	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
@@ -393,6 +400,30 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 		replicas = append(replicas, r)
 	}
 	return replicas, nil
+}
+
+// withTieBreaker appends a diskless tie-breaker to a freshly placed
+// 2-replica freeze volume, so majority quorum survives a single node loss
+// (#70). Unchanged when disabled, not applicable, or no spare node exists —
+// the tie-breaker reconciler retrofits skipped volumes once one joins.
+func (c *Controller) withTieBreaker(ctx context.Context, placed []miroirv1alpha1.Replica, replicas int, quorum miroirv1alpha1.QuorumPolicy) ([]miroirv1alpha1.Replica, error) {
+	if !c.AutoTieBreaker || replicas != 2 || quorum != miroirv1alpha1.QuorumFreeze {
+		return placed, nil
+	}
+	tb := c.Nodes.TieBreakerNode(placed)
+	if tb == "" {
+		return placed, nil
+	}
+	addr, err := c.nodeInternalIP(ctx, tb)
+	if err != nil {
+		return nil, err
+	}
+	return append(placed, miroirv1alpha1.Replica{
+		Node:     tb,
+		NodeID:   int32(len(placed)), //nolint:gosec // ≤3 replicas
+		Address:  addr,
+		Diskless: true,
+	}), nil
 }
 
 // spreadByZone selects count nodes from ordered (already ranked by topology
@@ -875,12 +906,14 @@ func parseReplicas(params map[string]string) (int, error) {
 	return n, nil
 }
 
+// parseQuorum defaults to freeze: with the auto-added tie-breaker a
+// 2-replica volume gets majority quorum without split-brain exposure (#70).
 func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) {
 	switch raw := params[constants.ParamQuorum]; raw {
-	case "", string(miroirv1alpha1.QuorumLastManStanding):
-		return miroirv1alpha1.QuorumLastManStanding, nil
-	case string(miroirv1alpha1.QuorumFreeze):
+	case "", string(miroirv1alpha1.QuorumFreeze):
 		return miroirv1alpha1.QuorumFreeze, nil
+	case string(miroirv1alpha1.QuorumLastManStanding):
+		return miroirv1alpha1.QuorumLastManStanding, nil
 	default:
 		return "", status.Errorf(codes.InvalidArgument,
 			"invalid %s=%q (want last-man-standing | freeze)", constants.ParamQuorum, raw)
