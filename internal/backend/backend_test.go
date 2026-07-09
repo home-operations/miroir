@@ -237,6 +237,7 @@ func TestZFSDeleteSnapshotDefersForClones(t *testing.T) {
 	// A restore clone pins its origin snapshot: -d lets ZFS remove it
 	// with the last clone instead of wedging the delete in retries.
 	fe := &fakeExec{}
+	fe.respond("zfs list -Hpo name -t snapshot", "tank/miroir/pvc-1@snap-1\n", nil)
 	b := newZFS(cfg, fe.run)
 
 	if err := b.DeleteSnapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
@@ -294,6 +295,7 @@ func TestZFSDeleteSnapshotSurfacesPermanentError(t *testing.T) {
 	// would silently retry it forever. The message contains "snapshot",
 	// which the old substring matcher wrongly treated as busy.
 	fe := &fakeExec{}
+	fe.respond("zfs list -Hpo name -t snapshot", "tank/miroir/pvc-1@snap-1\n", nil)
 	fe.respond("zfs destroy -d tank/miroir/pvc-1@snap-1", "",
 		errors.New("cannot destroy snapshot tank/miroir/pvc-1@snap-1: permission denied"))
 	b := newZFS(cfg, fe.run)
@@ -427,4 +429,64 @@ func TestNewSelectsBackend(t *testing.T) {
 	if _, err := New("bogus", cfg, fe.run); err == nil {
 		t.Fatal("expected error for unknown backend")
 	}
+}
+
+// PVC sizes are not necessarily 4KiB-multiples (1G = 10^9); OpenZFS
+// rejects a volsize that is not a multiple of volblocksize.
+func TestZFSAlignsVolsize(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
+	fe.respond("zfs get -Hpo value volsize", "1000001536\n", nil)
+	b := newZFS(cfg, fe.run)
+
+	if _, err := b.Create(context.Background(), "pvc-1", 1_000_000_000); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "-V 1000001536") // 10^9 rounded up to the 4096 boundary
+
+	if err := b.Resize(context.Background(), "pvc-1", 2_000_000_000); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "volsize=2000003072")
+}
+
+// Deleting a volume with restore clones promotes them, and zfs promote
+// reparents older snapshots onto the clone. DeleteSnapshot must find the
+// migrated copy by its cluster-unique @name — a false success here leaks
+// the snapshot onto the clone and blocks the clone's destroy forever.
+func TestZFSDeleteSnapshotFindsMigratedSnapshot(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -Hpo name -t snapshot -r tank/miroir",
+		"tank/miroir/pvc-clone@snap-1\n", nil)
+	b := newZFS(cfg, fe.run)
+
+	if err := b.DeleteSnapshot(context.Background(), "pvc-src", "snap-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "zfs destroy -d tank/miroir/pvc-clone@snap-1")
+}
+
+func TestZFSDeleteSnapshotAbsentIsNoop(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -Hpo name -t snapshot -r tank/miroir",
+		"tank/miroir/other@unrelated\n", nil)
+	b := newZFS(cfg, fe.run)
+
+	if err := b.DeleteSnapshot(context.Background(), "pvc-src", "snap-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "destroy")
+}
+
+// A transient vgs failure must surface, not fall into the bootstrap
+// branch and confusingly fail pvcreate against an in-use device.
+func TestLVMThinSetupSurfacesTransientVGSError(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("vgs vg-miroir", "", errors.New("global/lvmetad lock contention"))
+	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName, Device: "/dev/sdz"}, fe.run)
+
+	if err := b.Setup(context.Background()); err == nil {
+		t.Fatal("transient vgs error must fail Setup")
+	}
+	fe.notCalledWith(t, "pvcreate")
 }

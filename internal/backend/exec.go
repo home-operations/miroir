@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Exec runs a CLI command and returns its combined output. Injectable so
@@ -32,6 +33,10 @@ type Exec func(ctx context.Context, name string, args ...string) (string, error)
 // host namespaces, so lvm/zfs act on the node's devices directly.
 func RealExec(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// A child stuck in D-state (wedged pool, frozen dm device) ignores the
+	// SIGKILL from ctx cancellation and would pin CombinedOutput on its
+	// open pipes forever; WaitDelay forces Wait to give up on them.
+	cmd.WaitDelay = 10 * time.Second
 	// Force the C locale: the delete/exists classifiers match lvm/zfs error
 	// text ("in use", "Failed to find", …), which the tools localise.
 	cmd.Env = append(os.Environ(), "LC_ALL=C")

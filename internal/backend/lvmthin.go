@@ -54,6 +54,11 @@ func (l *lvmThin) Setup(ctx context.Context) error {
 		if ok {
 			return nil
 		}
+	} else if !strings.Contains(err.Error(), "not found") {
+		// Transient lvm failure (lock contention, device scan): surface it
+		// rather than falling into the bootstrap branch and confusingly
+		// failing pvcreate against an in-use device.
+		return fmt.Errorf("vgs %s: %w", l.vg, err)
 	} else if l.device == "" {
 		return fmt.Errorf("VG %s absent and no --lvm-device configured to create it", l.vg)
 	} else {

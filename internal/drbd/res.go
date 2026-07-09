@@ -22,6 +22,7 @@ package drbd
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -121,7 +122,13 @@ func Render(r Resource) string {
 	for _, p := range peers {
 		fmt.Fprintf(&b, "    on %q {\n", p.Node)
 		fmt.Fprintf(&b, "        node-id %d;\n", p.NodeID)
-		fmt.Fprintf(&b, "        address ipv4 %s:%d;\n", p.Address, r.Port)
+		// Family-aware: an IPv6 InternalIP rendered as ipv4 is a parse
+		// error that poisons drbdadm for every resource on the node.
+		if ip := net.ParseIP(p.Address); ip != nil && ip.To4() == nil {
+			fmt.Fprintf(&b, "        address ipv6 [%s]:%d;\n", p.Address, r.Port)
+		} else {
+			fmt.Fprintf(&b, "        address ipv4 %s:%d;\n", p.Address, r.Port)
+		}
 		b.WriteString("        volume 0 {\n")
 		fmt.Fprintf(&b, "            device minor %d;\n", r.Minor)
 		if p.Diskless {
