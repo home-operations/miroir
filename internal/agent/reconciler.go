@@ -118,7 +118,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if !localDiskless {
 		// Realize: create (or grow) the backing device — a CoW clone when the
 		// volume restores from a snapshot.
-		dev, forceFullSync, err = r.realizeBacking(ctx, vol)
+		dev, forceFullSync, err = r.realizeBacking(ctx, vol, vol.Spec.Replicas[idx].FullSync)
 		if err != nil {
 			return ctrl.Result{}, r.reportError(ctx, vol, err)
 		}
@@ -291,11 +291,14 @@ func (r *VolumeReconciler) wipedBacking(ctx context.Context, vol *miroirv1alpha1
 // the day0 GI seed keeps restored volumes from resyncing. forceFullSync
 // reports the node-wipe signature (wipedBacking): the recreated device
 // must join as a full SyncTarget, never re-seed the day0 GI.
-func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (dev string, forceFullSync bool, err error) {
+func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, fullSync bool) (dev string, forceFullSync bool, err error) {
 	if forceFullSync, err = r.wipedBacking(ctx, vol); err != nil {
 		return "", false, err
 	}
-	if vol.Spec.Source == nil {
+	if vol.Spec.Source == nil || fullSync {
+		// A FullSync joiner never clones, even on a restored volume: its
+		// node holds no source snapshot, and its content arrives over the
+		// wire as a full SyncTarget regardless of what the backing holds.
 		dev, err = r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 		return dev, forceFullSync, err
 	}

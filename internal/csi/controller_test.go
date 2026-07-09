@@ -446,6 +446,153 @@ func TestCreateVolumeAutoTieBreakerNoSpareNode(t *testing.T) {
 	}
 }
 
+// A retried expand whose earlier attempt already patched the spec but
+// timed out must keep waiting on realized sizes — returning success
+// early lets kubelet no-op the filesystem grow against the old device
+// size and record the PVC expanded while the fs stays small.
+func TestControllerExpandRetryWaitsForRealization(t *testing.T) {
+	s := newScheme(t)
+	v := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 10 << 30, // a prior attempt already grew the spec
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin},
+				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS},
+			},
+		},
+		Status: miroirv1alpha1.MiroirVolumeStatus{
+			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+				nodeKharkiv: {SizeBytes: 5 << 30},
+				nodeParis:   {SizeBytes: 5 << 30},
+			},
+		},
+	}
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+			WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build(),
+		ProvisionTimeout: time.Second,
+	}
+
+	_, err := c.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      volPvc1,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 10 << 30},
+	})
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("retry must wait for realization, got %v", err)
+	}
+}
+
+func TestControllerExpandSucceedsOnceRealized(t *testing.T) {
+	s := newScheme(t)
+	v := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 10 << 30,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin},
+			},
+		},
+		Status: miroirv1alpha1.MiroirVolumeStatus{
+			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+				nodeKharkiv: {SizeBytes: 10 << 30},
+			},
+		},
+	}
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+			WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build(),
+		ProvisionTimeout: time.Second,
+	}
+
+	// The idempotent retry (spec already at size, devices realized).
+	resp, err := c.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      volPvc1,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 10 << 30},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.CapacityBytes != 10<<30 {
+		t.Fatalf("capacity = %d", resp.CapacityBytes)
+	}
+
+	// A stale smaller request must never shrink and reports the spec size.
+	resp, err = c.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      volPvc1,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 5 << 30},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.CapacityBytes != 10<<30 {
+		t.Fatalf("stale request must report the larger spec size, got %d", resp.CapacityBytes)
+	}
+}
+
+// Restore copies the source's replica layout but must clean the entries:
+// FullSync stripped (clones are byte-identical on every leg) and the
+// replication addresses re-resolved from the live Node objects.
+func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
+				// paris joined after creation: FullSync stuck in the spec.
+				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2", FullSync: true},
+			},
+		},
+	}
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+	}
+	cl := readyOnGet(s)
+	for _, obj := range []client.Object{srcVol, srcSnap,
+		nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
+		if err := cl.Create(context.Background(), obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cl.Status().Update(context.Background(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	if _, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapSnap1},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(context.Background(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	for _, rep := range got.Spec.Replicas {
+		if rep.FullSync {
+			t.Fatalf("clone must not inherit FullSync: %+v", rep)
+		}
+	}
+	if got.Spec.Replicas[0].Address != addrKharkiv || got.Spec.Replicas[1].Address != addrParis {
+		t.Fatalf("addresses must be re-resolved: %+v", got.Spec.Replicas)
+	}
+}
+
 func TestPickNodeNoStorageNodes(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).Build(), Nodes: nodemap.Map{}}
