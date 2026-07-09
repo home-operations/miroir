@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +151,84 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	// The peer's device is still suspended; readyToUse lifts it.
 	reconcileSnap(t, rP, snapSnap1)
 	feP.calledWith(t, "drbdadm resume-io pvc-1")
+}
+
+// A snapshot round on a volume with a diskless tie-breaker completes on
+// the diskful legs alone: the tie-breaker never raises a barrier or cuts
+// a leg (it has none), and the coordinator must not wait for it. Its
+// deletion path releases the finalizer without touching the backend.
+func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: "oslo", NodeID: 2, Address: "192.168.1.43", Diskless: true,
+	})
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
+		"oslo":      {DiskState: "Diskless"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis, "oslo")).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	feK := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+	rK := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
+	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
+	fbO := newFakeBackend()
+	feO := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Diskless"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+	rO := &SnapshotReconciler{Client: c, NodeName: "oslo", Backend: fbO,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feO.run}}
+
+	// Round: coordinator raises, peer raises, both cut, coordinator
+	// collects — with the tie-breaker reconciling in between and never
+	// contributing a leg.
+	reconcileSnap(t, rK, snapSnap1)
+	reconcileSnap(t, rO, snapSnap1)
+	reconcileSnap(t, rP, snapSnap1)
+	reconcileSnap(t, rO, snapSnap1)
+	reconcileSnap(t, rK, snapSnap1)
+	reconcileSnap(t, rP, snapSnap1)
+	reconcileSnap(t, rK, snapSnap1)
+
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.ReadyToUse || got.Status.IOSuspended {
+		t.Fatalf("round must complete on diskful legs alone: %+v", got.Status)
+	}
+	if len(fbO.snapCalls) != 0 {
+		t.Fatalf("tie-breaker must not touch the backend: %v", fbO.snapCalls)
+	}
+	feO.notCalledWith(t, "drbdadm suspend-io")
+
+	// Deletion: the tie-breaker's agent releases its finalizer without a
+	// backend DeleteSnapshot.
+	if err := c.Delete(context.Background(), got); err != nil {
+		t.Fatal(err)
+	}
+	reconcileSnap(t, rO, snapSnap1)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+"oslo") {
+		t.Fatal("tie-breaker must release its snapshot finalizer on delete")
+	}
+	if len(fbO.snapCalls) != 0 {
+		t.Fatalf("tie-breaker deletion must not call the backend: %v", fbO.snapCalls)
+	}
 }
 
 // A peer raising its barrier must record only its own slot, never the

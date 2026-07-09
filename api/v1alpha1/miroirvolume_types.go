@@ -126,6 +126,7 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) ? size(self.replicas.filter(r, !has(r.diskless) || !r.diskless)) >= 2 : true",message="replicated volumes need at least 2 diskful (non-diskless) replicas"
 // +kubebuilder:validation:XValidation:rule="!has(self.drbd) ? !self.replicas.exists(r, has(r.diskless) && r.diskless) : true",message="diskless replicas are only valid on replicated volumes"
 // +kubebuilder:validation:XValidation:rule="size(self.replicas) > 0 ? !has(self.replicas[0].diskless) || !self.replicas[0].diskless : true",message="the first replica must be diskful (not a diskless tie-breaker)"
+// +kubebuilder:validation:XValidation:rule="self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))",message="a replica's diskless flag is immutable; remove the replica and re-add it instead"
 type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
 	// +kubebuilder:validation:Minimum=1

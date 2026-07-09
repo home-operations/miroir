@@ -144,6 +144,32 @@ func TestReusesLowestFreeNodeID(t *testing.T) {
 	}
 }
 
+// A diskless tie-breaker entry completes with NodeID/Address only: no
+// backend (it never provisions one) and no FullSync (nothing to sync).
+func TestCompletesDisklessReplica(t *testing.T) {
+	v := replicatedVol()
+	v.Spec.Replicas[2].Diskless = true
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeOslo, "192.168.1.43")).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+		nodeOslo: {Backend: miroirv1alpha1.BackendZFS},
+	}}
+
+	reconcile(t, r, "pvc-1")
+
+	rep := get(t, r, "pvc-1").Spec.Replicas[2]
+	if rep.NodeID != 2 || rep.Address != "192.168.1.43" {
+		t.Fatalf("diskless entry not completed: %+v", rep)
+	}
+	if rep.Backend != "" {
+		t.Fatalf("diskless entry must not get a backend: %+v", rep)
+	}
+	if rep.FullSync {
+		t.Fatal("diskless entry must not be marked FullSync — it has no data to sync")
+	}
+}
+
 func TestUnknownNodeLeavesSpecUntouched(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(replicatedVol()).

@@ -699,6 +699,91 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 	}
 }
 
+// Regression for the tie-breaker teardown leak: a diskful replica whose
+// DRBD detached its backing after an I/O error reports DiskState
+// "Diskless" — teardown must still delete the backend device, or the
+// LV/zvol leaks permanently while the finalizer is released.
+func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv)
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: "Diskless"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+
+	if _, err := fb.Create(context.Background(), volPvc1, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, volPvc1)
+
+	if len(fb.created) != 0 {
+		t.Fatalf("a detached (DiskState=Diskless) diskful replica must still delete its backing: %+v", fb.created)
+	}
+}
+
+// A diskless tie-breaker joins DRBD for quorum only: no backend device,
+// no metadata seed, DeviceCreated stays false so CSI never stages here.
+func TestReconcileDisklessTieBreaker(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: "oslo", NodeID: 2, Address: "192.168.1.43", Diskless: true,
+	})
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+"oslo")
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Diskless"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: "oslo", Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	res, err := r.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("tie-breaker must requeue to refresh DRBD state")
+	}
+	if len(fb.createVol) != 0 {
+		t.Fatalf("tie-breaker must not create a backing device: %v", fb.createVol)
+	}
+	fe.calledWith(t, "drbdadm adjust pvc-1")
+	fe.notCalledWith(t, "drbdmeta") // no create-md, no GI seed
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status.PerNode["oslo"]
+	if st.DeviceCreated {
+		t.Fatal("tie-breaker must not report DeviceCreated (blocks CSI staging)")
+	}
+	if st.DevicePath == "" || st.DiskState != "Diskless" {
+		t.Fatalf("tie-breaker status not reported: %+v", st)
+	}
+}
+
 // computePhase is the function the controller's waitReady depends on;
 // covering its mixed-state logic here means a regression breaks the
 // test that mirrors the live behaviour, not a synthetic helper.
@@ -789,6 +874,28 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 			},
 			want: miroirv1alpha1.VolumeDegraded,
+		},
+		{
+			name: "diskless tie-breaker ignored (ready on diskful legs alone)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas: []miroirv1alpha1.Replica{
+						{Node: "a"}, {Node: "b"}, {Node: "tb", Diskless: true},
+					},
+					DRBD: &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+						// The tie-breaker's slot must count toward
+						// neither ready nor failed.
+						"tb": {DiskState: "Diskless", Message: "whatever"},
+					},
+				},
+			},
+			want: miroirv1alpha1.VolumeReady,
 		},
 	}
 	for _, tc := range cases {

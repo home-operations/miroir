@@ -175,6 +175,10 @@ spec:
             - message: the first replica must be diskful (not a diskless tie-breaker)
               rule: 'size(self.replicas) > 0 ? !has(self.replicas[0].diskless) ||
                 !self.replicas[0].diskless : true'
+            - message: a replica's diskless flag is immutable; remove the replica
+                and re-add it instead
+              rule: self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
+                || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))
           status:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.

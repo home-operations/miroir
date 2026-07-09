@@ -108,6 +108,24 @@ func TestDevicePathHealthyReturnsDevice(t *testing.T) {
 	}
 }
 
+// A diskless tie-breaker node must never stage the volume: it holds no
+// data leg, only a quorum vote.
+func TestDevicePathRefusesDisklessNode(t *testing.T) {
+	v := stagedVolume()
+	// paris + oslo hold the data; kharkiv (this node) is the tie-breaker.
+	v.Spec.Replicas = []miroirv1alpha1.Replica{
+		{Node: nodeParis, NodeID: 0, Address: "192.168.1.42"},
+		{Node: "oslo", NodeID: 1, Address: "192.168.1.43"},
+		{Node: nodeKharkiv, NodeID: 2, Address: "192.168.1.41", Diskless: true},
+	}
+	n := newNode(t, v, fakeDRBDStatus{
+		st: drbd.Status{DiskState: "Diskless", Connected: true},
+	})
+	if _, _, err := n.devicePath(context.Background(), volPvc1); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("a diskless tie-breaker node must be FailedPrecondition, got %v", err)
+	}
+}
+
 // A node holding no replica of the volume must be refused before any DRBD
 // or device lookup.
 func TestDevicePathRefusesForeignNode(t *testing.T) {
