@@ -52,6 +52,9 @@ data:
         {{- if .rate }}
             resync-rate {{ .rate }};
         {{- end }}
+        {{- if .discardGranularity }}
+            rs-discard-granularity {{ .discardGranularity }};
+        {{- end }}
         {{- end }}
         }
         net {
@@ -59,6 +62,9 @@ data:
         {{- if .maxBuffers }}
             max-buffers {{ .maxBuffers }};
         {{- end }}
+        {{- end }}
+        {{- with .Values.drbd.verifyAlg }}
+            verify-alg {{ . }};
         {{- end }}
         }
     }

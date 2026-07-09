@@ -112,6 +112,18 @@ drbd:
     rate: ""
     # -- max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864").
     maxBuffers: ""
+    # -- rs-discard-granularity: during a full resync, runs of zeroes are
+    # sent as discards of this size instead of written out (e.g. "65536"),
+    # keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on
+    # clusters with loopfile-backed replicated volumes (loop devices
+    # mishandle it) or entirely to keep DRBD's default (off).
+    discardGranularity: ""
+  # -- verify-alg enables `drbdadm verify <res>` — the only cross-leg
+  # integrity check (zfs scrub validates one leg against itself). Set to a
+  # kernel digest (e.g. "crc32c") and run verify from cron/manually during
+  # quiet hours; out-of-sync blocks surface in the kernel log and
+  # `drbdsetup status`. Empty keeps verification unavailable.
+  verifyAlg: ""
 
 storageClass:
   create: true

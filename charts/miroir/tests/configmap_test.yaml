@@ -131,6 +131,40 @@ tests:
           path: data["global_common.conf"]
           pattern: "on-io-error pass_on;"
 
+  - it: renders discard granularity and verify-alg when set
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      drbd:
+        verifyAlg: crc32c
+        resync:
+          discardGranularity: "65536"
+    documentIndex: 1
+    asserts:
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "rs-discard-granularity 65536;"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "verify-alg crc32c;"
+
+  - it: default emits neither discard granularity nor verify-alg
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    documentIndex: 1
+    asserts:
+      - notMatchRegex:
+          path: data["global_common.conf"]
+          pattern: "rs-discard-granularity"
+      - notMatchRegex:
+          path: data["global_common.conf"]
+          pattern: "verify-alg"
+
   - it: honours a non-default Release namespace for both ConfigMaps
     release:
       name: miroir
