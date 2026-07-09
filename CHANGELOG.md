@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/home-operations/miroir/compare/0.2.10...0.2.11) (2026-07-09)
+
+
+### Performance Improvements
+
+* **backend:** direct-io loop devices, lz4 on zvols ([#71](https://github.com/home-operations/miroir/issues/71)) ([e29d5f0](https://github.com/home-operations/miroir/commit/e29d5f09e42b907846d9a390fd57d5f0b57bd180))
+
 ## [0.2.10](https://github.com/home-operations/miroir/compare/0.2.9...0.2.10) (2026-07-08)
 
 
