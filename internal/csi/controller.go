@@ -154,10 +154,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			return nil, status.Errorf(codes.InvalidArgument,
 				"requested %d below snapshot size %d", sizeBytes, snap.Status.SizeBytes)
 		}
-		if len(srcVol.Spec.Replicas) != replicas {
+		if len(srcVol.Spec.DiskfulReplicas()) != replicas {
 			return nil, status.Errorf(codes.InvalidArgument,
-				"restore replica count %d must match source %d",
-				replicas, len(srcVol.Spec.Replicas))
+				"restore replica count %d must match source diskful replicas %d",
+				replicas, len(srcVol.Spec.DiskfulReplicas()))
 		}
 		source = &miroirv1alpha1.VolumeSource{SnapshotName: snapID}
 		srcReplicas = srcVol.Spec.Replicas
@@ -221,6 +221,9 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 
 	topology := make([]*csi.Topology, 0, len(vol.Spec.Replicas))
 	for _, r := range vol.Spec.Replicas {
+		if r.Diskless {
+			continue
+		}
 		topology = append(topology, &csi.Topology{
 			Segments: map[string]string{constants.TopologyKey: r.Node},
 		})
@@ -484,6 +487,9 @@ func (c *Controller) provisionedPerNode(ctx context.Context, exclude string) (ma
 			continue
 		}
 		for _, r := range v.Spec.Replicas {
+			if r.Diskless {
+				continue
+			}
 			out[r.Node] += v.Spec.SizeBytes
 		}
 	}
@@ -542,12 +548,13 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 	if existing.Spec.Source != nil {
 		existingSource = existing.Spec.Source.SnapshotName
 	}
-	if existing.Spec.SizeBytes != sizeBytes || len(existing.Spec.Replicas) != replicas ||
+	existingDiskful := len(existing.Spec.DiskfulReplicas())
+	if existing.Spec.SizeBytes != sizeBytes || existingDiskful != replicas ||
 		(replicas > 1 && existing.Spec.QuorumPolicy != quorum) ||
 		existingSource != sourceSnapshot {
 		return status.Errorf(codes.AlreadyExists,
-			"volume %s exists with size=%d replicas=%d quorum=%s source=%q (requested size=%d replicas=%d quorum=%s source=%q)",
-			vol.Name, existing.Spec.SizeBytes, len(existing.Spec.Replicas), existing.Spec.QuorumPolicy, existingSource,
+			"volume %s exists with size=%d diskful=%d quorum=%s source=%q (requested size=%d replicas=%d quorum=%s source=%q)",
+			vol.Name, existing.Spec.SizeBytes, existingDiskful, existing.Spec.QuorumPolicy, existingSource,
 			sizeBytes, replicas, quorum, sourceSnapshot)
 	}
 	*vol = *existing
@@ -653,6 +660,9 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 				return false, client.IgnoreNotFound(err) // cache lag → retry
 			}
 			for _, rep := range v.Spec.Replicas {
+				if rep.Diskless {
+					continue
+				}
 				if v.Status.PerNode[rep.Node].SizeBytes < newSize {
 					return false, nil
 				}
@@ -783,6 +793,9 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 		v := &vols.Items[i]
 		topology := make([]*csi.Topology, 0, len(v.Spec.Replicas))
 		for _, r := range v.Spec.Replicas {
+			if r.Diskless {
+				continue
+			}
 			topology = append(topology, &csi.Topology{
 				Segments: map[string]string{constants.TopologyKey: r.Node},
 			})

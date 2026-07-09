@@ -105,13 +105,21 @@ spec:
                         Only set on replicated volumes.
                       type: string
                     backend:
-                      description: Backend selects how the backing device is provisioned
-                        on this node.
+                      description: |-
+                        Backend selects how the backing device is provisioned on this node.
+                        Unused for diskless tie-breaker replicas (they have no backing device).
                       enum:
                       - lvmthin
                       - zfs
                       - loopfile
                       type: string
+                    diskless:
+                      description: |-
+                        Diskless makes this a quorum-only tie-breaker: DRBD joins for
+                        voting but stores no data. No backend device, never a mount
+                        target. The agent skips backend create/resize/delete and DRBD
+                        create-md; the resource renders "disk none" for this peer.
+                      type: boolean
                     fullSync:
                       description: |-
                         FullSync marks a replica added after volume creation: its agent
@@ -129,7 +137,6 @@ spec:
                       format: int32
                       type: integer
                   required:
-                  - backend
                   - node
                   type: object
                 minItems: 1
@@ -159,6 +166,15 @@ spec:
                 exactly 1
               rule: 'has(self.drbd) ? (size(self.replicas) >= 2 && size(self.replicas)
                 <= 3) : size(self.replicas) == 1'
+            - message: replicated volumes need at least 2 diskful (non-diskless) replicas
+              rule: 'has(self.drbd) ? size(self.replicas.filter(r, !has(r.diskless)
+                || !r.diskless)) >= 2 : true'
+            - message: diskless replicas are only valid on replicated volumes
+              rule: '!has(self.drbd) ? !self.replicas.exists(r, has(r.diskless) &&
+                r.diskless) : true'
+            - message: the first replica must be diskful (not a diskless tie-breaker)
+              rule: 'size(self.replicas) > 0 ? !has(self.replicas[0].diskless) ||
+                !self.replicas[0].diskless : true'
           status:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.

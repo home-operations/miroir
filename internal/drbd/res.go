@@ -47,8 +47,12 @@ type Resource struct {
 	// LocalNode is the node this config is rendered on; its peer entry
 	// gets the real backing path, all others the placeholder.
 	LocalNode string
-	// LocalDisk is the local backing device path.
+	// LocalDisk is the local backing device path. Empty/unused when
+	// LocalDiskless is true.
 	LocalDisk string
+	// LocalDiskless is true when the local node is a diskless tie-breaker:
+	// Apply skips create-md/seedGI and the local peer renders "disk none".
+	LocalDiskless bool
 	// Secret authenticates peers (cram-hmac challenge-response). Empty
 	// renders no auth — volumes created before secrets existed.
 	Secret string
@@ -56,15 +60,19 @@ type Resource struct {
 	// instead of day0 GI seeding: a replica joining an existing volume
 	// must full-sync from its peers, not pose as a pristine twin.
 	SkipSeed bool
-	// Peers are all diskful members, including the local node.
+	// Peers are all members of the resource, including the local node.
+	// A Peer with Diskless=true renders "disk none" and omits meta-disk.
 	Peers []Peer
 }
 
-// Peer is one diskful member of the resource.
+// Peer is one member of the resource (diskful or diskless).
 type Peer struct {
 	Node    string
 	NodeID  int32
 	Address string
+	// Diskless marks a quorum-only tie-breaker peer: renders "disk none",
+	// no meta-disk, no backend.
+	Diskless bool
 }
 
 // Render produces the .res file content for the local node.
@@ -83,6 +91,9 @@ func Render(r Resource) string {
 		// Any disconnect halts writes on both sides; never diverges.
 		b.WriteString("        quorum majority;\n")
 		b.WriteString("        on-no-quorum io-error;\n")
+		// Auto-demote a stale primary when it reconnects after losing
+		// quorum — improves failover recovery without manual intervention.
+		b.WriteString("        on-suspended-primary-outdated force-secondary;\n")
 	default:
 		// Last-man-standing: the survivor keeps writing; split-brain is
 		// detected on reconnect and surfaced for manual resolution.
@@ -108,17 +119,25 @@ func Render(r Resource) string {
 	b.WriteString("    }\n")
 
 	for _, p := range peers {
-		disk := peerDiskPlaceholder
-		if p.Node == r.LocalNode {
-			disk = r.LocalDisk
-		}
 		fmt.Fprintf(&b, "    on %q {\n", p.Node)
 		fmt.Fprintf(&b, "        node-id %d;\n", p.NodeID)
 		fmt.Fprintf(&b, "        address ipv4 %s:%d;\n", p.Address, r.Port)
 		b.WriteString("        volume 0 {\n")
 		fmt.Fprintf(&b, "            device minor %d;\n", r.Minor)
-		fmt.Fprintf(&b, "            disk %q;\n", disk)
-		b.WriteString("            meta-disk internal;\n")
+		if p.Diskless {
+			// Diskless tie-breaker: joins for quorum voting, stores no
+			// data. No backing device, no on-disk metadata.
+			b.WriteString("            disk none;\n")
+			// No meta-disk directive — DRBD treats the absence as "no
+			// metadata device" for diskless peers.
+		} else {
+			disk := peerDiskPlaceholder
+			if p.Node == r.LocalNode {
+				disk = r.LocalDisk
+			}
+			fmt.Fprintf(&b, "            disk %q;\n", disk)
+			b.WriteString("            meta-disk internal;\n")
+		}
 		b.WriteString("        }\n")
 		b.WriteString("    }\n")
 	}

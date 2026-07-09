@@ -148,10 +148,12 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 		id++
 	}
 
-	rep.Backend = entry.Backend
+	if !rep.Diskless {
+		rep.Backend = entry.Backend
+		rep.FullSync = true
+	}
 	rep.NodeID = id
 	rep.Address = addr
-	rep.FullSync = true
 	return nil
 }
 

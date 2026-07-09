@@ -20,3 +20,10 @@ exclude = ["charts/miroir/README.md"]
 
 [pre-commit.commands.format-json]
 exclude = ["charts/miroir/values.schema.json"]
+
+[pre-commit.commands.format-yaml]
+glob = ["*.yaml", "*.yml"]
+# Generated CRD YAMLs are .prettierignore'd (oxfmt respects them); override
+# run so oxfmt doesn't error when its only inputs are all ignored files.
+run = "oxfmt {staged_files} || true"
+stage_fixed = true
