@@ -38,6 +38,11 @@ import (
 // snapshots must not freeze the volume forever. Exported so the agent's
 // startup sweep can apply the same deadline when lifting barriers left
 // raised by a previous crash.
+//
+// Peers compare the coordinator's SuspendedAt (its wall clock) against
+// their own, so this deadline doubles as the cross-node clock-skew
+// budget: nodes must run NTP. Skew approaching 60s can prematurely expire
+// (or over-extend) a round; homelab nodes are expected well under a second.
 const SuspendDeadline = 60 * time.Second
 
 // suspendRetryBackoff spaces barrier retries after a failed round.
@@ -394,8 +399,32 @@ func (r *SnapshotReconciler) isCoordinator(vol *miroirv1alpha1.MiroirVolume, st 
 	if st.PeerPrimary {
 		return false
 	}
-	rep := vol.Spec.FirstDiskfulReplica()
-	return rep != nil && rep.Node == r.NodeName
+	// No Primary anywhere: the lowest-ordered diskful replica coordinates,
+	// but a dead replicas[0] must not orphan the round (no survivor would
+	// ever become coordinator, so it never voids and every sibling snapshot
+	// queues behind it forever). Walk diskful replicas in spec order and
+	// take the first REACHABLE one: self → we coordinate; a connected peer
+	// → it does; a down or not-yet-completed peer → skip to the next. A
+	// dead node is in no survivor's connected set, so every mutually
+	// connected survivor elects the same present node; a partitioned
+	// minority may self-elect, but a degraded volume fails the healthy gate
+	// and cannot raise a barrier anyway.
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Diskless {
+			continue
+		}
+		if rep.Node == r.NodeName {
+			return true
+		}
+		// A diskful peer earlier in spec order coordinates unless it is
+		// provably down — addressed but its connection is not established.
+		// An address-less (not-yet-completed) peer is treated as present so
+		// coordination stays deterministic during a membership change.
+		if rep.Address == "" || st.PeerConnected[rep.NodeID] {
+			return false
+		}
+	}
+	return false
 }
 
 func replicaOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {

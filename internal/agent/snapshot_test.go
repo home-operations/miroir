@@ -86,6 +86,51 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 	}
 }
 
+// Regression: replicas[0] (the default coordinator) is dead mid-round. A
+// surviving diskful replica must take over as coordinator and void the
+// expired round — otherwise status.IOSuspended stays true forever and
+// every future snapshot of the volume queues behind it.
+func TestSnapshotCoordinatorFailsOverFromDeadReplica0(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis) // kharkiv = replicas[0]
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	snap := snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)
+	expired := metav1.NewTime(time.Now().Add(-2 * SuspendDeadline))
+	snap.Status.IOSuspended = true
+	snap.Status.SuspendedAt = &expired
+	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+		nodeParis: miroirv1alpha1.SnapshotSuspended,
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	// paris: Secondary, no Primary anywhere, and its link to kharkiv
+	// (node-id 0) is down — paris is now the lowest reachable diskful leg.
+	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":0,"connection-state":"Connecting"}]}]`}
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
+	reconcileSnap(t, rP, snapSnap1)
+
+	feP.calledWith(t, "drbdadm resume-io pvc-1")
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.IOSuspended {
+		t.Fatalf("survivor coordinator must void the dead round: %+v", got.Status)
+	}
+}
+
 func TestSnapshotReplicatedBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
