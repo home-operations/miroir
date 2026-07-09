@@ -507,6 +507,31 @@ func TestStatusParsing(t *testing.T) {
 	}
 }
 
+// Per-peer connection state keys on the DRBD node id, so consumers can
+// ignore a diskless tie-breaker's link (snapshot barrier, removal gating)
+// while the aggregate Connected still reflects every link.
+func TestStatusPerPeerConnected(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"UpToDate"}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connected"},
+				{"peer-node-id":2,"connection-state":"Connecting"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	s, err := d.Status(context.Background(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.PeerConnected[1] || s.PeerConnected[2] {
+		t.Fatalf("per-peer state wrong: %+v", s.PeerConnected)
+	}
+	if s.Connected {
+		t.Fatal("aggregate Connected must still reflect the down link")
+	}
+}
+
 func TestDownSecondariesSkipsPrimary(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[

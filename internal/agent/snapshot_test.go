@@ -162,7 +162,7 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: nodeOslo, NodeID: 2, Address: "192.168.1.43", Diskless: true,
+		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
 	})
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
@@ -228,6 +228,64 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 	}
 	if len(fbO.snapCalls) != 0 {
 		t.Fatalf("tie-breaker deletion must not call the backend: %v", fbO.snapCalls)
+	}
+}
+
+// Regression: a snapshot round must proceed while the tie-breaker is
+// DISCONNECTED — quorum still holds 2/3 and both data legs are healthy,
+// which is exactly the degraded mode the tie-breaker exists to survive.
+// The old aggregate-Connected gate blocked every round here.
+func TestSnapshotProceedsWithTieBreakerDown(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	// Full addresses + node ids so the diskful-connectivity check
+	// actually consults the per-peer map (address-less entries are
+	// skipped as not-yet-rendered).
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
+	})
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeOslo:    {DiskState: diskStateDiskless},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis, nodeOslo)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	// Both diskful views: data link Connected, tie-breaker link down.
+	feK := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"},
+			{"peer-node-id":2,"connection-state":"Connecting"}]}]`}
+	rK := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
+	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":0,"connection-state":"Connected"},
+			{"peer-node-id":2,"connection-state":"Connecting"}]}]`}
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
+
+	reconcileSnap(t, rK, snapSnap1)
+	feK.calledWith(t, "drbdadm suspend-io pvc-1") // barrier raised despite the down tie-breaker
+	reconcileSnap(t, rP, snapSnap1)
+	reconcileSnap(t, rK, snapSnap1)
+	reconcileSnap(t, rP, snapSnap1)
+	reconcileSnap(t, rK, snapSnap1)
+
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.ReadyToUse || got.Status.IOSuspended {
+		t.Fatalf("round must complete with the tie-breaker down: %+v", got.Status)
 	}
 }
 
@@ -423,6 +481,13 @@ func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	// Addresses + node ids: the health gate checks the links to diskful
+	// peers by node id, and skips entries the membership reconciler has
+	// not completed yet.
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
 		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
@@ -432,10 +497,10 @@ func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
-	// Primary and locally UpToDate, but the peer link is still down.
+	// Primary and locally UpToDate, but the data-peer link is still down.
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"connection-state":"Connecting"}]}]`}
+		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`}
 	fb := newFakeBackend()
 	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}

@@ -50,6 +50,7 @@ const (
 	diskStateInconsistent = "Inconsistent"
 	diskStateDiskless     = "Diskless"
 	nodeOslo              = "oslo"
+	addrOslo              = "192.168.1.43"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -324,7 +325,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"connection-state":"Connected"}]}]`}
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -421,7 +422,7 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 	}
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"connection-state":"Connected"}]}]`}
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
 
 	var applies []miroirv1alpha1.MiroirVolumeStatus
 	c := fake.NewClientBuilder().WithScheme(s).
@@ -485,7 +486,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	// sync should withhold the resize.
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"connection-state":"Connected","replication-state":"SyncSource"}]}]`}
+		"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"SyncSource"}]}]`}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -522,7 +523,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	// Resync completes: the next pass grows DRBD and publishes the size.
 	fe.statusJSON = `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"connection-state":"Connected","replication-state":"Established"}]}]`
+		"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"Established"}]}]`
 	if _, err := r.Reconcile(context.Background(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatal(err)
@@ -559,7 +560,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	fe := &fakeDRBDExec{
 		statusJSON: `[{"name":"` + volPvc1 + `",
 			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-			"connections":[{"connection-state":"Connected","replication-state":"Established"}]}]`,
+			"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"Established"}]}]`,
 		errOn: map[string]error{
 			"drbdadm resize": errors.New("exit status 10: Resize not allowed during resync."),
 		},
@@ -743,13 +744,13 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	v.Spec.Replicas[1].NodeID = 1
 	v.Spec.Replicas[1].Address = addrParis
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: nodeOslo, NodeID: 2, Address: "192.168.1.43", Diskless: true,
+		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
 	})
 	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeOslo)
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
-		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+		"connections":[{"peer-node-id":0,"connection-state":"Connected"},{"peer-node-id":1,"connection-state":"Connected"}]}]`}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -783,6 +784,58 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	}
 	if st.DevicePath == "" || st.DiskState != diskStateDiskless {
 		t.Fatalf("tie-breaker status not reported: %+v", st)
+	}
+}
+
+// Status.Connected scopes to diskful peers: a downed tie-breaker link
+// must not read as degraded replication, while a downed data leg must.
+func TestDiskfulPeersConnected(t *testing.T) {
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
+	})
+
+	tieBreakerDown := drbd.Status{PeerConnected: map[int32]bool{1: true, 2: false}}
+	if !diskfulPeersConnected(tieBreakerDown, v, nodeKharkiv) {
+		t.Fatal("a downed tie-breaker link must not count as disconnected")
+	}
+	dataLegDown := drbd.Status{PeerConnected: map[int32]bool{1: false, 2: true}}
+	if diskfulPeersConnected(dataLegDown, v, nodeKharkiv) {
+		t.Fatal("a downed data leg must count as disconnected")
+	}
+}
+
+// Removing a tie-breaker is not pinned by snapshots (it holds no backend
+// CoW state); removing a diskful replica still is. The self-reported
+// status marker decides — the entry is already gone from spec.
+func TestRemovalSnapshotGateSkipsTieBreaker(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis) // oslo already removed from spec
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, Connected: true},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate, Connected: true},
+		nodeOslo:    {DiskState: diskStateDiskless, Diskless: true},
+	}
+	snap := snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
+		Build()
+
+	rO := &VolumeReconciler{Client: c, NodeName: nodeOslo, Backend: newFakeBackend()}
+	if reason := rO.removalBlocked(context.Background(), v); reason != "" {
+		t.Fatalf("tie-breaker removal must not be pinned by snapshots: %s", reason)
+	}
+	// A removed diskful replica (no Diskless marker) stays pinned.
+	rK := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend()}
+	if reason := rK.removalBlocked(context.Background(), v); !strings.Contains(reason, "snapshot") {
+		t.Fatalf("diskful removal must stay pinned by snapshots, got %q", reason)
 	}
 }
 

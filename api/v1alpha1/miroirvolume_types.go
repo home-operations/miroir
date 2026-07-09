@@ -168,14 +168,22 @@ type ReplicaStatus struct {
 	// Inconsistent, Outdated, Diskless, …). Empty for unreplicated volumes.
 	// +optional
 	DiskState string `json:"diskState,omitempty"`
-	// Connected is true when all replication links from this node are
-	// established. Always true for unreplicated volumes.
+	// Connected is true when this node's replication links to every
+	// diskful peer are established. A diskless tie-breaker's link state
+	// is deliberately excluded: it holds no data leg, so its downtime
+	// must not read as degraded replication (it would block snapshots
+	// and replica removal). Always true for unreplicated volumes.
 	// +optional
 	Connected bool `json:"connected"`
 	// SplitBrain is true when this node's DRBD refused a reconnect after
 	// detecting divergent data — operator intervention required.
 	// +optional
 	SplitBrain bool `json:"splitBrain"`
+	// Diskless records that this node's replica is a quorum-only
+	// tie-breaker. Self-reported by the agent so removal handling still
+	// knows after the entry has left spec.replicas.
+	// +optional
+	Diskless bool `json:"diskless,omitempty"`
 	// Message carries the last reconcile error, if any.
 	Message string `json:"message,omitempty"`
 }

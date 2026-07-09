@@ -204,10 +204,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
 			"volume", vol.Name)
 	}
+	connected := diskfulPeersConnected(st, vol, r.NodeName)
 	if !localDiskless {
 		recordVolumeMetrics(vol.Name, miroirReplicaView{
 			upToDate:   st.DiskState == drbd.DiskUpToDate,
-			connected:  st.Connected,
+			connected:  connected,
 			splitBrain: st.SplitBrain,
 			suspended:  st.Suspended,
 		})
@@ -218,12 +219,33 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		DRBDMinor:     minor,
 		SizeBytes:     reportSize,
 		DiskState:     st.DiskState,
-		Connected:     st.Connected,
+		Connected:     connected,
 		SplitBrain:    st.SplitBrain,
+		Diskless:      localDiskless,
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// diskfulPeersConnected reports whether this node's replication links to
+// every diskful peer are established. A diskless tie-breaker's link is
+// excluded: it holds no data leg, so its downtime must not read as
+// degraded replication — the snapshot barrier and removal gating key on
+// this, and coupling them to the tie-breaker would block both in exactly
+// the degraded mode the tie-breaker exists to survive. Entries the
+// membership reconciler has not completed (no address) have no
+// connection yet and are skipped, matching the rendered config.
+func diskfulPeersConnected(st drbd.Status, vol *miroirv1alpha1.MiroirVolume, self string) bool {
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == self || rep.Diskless || rep.Address == "" {
+			continue
+		}
+		if !st.PeerConnected[rep.NodeID] {
+			return false
+		}
+	}
+	return true
 }
 
 // peerBackingsGrown reports whether every peer realized the desired size.
@@ -352,13 +374,21 @@ func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *miroirv1alph
 		// holding the data, so tearing down here is data loss. Unsupported.
 		return "volume has no replication layer; refusing to drop the only copy"
 	}
-	snaps := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := r.List(ctx, snaps); err != nil {
-		return "cannot list snapshots: " + err.Error()
-	}
-	for _, s := range snaps.Items {
-		if s.Spec.VolumeName == vol.Name {
-			return "snapshot " + s.Name + " exists; delete the volume's snapshots first"
+	// A diskless tie-breaker holds no backend CoW state, so snapshots do
+	// not pin it — only the remaining-replica health gate below applies
+	// (pulling the quorum vote while a data leg is down would drop the
+	// volume to 1-of-2). The self-reported status marker survives the
+	// entry's removal from spec; never key this on the kernel DiskState,
+	// which a detached diskful replica also reads.
+	if !vol.Status.PerNode[r.NodeName].Diskless {
+		snaps := &miroirv1alpha1.MiroirSnapshotList{}
+		if err := r.List(ctx, snaps); err != nil {
+			return "cannot list snapshots: " + err.Error()
+		}
+		for _, s := range snaps.Items {
+			if s.Spec.VolumeName == vol.Name {
+				return "snapshot " + s.Name + " exists; delete the volume's snapshots first"
+			}
 		}
 	}
 	for _, rep := range vol.Spec.Replicas {

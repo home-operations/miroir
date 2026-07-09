@@ -167,8 +167,10 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 	// Disconnected or resyncing legs have diverged (quorum off lets the
 	// survivor write alone) and a barrier over diverged legs cuts
 	// diverged legs. Gates raising and cutting only — a degraded volume
-	// must still resume.
-	healthy := st.Connected && st.DiskState == drbd.DiskUpToDate
+	// must still resume. Only diskful peers count: a downed tie-breaker
+	// holds no leg, and gating on its link would block every snapshot in
+	// exactly the degraded mode the tie-breaker exists to survive.
+	healthy := diskfulPeersConnected(st, vol, r.NodeName) && st.DiskState == drbd.DiskUpToDate
 
 	switch {
 	case coordinator && !snap.Status.IOSuspended && healthy:
