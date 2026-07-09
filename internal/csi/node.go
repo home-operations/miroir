@@ -106,6 +106,15 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroir
 		}
 		return "", nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
 	}
+	for _, r := range vol.Spec.Replicas {
+		if r.Node == n.NodeName {
+			if r.Diskless {
+				return "", nil, status.Errorf(codes.FailedPrecondition,
+					"node %s is a diskless tie-breaker; cannot stage volume %s", n.NodeName, volumeID)
+			}
+			break
+		}
+	}
 	if !slices.ContainsFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
 		return r.Node == n.NodeName
 	}) {

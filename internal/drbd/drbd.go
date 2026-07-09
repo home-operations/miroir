@@ -55,28 +55,33 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 		return err
 	}
 
-	// create-md + seed exactly once per backing device: the .md-created
-	// marker lands only after a fully successful seed, so a retry never
-	// adopts half-seeded metadata (which deadlocks the first handshake:
-	// both sides Inconsistent, no sync source).
-	marker := d.path(r.Name + ".md-created")
-	if _, err := os.Stat(marker); err != nil {
-		if !os.IsNotExist(err) {
+	// A diskless tie-breaker has no backing device — no metadata, no
+	// device-node, no marker. It only needs the .res rendered (writeConfig
+	// above) and drbdadm up/adjust so DRBD joins the resource for quorum.
+	if !r.LocalDiskless {
+		// create-md + seed exactly once per backing device: the .md-created
+		// marker lands only after a fully successful seed, so a retry never
+		// adopts half-seeded metadata (which deadlocks the first handshake:
+		// both sides Inconsistent, no sync source).
+		marker := d.path(r.Name + ".md-created")
+		if _, err := os.Stat(marker); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+			if err := d.ensureMetadata(ctx, r); err != nil {
+				return err
+			}
+		}
+		// A sentinel must never outlive a completed seed — left stale, it
+		// would authorize re-seeding live metadata the moment the marker is
+		// lost. Removed before the marker lands so a crash in between leaves
+		// "no markers" (re-probed, re-seeded only if virgin).
+		if err := os.Remove(d.path(r.Name + ".md-seeding")); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		if err := d.ensureMetadata(ctx, r); err != nil {
+		if err := os.WriteFile(marker, nil, 0o640); err != nil {
 			return err
 		}
-	}
-	// A sentinel must never outlive a completed seed — left stale, it
-	// would authorize re-seeding live metadata the moment the marker is
-	// lost. Removed before the marker lands so a crash in between leaves
-	// "no markers" (re-probed, re-seeded only if virgin).
-	if err := os.Remove(d.path(r.Name + ".md-seeding")); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.WriteFile(marker, nil, 0o640); err != nil {
-		return err
 	}
 
 	// adjust is idempotent: up when down, reconfigure on change, no-op
@@ -496,6 +501,9 @@ func Day0GI(name string) string {
 // Bitmap base stays 0 ("no out-of-sync bits") — a non-zero base reads as
 // a live resync anchor and triggers a full SyncTarget.
 func (d *Driver) seedGI(ctx context.Context, r Resource) error {
+	if r.LocalDiskless {
+		return nil
+	}
 	gi := Day0GI(r.Name) + ":0:0:0"
 	if isWinner(r) {
 		// The winner is UpToDate from metadata alone; everyone else
@@ -560,6 +568,9 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 
 // DiskUpToDate is the disk state of a replica holding current data.
 const DiskUpToDate = "UpToDate"
+
+// DiskStateDiskless is the disk state of a diskless tie-breaker peer.
+const DiskStateDiskless = "Diskless"
 
 // rolePrimary is the DRBD role of a node that holds the device open.
 const rolePrimary = "Primary"

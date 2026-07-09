@@ -41,7 +41,9 @@ type Replica struct {
 	// Node is the Kubernetes node name hosting this replica.
 	Node string `json:"node"`
 	// Backend selects how the backing device is provisioned on this node.
-	Backend BackendType `json:"backend"`
+	// Unused for diskless tie-breaker replicas (they have no backing device).
+	// +optional
+	Backend BackendType `json:"backend,omitempty"`
 	// NodeID is the DRBD node id, assigned by the controller at creation
 	// and stable for the volume's lifetime. Only set on replicated volumes.
 	// +optional
@@ -56,6 +58,12 @@ type Replica struct {
 	// membership reconciler when it completes the entry.
 	// +optional
 	FullSync bool `json:"fullSync,omitempty"`
+	// Diskless makes this a quorum-only tie-breaker: DRBD joins for
+	// voting but stores no data. No backend device, never a mount
+	// target. The agent skips backend create/resize/delete and DRBD
+	// create-md; the resource renders "disk none" for this peer.
+	// +optional
+	Diskless bool `json:"diskless,omitempty"`
 }
 
 // DRBDSpec carries the cluster-unique DRBD identifiers allocated by the
@@ -82,6 +90,31 @@ type VolumeSource struct {
 	SnapshotName string `json:"snapshotName"`
 }
 
+// DiskfulReplicas returns the non-diskless replicas — those that hold
+// actual data. Use this instead of the raw slice where diskless
+// tie-breakers must be excluded (capacity, phase, snapshot barrier).
+func (s MiroirVolumeSpec) DiskfulReplicas() []Replica {
+	out := make([]Replica, 0, len(s.Replicas))
+	for _, r := range s.Replicas {
+		if !r.Diskless {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// FirstDiskfulReplica returns the first non-diskless replica, or nil if
+// there are none. Use where Replicas[0] was previously assumed diskful
+// (resize coordinator, snapshot coordinator fallback).
+func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
+	for i := range s.Replicas {
+		if !s.Replicas[i].Diskless {
+			return &s.Replicas[i]
+		}
+	}
+	return nil
+}
+
 // MiroirVolumeSpec is the desired state, written by the controller at
 // CreateVolume time and reconciled by node agents. Replicas may be edited
 // on a live replicated volume — add an entry (node + backend; the
@@ -90,6 +123,9 @@ type VolumeSource struct {
 // replication layer in place (internal DRBD metadata cannot be added
 // under a live filesystem), and a replicated one keeps 2–3 replicas.
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) ? (size(self.replicas) >= 2 && size(self.replicas) <= 3) : size(self.replicas) == 1",message="replicated volumes (spec.drbd set) need 2-3 replicas; unreplicated exactly 1"
+// +kubebuilder:validation:XValidation:rule="has(self.drbd) ? size(self.replicas.filter(r, !r.diskless)) >= 2 : true",message="replicated volumes need at least 2 diskful (non-diskless) replicas"
+// +kubebuilder:validation:XValidation:rule="!has(self.drbd) ? !self.replicas.exists(r, r.diskless) : true",message="diskless replicas are only valid on replicated volumes"
+// +kubebuilder:validation:XValidation:rule="size(self.replicas) > 0 ? !self.replicas[0].diskless : true",message="the first replica must be diskful (not a diskless tie-breaker)"
 type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
 	// +kubebuilder:validation:Minimum=1

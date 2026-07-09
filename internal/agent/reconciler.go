@@ -75,6 +75,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return rep.Node == r.NodeName
 	})
 	mine := idx >= 0
+	localDiskless := mine && vol.Spec.Replicas[idx].Diskless
 
 	if !vol.DeletionTimestamp.IsZero() {
 		// Only the agent owning a replica may release the finalizer, and
@@ -111,39 +112,46 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
-	// Realize: create (or grow) the backing device — a CoW clone when the
-	// volume restores from a snapshot.
-	dev, err := r.realizeBacking(ctx, vol)
-	if err != nil {
-		return ctrl.Result{}, r.reportError(ctx, vol, err)
-	}
-	// Record the device before growing it: computePhase treats errors
-	// with DeviceCreated=false as hard provisioning failures, and a
-	// transient resize error must not be one.
-	if !vol.Status.PerNode[r.NodeName].DeviceCreated {
-		if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
-			DeviceCreated: true,
-			DevicePath:    dev,
-		}); err != nil {
-			return ctrl.Result{}, err
+	var dev string
+	var err error
+	if !localDiskless {
+		// Realize: create (or grow) the backing device — a CoW clone when the
+		// volume restores from a snapshot.
+		dev, err = r.realizeBacking(ctx, vol)
+		if err != nil {
+			return ctrl.Result{}, r.reportError(ctx, vol, err)
 		}
-		vol.Status.PerNode[r.NodeName] = miroirv1alpha1.ReplicaStatus{
-			DeviceCreated: true, DevicePath: dev,
+		// Record the device before growing it: computePhase treats errors
+		// with DeviceCreated=false as hard provisioning failures, and a
+		// transient resize error must not be one.
+		if !vol.Status.PerNode[r.NodeName].DeviceCreated {
+			if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
+				DeviceCreated: true,
+				DevicePath:    dev,
+			}); err != nil {
+				return ctrl.Result{}, err
+			}
+			vol.Status.PerNode[r.NodeName] = miroirv1alpha1.ReplicaStatus{
+				DeviceCreated: true, DevicePath: dev,
+			}
 		}
-	}
-	if err := r.Backend.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
-		return ctrl.Result{}, r.reportError(ctx, vol, err)
-	}
-
-	if vol.Spec.DRBD == nil {
-		log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
-		recordVolumeMetrics(vol.Name, miroirReplicaView{upToDate: true, connected: true})
-		return ctrl.Result{}, r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
-			DeviceCreated: true,
-			DevicePath:    dev,
-			SizeBytes:     vol.Spec.SizeBytes,
-			Connected:     true,
-		})
+		if err := r.Backend.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
+			return ctrl.Result{}, r.reportError(ctx, vol, err)
+		}
+		if vol.Spec.DRBD == nil {
+			log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
+			recordVolumeMetrics(vol.Name, miroirReplicaView{upToDate: true, connected: true})
+			return ctrl.Result{}, r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
+				DeviceCreated: true,
+				DevicePath:    dev,
+				SizeBytes:     vol.Spec.SizeBytes,
+				Connected:     true,
+			})
+		}
+	} else {
+		// Diskless tie-breaker: join DRBD for quorum only, no backing.
+		log.V(1).Info("diskless tie-breaker realized", "volume", vol.Name)
+		recordVolumeMetrics(vol.Name, miroirReplicaView{connected: true})
 	}
 
 	// Replicated: layer DRBD on the backing device. Pods attach the DRBD
@@ -152,21 +160,22 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor)); err != nil {
+	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor, localDiskless)); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	// Online growth: once every peer's backing device is at the new size
-	// (the local leg was just resized above), replicas[0] grows the DRBD
-	// device over them. It withholds the new size from its status until
-	// then — the CSI expansion wait keys on status, and the filesystem
-	// must not grow against a still-small DRBD device.
+	// (the local leg was just resized above), the first diskful replica
+	// grows the DRBD device over them. It withholds the new size from its
+	// status until then — the CSI expansion wait keys on status, and the
+	// filesystem must not grow against a still-small DRBD device. A
+	// diskless tie-breaker must never be the resize coordinator.
 	st, err := r.DRBD.Status(ctx, vol.Name)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	reportSize := vol.Spec.SizeBytes
 	requeue := drbdPollInterval
-	if vol.Spec.Replicas[0].Node == r.NodeName {
+	if coord := vol.Spec.FirstDiskfulReplica(); coord != nil && coord.Node == r.NodeName {
 		// drbdadm resize is refused mid-resync, so withhold the size and
 		// retry on the next poll instead of failing the reconcile.
 		switch {
@@ -200,7 +209,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		suspended:  st.Suspended,
 	})
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
-		DeviceCreated: true,
+		DeviceCreated: !localDiskless,
 		DevicePath:    drbd.DevicePath(minor),
 		DRBDMinor:     minor,
 		SizeBytes:     reportSize,
@@ -218,6 +227,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == self {
+			continue
+		}
+		if rep.Diskless {
 			continue
 		}
 		if vol.Status.PerNode[rep.Node].SizeBytes < vol.Spec.SizeBytes {
@@ -252,7 +264,7 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alph
 // membership reconciler has not completed yet (no address) are left out:
 // rendering them would produce a config DRBD cannot parse, and the peer
 // cannot connect before completion anyway.
-func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32) drbd.Resource {
+func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless bool) drbd.Resource {
 	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
 	skipSeed := false
 	for _, rep := range vol.Spec.Replicas {
@@ -263,21 +275,23 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 			skipSeed = rep.FullSync
 		}
 		peers = append(peers, drbd.Peer{
-			Node:    rep.Node,
-			NodeID:  rep.NodeID,
-			Address: rep.Address,
+			Node:     rep.Node,
+			NodeID:   rep.NodeID,
+			Address:  rep.Address,
+			Diskless: rep.Diskless,
 		})
 	}
 	return drbd.Resource{
-		Name:      vol.Name,
-		Minor:     minor,
-		Port:      vol.Spec.DRBD.Port,
-		Quorum:    vol.Spec.QuorumPolicy,
-		LocalNode: localNode,
-		LocalDisk: localDisk,
-		Secret:    vol.Spec.DRBD.SharedSecret,
-		SkipSeed:  skipSeed,
-		Peers:     peers,
+		Name:          vol.Name,
+		Minor:         minor,
+		Port:          vol.Spec.DRBD.Port,
+		Quorum:        vol.Spec.QuorumPolicy,
+		LocalNode:     localNode,
+		LocalDisk:     localDisk,
+		LocalDiskless: localDiskless,
+		Secret:        vol.Spec.DRBD.SharedSecret,
+		SkipSeed:      skipSeed,
+		Peers:         peers,
 	}
 }
 
@@ -344,6 +358,9 @@ func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *miroirv1alph
 		}
 	}
 	for _, rep := range vol.Spec.Replicas {
+		if rep.Diskless {
+			continue
+		}
 		st, ok := vol.Status.PerNode[rep.Node]
 		if !ok || st.DiskState != drbd.DiskUpToDate || !st.Connected {
 			return "replica on " + rep.Node + " is not UpToDate and connected"
@@ -357,6 +374,16 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 		if err := r.DRBD.Down(ctx, vol.Name); err != nil {
 			return err
 		}
+	}
+	// Diskless replicas have no backing device to delete. During removal
+	// the replica may already be gone from spec, so also check the last-
+	// known DiskState in status — a Diskless node never created a backend.
+	if myIdx := slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == r.NodeName
+	}); myIdx >= 0 && vol.Spec.Replicas[myIdx].Diskless {
+		return nil
+	} else if st, ok := vol.Status.PerNode[r.NodeName]; ok && st.DiskState == drbd.DiskStateDiskless {
+		return nil
 	}
 	return r.Backend.Delete(ctx, vol.Name)
 }
@@ -421,8 +448,9 @@ func (r *VolumeReconciler) assignMinor(_ context.Context, vol *miroirv1alpha1.Mi
 // computePhase aggregates per-node states into the volume phase the CSI
 // controller waits on (notes/DESIGN.md §4.5.1).
 func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
+	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
-	for _, rep := range vol.Spec.Replicas {
+	for _, rep := range diskfulReplicas {
 		st, ok := vol.Status.PerNode[rep.Node]
 		replicated := vol.Spec.DRBD != nil
 		switch {
@@ -437,7 +465,7 @@ func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
 		}
 	}
 	switch {
-	case ready == len(vol.Spec.Replicas):
+	case ready == len(diskfulReplicas):
 		return miroirv1alpha1.VolumeReady
 	case ready > 0:
 		return miroirv1alpha1.VolumeDegraded

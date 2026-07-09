@@ -97,6 +97,10 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, err
 			}
 		}
+		// A diskless replica has no backend snapshot to delete.
+		if r.disklessOn(vol) {
+			return ctrl.Result{}, r.removeFinalizer(ctx, snap)
+		}
 		if err := r.Backend.DeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
 			if errors.Is(err, backend.ErrBusy) {
 				// The snapshot device is still open (e.g. a restore in
@@ -250,6 +254,11 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 // keep cutting, so dropping it would let writes into some legs and not
 // others. The deadline bounds the freeze instead.
 func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
+	// A diskless replica has no backend: skip the backend sync/snapshot
+	// cycle; it only needs to report Done so the coordinator can collect.
+	if r.disklessOn(vol) {
+		return ctrl.Result{}, r.patchOwnState(ctx, snap, miroirv1alpha1.SnapshotDone)
+	}
 	// Re-assert the local barrier first (idempotent) — a crash or manual
 	// resume-io between phases must not let a leg be cut unprotected.
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
@@ -274,13 +283,14 @@ func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.Mi
 // collectLegs is the coordinator's last phase: all legs Done → resume and
 // publish; deadline passed → resume and void the round.
 func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, expired bool) (ctrl.Result, error) {
+	diskful := vol.Spec.DiskfulReplicas()
 	done := 0
-	for _, rep := range vol.Spec.Replicas {
+	for _, rep := range diskful {
 		if snap.Status.PerNode[rep.Node] == miroirv1alpha1.SnapshotDone {
 			done++
 		}
 	}
-	if done < len(vol.Spec.Replicas) && !expired {
+	if done < len(diskful) && !expired {
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	// Resume before reporting anything else: a frozen volume is an
@@ -290,7 +300,7 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *miroirv1alph
 	}
 	return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
 		s.Status.IOSuspended = false
-		if done == len(vol.Spec.Replicas) {
+		if done == len(diskful) {
 			s.Status.SizeBytes = vol.Spec.SizeBytes
 			s.Status.SourceFormatted = vol.Status.Formatted
 			s.Status.ReadyToUse = true
@@ -309,10 +319,10 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *miroirv1alph
 	})
 }
 
-// allSuspended reports whether every replica has raised its write
-// barrier (Done implies it did).
+// allSuspended reports whether the diskful replicas have raised their
+// write barrier (Done implies it did); diskless members vote only quorum.
 func allSuspended(vol *miroirv1alpha1.MiroirVolume, snap *miroirv1alpha1.MiroirSnapshot) bool {
-	for _, rep := range vol.Spec.Replicas {
+	for _, rep := range vol.Spec.DiskfulReplicas() {
 		st := snap.Status.PerNode[rep.Node]
 		if st != miroirv1alpha1.SnapshotSuspended && st != miroirv1alpha1.SnapshotDone {
 			return false
@@ -337,12 +347,24 @@ func (r *SnapshotReconciler) isCoordinator(vol *miroirv1alpha1.MiroirVolume, st 
 	if st.PeerPrimary {
 		return false
 	}
-	return len(vol.Spec.Replicas) > 0 && vol.Spec.Replicas[0].Node == r.NodeName
+	rep := vol.Spec.FirstDiskfulReplica()
+	return rep != nil && rep.Node == r.NodeName
 }
 
 func replicaOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == node {
+			return true
+		}
+	}
+	return false
+}
+
+// disklessOn checks whether the local replica (if any) is diskless — a
+// quorum-only tie-breaker that holds no backend data.
+func (r *SnapshotReconciler) disklessOn(vol *miroirv1alpha1.MiroirVolume) bool {
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == r.NodeName && rep.Diskless {
 			return true
 		}
 	}
