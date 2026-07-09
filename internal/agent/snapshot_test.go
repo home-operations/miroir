@@ -18,11 +18,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -513,7 +515,9 @@ func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 }
 
 // Regression: a snapshot deleted while its barrier is up must resume IO
-// on the way out — nothing else ever would.
+// on the way out — nothing else ever would. The lift keys on the kernel
+// suspend flag, so it fires even when status.ioSuspended is already false
+// (a peer's barrier outliving the coordinator's void).
 func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
@@ -521,19 +525,173 @@ func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 	snap := snapObj("snap-del", volPvc1, nodeKharkiv)
 	now := metav1.NewTime(time.Now())
 	snap.DeletionTimestamp = &now
-	snap.Status.IOSuspended = true
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snap).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
-	fe := &fakeDRBDExec{}
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}]}]`}
 	fb := newFakeBackend()
 	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
 	fe.calledWith(t, "drbdadm resume-io pvc-1")
+}
+
+// assertFinalizerReleased passes when the node's finalizer is gone —
+// including when releasing the last finalizer let the fake client delete
+// the object outright.
+func assertFinalizerReleased(t *testing.T, c client.Client, name, node string) {
+	t.Helper()
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	err := c.Get(context.Background(), types.NamespacedName{Name: name}, got)
+	if apierrors.IsNotFound(err) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+node) {
+		t.Fatalf("finalizer must be released: %v", got.Finalizers)
+	}
+}
+
+// A snapshot deleted after this node's volume teardown already ran Down
+// must not wedge on the barrier lift: Status fails on the torn-down
+// resource, so nothing is suspended and deletion proceeds — the volume
+// teardown's ErrBusy retry then completes. (Deadlock regression.)
+func TestSnapshotDeleteToleratesDownedResource(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	snap := snapObj("snap-del", volPvc1, nodeKharkiv)
+	now := metav1.NewTime(time.Now())
+	snap.DeletionTimestamp = &now
+	snap.Status.IOSuspended = true // stranded by the dead round
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{errOn: map[string]error{"status": errors.New("no such resource")}}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, "snap-del")
+
+	fe.notCalledWith(t, "resume-io")
+	assertFinalizerReleased(t, c, "snap-del", nodeKharkiv)
+}
+
+// A node that left spec.replicas after the snapshot was cut still holds
+// its finalizer; deletion must release it or the snapshot wedges in
+// Terminating and blocks every later replica removal on the volume.
+func TestSnapshotDeleteReleasesDepartedNode(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis) // oslo already removed
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	snap := snapObj("snap-del", volPvc1, nodeKharkiv, nodeParis, nodeOslo)
+	now := metav1.NewTime(time.Now())
+	snap.DeletionTimestamp = &now
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{errOn: map[string]error{"status": errors.New("no such resource")}}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeOslo, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, "snap-del")
+
+	assertFinalizerReleased(t, c, "snap-del", nodeOslo)
+}
+
+// The kernel suspend flag is shared per resource: while a sibling
+// snapshot's round is live, a deleting snapshot must not lift the
+// barrier out from under it — but it still deletes its leg and departs.
+func TestSnapshotDeleteSkipsSiblingRoundBarrier(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	snap := snapObj("snap-del", volPvc1, nodeKharkiv)
+	now := metav1.NewTime(time.Now())
+	snap.DeletionTimestamp = &now
+	sibling := snapObj("snap-live", volPvc1, nodeKharkiv, nodeParis)
+	sibling.Status.IOSuspended = true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap, sibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}]}]`}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, "snap-del")
+
+	fe.notCalledWith(t, "resume-io")
+	assertFinalizerReleased(t, c, "snap-del", nodeKharkiv)
+}
+
+// One round per volume: a coordinator must not open a round while a
+// sibling snapshot of the same volume is mid-round.
+func TestSnapshotRoundWaitsForSibling(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	fresh := snapObj("snap-b", volPvc1, nodeKharkiv, nodeParis)
+	sibling := snapObj("snap-a", volPvc1, nodeKharkiv, nodeParis)
+	sibling.Status.IOSuspended = true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, fresh, sibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	res := reconcileSnap(t, r, "snap-b")
+
+	fe.notCalledWith(t, "suspend-io")
+	if res.RequeueAfter == 0 {
+		t.Fatal("must requeue to wait for the sibling round to close")
+	}
+}
+
+// A voided round's leftover barrier must stay up while a sibling round
+// owns it — the sibling's own protocol lifts it.
+func TestSnapshotVoidedResumeDefersToSiblingRound(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	voided := snapObj("snap-a", volPvc1, nodeKharkiv, nodeParis) // round voided
+	sibling := snapObj("snap-b", volPvc1, nodeKharkiv, nodeParis)
+	sibling.Status.IOSuspended = true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, voided, sibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	// paris: Secondary, not replicas[0] → not coordinator; barrier up.
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeParis, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, "snap-a")
+
+	fe.notCalledWith(t, "resume-io")
 }
 
 func TestSnapshotPeerWaitsForBarrier(t *testing.T) {

@@ -83,21 +83,29 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	mine := replicaOn(vol, r.NodeName)
-	if !mine {
-		return ctrl.Result{}, nil
-	}
-
 	if !snap.DeletionTimestamp.IsZero() {
-		// A snapshot deleted mid-round must not strand its barrier:
-		// resume before anything that can fail or requeue. Every replica
-		// passes here and resume-io is a no-op when not suspended.
-		if snap.Status.IOSuspended && vol.Spec.DRBD != nil {
-			if err := r.DRBD.ResumeIO(ctx, vol.Name); err != nil {
-				return ctrl.Result{}, err
+		// Deletion runs before the membership gate: a node that left
+		// spec.replicas after the snapshot was cut still holds its
+		// finalizer, and skipping it would wedge the snapshot in
+		// Terminating forever (which also blocks every later replica
+		// removal on the volume).
+		//
+		// A snapshot deleted mid-round must not strand its barrier. The
+		// lift keys on kernel state, not status.ioSuspended: a peer's
+		// barrier can outlive the coordinator's void (status already
+		// false), and a torn-down resource must not error the path
+		// (Status fails → nothing is suspended). Never lift a barrier a
+		// sibling snapshot's live round now owns.
+		if vol.Spec.DRBD != nil {
+			if st, err := r.DRBD.Status(ctx, vol.Name); err == nil && st.Suspended {
+				if err := r.resumeUnlessSiblingRound(ctx, snap, vol); err != nil {
+					return ctrl.Result{}, err
+				}
 			}
 		}
-		// A diskless replica has no backend snapshot to delete.
+		// A diskless replica has no backend snapshot to delete; a
+		// departed node deletes whatever leg it still holds (the
+		// backends succeed when it is already absent).
 		if r.disklessOn(vol) {
 			return ctrl.Result{}, r.removeFinalizer(ctx, snap)
 		}
@@ -112,12 +120,17 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, r.removeFinalizer(ctx, snap)
 	}
 
+	if !replicaOn(vol, r.NodeName) {
+		return ctrl.Result{}, nil
+	}
+
 	if snap.Status.ReadyToUse {
-		// A peer's barrier can outlive the round by a moment; lift it.
+		// A peer's barrier can outlive the round by a moment; lift it —
+		// unless a sibling snapshot's round owns the kernel barrier now.
 		// Best-effort: if DRBD cannot report, nothing holds a barrier.
 		if vol.Spec.DRBD != nil {
 			if st, err := r.DRBD.Status(ctx, vol.Name); err == nil && st.Suspended {
-				return ctrl.Result{}, r.DRBD.ResumeIO(ctx, vol.Name)
+				return ctrl.Result{}, r.resumeUnlessSiblingRound(ctx, snap, vol)
 			}
 		}
 		return ctrl.Result{}, nil
@@ -181,6 +194,12 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 			time.Since(snap.Status.SuspendedAt.Time) < suspendRetryBackoff {
 			return ctrl.Result{RequeueAfter: suspendRetryBackoff}, nil
 		}
+		// One round per volume: the kernel suspend flag is shared, so a
+		// second snapshot's round would tear the first's barrier down
+		// mid-cut. Wait for the sibling round to close.
+		if active, err := r.otherRoundActive(ctx, snap); err != nil || active {
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+		}
 		return r.raiseBarrier(ctx, snap, vol, true)
 
 	case !coordinator && snap.Status.IOSuspended && !expired && healthy &&
@@ -200,8 +219,9 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.DRBD.ResumeIO(ctx, vol.Name)
 
 	case !snap.Status.IOSuspended && st.Suspended:
-		// The round ended (voided) while the local barrier was still up.
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.DRBD.ResumeIO(ctx, vol.Name)
+		// The round ended (voided) while the local barrier was still up —
+		// unless a sibling snapshot's round owns the barrier by now.
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeUnlessSiblingRound(ctx, snap, vol)
 	}
 	return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 }
@@ -331,6 +351,35 @@ func allSuspended(vol *miroirv1alpha1.MiroirVolume, snap *miroirv1alpha1.MiroirS
 		}
 	}
 	return true
+}
+
+// otherRoundActive reports whether a different MiroirSnapshot of the same
+// volume is mid-round (its coordinator holds status.ioSuspended). The
+// kernel suspend-io flag is per-resource, not per-snapshot: concurrent
+// rounds would lift each other's barrier and cut non-identical legs, so
+// every barrier touch outside a round defers to a live sibling.
+func (r *SnapshotReconciler) otherRoundActive(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) (bool, error) {
+	list := &miroirv1alpha1.MiroirSnapshotList{}
+	if err := r.List(ctx, list); err != nil {
+		return false, err
+	}
+	for i := range list.Items {
+		s := &list.Items[i]
+		if s.Name != snap.Name && s.Spec.VolumeName == snap.Spec.VolumeName && s.Status.IOSuspended {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// resumeUnlessSiblingRound lifts the local barrier unless a sibling
+// snapshot's live round owns it (that round's protocol lifts it).
+func (r *SnapshotReconciler) resumeUnlessSiblingRound(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) error {
+	active, err := r.otherRoundActive(ctx, snap)
+	if err != nil || active {
+		return err
+	}
+	return r.DRBD.ResumeIO(ctx, vol.Name)
 }
 
 // isCoordinator: the Primary owns the barrier (suspend-io only blocks
