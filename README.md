@@ -2,7 +2,7 @@
 
 Replicated block storage for small Kubernetes clusters. CSI driver
 on top of LVM thin, ZFS, or loopfile backends, with optional
-synchronous 2-node replication via DRBD9.
+synchronous replication (2–3 replicas) via DRBD9.
 
 ## When to use it
 
@@ -60,10 +60,16 @@ nodes:
     kharkiv:
         backend: lvmthin
         device: /dev/disk/by-partlabel/r-miroir
+        zone: rack-a # optional failure domain
     paris:
         backend: zfs
         zfsDataset: data-pool/miroir
+        zone: rack-b
 ```
+
+`zone` is optional: when set, replicas — and the quorum tie-breaker —
+prefer distinct zones (rack, room, AZ). Nodes without a zone are
+unconstrained.
 
 | Backend    | You provide                            | Notes                                  |
 | ---------- | -------------------------------------- | -------------------------------------- |
@@ -79,10 +85,12 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
 ```
 
 The chart deploys a single `miroir-controller` Deployment, a
-`miroir-agent` DaemonSet on every storage node, and two
-StorageClasses: `miroir-local` (1 replica) and `miroir-replicated`
-(2 replicas, DRBD9). Each agent bootstraps its pool on first start;
-existing pools are reused.
+`miroir-agent` DaemonSet on every schedulable node (pods can mount
+miroir volumes from any node; only nodes in the `nodes` map hold
+storage), and two StorageClasses: `miroir-local` (1 replica) and
+`miroir-replicated` (2 replicas, DRBD9). Per-node setup jobs
+provision each pool on install and upgrade, and the agent re-runs
+the same idempotent setup at startup; existing pools are reused.
 
 ### 3. Claim a volume
 
@@ -261,7 +269,7 @@ after it.
 
 - **Agent pod `CrashLoopBackOff` on lvmthin**: partition or disk
   missing, or `dm_thin_pool` not loaded. Check
-  `kubectl logs -n miroir-system -l app=miroir-agent` and
+  `kubectl logs -n miroir-system -l app.kubernetes.io/component=agent` and
   `lsmod | grep dm_thin` on the node.
 - **Agent pod `CrashLoopBackOff` on loopfile**: `baseDir` isn't
   reflink-capable. The agent refuses to start so the failure shows
@@ -278,11 +286,13 @@ after it.
 helm uninstall miroir -n miroir-system
 ```
 
-A pre-delete job tears down DRBD resources on each node before the
-chart releases the CRDs. If a tear-down fails (a node is down), the
-job blocks until you clean up manually — see `kubectl logs -n
-miroir-system -l app.kubernetes.io/job-name=miroir-uninstall` for
-the exact `drbdsetup` / `lvremove` / `zfs destroy` calls needed.
+A pre-delete job deletes every MiroirVolume and MiroirSnapshot and
+waits while each node's agent tears down its DRBD resources and
+backing devices through the finalizers. If a teardown cannot finish
+(a node is down), the job blocks: `kubectl get miroirvolumes` shows
+what is stuck, and the agent log on the affected node
+(`kubectl logs -n miroir-system -l app.kubernetes.io/component=agent`)
+shows the failing call to clean up manually.
 
 ## Roadmap
 
@@ -290,8 +300,10 @@ the exact `drbdsetup` / `lvremove` / `zfs destroy` calls needed.
 
 - [x] Capacity-aware placement
 - [ ] CSI `CSIStorageCapacity` reporting per pool
-- [ ] Per-volume Prometheus metrics (IOPS, latency, DRBD resync
-      progress, split-brain alert)
+- [x] Per-volume DRBD state metrics (`miroir_volume_up_to_date` /
+      `connected` / `split_brain` / `suspended`; opt-in
+      ServiceMonitor via `monitoring.serviceMonitor.enabled`)
+- [ ] Per-volume performance metrics (IOPS, latency, resync progress)
 
 **Natural extensions**
 
