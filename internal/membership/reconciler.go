@@ -148,7 +148,11 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 		id++
 	}
 
-	if !rep.Diskless {
+	if rep.Diskless {
+		// Quorum-only entry: a backend is meaningless, and the node map
+		// (not the operator's edit) decides backends — clear any typo.
+		rep.Backend = ""
+	} else {
 		rep.Backend = entry.Backend
 		rep.FullSync = true
 	}

@@ -43,14 +43,14 @@ func testResource(local string) Resource {
 		LocalNode: local,
 		LocalDisk: "/dev/vg-miroir/pvc-1",
 		Peers: []Peer{
-			{Node: "kharkiv", NodeID: 0, Address: "192.168.1.41"},
-			{Node: "paris", NodeID: 1, Address: "192.168.1.42"},
+			{Node: nodeKharkiv, NodeID: 0, Address: "192.168.1.41"},
+			{Node: nodeParis, NodeID: 1, Address: "192.168.1.42"},
 		},
 	}
 }
 
 func TestRenderDeterministicAndLocalDisk(t *testing.T) {
-	r := testResource("kharkiv")
+	r := testResource(nodeKharkiv)
 	a, b := Render(r), Render(r)
 	if a != b {
 		t.Fatal("render is not deterministic")
@@ -70,7 +70,7 @@ func TestRenderDeterministicAndLocalDisk(t *testing.T) {
 }
 
 func TestRenderSharedSecret(t *testing.T) {
-	r := testResource("kharkiv")
+	r := testResource(nodeKharkiv)
 	if out := Render(r); strings.Contains(out, "shared-secret") {
 		t.Fatalf("no auth must render for secretless volumes (pre-secret CRs):\n%s", out)
 	}
@@ -102,7 +102,7 @@ func TestParseEvent2(t *testing.T) {
 }
 
 func TestRenderFreezeQuorum(t *testing.T) {
-	r := testResource("kharkiv")
+	r := testResource(nodeKharkiv)
 	r.Quorum = miroirv1alpha1.QuorumFreeze
 	out := Render(r)
 	if !strings.Contains(out, "quorum majority;") || !strings.Contains(out, "on-no-quorum io-error;") {
@@ -111,7 +111,7 @@ func TestRenderFreezeQuorum(t *testing.T) {
 }
 
 func TestRenderNoAutoSplitBrainResolution(t *testing.T) {
-	out := Render(testResource("kharkiv"))
+	out := Render(testResource(nodeKharkiv))
 	for _, directive := range []string{
 		"after-sb-0pri disconnect;",
 		"after-sb-1pri disconnect;",
@@ -194,7 +194,7 @@ func (f *fakeExec) notCalledWith(t *testing.T, substr string) {
 func TestApplyFreshResource(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource("kharkiv") // node-id 0 → winner
+	r := testResource(nodeKharkiv) // node-id 0 → winner
 
 	if err := d.Apply(context.Background(), r); err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func TestApplyFreshResource(t *testing.T) {
 func TestApplyNonWinnerSeedsWasUpToDate(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource("paris") // node-id 1 → not winner
+	r := testResource(nodeParis) // node-id 1 → not winner
 
 	if err := d.Apply(context.Background(), r); err != nil {
 		t.Fatal(err)
@@ -242,7 +242,7 @@ func TestApplyNonWinnerSeedsWasUpToDate(t *testing.T) {
 func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource("kharkiv")
+	r := testResource(nodeKharkiv)
 	r.SkipSeed = true // late joiner: must full-sync, not pose as a day0 twin
 
 	if err := d.Apply(context.Background(), r); err != nil {
@@ -259,7 +259,7 @@ func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
 func TestApplyIdempotent(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource("kharkiv")
+	r := testResource(nodeKharkiv)
 
 	if err := d.Apply(context.Background(), r); err != nil {
 		t.Fatal(err)
@@ -283,7 +283,7 @@ func TestApplyReseedsAfterMidSeedCrash(t *testing.T) {
 		"set-gi --node-id 1": errors.New("exit status 20: Unexpected output from drbdsetup"),
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource("paris")
+	r := testResource(nodeParis)
 
 	if err := d.Apply(context.Background(), r); err == nil {
 		t.Fatal("expected mid-seed failure")
@@ -332,7 +332,7 @@ func TestApplyAdoptsAttachedDevice(t *testing.T) {
 		}},
 	} {
 		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-		if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+		if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		fe.notCalledWith(t, "create-md")
@@ -359,7 +359,7 @@ func TestApplyAppliesALOnUncleanClone(t *testing.T) {
 	}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm apply-al pvc-1/0")
@@ -379,7 +379,7 @@ func TestApplySurfacesNonDRBDBusyDevice(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource("kharkiv")); err == nil {
+	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err == nil {
 		t.Fatal("busy backing device must surface as an error")
 	}
 	fe.notCalledWith(t, "create-md")
@@ -400,7 +400,7 @@ func TestApplyFastPathCleansStaleSentinel(t *testing.T) {
 		}
 	}
 
-	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "set-gi")
@@ -417,7 +417,7 @@ func TestApplyAdoptsLiveMetadataWithoutMarkers(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "create-md")
@@ -436,7 +436,7 @@ func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource("kharkiv")); err != nil {
+	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "set-gi --node-id 1")
@@ -467,7 +467,7 @@ func TestVirginMetadata(t *testing.T) {
 func TestDownRemovesState(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource("kharkiv")
+	r := testResource(nodeKharkiv)
 
 	if err := d.Apply(context.Background(), r); err != nil {
 		t.Fatal(err)

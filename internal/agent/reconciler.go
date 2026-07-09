@@ -150,8 +150,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	} else {
 		// Diskless tie-breaker: join DRBD for quorum only, no backing.
+		// No replica metrics either — the up-to-date/connected series
+		// describe data legs, and a tie-breaker is never UpToDate, so a
+		// series here would permanently trip up_to_date==0 alerts.
 		log.V(1).Info("diskless tie-breaker realized", "volume", vol.Name)
-		recordVolumeMetrics(vol.Name, miroirReplicaView{connected: true})
 	}
 
 	// Replicated: layer DRBD on the backing device. Pods attach the DRBD
@@ -202,12 +204,14 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
 			"volume", vol.Name)
 	}
-	recordVolumeMetrics(vol.Name, miroirReplicaView{
-		upToDate:   st.DiskState == drbd.DiskUpToDate,
-		connected:  st.Connected,
-		splitBrain: st.SplitBrain,
-		suspended:  st.Suspended,
-	})
+	if !localDiskless {
+		recordVolumeMetrics(vol.Name, miroirReplicaView{
+			upToDate:   st.DiskState == drbd.DiskUpToDate,
+			connected:  st.Connected,
+			splitBrain: st.SplitBrain,
+			suspended:  st.Suspended,
+		})
+	}
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: !localDiskless,
 		DevicePath:    drbd.DevicePath(minor),
@@ -375,16 +379,11 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			return err
 		}
 	}
-	// Diskless replicas have no backing device to delete. During removal
-	// the replica may already be gone from spec, so also check the last-
-	// known DiskState in status — a Diskless node never created a backend.
-	if myIdx := slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
-		return rep.Node == r.NodeName
-	}); myIdx >= 0 && vol.Spec.Replicas[myIdx].Diskless {
-		return nil
-	} else if st, ok := vol.Status.PerNode[r.NodeName]; ok && st.DiskState == drbd.DiskStateDiskless {
-		return nil
-	}
+	// Backend.Delete succeeds when the device is already absent, so a
+	// diskless tie-breaker (which never created one) needs no special
+	// case. Never key this on the kernel DiskState: a diskful replica
+	// reads "Diskless" after an I/O-error detach, and skipping its
+	// delete would leak the backing device.
 	return r.Backend.Delete(ctx, vol.Name)
 }
 

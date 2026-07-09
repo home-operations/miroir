@@ -93,7 +93,10 @@ spec:
               replicas:
                 description: |-
                   Replicas lists the placement of the volume: one entry for local
-                  volumes, two or more for DRBD-replicated ones.
+                  volumes, two or more for DRBD-replicated ones. MaxItems matches the
+                  CEL size rule and bounds the apiserver's CEL cost estimate — the
+                  diskless transition rule is nested over this list and exceeds the
+                  rule budget on an unbounded array.
                 items:
                   description: |-
                     Replica is one placement of the volume's data — a DRBD peer when the
@@ -139,6 +142,7 @@ spec:
                   required:
                   - node
                   type: object
+                maxItems: 3
                 minItems: 1
                 type: array
               sizeBytes:
@@ -175,6 +179,10 @@ spec:
             - message: the first replica must be diskful (not a diskless tie-breaker)
               rule: 'size(self.replicas) > 0 ? !has(self.replicas[0].diskless) ||
                 !self.replicas[0].diskless : true'
+            - message: a replica's diskless flag is immutable; remove the replica
+                and re-add it instead
+              rule: self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
+                || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))
           status:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.

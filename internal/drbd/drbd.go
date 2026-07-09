@@ -534,11 +534,17 @@ func (d *Driver) seedGI(ctx context.Context, r Resource) error {
 	return nil
 }
 
-// isWinner picks the seed winner deterministically: the lowest node id.
+// isWinner picks the seed winner deterministically: the lowest node id
+// among diskful peers. A diskless tie-breaker never holds data, so it
+// must never win — with it elected, no diskful node would seed
+// UpToDate and the first handshake would deadlock all-Inconsistent.
 func isWinner(r Resource) bool {
 	lowest := int32(-1)
 	var lowestNode string
 	for _, p := range r.Peers {
+		if p.Diskless {
+			continue
+		}
 		if lowest == -1 || p.NodeID < lowest {
 			lowest = p.NodeID
 			lowestNode = p.Node

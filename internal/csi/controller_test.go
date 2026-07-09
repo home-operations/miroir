@@ -41,6 +41,8 @@ import (
 const (
 	nodeKharkiv = "kharkiv"
 	nodeParis   = "paris"
+	nodeOslo    = "oslo"
+	addrKharkiv = "192.168.1.41"
 	volPvc1     = "pvc-1"
 	volSrc      = "pvc-src"
 	volNew      = "pvc-new"
@@ -230,7 +232,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj(nodeKharkiv, "192.168.1.41"), nodeObj(nodeParis, "192.168.1.42")).
+			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, "192.168.1.42")).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {
@@ -279,7 +281,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		t.Fatalf("unexpected first replica %+v", vol.Spec.Replicas[0])
 	}
 	if vol.Spec.Replicas[0].Address != "192.168.1.42" ||
-		vol.Spec.Replicas[1].Address != "192.168.1.41" {
+		vol.Spec.Replicas[1].Address != addrKharkiv {
 		t.Fatalf("InternalIPs not resolved: %+v", vol.Spec.Replicas)
 	}
 	if vol.Spec.DRBD == nil || vol.Spec.DRBD.Port != 7000 {

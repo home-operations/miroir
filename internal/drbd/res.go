@@ -89,11 +89,11 @@ func Render(r Resource) string {
 	switch r.Quorum {
 	case miroirv1alpha1.QuorumFreeze:
 		// Any disconnect halts writes on both sides; never diverges.
+		// No on-suspended-primary-outdated: it only acts under
+		// on-no-quorum suspend-io, and keying off the suspended state
+		// would entangle it with the snapshot barrier's suspend-io.
 		b.WriteString("        quorum majority;\n")
 		b.WriteString("        on-no-quorum io-error;\n")
-		// Auto-demote a stale primary when it reconnects after losing
-		// quorum — improves failover recovery without manual intervention.
-		b.WriteString("        on-suspended-primary-outdated force-secondary;\n")
 	default:
 		// Last-man-standing: the survivor keeps writing; split-brain is
 		// detected on reconnect and surfaced for manual resolution.
