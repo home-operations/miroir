@@ -113,6 +113,37 @@ func TestTieBreakerRetrofitsAndMembershipCompletes(t *testing.T) {
 	}
 }
 
+// A removed replica's node must not be picked as the tie-breaker while
+// its teardown finalizer is still held — re-adding it would cancel the
+// teardown, leaking the backing device and stale DRBD metadata that a
+// later diskful re-add would adopt (partial resync missing writes).
+func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
+	vol := freezeVol()
+	// oslo was just removed from spec.replicas; its agent still holds the
+	// teardown finalizer while it waits for the remaining legs to be safe.
+	vol.Finalizers = append(vol.Finalizers, constants.FinalizerPrefix+nodeOslo)
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(vol, node(nodeOslo, addrOslo)).Build()
+	tb := &TieBreakerReconciler{Client: c, Nodes: nodemap.Map{
+		nodeKharkiv: {Backend: miroirv1alpha1.BackendZFS},
+		nodeParis:   {Backend: miroirv1alpha1.BackendZFS},
+		nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin},
+	}}
+
+	res, err := tb.Reconcile(context.Background(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volTB}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("must requeue: the finalizer release does not bump the generation")
+	}
+	got := get(t, &Reconciler{Client: c}, volTB)
+	if len(got.Spec.Replicas) != 2 {
+		t.Fatalf("no tie-breaker may be added mid-removal: %+v", got.Spec.Replicas)
+	}
+}
+
 func TestTieBreakerSkips(t *testing.T) {
 	spare := nodemap.Map{
 		nodeKharkiv: {Backend: miroirv1alpha1.BackendZFS},

@@ -18,6 +18,9 @@ package membership
 
 import (
 	"context"
+	"slices"
+	"strings"
+	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -25,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/nodemap"
 )
 
@@ -60,6 +64,23 @@ func (r *TieBreakerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if rep.Address == "" {
 			// Incomplete entry: membership's completion edit re-triggers us.
 			return ctrl.Result{}, nil
+		}
+	}
+	for _, f := range vol.Finalizers {
+		node, ok := strings.CutPrefix(f, constants.FinalizerPrefix)
+		if !ok {
+			continue
+		}
+		if !slices.ContainsFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+			return rep.Node == node
+		}) {
+			// A removed replica's teardown is still in flight: its agent
+			// holds the finalizer until the leg is safely gone. Picking
+			// that node now would cancel the teardown, leaking its backing
+			// device and stale DRBD metadata that a later diskful re-add
+			// would adopt. Releasing the finalizer does not bump the
+			// generation, so poll instead of waiting on a watch event.
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 	}
 	tb := r.Nodes.TieBreakerNode(vol.Spec.Replicas)
