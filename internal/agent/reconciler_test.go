@@ -734,6 +734,46 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 
 // A diskless tie-breaker joins DRBD for quorum only: no backend device,
 // no metadata seed, DeviceCreated stays false so CSI never stages here.
+// A backing device that vanished after this node had realized it (the
+// status slot still says DeviceCreated) is the node-wipe signature: the
+// recreated device must full-sync, never re-seed the day0 GI and pose as
+// the peers' identical twin.
+func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = "192.168.1.42"
+	// The pre-wipe agent had realized the backing and said so in status.
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DevicePath: "/dev/mapper/x"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	// The kernel probe fails (fresh boot, resource never configured);
+	// the post-Apply --json status still answers.
+	fe := &fakeDRBDExec{
+		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Inconsistent"}],"connections":[]}]`,
+		errOn: map[string]error{"drbdsetup status " + volPvc1: errors.New("no such resource")},
+	}
+	fb := newFakeBackend() // Exists() == false: the wipe took the device
+	r := &VolumeReconciler{
+		Client:   c,
+		NodeName: nodeKharkiv,
+		Backend:  fb,
+		DRBD:     &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	reconcile(t, r, volPvc1)
+
+	fe.calledWith(t, "create-md")
+	fe.notCalledWith(t, "set-gi") // just-created metadata → full SyncTarget
+}
+
 func TestReconcileDisklessTieBreaker(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()

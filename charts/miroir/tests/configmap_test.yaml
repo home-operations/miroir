@@ -94,6 +94,11 @@ tests:
       - notMatchRegex:
           path: data["global_common.conf"]
           pattern: "c-max-rate"
+      # on-io-error detach is the default: a dying disk degrades the leg
+      # to Diskless instead of surfacing EIO into the pod.
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "on-io-error detach;"
 
   - it: renders cluster-wide resync tuning into common{} when set
     set:
@@ -102,6 +107,7 @@ tests:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
+        onIoError: pass_on
         resync:
           planAhead: "20"
           maxRate: 720M
@@ -121,6 +127,9 @@ tests:
       - matchRegex:
           path: data["global_common.conf"]
           pattern: "max-buffers 36864;"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "on-io-error pass_on;"
 
   - it: honours a non-default Release namespace for both ConfigMaps
     release:

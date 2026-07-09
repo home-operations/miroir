@@ -113,11 +113,12 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	var dev string
+	var forceFullSync bool
 	var err error
 	if !localDiskless {
 		// Realize: create (or grow) the backing device — a CoW clone when the
 		// volume restores from a snapshot.
-		dev, err = r.realizeBacking(ctx, vol)
+		dev, forceFullSync, err = r.realizeBacking(ctx, vol)
 		if err != nil {
 			return ctrl.Result{}, r.reportError(ctx, vol, err)
 		}
@@ -162,7 +163,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor, localDiskless)); err != nil {
+	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor, localDiskless, forceFullSync)); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	// Online growth: once every peer's backing device is at the new size
@@ -265,40 +266,68 @@ func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
 	return true
 }
 
+// wipedBacking reports the node-wipe signature: this node's status slot
+// says the backing was realized, but the device is gone and so is the
+// local seed marker (a reinstall takes both). Re-seeding the day0 GI
+// would pose the empty recreated device as the peers' identical twin and
+// the partial resync would miss every write since creation — the caller
+// forces the just-created-metadata path so the first handshake
+// full-syncs this leg instead. Cheap steady-state: the marker check
+// short-circuits once Apply has seeded.
+func (r *VolumeReconciler) wipedBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (bool, error) {
+	if vol.Spec.DRBD == nil || r.DRBD.Seeded(vol.Name) ||
+		!vol.Status.PerNode[r.NodeName].DeviceCreated {
+		return false, nil
+	}
+	exists, err := r.Backend.Exists(ctx, vol.Name)
+	if err != nil {
+		return false, err
+	}
+	return !exists, nil
+}
+
 // realizeBacking creates the backing device: fresh, or cloned from a
 // snapshot for restores. Clones are byte-identical on every replica, so
-// the day0 GI seed keeps restored volumes from resyncing.
-func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (string, error) {
+// the day0 GI seed keeps restored volumes from resyncing. forceFullSync
+// reports the node-wipe signature (wipedBacking): the recreated device
+// must join as a full SyncTarget, never re-seed the day0 GI.
+func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (dev string, forceFullSync bool, err error) {
+	if forceFullSync, err = r.wipedBacking(ctx, vol); err != nil {
+		return "", false, err
+	}
 	if vol.Spec.Source == nil {
-		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		dev, err = r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		return dev, forceFullSync, err
 	}
 	// The backing is cloned once and survives reboots; the source snapshot
 	// may be gone by then, so recover an existing device without it.
 	if exists, err := r.Backend.Exists(ctx, vol.Name); err != nil {
-		return "", err
+		return "", false, err
 	} else if exists {
-		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		dev, err = r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		return dev, forceFullSync, err
 	}
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
-		return "", err
+		return "", false, err
 	}
-	return r.Backend.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
+	dev, err = r.Backend.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
+	return dev, forceFullSync, err
 }
 
 // drbdResource maps the CRD desired state to a render input. Entries the
 // membership reconciler has not completed yet (no address) are left out:
 // rendering them would produce a config DRBD cannot parse, and the peer
 // cannot connect before completion anyway.
-func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless bool) drbd.Resource {
+func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless, forceFullSync bool) drbd.Resource {
 	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
-	skipSeed := false
+	skipSeed := forceFullSync
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Address == "" {
 			continue
 		}
-		if rep.Node == localNode {
-			skipSeed = rep.FullSync
+		if rep.Node == localNode && rep.FullSync {
+			skipSeed = true
 		}
 		peers = append(peers, drbd.Peer{
 			Node:     rep.Node,

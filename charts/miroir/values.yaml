@@ -94,6 +94,11 @@ agent:
 # DRBD's built-in default. Tune to your replication network — see the LINBIT
 # "Tuning the DRBD Resync Controller" guide.
 drbd:
+  # How a diskful replica reacts to a backing-device I/O error. detach
+  # (the LINSTOR/DRBD-recommended default) drops the failing leg to
+  # Diskless and serves reads/writes via the peer instead of surfacing
+  # EIO into the pod. Set to pass_on to propagate errors instead.
+  onIoError: detach
   resync:
     # -- c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller.
     planAhead: ""

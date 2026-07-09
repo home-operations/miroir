@@ -47,6 +47,15 @@ type Driver struct {
 	Mknod func(path string, mode uint32, dev int) error
 }
 
+// Seeded reports whether Apply has completed the create-md + GI phase for
+// the resource on this node (the .md-created marker). Absent marker with
+// a previously realized volume is the node-wipe signature the agent keys
+// its re-seed guard on.
+func (d *Driver) Seeded(name string) bool {
+	_, err := os.Stat(d.path(name + ".md-created"))
+	return err == nil
+}
+
 // Apply converges the kernel state for one resource: write config when it
 // changed, create and GI-seed metadata once (see seedGI for how fresh
 // volumes skip the initial sync), bring the resource up / adjust.

@@ -113,6 +113,12 @@
     "drbd": {
       "description": "DRBD replication tuning applied cluster-wide through the common{} section of\nglobal_common.conf; every resource inherits it. Leave a value empty to use\nDRBD's built-in default. Tune to your replication network — see the LINBIT\n\"Tuning the DRBD Resync Controller\" guide.",
       "properties": {
+        "onIoError": {
+          "default": "detach",
+          "description": "How a diskful replica reacts to a backing-device I/O error. detach\n(the LINSTOR/DRBD-recommended default) drops the failing leg to\nDiskless and serves reads/writes via the peer instead of surfacing\nEIO into the pod. Set to pass_on to propagate errors instead.",
+          "title": "onIoError",
+          "type": "string"
+        },
         "resync": {
           "properties": {
             "fillTarget": {
