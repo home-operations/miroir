@@ -59,7 +59,7 @@ func TestListWithRetrySucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := fake.NewClientBuilder().WithScheme(s).Build()
-	if err := listWithRetry(c, &miroirv1alpha1.MiroirVolumeList{}); err != nil {
+	if err := listWithRetry(c, &miroirv1alpha1.MiroirVolumeList{}, apiStartupWait); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -78,7 +78,7 @@ func TestListWithRetryReturnsTerminalErrorImmediately(t *testing.T) {
 				return apierrors.NewUnauthorized("no creds")
 			},
 		}).Build()
-	if err := listWithRetry(c, &miroirv1alpha1.MiroirVolumeList{}); !apierrors.IsUnauthorized(err) {
+	if err := listWithRetry(c, &miroirv1alpha1.MiroirVolumeList{}, apiStartupWait); !apierrors.IsUnauthorized(err) {
 		t.Fatalf("want the terminal Unauthorized returned, got %v", err)
 	}
 }
