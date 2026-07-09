@@ -17,7 +17,6 @@ limitations under the License.
 package agent
 
 import (
-	"context"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -47,7 +46,7 @@ func newPublisher(t *testing.T, fb *fakeBackend, rec events.EventRecorder) (*Poo
 	}
 	get := func() *miroirv1alpha1.MiroirNode {
 		n := &miroirv1alpha1.MiroirNode{}
-		if err := c.Get(context.Background(), types.NamespacedName{Name: nodeKharkiv}, n); err != nil {
+		if err := c.Get(t.Context(), types.NamespacedName{Name: nodeKharkiv}, n); err != nil {
 			t.Fatal(err)
 		}
 		return n
@@ -60,7 +59,7 @@ func TestPoolStatsPublisherPublishes(t *testing.T) {
 	fb.stats = backend.PoolStats{SizeBytes: 100 * poolGiB, UsedBytes: 50 * poolGiB}
 	p, get := newPublisher(t, fb, nil)
 
-	if err := p.publish(context.Background()); err != nil {
+	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	n := get()
@@ -84,7 +83,7 @@ func TestPoolStatsPublisherRaisesHighDataUsage(t *testing.T) {
 	rec := events.NewFakeRecorder(8)
 	p, get := newPublisher(t, fb, rec)
 
-	if err := p.publish(context.Background()); err != nil {
+	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	c := meta.FindStatusCondition(get().Status.Conditions, ConditionPoolUsageHigh)
@@ -107,14 +106,14 @@ func TestPoolStatsPublisherEventsOnlyOnTransition(t *testing.T) {
 	rec := events.NewFakeRecorder(8)
 	p, get := newPublisher(t, fb, rec)
 
-	if err := p.publish(context.Background()); err != nil {
+	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	<-rec.Events // first crossing
 
 	// Usage drifts but stays high: message changes, no new event.
 	fb.stats.UsedBytes = 86 * poolGiB
-	if err := p.publish(context.Background()); err != nil {
+	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -125,14 +124,14 @@ func TestPoolStatsPublisherEventsOnlyOnTransition(t *testing.T) {
 
 	// Recovery, then a fresh crossing: one new event.
 	fb.stats.UsedBytes = 50 * poolGiB
-	if err := p.publish(context.Background()); err != nil {
+	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if c := meta.FindStatusCondition(get().Status.Conditions, ConditionPoolUsageHigh); c == nil || c.Status != metav1.ConditionFalse {
 		t.Fatalf("condition must recover to False, got %+v", c)
 	}
 	fb.stats.UsedBytes = 90 * poolGiB
-	if err := p.publish(context.Background()); err != nil {
+	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -147,7 +146,7 @@ func TestPoolStatsPublisherRaisesHighMetadataUsage(t *testing.T) {
 	fb.stats = backend.PoolStats{SizeBytes: 100 * poolGiB, UsedBytes: 10 * poolGiB, MetaUsedPercent: 90}
 	p, get := newPublisher(t, fb, nil)
 
-	if err := p.publish(context.Background()); err != nil {
+	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	n := get()

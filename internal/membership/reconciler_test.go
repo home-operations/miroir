@@ -17,7 +17,6 @@ limitations under the License.
 package membership
 
 import (
-	"context"
 	"slices"
 	"testing"
 
@@ -85,7 +84,7 @@ func replicatedVol() *miroirv1alpha1.MiroirVolume {
 //nolint:unparam // future tests will vary the name
 func reconcile(t *testing.T, r *Reconciler, name string) {
 	t.Helper()
-	if _, err := r.Reconcile(context.Background(),
+	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +94,7 @@ func reconcile(t *testing.T, r *Reconciler, name string) {
 func get(t *testing.T, r *Reconciler, name string) *miroirv1alpha1.MiroirVolume {
 	t.Helper()
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := r.Get(context.Background(), types.NamespacedName{Name: name}, got); err != nil {
+	if err := r.Get(t.Context(), types.NamespacedName{Name: name}, got); err != nil {
 		t.Fatal(err)
 	}
 	return got
@@ -206,7 +205,7 @@ func TestRequeuesWhenNodeNotReady(t *testing.T) {
 				nodeOslo: {Backend: miroirv1alpha1.BackendZFS},
 			}}
 
-			if _, err := r.Reconcile(context.Background(),
+			if _, err := r.Reconcile(t.Context(),
 				ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}}); err == nil {
 				t.Fatal("transient completion failure must return an error to requeue")
 			}

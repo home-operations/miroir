@@ -53,10 +53,11 @@ type Backend interface {
 	// device; zfs creates the parent dataset. Idempotent.
 	Setup(ctx context.Context) error
 	// Create provisions a thin device of the given virtual size and
-	// returns its device path. Succeeds if the device already exists at
-	// (at least) the requested size.
+	// returns its device path. Succeeds without re-checking size when the
+	// device already exists — growth is Resize's job.
 	Create(ctx context.Context, vol string, sizeBytes int64) (devPath string, err error)
-	// Resize grows the device to sizeBytes (online). Shrinking errors.
+	// Resize grows the device to sizeBytes (online). A request at or
+	// below the current size is a no-op — CSI never shrinks.
 	Resize(ctx context.Context, vol string, sizeBytes int64) error
 	// Sync drains in-flight writes down to the backing store: dirty
 	// pages, DRBD's writeback queue, and (ZFS) pending transaction

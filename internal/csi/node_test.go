@@ -68,9 +68,9 @@ func newNode(t *testing.T, vol *miroirv1alpha1.MiroirVolume, d DRBDStatus) *Node
 // lagging CRD status.
 func TestDevicePathRefusesSplitBrain(t *testing.T) {
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{
-		st: drbd.Status{DiskState: drbd.DiskUpToDate, Connected: true, SplitBrain: true},
+		st: drbd.Status{DiskState: drbd.DiskUpToDate, SplitBrain: true},
 	})
-	if _, _, err := n.devicePath(context.Background(), volPvc1); status.Code(err) != codes.FailedPrecondition {
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("split-brain must be FailedPrecondition, got %v", err)
 	}
 }
@@ -79,9 +79,9 @@ func TestDevicePathRefusesSplitBrain(t *testing.T) {
 // could mount stale data or race the initial handshake.
 func TestDevicePathRefusesNotUpToDate(t *testing.T) {
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{
-		st: drbd.Status{DiskState: "Inconsistent", Connected: true},
+		st: drbd.Status{DiskState: "Inconsistent"},
 	})
-	if _, _, err := n.devicePath(context.Background(), volPvc1); status.Code(err) != codes.Unavailable {
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
 		t.Fatalf("a non-UpToDate leg must be Unavailable, got %v", err)
 	}
 }
@@ -90,16 +90,16 @@ func TestDevicePathRefusesNotUpToDate(t *testing.T) {
 // fall through to staging.
 func TestDevicePathRefusesUnreadableDRBD(t *testing.T) {
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{err: context.DeadlineExceeded})
-	if _, _, err := n.devicePath(context.Background(), volPvc1); status.Code(err) != codes.Unavailable {
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
 		t.Fatalf("unreadable DRBD state must be Unavailable, got %v", err)
 	}
 }
 
 func TestDevicePathHealthyReturnsDevice(t *testing.T) {
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{
-		st: drbd.Status{DiskState: drbd.DiskUpToDate, Connected: true},
+		st: drbd.Status{DiskState: drbd.DiskUpToDate},
 	})
-	dev, _, err := n.devicePath(context.Background(), volPvc1)
+	dev, _, err := n.devicePath(t.Context(), volPvc1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +119,9 @@ func TestDevicePathRefusesDisklessNode(t *testing.T) {
 		{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv, Diskless: true},
 	}
 	n := newNode(t, v, fakeDRBDStatus{
-		st: drbd.Status{DiskState: "Diskless", Connected: true},
+		st: drbd.Status{DiskState: "Diskless"},
 	})
-	if _, _, err := n.devicePath(context.Background(), volPvc1); status.Code(err) != codes.FailedPrecondition {
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("a diskless tie-breaker node must be FailedPrecondition, got %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestDevicePathRefusesForeignNode(t *testing.T) {
 	v := stagedVolume()
 	v.Spec.Replicas[0].Node = nodeParis
 	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
-	if _, _, err := n.devicePath(context.Background(), volPvc1); status.Code(err) != codes.FailedPrecondition {
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("a node without a replica must be FailedPrecondition, got %v", err)
 	}
 }

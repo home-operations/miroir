@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,11 +28,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
-	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
@@ -245,8 +244,10 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 			s.Status.SuspendedAt = &now
 			// Reset peers: a slow peer's Done from the voided round can
 			// land after the void and would pair its stale leg with
-			// this round's cuts.
-			for _, rep := range vol.Spec.Replicas {
+			// this round's cuts. Only diskful replicas hold legs — a
+			// tie-breaker never joins the round (it can never reach
+			// Suspended: raising requires an UpToDate disk).
+			for _, rep := range vol.Spec.DiskfulReplicas() {
 				if rep.Node != r.NodeName {
 					s.Status.PerNode[rep.Node] = miroirv1alpha1.SnapshotPending
 				}
@@ -276,11 +277,6 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 // keep cutting, so dropping it would let writes into some legs and not
 // others. The deadline bounds the freeze instead.
 func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
-	// A diskless replica has no backend: skip the backend sync/snapshot
-	// cycle; it only needs to report Done so the coordinator can collect.
-	if r.disklessOn(vol) {
-		return ctrl.Result{}, r.patchOwnState(ctx, snap, miroirv1alpha1.SnapshotDone)
-	}
 	// Re-assert the local barrier first (idempotent) — a crash or manual
 	// resume-io between phases must not let a leg be cut unprotected.
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
@@ -329,7 +325,7 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *miroirv1alph
 		} else {
 			// Every leg of this round is void, Done ones included: they
 			// were cut under a barrier that failed. The retry recuts.
-			for _, rep := range vol.Spec.Replicas {
+			for _, rep := range vol.Spec.DiskfulReplicas() {
 				s.Status.PerNode[rep.Node] = miroirv1alpha1.SnapshotPending
 			}
 			s.Status.PerNode[r.NodeName] = miroirv1alpha1.SnapshotError
@@ -403,23 +399,17 @@ func (r *SnapshotReconciler) isCoordinator(vol *miroirv1alpha1.MiroirVolume, st 
 }
 
 func replicaOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Node == node {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == node
+	})
 }
 
 // disklessOn checks whether the local replica (if any) is diskless — a
 // quorum-only tie-breaker that holds no backend data.
 func (r *SnapshotReconciler) disklessOn(vol *miroirv1alpha1.MiroirVolume) bool {
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Node == r.NodeName && rep.Diskless {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == r.NodeName && rep.Diskless
+	})
 }
 
 // patchOwnState records only this node's slot in the snapshot barrier via a
@@ -441,15 +431,7 @@ func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *miroirv1alpha1
 }
 
 func (r *SnapshotReconciler) removeFinalizer(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) error {
-	finalizer := constants.FinalizerPrefix + r.NodeName
-	if !controllerutil.ContainsFinalizer(snap, finalizer) {
-		return nil
-	}
-	controllerutil.RemoveFinalizer(snap, finalizer)
-	if err := r.Update(ctx, snap); err != nil && !apierrors.IsConflict(err) && !apierrors.IsNotFound(err) {
-		return err
-	}
-	return nil
+	return removeNodeFinalizer(ctx, r.Client, snap, r.NodeName)
 }
 
 // SetupWithManager registers the reconciler.

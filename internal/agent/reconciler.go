@@ -253,10 +253,7 @@ func diskfulPeersConnected(st drbd.Status, vol *miroirv1alpha1.MiroirVolume, sel
 // The local leg is excluded: its status entry is stale (just patched).
 func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
 	for _, rep := range vol.Spec.Replicas {
-		if rep.Node == self {
-			continue
-		}
-		if rep.Diskless {
+		if rep.Node == self || rep.Diskless {
 			continue
 		}
 		if vol.Status.PerNode[rep.Node].SizeBytes < vol.Spec.SizeBytes {
@@ -452,12 +449,20 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 // removeFinalizer releases this node's own finalizer once local teardown
 // is done; the volume disappears when the last replica's agent finishes.
 func (r *VolumeReconciler) removeFinalizer(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
-	finalizer := constants.FinalizerPrefix + r.NodeName
-	if !controllerutil.ContainsFinalizer(vol, finalizer) {
+	return removeNodeFinalizer(ctx, r.Client, vol, r.NodeName)
+}
+
+// removeNodeFinalizer drops this node's teardown finalizer, swallowing
+// conflicts (the watch retriggers) and not-found (the object is already
+// gone — the goal state). Shared by the volume and snapshot reconcilers so
+// the subtle swallow semantics cannot drift apart.
+func removeNodeFinalizer(ctx context.Context, c client.Client, obj client.Object, node string) error {
+	finalizer := constants.FinalizerPrefix + node
+	if !controllerutil.ContainsFinalizer(obj, finalizer) {
 		return nil
 	}
-	controllerutil.RemoveFinalizer(vol, finalizer)
-	if err := r.Update(ctx, vol); err != nil && !apierrors.IsConflict(err) && !apierrors.IsNotFound(err) {
+	controllerutil.RemoveFinalizer(obj, finalizer)
+	if err := c.Update(ctx, obj); err != nil && !apierrors.IsConflict(err) && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil

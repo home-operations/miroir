@@ -106,20 +106,16 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroir
 		}
 		return "", nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
 	}
-	for _, r := range vol.Spec.Replicas {
-		if r.Node == n.NodeName {
-			if r.Diskless {
-				return "", nil, status.Errorf(codes.FailedPrecondition,
-					"node %s is a diskless tie-breaker; cannot stage volume %s", n.NodeName, volumeID)
-			}
-			break
-		}
-	}
-	if !slices.ContainsFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
+	i := slices.IndexFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
 		return r.Node == n.NodeName
-	}) {
+	})
+	if i < 0 {
 		return "", nil, status.Errorf(codes.FailedPrecondition,
 			"volume %s has no replica on node %s", volumeID, n.NodeName)
+	}
+	if vol.Spec.Replicas[i].Diskless {
+		return "", nil, status.Errorf(codes.FailedPrecondition,
+			"node %s is a diskless tie-breaker; cannot stage volume %s", n.NodeName, volumeID)
 	}
 	st, ok := vol.Status.PerNode[n.NodeName]
 	if !ok || !st.DeviceCreated || st.DevicePath == "" {
@@ -260,12 +256,7 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 // markFormatted records that the volume carries a filesystem. No-op when
 // already recorded.
 func (n *Node) markFormatted(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
-	if vol.Status.Formatted {
-		return nil
-	}
-	base := vol.DeepCopy()
-	vol.Status.Formatted = true
-	return n.Client.Status().Patch(ctx, vol, client.MergeFrom(base))
+	return markFormatted(ctx, n.Client, vol)
 }
 
 // NodeExpandVolume grows the filesystem to the (already grown) device,
@@ -370,6 +361,12 @@ func (n *Node) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolu
 func (n *Node) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
 	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and path are required")
+	}
+	// A raw-block publish path is a bind-mounted device file: statfs
+	// there reports the host filesystem backing the target dir, not the
+	// volume. No filesystem, no usage to report.
+	if fi, err := os.Stat(req.GetVolumePath()); err == nil && !fi.IsDir() {
+		return &csi.NodeGetVolumeStatsResponse{}, nil
 	}
 	stats, err := statfsAt(req.GetVolumePath())
 	if err != nil {

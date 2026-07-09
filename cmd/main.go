@@ -86,6 +86,32 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool) e
 	return nil
 }
 
+// backendFor resolves this node's storage entry from the node map and
+// builds its backend — shared by setup and agent mode so the two can
+// never wire Config differently.
+func backendFor(nodeName, nodesConfig, vg, thinPool string) (backend.Backend, miroirv1alpha1.BackendType, error) {
+	nodes, err := nodemap.Load(nodesConfig)
+	if err != nil {
+		return nil, "", fmt.Errorf("load node map: %w", err)
+	}
+	entry, ok := nodes[nodeName]
+	if !ok {
+		return nil, "", fmt.Errorf("node %s absent from the node map (Helm values: nodes)", nodeName)
+	}
+	be, err := backend.New(entry.Backend, backend.Config{
+		VolumeGroup: vg,
+		ThinPool:    thinPool,
+		Device:      entry.Device,
+		Dataset:     entry.ZFSDataset,
+		PoolSize:    entry.ThinPoolSize,
+		BaseDir:     entry.BaseDir,
+	}, backend.RealExec)
+	if err != nil {
+		return nil, "", fmt.Errorf("backend for node %s: %w", nodeName, err)
+	}
+	return be, entry.Backend, nil
+}
+
 func main() {
 	var (
 		mode             string
@@ -103,7 +129,7 @@ func main() {
 		drbdStateDir      string
 		poolStatsInterval time.Duration
 	)
-	flag.StringVar(&mode, "mode", "", "controller | agent")
+	flag.StringVar(&mode, "mode", "", "controller | agent | setup")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081",
 		"single operational endpoint: /metrics plus the /healthz and /readyz probes (org port standard)")
@@ -137,26 +163,9 @@ func main() {
 			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
 			os.Exit(1)
 		}
-		nodes, err := nodemap.Load(nodesConfig)
+		be, _, err := backendFor(nodeName, nodesConfig, vg, thinPool)
 		if err != nil {
-			setupLog.Error(err, "unable to load node map")
-			os.Exit(1)
-		}
-		entry, ok := nodes[nodeName]
-		if !ok {
-			setupLog.Error(nil, "node absent from the node map", "node", nodeName)
-			os.Exit(1)
-		}
-		be, err := backend.New(entry.Backend, backend.Config{
-			VolumeGroup: vg,
-			ThinPool:    thinPool,
-			Device:      entry.Device,
-			Dataset:     entry.ZFSDataset,
-			PoolSize:    entry.ThinPoolSize,
-			BaseDir:     entry.BaseDir,
-		}, backend.RealExec)
-		if err != nil {
-			setupLog.Error(err, "invalid backend for node", "node", nodeName)
+			setupLog.Error(err, "unable to build the node's backend")
 			os.Exit(1)
 		}
 		if err := be.Setup(context.Background()); err != nil {
@@ -226,29 +235,12 @@ func main() {
 			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in agent mode")
 			os.Exit(1)
 		}
-		nodes, err := nodemap.Load(nodesConfig)
+		// Agents refuse to start on nodes absent from the node map: the
+		// DaemonSet's chart-side scope is every schedulable node, but only
+		// storage nodes run an agent-backed backend.
+		be, backendType, err := backendFor(nodeName, nodesConfig, vg, thinPool)
 		if err != nil {
-			setupLog.Error(err, "unable to load node map")
-			os.Exit(1)
-		}
-		entry, ok := nodes[nodeName]
-		if !ok {
-			// Not a storage node: serve the CSI node service (pods may
-			// still mount remote volumes in future modes) but no backend.
-			setupLog.Error(nil, "node absent from the node map; agent requires a storage entry",
-				"node", nodeName)
-			os.Exit(1)
-		}
-		be, err := backend.New(entry.Backend, backend.Config{
-			VolumeGroup: vg,
-			ThinPool:    thinPool,
-			Device:      entry.Device,
-			Dataset:     entry.ZFSDataset,
-			PoolSize:    entry.ThinPoolSize,
-			BaseDir:     entry.BaseDir,
-		}, backend.RealExec)
-		if err != nil {
-			setupLog.Error(err, "invalid backend for node", "node", nodeName)
+			setupLog.Error(err, "unable to build the node's backend")
 			os.Exit(1)
 		}
 		// Bootstrap the node-local pool before serving anything
@@ -321,7 +313,7 @@ func main() {
 			Client:      mgr.GetClient(),
 			NodeName:    nodeName,
 			Backend:     be,
-			BackendType: entry.Backend,
+			BackendType: backendType,
 			Interval:    poolStatsInterval,
 			Recorder:    mgr.GetEventRecorder("miroir-agent"),
 		}); err != nil {

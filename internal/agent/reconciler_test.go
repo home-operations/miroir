@@ -165,7 +165,7 @@ func vol(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
 //nolint:unparam // future tests will vary the name
 func reconcile(t *testing.T, r *VolumeReconciler, name string) {
 	t.Helper()
-	_, err := r.Reconcile(context.Background(),
+	_, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestReconcileRealizesReplica(t *testing.T) {
 		t.Fatalf("device not created: %+v", fb.created)
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
@@ -224,14 +224,14 @@ func TestReconcileReportsBackendError(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
-	_, err := r.Reconcile(context.Background(),
+	_, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err == nil {
 		t.Fatal("expected error to requeue")
 	}
 
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.Phase != miroirv1alpha1.VolumeFailed {
@@ -266,7 +266,7 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 		t.Fatalf("must recover the existing device via Create, got %v", fb.createVol)
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
@@ -290,7 +290,7 @@ func TestReconcileSourceSnapshotGoneAndDeviceMissingFails(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
-	_, err := r.Reconcile(context.Background(),
+	_, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err == nil {
 		t.Fatal("expected error: restore source is gone and device was never created")
@@ -336,7 +336,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
-	res, err := r.Reconcile(context.Background(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err != nil {
 		t.Fatal(err)
@@ -350,7 +350,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	st := got.Status.PerNode[nodeKharkiv]
@@ -374,15 +374,15 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	got.Status.PerNode["paris"] = miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true,
 	}
-	if err := c.Status().Patch(context.Background(), got, client.MergeFrom(base)); err != nil {
+	if err := c.Status().Patch(t.Context(), got, client.MergeFrom(base)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.Reconcile(context.Background(),
+	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm resize --assume-clean pvc-1")
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.PerNode[nodeKharkiv].SizeBytes != 1<<30 {
@@ -444,7 +444,7 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
-	if _, err := r.Reconcile(context.Background(),
+	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatal(err)
 	}
@@ -498,23 +498,23 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	}
 
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	base := got.DeepCopy()
 	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		"paris": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 	}
-	if err := c.Status().Patch(context.Background(), got, client.MergeFrom(base)); err != nil {
+	if err := c.Status().Patch(t.Context(), got, client.MergeFrom(base)); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := r.Reconcile(context.Background(),
+	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatalf("a resync in progress must not surface as a reconcile error: %v", err)
 	}
 	fe.notCalledWith(t, "drbdadm resize")
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.PerNode[nodeKharkiv].SizeBytes != 0 {
@@ -525,12 +525,12 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	fe.statusJSON = `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"Established"}]}]`
-	if _, err := r.Reconcile(context.Background(),
+	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm resize --assume-clean pvc-1")
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.PerNode[nodeKharkiv].SizeBytes != 1<<30 {
@@ -576,18 +576,18 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	}
 
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	base := got.DeepCopy()
 	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
 		"paris": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 	}
-	if err := c.Status().Patch(context.Background(), got, client.MergeFrom(base)); err != nil {
+	if err := c.Status().Patch(t.Context(), got, client.MergeFrom(base)); err != nil {
 		t.Fatal(err)
 	}
 
-	res, err := r.Reconcile(context.Background(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err != nil {
 		t.Fatalf("a resize that raced a resync must not fail the reconcile: %v", err)
@@ -596,7 +596,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	if res.RequeueAfter != 5*time.Second {
 		t.Fatalf("must requeue soon to retry the resize, got %v", res.RequeueAfter)
 	}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.PerNode[nodeKharkiv].SizeBytes != 0 {
@@ -665,7 +665,7 @@ func TestReconcileForeignAgentLeavesFinalizerOnDelete(t *testing.T) {
 	reconcile(t, r, volPvc1)
 
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatalf("volume must still exist (finalizer held): %v", err)
 	}
 	if len(got.Finalizers) == 0 {
@@ -686,7 +686,7 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
 	// Pre-create the device so teardown has something to remove.
-	if _, err := fb.Create(context.Background(), volPvc1, 1<<30); err != nil {
+	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
 		t.Fatal(err)
 	}
 
@@ -697,7 +697,7 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 	}
 	// Finalizer removed → fake client garbage-collects the object.
 	got := &miroirv1alpha1.MiroirVolume{}
-	err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got)
+	err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got)
 	if err == nil {
 		t.Fatalf("volume should be gone, still has finalizers %v", got.Finalizers)
 	}
@@ -722,7 +722,7 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
-	if _, err := fb.Create(context.Background(), volPvc1, 1<<30); err != nil {
+	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
 		t.Fatal(err)
 	}
 
@@ -747,7 +747,7 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 	fb := newFakeBackend()
 	r := &VolumeReconciler{Client: c, NodeName: nodeParis, Backend: fb}
 
-	if _, _, err := r.realizeBacking(context.Background(), v, true); err != nil {
+	if _, _, err := r.realizeBacking(t.Context(), v, true); err != nil {
 		t.Fatal(err)
 	}
 	if len(fb.fromSnapVol) != 0 {
@@ -824,7 +824,7 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
-	res, err := r.Reconcile(context.Background(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err != nil {
 		t.Fatal(err)
@@ -839,7 +839,7 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	fe.notCalledWith(t, "drbdmeta") // no create-md, no GI seed
 
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	st := got.Status.PerNode[nodeOslo]
@@ -893,12 +893,12 @@ func TestRemovalSnapshotGateSkipsTieBreaker(t *testing.T) {
 		Build()
 
 	rO := &VolumeReconciler{Client: c, NodeName: nodeOslo, Backend: newFakeBackend()}
-	if reason := rO.removalBlocked(context.Background(), v); reason != "" {
+	if reason := rO.removalBlocked(t.Context(), v); reason != "" {
 		t.Fatalf("tie-breaker removal must not be pinned by snapshots: %s", reason)
 	}
 	// A removed diskful replica (no Diskless marker) stays pinned.
 	rK := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend()}
-	if reason := rK.removalBlocked(context.Background(), v); !strings.Contains(reason, "snapshot") {
+	if reason := rK.removalBlocked(t.Context(), v); !strings.Contains(reason, "snapshot") {
 		t.Fatalf("diskful removal must stay pinned by snapshots, got %q", reason)
 	}
 }
@@ -1035,7 +1035,7 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
-	if err := c.Status().Patch(context.Background(), &miroirv1alpha1.MiroirVolume{
+	if err := c.Status().Patch(t.Context(), &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {"`+nodeKharkiv+`": {
@@ -1045,13 +1045,13 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.reportError(context.Background(), got, errors.New("transient K8s blip")); err == nil {
+	if err := r.reportError(t.Context(), got, errors.New("transient K8s blip")); err == nil {
 		t.Fatal("expected reportError to requeue with the original cause")
 	}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	st := got.Status.PerNode[nodeKharkiv]
@@ -1078,7 +1078,7 @@ func removedReplicaVol() *miroirv1alpha1.MiroirVolume {
 
 func patchPeersUpToDate(t *testing.T, c client.Client, diskState string) {
 	t.Helper()
-	err := c.Status().Patch(context.Background(), &miroirv1alpha1.MiroirVolume{
+	err := c.Status().Patch(t.Context(), &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {
@@ -1116,7 +1116,7 @@ func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
 	}
 	fe.calledWith(t, "drbdsetup down pvc-1")
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range got.Finalizers {
@@ -1143,7 +1143,7 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 	patchPeersUpToDate(t, c, diskStateUpToDate)
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
-	res, err := r.Reconcile(context.Background(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err != nil {
 		t.Fatal(err)
@@ -1155,7 +1155,7 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 		t.Fatal("must not tear down while a snapshot references the volume")
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(got.Status.PerNode[nodeKharkiv].Message, "snapshot") {
@@ -1174,7 +1174,7 @@ func TestReconcileRemovalBlockedByDegradedPeer(t *testing.T) {
 	patchPeersUpToDate(t, c, diskStateInconsistent) // paris still syncing
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
-	res, err := r.Reconcile(context.Background(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err != nil {
 		t.Fatal(err)
@@ -1201,7 +1201,7 @@ func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
 
-	res, err := r.Reconcile(context.Background(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err != nil {
 		t.Fatal(err)

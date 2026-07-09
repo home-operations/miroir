@@ -17,7 +17,6 @@ limitations under the License.
 package backend
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -34,7 +33,7 @@ func TestLoopfileCreateAttachesNewFile(t *testing.T) {
 	fe.respond("losetup --find --show", "/dev/loop0\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
-	dev, err := b.Create(context.Background(), "pvc-1", 10<<30)
+	dev, err := b.Create(t.Context(), "pvc-1", 10<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +51,7 @@ func TestLoopfileCreateIdempotentReusesLoop(t *testing.T) {
 	fe.respond("losetup -j", "/dev/loop3\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
-	dev, err := b.Create(context.Background(), "pvc-1", 10<<30)
+	dev, err := b.Create(t.Context(), "pvc-1", 10<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +72,7 @@ func TestLoopfileResizeGrowsAndRefreshesLoop(t *testing.T) {
 	fe.respond("losetup -j", "/dev/loop3\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Resize(context.Background(), "pvc-1", 10<<30); err != nil {
+	if err := b.Resize(t.Context(), "pvc-1", 10<<30); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "truncate -s 10737418240 /var/lib/miroir/volumes/pvc-1.img")
@@ -85,7 +84,7 @@ func TestLoopfileResizeSkipsWhenBigEnough(t *testing.T) {
 	fe.respond("stat -c %s", "10737418240\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Resize(context.Background(), "pvc-1", 10<<30); err != nil {
+	if err := b.Resize(t.Context(), "pvc-1", 10<<30); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "truncate")
@@ -98,7 +97,7 @@ func TestLoopfileSnapshotReflinks(t *testing.T) {
 		errors.New("No such file or directory"))
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Snapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
+	if err := b.Snapshot(t.Context(), "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "cp --reflink=always /var/lib/miroir/volumes/pvc-1.img /var/lib/miroir/snapshots/snap-1.img.tmp")
@@ -109,7 +108,7 @@ func TestLoopfileSnapshotIdempotent(t *testing.T) {
 	fe := &fakeExec{} // stat succeeds → snapshot file exists
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Snapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
+	if err := b.Snapshot(t.Context(), "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "cp --reflink")
@@ -123,7 +122,7 @@ func TestLoopfileCreateFromSnapshot(t *testing.T) {
 	fe.respond("losetup --find --show", "/dev/loop0\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
-	dev, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snap-1")
+	dev, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snap-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +138,7 @@ func TestLoopfileDeleteDetachesAndRemoves(t *testing.T) {
 	fe.respond("losetup -j", "/dev/loop3\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Delete(context.Background(), "pvc-1"); err != nil {
+	if err := b.Delete(t.Context(), "pvc-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "losetup -d /dev/loop3")
@@ -154,7 +153,7 @@ func TestLoopfileDeleteBusyWhenAttached(t *testing.T) {
 		errors.New("losetup: /dev/loop3: detach failed: Device or resource busy"))
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Delete(context.Background(), "pvc-1"); !errors.Is(err, ErrBusy) {
+	if err := b.Delete(t.Context(), "pvc-1"); !errors.Is(err, ErrBusy) {
 		t.Fatalf("want ErrBusy while the loop device is attached, got %v", err)
 	}
 }
@@ -165,7 +164,7 @@ func TestLoopfileDeleteAbsentIsNoop(t *testing.T) {
 		errors.New("No such file or directory"))
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Delete(context.Background(), "pvc-1"); err != nil {
+	if err := b.Delete(t.Context(), "pvc-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "losetup -d")
@@ -176,7 +175,7 @@ func TestLoopfileSetupProbesReflink(t *testing.T) {
 	fe := &fakeExec{}
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Setup(context.Background()); err != nil {
+	if err := b.Setup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "mkdir -p /var/lib/miroir/volumes")
@@ -190,7 +189,7 @@ func TestLoopfileSetupFailsWithoutReflink(t *testing.T) {
 	fe.respond("cp --reflink", "", errors.New("cp: failed to clone: Operation not supported"))
 	b := newLoopfile(lcfg, fe.run)
 
-	if err := b.Setup(context.Background()); err == nil {
+	if err := b.Setup(t.Context()); err == nil {
 		t.Fatal("expected Setup to fail on a non-reflink filesystem")
 	}
 	// The probe must be cleaned up even when the clone fails.
@@ -203,7 +202,7 @@ func TestLoopfileStats(t *testing.T) {
 		"/dev/sda2 2000000000000 500000000000 1500000000000 25% /var/lib/miroir\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
-	s, err := b.Stats(context.Background())
+	s, err := b.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +243,7 @@ func TestLoopfileSetupPrunesStaleSymlinks(t *testing.T) {
 		}
 	}
 
-	if err := b.Setup(context.Background()); err != nil {
+	if err := b.Setup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(devDir, "pvc-stale")); !os.IsNotExist(err) {
