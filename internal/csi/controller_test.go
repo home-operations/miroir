@@ -122,7 +122,7 @@ func TestCreateVolumePlacesOnPreferredNode(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
-	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
@@ -144,7 +144,7 @@ func TestCreateVolumePlacesOnPreferredNode(t *testing.T) {
 
 	// The CR must exist with the right backend for the chosen node.
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: volPvc1}, vol); err != nil {
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if vol.Spec.Replicas[0].Backend != miroirv1alpha1.BackendLVMThin {
@@ -161,15 +161,15 @@ func TestCreateVolumeIdempotent(t *testing.T) {
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 	}
 
-	if _, err := c.CreateVolume(context.Background(), req); err != nil {
+	if _, err := c.CreateVolume(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.CreateVolume(context.Background(), req); err != nil {
+	if _, err := c.CreateVolume(t.Context(), req); err != nil {
 		t.Fatalf("second identical CreateVolume must succeed: %v", err)
 	}
 
 	req.CapacityRange = &csi.CapacityRange{RequiredBytes: 6 << 30}
-	_, err := c.CreateVolume(context.Background(), req)
+	_, err := c.CreateVolume(t.Context(), req)
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("size mismatch must be ALREADY_EXISTS, got %v", err)
 	}
@@ -181,7 +181,7 @@ func TestCreateVolumeSucceedsWhenDegraded(t *testing.T) {
 
 	// Degraded means the primary is UpToDate and serving; CreateVolume must
 	// return without waiting for the secondary's initial sync.
-	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
@@ -198,7 +198,7 @@ func TestCreateVolumeRejectsRWX(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes}
 
-	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name: volPvc1,
 		VolumeCapabilities: []*csi.VolumeCapability{{
 			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
@@ -216,7 +216,7 @@ func TestDeleteVolumeIdempotent(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes}
 
-	if _, err := c.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "nope"}); err != nil {
+	if _, err := c.DeleteVolume(t.Context(), &csi.DeleteVolumeRequest{VolumeId: "nope"}); err != nil {
 		t.Fatalf("deleting absent volume must succeed: %v", err)
 	}
 }
@@ -250,7 +250,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		ProvisionTimeout: 2 * time.Second,
 	}
 
-	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-r1",
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
@@ -272,7 +272,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	}
 
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-r1"}, vol); err != nil {
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-r1"}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if len(vol.Spec.Replicas) != 2 {
@@ -297,7 +297,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	}
 
 	// A second volume gets the next minor/port.
-	if _, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-r2",
 		VolumeCapabilities: volCaps(),
 		Parameters:         map[string]string{constants.ParamReplicas: "2"},
@@ -305,7 +305,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		t.Fatal(err)
 	}
 	vol2 := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-r2"}, vol2); err != nil {
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-r2"}, vol2); err != nil {
 		t.Fatal(err)
 	}
 	if vol2.Spec.DRBD.Port != 7001 {
@@ -346,7 +346,7 @@ func tieBreakerController(t *testing.T, autoTieBreaker bool) *Controller {
 func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 	c := tieBreakerController(t, true)
 
-	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-tb",
 		VolumeCapabilities: volCaps(),
 		Parameters:         map[string]string{constants.ParamReplicas: "2"},
@@ -365,7 +365,7 @@ func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 	}
 
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-tb"}, vol); err != nil {
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-tb"}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if vol.Spec.QuorumPolicy != miroirv1alpha1.QuorumFreeze {
@@ -405,7 +405,7 @@ func TestCreateVolumeAutoTieBreakerSkips(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := tc.controller.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+			if _, err := tc.controller.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 				Name:               "pvc-plain",
 				VolumeCapabilities: volCaps(),
 				Parameters:         tc.params,
@@ -413,7 +413,7 @@ func TestCreateVolumeAutoTieBreakerSkips(t *testing.T) {
 				t.Fatal(err)
 			}
 			vol := &miroirv1alpha1.MiroirVolume{}
-			if err := tc.controller.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-plain"}, vol); err != nil {
+			if err := tc.controller.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-plain"}, vol); err != nil {
 				t.Fatal(err)
 			}
 			if len(vol.Spec.Replicas) != 2 {
@@ -429,7 +429,7 @@ func TestCreateVolumeAutoTieBreakerNoSpareNode(t *testing.T) {
 	c := tieBreakerController(t, true)
 	c.Nodes = testNodes // kharkiv + paris only
 
-	if _, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-nospare",
 		VolumeCapabilities: volCaps(),
 		Parameters:         map[string]string{constants.ParamReplicas: "2"},
@@ -437,7 +437,7 @@ func TestCreateVolumeAutoTieBreakerNoSpareNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-nospare"}, vol); err != nil {
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-nospare"}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if len(vol.Spec.Replicas) != 2 || vol.Spec.QuorumPolicy != miroirv1alpha1.QuorumFreeze {
@@ -474,7 +474,7 @@ func TestControllerExpandRetryWaitsForRealization(t *testing.T) {
 		ProvisionTimeout: time.Second,
 	}
 
-	_, err := c.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+	_, err := c.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{
 		VolumeId:      volPvc1,
 		CapacityRange: &csi.CapacityRange{RequiredBytes: 10 << 30},
 	})
@@ -506,7 +506,7 @@ func TestControllerExpandSucceedsOnceRealized(t *testing.T) {
 	}
 
 	// The idempotent retry (spec already at size, devices realized).
-	resp, err := c.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+	resp, err := c.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{
 		VolumeId:      volPvc1,
 		CapacityRange: &csi.CapacityRange{RequiredBytes: 10 << 30},
 	})
@@ -518,7 +518,7 @@ func TestControllerExpandSucceedsOnceRealized(t *testing.T) {
 	}
 
 	// A stale smaller request must never shrink and reports the spec size.
-	resp, err = c.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+	resp, err = c.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{
 		VolumeId:      volPvc1,
 		CapacityRange: &csi.CapacityRange{RequiredBytes: 5 << 30},
 	})
@@ -556,16 +556,16 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 	cl := readyOnGet(s)
 	for _, obj := range []client.Object{srcVol, srcSnap,
 		nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
-		if err := cl.Create(context.Background(), obj); err != nil {
+		if err := cl.Create(t.Context(), obj); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := cl.Status().Update(context.Background(), srcSnap); err != nil {
+	if err := cl.Status().Update(t.Context(), srcSnap); err != nil {
 		t.Fatal(err)
 	}
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
-	if _, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volNew,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
@@ -580,7 +580,7 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 	}
 
 	got := &miroirv1alpha1.MiroirVolume{}
-	if err := cl.Get(context.Background(), types.NamespacedName{Name: volNew}, got); err != nil {
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
 		t.Fatal(err)
 	}
 	for _, rep := range got.Spec.Replicas {
@@ -597,7 +597,7 @@ func TestPickNodeNoStorageNodes(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).Build(), Nodes: nodemap.Map{}}
 
-	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 	})
@@ -621,19 +621,19 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	cl := readyOnGet(s)
-	if err := cl.Create(context.Background(), srcVol); err != nil {
+	if err := cl.Create(t.Context(), srcVol); err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.Create(context.Background(), srcSnap); err != nil {
+	if err := cl.Create(t.Context(), srcSnap); err != nil {
 		t.Fatal(err)
 	}
 	// The status subresource strips status on create.
-	if err := cl.Status().Update(context.Background(), srcSnap); err != nil {
+	if err := cl.Status().Update(t.Context(), srcSnap); err != nil {
 		t.Fatal(err)
 	}
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
-	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volNew,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
@@ -653,7 +653,7 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 		t.Fatalf("ContentSource.Snapshot.SnapshotId = %q, want snap-1", got)
 	}
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: volNew}, vol); err != nil {
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if vol.Spec.Source == nil || vol.Spec.Source.SnapshotName != snapSnap1 {
@@ -683,19 +683,19 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 		},
 	}
 	cl := readyOnGet(s)
-	if err := cl.Create(context.Background(), srcVol); err != nil {
+	if err := cl.Create(t.Context(), srcVol); err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.Create(context.Background(), srcSnap); err != nil {
+	if err := cl.Create(t.Context(), srcSnap); err != nil {
 		t.Fatal(err)
 	}
 	// The status subresource strips status on create.
-	if err := cl.Status().Update(context.Background(), srcSnap); err != nil {
+	if err := cl.Status().Update(t.Context(), srcSnap); err != nil {
 		t.Fatal(err)
 	}
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
-	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volNew,
 		VolumeCapabilities: volCaps(),
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
@@ -709,7 +709,7 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 		t.Fatal(err)
 	}
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: volNew}, vol); err != nil {
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, vol); err != nil {
 		t.Fatal(err)
 	}
 	if !vol.Status.Formatted {
@@ -721,7 +721,7 @@ func TestCreateVolumeRejectsFourReplicas(t *testing.T) {
 	// Exceeding --max-peers headroom; fail loudly.
 	s := newScheme(t)
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
-	_, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
 		VolumeCapabilities: volCaps(),
 		Parameters:         map[string]string{constants.ParamReplicas: "4"},
@@ -743,7 +743,7 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 		},
 	}
 	cl := readyOnGet(s)
-	if err := cl.Create(context.Background(), srcVol); err != nil {
+	if err := cl.Create(t.Context(), srcVol); err != nil {
 		t.Fatal(err)
 	}
 	snap1 := &miroirv1alpha1.MiroirSnapshot{
@@ -756,16 +756,16 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
-	if err := cl.Create(context.Background(), snap1); err != nil {
+	if err := cl.Create(t.Context(), snap1); err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.Status().Update(context.Background(), snap1); err != nil {
+	if err := cl.Status().Update(t.Context(), snap1); err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.Create(context.Background(), snap2); err != nil {
+	if err := cl.Create(t.Context(), snap2); err != nil {
 		t.Fatal(err)
 	}
-	if err := cl.Status().Update(context.Background(), snap2); err != nil {
+	if err := cl.Status().Update(t.Context(), snap2); err != nil {
 		t.Fatal(err)
 	}
 	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
@@ -781,12 +781,12 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 			},
 		}
 	}
-	if _, err := c.CreateVolume(context.Background(), mk(snapSnap1)); err != nil {
+	if _, err := c.CreateVolume(t.Context(), mk(snapSnap1)); err != nil {
 		t.Fatal(err)
 	}
 	// Same name, different source snapshot → ALREADY_EXISTS, not silent
 	// re-pointing of the existing CR's source field.
-	_, err := c.CreateVolume(context.Background(), mk("snap-2"))
+	_, err := c.CreateVolume(t.Context(), mk("snap-2"))
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("source change must be ALREADY_EXISTS, got %v", err)
 	}

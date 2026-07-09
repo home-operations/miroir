@@ -60,7 +60,7 @@ func (d *Driver) Seeded(name string) bool {
 // changed, create and GI-seed metadata once (see seedGI for how fresh
 // volumes skip the initial sync), bring the resource up / adjust.
 func (d *Driver) Apply(ctx context.Context, r Resource) error {
-	if _, err := d.writeConfig(r); err != nil {
+	if err := d.writeConfig(r); err != nil {
 		return err
 	}
 
@@ -414,13 +414,13 @@ func (d *Driver) readAssignments() (map[string]int32, error) {
 		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) != 2 {
+		name, val, ok := strings.Cut(line, " ")
+		if !ok {
 			continue
 		}
-		n, err := strconv.Atoi(parts[1])
+		n, err := strconv.Atoi(val)
 		if err == nil {
-			m[parts[0]] = int32(n)
+			m[name] = int32(n)
 		}
 	}
 	return m, nil
@@ -618,9 +618,6 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 // DiskUpToDate is the disk state of a replica holding current data.
 const DiskUpToDate = "UpToDate"
 
-// DiskStateDiskless is the disk state of a diskless tie-breaker peer.
-const DiskStateDiskless = "Diskless"
-
 // rolePrimary is the DRBD role of a node that holds the device open.
 const rolePrimary = "Primary"
 
@@ -636,12 +633,11 @@ type Status struct {
 	PeerPrimary bool
 	// Suspended is true while suspend-io holds this node's write barrier.
 	Suspended bool
-	// Connected is true when every peer connection is established.
-	Connected bool
 	// PeerConnected maps each peer's DRBD node id to whether its
-	// connection is established — consumers that must ignore a diskless
-	// tie-breaker's link state (snapshot barrier, removal gating) filter
-	// by the spec's diskful node ids instead of using the aggregate.
+	// connection is established. There is deliberately no all-peers
+	// aggregate: it would couple health decisions to a diskless
+	// tie-breaker's link state (the exact bug #78 removed) — filter by
+	// the spec's diskful node ids instead (see agent.diskfulPeersConnected).
 	PeerConnected map[int32]bool
 	// SplitBrain is true when a connection is StandAlone — DRBD refused
 	// to reconnect after detecting divergent data.
@@ -683,7 +679,6 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	res := parsed[0]
 
 	s := Status{
-		Connected:     true,
 		Primary:       res.Role == "Primary",
 		Suspended:     res.SuspendedUser,
 		PeerConnected: make(map[int32]bool, len(res.Connections)),
@@ -700,13 +695,8 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 			s.Resyncing = true
 		}
 		s.PeerConnected[c.PeerNodeID] = c.ConnectionState == "Connected"
-		switch c.ConnectionState {
-		case "Connected":
-		case "StandAlone":
+		if c.ConnectionState == "StandAlone" {
 			s.SplitBrain = true
-			s.Connected = false
-		default:
-			s.Connected = false
 		}
 	}
 	return s, nil
@@ -769,24 +759,24 @@ func IsResizeDuringResync(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "Resize not allowed during resync")
 }
 
-func (d *Driver) writeConfig(r Resource) (bool, error) {
+func (d *Driver) writeConfig(r Resource) error {
 	rendered := []byte(Render(r))
 	path := d.path(r.Name + ".res")
 	current, err := os.ReadFile(path)
 	if err == nil && bytes.Equal(current, rendered) {
-		return false, nil
+		return nil
 	}
 	if err != nil && !os.IsNotExist(err) {
-		return false, err
+		return err
 	}
 	if err := os.MkdirAll(d.StateDir, 0o750); err != nil {
-		return false, err
+		return err
 	}
 	// Atomic write: StateDir is drbdadm's include directory, and a crash
 	// mid-write would leave a truncated .res that makes drbdadm adjust fail
 	// for EVERY resource on the node, not just this one. Same tmp+sync+rename
 	// as writeAssignments.
-	return true, writeFileAtomic(path, rendered, 0o640)
+	return writeFileAtomic(path, rendered, 0o640)
 }
 
 // writeFileAtomic writes data to path via a temp file, fsync, and rename, so a

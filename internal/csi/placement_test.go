@@ -17,7 +17,6 @@ limitations under the License.
 package csi
 
 import (
-	"context"
 	"slices"
 	"testing"
 
@@ -81,7 +80,7 @@ func TestPlaceWeightsByFreeSpace(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	got, err := c.place(context.Background(), nil, 1, 5*gib, volNew)
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +102,7 @@ func TestPlaceRefusesOvercommit(t *testing.T) {
 	}
 
 	// Default 2× ratio: 15 + 10 = 25 GiB provisioned > 20 GiB cap on both.
-	_, err := c.place(context.Background(), nil, 1, 10*gib, volNew)
+	_, err := c.place(t.Context(), nil, 1, 10*gib, volNew)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("overcommit must be ResourceExhausted, got %v", err)
 	}
@@ -120,7 +119,7 @@ func TestPlaceTopologyPinnedRefusedWhenOvercommitted(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	_, err := c.place(context.Background(), topologyPref(nodeKharkiv), 1, 10*gib, volNew)
+	_, err := c.place(t.Context(), topologyPref(nodeKharkiv), 1, 10*gib, volNew)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("pinned overcommitted node must be ResourceExhausted, got %v", err)
 	}
@@ -130,7 +129,7 @@ func TestPlaceFallsBackWithoutStats(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: placementClient(s), Nodes: testNodes}
 
-	got, err := c.place(context.Background(), nil, 1, 5*gib, volNew)
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +150,7 @@ func TestPlaceHonoursConfiguredRatio(t *testing.T) {
 	}
 
 	// 11 GiB on a 10 GiB pool breaches a 1× ratio on every node.
-	_, err := c.place(context.Background(), nil, 1, 11*gib, volNew)
+	_, err := c.place(t.Context(), nil, 1, 11*gib, volNew)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("1x ratio must refuse an over-capacity volume, got %v", err)
 	}
@@ -229,7 +228,7 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 		},
 	}
 
-	got, err := c.place(context.Background(), nil, 2, 5*gib, volNew)
+	got, err := c.place(t.Context(), nil, 2, 5*gib, volNew)
 	if err != nil {
 		t.Fatal(err)
 	}

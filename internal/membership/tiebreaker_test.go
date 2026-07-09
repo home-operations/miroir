@@ -17,7 +17,6 @@ limitations under the License.
 package membership
 
 import (
-	"context"
 	"slices"
 	"testing"
 
@@ -63,7 +62,7 @@ func freezeVol() *miroirv1alpha1.MiroirVolume {
 
 func tbReconcile(t *testing.T, r *TieBreakerReconciler) {
 	t.Helper()
-	if _, err := r.Reconcile(context.Background(),
+	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volTB}}); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +129,7 @@ func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
 		nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
-	res, err := tb.Reconcile(context.Background(),
+	res, err := tb.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volTB}})
 	if err != nil {
 		t.Fatal(err)

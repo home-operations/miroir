@@ -17,7 +17,6 @@ limitations under the License.
 package agent
 
 import (
-	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -44,7 +43,7 @@ func TestCordonWatcherTracksUnschedulable(t *testing.T) {
 		t.Fatal("must default to not cordoned before any observation")
 	}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: nodeKharkiv}}
-	if _, err := w.Reconcile(context.Background(), req); err != nil {
+	if _, err := w.Reconcile(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}
 	if !w.Cordoned() {
@@ -53,10 +52,10 @@ func TestCordonWatcherTracksUnschedulable(t *testing.T) {
 
 	// Uncordon: the cached state follows the node back to schedulable.
 	node.Spec.Unschedulable = false
-	if err := c.Update(context.Background(), node); err != nil {
+	if err := c.Update(t.Context(), node); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Reconcile(context.Background(), req); err != nil {
+	if _, err := w.Reconcile(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}
 	if w.Cordoned() {

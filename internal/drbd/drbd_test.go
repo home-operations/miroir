@@ -198,7 +198,7 @@ func TestApplyFreshResource(t *testing.T) {
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource(nodeKharkiv) // node-id 0 → winner
 
-	if err := d.Apply(context.Background(), r); err != nil {
+	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
@@ -229,7 +229,7 @@ func TestApplyNonWinnerSeedsWasUpToDate(t *testing.T) {
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource(nodeParis) // node-id 1 → not winner
 
-	if err := d.Apply(context.Background(), r); err != nil {
+	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
 	// Non-winner seeds WasUpToDate (without Consistent): attaches
@@ -247,7 +247,7 @@ func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
 	r := testResource(nodeKharkiv)
 	r.SkipSeed = true // late joiner: must full-sync, not pose as a day0 twin
 
-	if err := d.Apply(context.Background(), r); err != nil {
+	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
@@ -263,11 +263,11 @@ func TestApplyIdempotent(t *testing.T) {
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource(nodeKharkiv)
 
-	if err := d.Apply(context.Background(), r); err != nil {
+	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
 	before := len(fe.calls)
-	if err := d.Apply(context.Background(), r); err != nil {
+	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
 	// Second pass: only adjust — no create-md, no re-seeding (would
@@ -287,7 +287,7 @@ func TestApplyReseedsAfterMidSeedCrash(t *testing.T) {
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource(nodeParis)
 
-	if err := d.Apply(context.Background(), r); err == nil {
+	if err := d.Apply(t.Context(), r); err == nil {
 		t.Fatal("expected mid-seed failure")
 	}
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); !os.IsNotExist(err) {
@@ -303,7 +303,7 @@ func TestApplyReseedsAfterMidSeedCrash(t *testing.T) {
 	fe.errOn = nil
 	fe.responses = map[string]string{cmdDumpMD: mockCurrentUUID}
 	fe.calls = nil
-	if err := d.Apply(context.Background(), r); err != nil {
+	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1))
@@ -334,7 +334,7 @@ func TestApplyAdoptsAttachedDevice(t *testing.T) {
 		}},
 	} {
 		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-		if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
+		if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		fe.notCalledWith(t, "create-md")
@@ -361,7 +361,7 @@ func TestApplyAppliesALOnUncleanClone(t *testing.T) {
 	}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm apply-al pvc-1/0")
@@ -381,7 +381,7 @@ func TestApplySurfacesNonDRBDBusyDevice(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err == nil {
+	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err == nil {
 		t.Fatal("busy backing device must surface as an error")
 	}
 	fe.notCalledWith(t, "create-md")
@@ -402,7 +402,7 @@ func TestApplyFastPathCleansStaleSentinel(t *testing.T) {
 		}
 	}
 
-	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "set-gi")
@@ -419,7 +419,7 @@ func TestApplyAdoptsLiveMetadataWithoutMarkers(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "create-md")
@@ -438,7 +438,7 @@ func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(context.Background(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "set-gi --node-id 1")
@@ -471,10 +471,10 @@ func TestDownRemovesState(t *testing.T) {
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource(nodeKharkiv)
 
-	if err := d.Apply(context.Background(), r); err != nil {
+	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Down(context.Background(), volPvc1); err != nil {
+	if err := d.Down(t.Context(), volPvc1); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdsetup down pvc-1")
@@ -484,7 +484,7 @@ func TestDownRemovesState(t *testing.T) {
 
 	// Down on never-configured resource is a no-op.
 	before := len(fe.calls)
-	if err := d.Down(context.Background(), "pvc-other"); err != nil {
+	if err := d.Down(t.Context(), "pvc-other"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fe.calls) != before {
@@ -500,18 +500,17 @@ func TestStatusParsing(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	s, err := d.Status(context.Background(), volPvc1)
+	s, err := d.Status(t.Context(), volPvc1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.DiskState != "UpToDate" || !s.Connected || s.SplitBrain || !s.PeerPrimary || !s.Suspended {
+	if s.DiskState != "UpToDate" || s.SplitBrain || !s.PeerPrimary || !s.Suspended {
 		t.Fatalf("unexpected status %+v", s)
 	}
 }
 
 // Per-peer connection state keys on the DRBD node id, so consumers can
-// ignore a diskless tie-breaker's link (snapshot barrier, removal gating)
-// while the aggregate Connected still reflects every link.
+// ignore a diskless tie-breaker's link (snapshot barrier, removal gating).
 func TestStatusPerPeerConnected(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
@@ -522,15 +521,12 @@ func TestStatusPerPeerConnected(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	s, err := d.Status(context.Background(), volPvc1)
+	s, err := d.Status(t.Context(), volPvc1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !s.PeerConnected[1] || s.PeerConnected[2] {
 		t.Fatalf("per-peer state wrong: %+v", s.PeerConnected)
-	}
-	if s.Connected {
-		t.Fatal("aggregate Connected must still reflect the down link")
 	}
 }
 
@@ -542,7 +538,7 @@ func TestDownSecondariesSkipsPrimary(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.DownSecondaries(context.Background()); err != nil {
+	if err := d.DownSecondaries(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	// Primary legs are still open — skipped.
@@ -561,7 +557,7 @@ func TestDownSecondariesContinuesOnError(t *testing.T) {
 	}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	err := d.DownSecondaries(context.Background())
+	err := d.DownSecondaries(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "pvc-2") {
 		t.Fatalf("want a joined error naming pvc-2, got %v", err)
 	}
@@ -589,7 +585,7 @@ func TestUserSuspendedListsFrozenResources(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	got, err := d.UserSuspended(context.Background())
+	got, err := d.UserSuspended(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,11 +602,11 @@ func TestStatusSplitBrain(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	s, err := d.Status(context.Background(), volPvc1)
+	s, err := d.Status(t.Context(), volPvc1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !s.SplitBrain || s.Connected {
+	if !s.SplitBrain {
 		t.Fatalf("StandAlone must surface as split-brain: %+v", s)
 	}
 }
@@ -639,15 +635,15 @@ func TestStatusResyncing(t *testing.T) {
 			}}
 			d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-			s, err := d.Status(context.Background(), volPvc1)
+			s, err := d.Status(t.Context(), volPvc1)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if s.Resyncing != tc.wantR {
 				t.Fatalf("replication-state %q: Resyncing = %v, want %v", tc.repl, s.Resyncing, tc.wantR)
 			}
-			if !s.Connected {
-				t.Fatalf("a connected peer must stay Connected: %+v", s)
+			if !s.PeerConnected[0] {
+				t.Fatalf("a connected peer must stay connected: %+v", s)
 			}
 		})
 	}

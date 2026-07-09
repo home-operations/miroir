@@ -58,7 +58,7 @@ func snapObj(name, volume string, nodes ...string) *miroirv1alpha1.MiroirSnapsho
 //nolint:unparam // future tests will vary the name
 func reconcileSnap(t *testing.T, r *SnapshotReconciler, name string) ctrl.Result {
 	t.Helper()
-	res, err := r.Reconcile(context.Background(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 	reconcileSnap(t, r, snapSnap1)
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Status.ReadyToUse {
@@ -110,7 +110,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	feK.calledWith(t, "drbdadm suspend-io pvc-1")
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
 	if !got.Status.IOSuspended || got.Status.PerNode[nodeKharkiv] != miroirv1alpha1.SnapshotSuspended {
 		t.Fatalf("coordinator must raise the barrier before cutting: %+v", got.Status)
 	}
@@ -137,7 +137,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	if len(fbP.snapCalls) != 2 || fbP.snapCalls[1] != snapCallSnapshot {
 		t.Fatalf("peer must cut once all barriers are up: %v", fbP.snapCalls)
 	}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
 	if got.Status.ReadyToUse {
 		t.Fatal("snapshot must not be ready before the coordinator collects")
 	}
@@ -145,7 +145,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 	// Coordinator sees both Done → resumes and marks ready.
 	reconcileSnap(t, rK, snapSnap1)
 	feK.calledWith(t, "drbdadm resume-io pvc-1")
-	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
 	if !got.Status.ReadyToUse || got.Status.IOSuspended {
 		t.Fatalf("snapshot must be ready with IO resumed: %+v", got.Status)
 	}
@@ -205,7 +205,7 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 	reconcileSnap(t, rK, snapSnap1)
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Status.ReadyToUse || got.Status.IOSuspended {
@@ -218,11 +218,11 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 
 	// Deletion: the tie-breaker's agent releases its finalizer without a
 	// backend DeleteSnapshot.
-	if err := c.Delete(context.Background(), got); err != nil {
+	if err := c.Delete(t.Context(), got); err != nil {
 		t.Fatal(err)
 	}
 	reconcileSnap(t, rO, snapSnap1)
-	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeOslo) {
@@ -283,7 +283,7 @@ func TestSnapshotProceedsWithTieBreakerDown(t *testing.T) {
 	reconcileSnap(t, rK, snapSnap1)
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Status.ReadyToUse || got.Status.IOSuspended {
@@ -354,7 +354,7 @@ func TestSnapshotPeerRecordsOnlyOwnSlot(t *testing.T) {
 
 	// The coordinator's barrier survives the peer's write.
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Status.IOSuspended {
@@ -427,7 +427,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	reconcileSnap(t, r, snapSnap1)
 	fe.calledWith(t, "drbdadm resume-io pvc-1")
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Status.IOSuspended || got.Status.ReadyToUse {
@@ -441,7 +441,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	// The void restamps suspendedAt so the retry backoff is real: an
 	// immediate reconcile must not re-raise the barrier.
 	reconcileSnap(t, r, snapSnap1)
-	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
 	if got.Status.IOSuspended {
 		t.Fatalf("retry must back off before re-raising the barrier: %+v", got.Status)
 	}
@@ -451,7 +451,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	aged := metav1.NewTime(time.Now().Add(-2 * suspendRetryBackoff))
 	got.Status.SuspendedAt = &aged
 	got.Status.PerNode[nodeParis] = miroirv1alpha1.SnapshotDone
-	if err := c.Status().Update(context.Background(), got); err != nil {
+	if err := c.Status().Update(t.Context(), got); err != nil {
 		t.Fatal(err)
 	}
 
@@ -460,7 +460,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	if len(fb.snapCalls) != 0 {
 		t.Fatalf("no recut before every barrier is up: %v", fb.snapCalls)
 	}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
 	if got.Status.PerNode[nodeParis] != miroirv1alpha1.SnapshotPending {
 		t.Fatalf("opening a round must void stale peer legs: %+v", got.Status.PerNode)
 	}
@@ -546,7 +546,7 @@ func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 func assertFinalizerReleased(t *testing.T, c client.Client, name, node string) {
 	t.Helper()
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	err := c.Get(context.Background(), types.NamespacedName{Name: name}, got)
+	err := c.Get(t.Context(), types.NamespacedName{Name: name}, got)
 	if apierrors.IsNotFound(err) {
 		return
 	}
@@ -717,7 +717,7 @@ func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 	reconcileSnap(t, r, snapSnap1)
 
 	got := &miroirv1alpha1.MiroirSnapshot{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: snapSnap1}, got)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
 	if got.Status.PerNode[nodeParis] == miroirv1alpha1.SnapshotDone {
 		t.Fatal("peer must wait for the IO barrier")
 	}

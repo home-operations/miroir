@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -536,12 +535,8 @@ func (c *Controller) provisionedPerNode(ctx context.Context, exclude string) (ma
 // agent.
 func (c *Controller) allocateDRBD(ctx context.Context) (*miroirv1alpha1.DRBDSpec, error) {
 	const portBase = 7000
-	reader := c.APIReader
-	if reader == nil {
-		reader = c.Client
-	}
 	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := reader.List(ctx, vols); err != nil {
+	if err := c.reader().List(ctx, vols); err != nil {
 		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
 	}
 	usedPort := map[int32]bool{}
@@ -607,11 +602,7 @@ func (e *errVolumeFailed) Error() string { return e.detail }
 // retries forever and the PVC never binds). devicePath/NodeStage separately
 // refuses an Inconsistent local replica, so no pod lands on stale data.
 func (c *Controller) waitReady(ctx context.Context, name string) error {
-	timeout := c.ProvisionTimeout
-	if timeout == 0 {
-		timeout = defaultProvisionTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(c.ProvisionTimeout, defaultProvisionTimeout))
 	defer cancel()
 
 	err := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true,
@@ -746,10 +737,7 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 	}
 	// Report the size captured at snapshot time once known; the live
 	// volume may have been expanded since.
-	size := vol.Spec.SizeBytes
-	if snap.Status.SizeBytes > 0 {
-		size = snap.Status.SizeBytes
-	}
+	size := cmp.Or(snap.Status.SizeBytes, vol.Spec.SizeBytes)
 	return &csi.CreateSnapshotResponse{Snapshot: csiSnapshot(snap, size)}, nil
 }
 
@@ -797,7 +785,7 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 	// Tokens are positional; the listing order must be stable across calls
 	// or pages skip and duplicate entries.
 	slices.SortFunc(vols.Items, func(a, b miroirv1alpha1.MiroirVolume) int {
-		return strings.Compare(a.Name, b.Name)
+		return cmp.Compare(a.Name, b.Name)
 	})
 
 	start := 0
@@ -815,10 +803,7 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 	}
 
 	resp := &csi.ListVolumesResponse{}
-	end := start + maxEntries
-	if end > len(vols.Items) {
-		end = len(vols.Items)
-	}
+	end := min(start+maxEntries, len(vols.Items))
 
 	for i := start; i < end; i++ {
 		v := &vols.Items[i]
@@ -841,7 +826,7 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 	}
 
 	if end < len(vols.Items) {
-		resp.NextToken = fmt.Sprintf("%d", end)
+		resp.NextToken = strconv.Itoa(end)
 	}
 	return resp, nil
 }
@@ -904,12 +889,18 @@ func (c *Controller) markVolumeFormatted(ctx context.Context, name string) error
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 		return err
 	}
+	return markFormatted(ctx, c.Client, vol)
+}
+
+// markFormatted flips the Formatted status flag once; shared by the
+// controller (clone inheritance) and the node service (post-mkfs).
+func markFormatted(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume) error {
 	if vol.Status.Formatted {
 		return nil
 	}
 	base := vol.DeepCopy()
 	vol.Status.Formatted = true
-	return c.Client.Status().Patch(ctx, vol, client.MergeFrom(base))
+	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
 func parseReplicas(params map[string]string) (int, error) {

@@ -88,7 +88,7 @@ func TestLVMThinCreate(t *testing.T) {
 	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("Failed to find logical volume"))
 	b := newLVMThin(cfg, fe.run)
 
-	dev, err := b.Create(context.Background(), "pvc-1", 10<<30)
+	dev, err := b.Create(t.Context(), "pvc-1", 10<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestLVMThinCreateIdempotent(t *testing.T) {
 	fe := &fakeExec{} // lvs succeeds → LV exists
 	b := newLVMThin(cfg, fe.run)
 
-	if _, err := b.Create(context.Background(), "pvc-1", 10<<30); err != nil {
+	if _, err := b.Create(t.Context(), "pvc-1", 10<<30); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "lvcreate")
@@ -116,7 +116,7 @@ func TestLVMThinResizeSkipsWhenBigEnough(t *testing.T) {
 	fe.respond("lv_size", "  10737418240\n", nil)
 	b := newLVMThin(cfg, fe.run)
 
-	if err := b.Resize(context.Background(), "pvc-1", 10<<30); err != nil {
+	if err := b.Resize(t.Context(), "pvc-1", 10<<30); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "lvextend")
@@ -127,7 +127,7 @@ func TestLVMThinDeleteAbsentIsNoop(t *testing.T) {
 	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("Failed to find logical volume"))
 	b := newLVMThin(cfg, fe.run)
 
-	if err := b.Delete(context.Background(), "pvc-1"); err != nil {
+	if err := b.Delete(t.Context(), "pvc-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "lvremove")
@@ -138,7 +138,7 @@ func TestLVMThinStats(t *testing.T) {
 	fe.respond("lv_size,data_percent,metadata_percent", "  751619276800|10.50|1.20\n", nil)
 	b := newLVMThin(cfg, fe.run)
 
-	s, err := b.Stats(context.Background())
+	s, err := b.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestZFSCreate(t *testing.T) {
 	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
 	b := newZFS(cfg, fe.run)
 
-	dev, err := b.Create(context.Background(), "pvc-1", 10<<30)
+	dev, err := b.Create(t.Context(), "pvc-1", 10<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestZFSSnapshotIdempotent(t *testing.T) {
 	fe := &fakeExec{} // list succeeds → snapshot exists
 	b := newZFS(cfg, fe.run)
 
-	if err := b.Snapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
+	if err := b.Snapshot(t.Context(), "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "zfs snapshot")
@@ -184,7 +184,7 @@ func TestZFSCreateFromSnapshot(t *testing.T) {
 	fe.respond("zfs list -H tank/miroir/pvc-2", "", errors.New("dataset does not exist"))
 	b := newZFS(cfg, fe.run)
 
-	dev, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snap-1")
+	dev, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snap-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestLVMThinCloneReactivates(t *testing.T) {
 	fe := &fakeExec{}
 	b := newLVMThin(cfg, fe.run)
 
-	if _, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snap-1"); err != nil {
+	if _, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "lvcreate")
@@ -214,20 +214,20 @@ func TestLVMThinSnapshotAvoidsReservedName(t *testing.T) {
 	fe.respond("lvs vg-miroir/miroir-snapshot-1", "", errors.New("Failed to find logical volume"))
 	b := newLVMThin(cfg, fe.run)
 
-	if err := b.Snapshot(context.Background(), "pvc-1", "snapshot-1"); err != nil {
+	if err := b.Snapshot(t.Context(), "pvc-1", "snapshot-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "--name miroir-snapshot-1")
 	fe.notCalledWith(t, "--name snapshot-1")
 
 	fe.respond("lvs vg-miroir/pvc-2", "", errors.New("Failed to find logical volume"))
-	if _, err := b.CreateFromSnapshot(context.Background(), "pvc-2", "pvc-1", "snapshot-1"); err != nil {
+	if _, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snapshot-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "vg-miroir/miroir-snapshot-1")
 
 	fe.respond("lvs vg-miroir/miroir-snapshot-1", "", nil) // now exists
-	if err := b.DeleteSnapshot(context.Background(), "pvc-1", "snapshot-1"); err != nil {
+	if err := b.DeleteSnapshot(t.Context(), "pvc-1", "snapshot-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "lvremove --yes vg-miroir/miroir-snapshot-1")
@@ -240,7 +240,7 @@ func TestZFSDeleteSnapshotDefersForClones(t *testing.T) {
 	fe.respond("zfs list -Hpo name -t snapshot", "tank/miroir/pvc-1@snap-1\n", nil)
 	b := newZFS(cfg, fe.run)
 
-	if err := b.DeleteSnapshot(context.Background(), "pvc-1", "snap-1"); err != nil {
+	if err := b.DeleteSnapshot(t.Context(), "pvc-1", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "zfs destroy -d tank/miroir/pvc-1@snap-1")
@@ -256,7 +256,7 @@ func TestZFSDeletePromotesDependentClones(t *testing.T) {
 
 	// The retry hits the same canned destroy error; what matters is that
 	// every dependent clone was promoted first.
-	if err := b.Delete(context.Background(), "pvc-1"); err == nil {
+	if err := b.Delete(t.Context(), "pvc-1"); err == nil {
 		t.Fatal("expected destroy error to propagate")
 	}
 	fe.calledWith(t, "zfs promote tank/miroir/pvc-2")
@@ -267,7 +267,7 @@ func TestZFSDeleteWithoutClonesDoesNotPromote(t *testing.T) {
 	fe := &fakeExec{}
 	b := newZFS(cfg, fe.run)
 
-	if err := b.Delete(context.Background(), "pvc-1"); err != nil {
+	if err := b.Delete(t.Context(), "pvc-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "zfs promote")
@@ -284,7 +284,7 @@ func TestZFSDeleteBusyWhileSnapshotsPresent(t *testing.T) {
 	fe.respond("zfs get -Hpo value clones", "-\n", nil) // no clones to promote
 	b := newZFS(cfg, fe.run)
 
-	if err := b.Delete(context.Background(), "pvc-1"); !errors.Is(err, ErrBusy) {
+	if err := b.Delete(t.Context(), "pvc-1"); !errors.Is(err, ErrBusy) {
 		t.Fatalf("want ErrBusy while snapshots pin the volume, got %v", err)
 	}
 }
@@ -300,7 +300,7 @@ func TestZFSDeleteSnapshotSurfacesPermanentError(t *testing.T) {
 		errors.New("cannot destroy snapshot tank/miroir/pvc-1@snap-1: permission denied"))
 	b := newZFS(cfg, fe.run)
 
-	err := b.DeleteSnapshot(context.Background(), "pvc-1", "snap-1")
+	err := b.DeleteSnapshot(t.Context(), "pvc-1", "snap-1")
 	if err == nil {
 		t.Fatal("a permanent DeleteSnapshot error must surface")
 	}
@@ -315,7 +315,7 @@ func TestLVMThinDeleteBusyWhenInUse(t *testing.T) {
 		errors.New("Logical volume vg-miroir/pvc-1 in use."))
 	b := newLVMThin(cfg, fe.run)
 
-	if err := b.Delete(context.Background(), "pvc-1"); !errors.Is(err, ErrBusy) {
+	if err := b.Delete(t.Context(), "pvc-1"); !errors.Is(err, ErrBusy) {
 		t.Fatalf("want ErrBusy while the LV is open, got %v", err)
 	}
 }
@@ -325,7 +325,7 @@ func TestZFSStatsUsesPool(t *testing.T) {
 	fe.respond("zpool get", "2000000000000\n500000000000\n", nil)
 	b := newZFS(cfg, fe.run)
 
-	s, err := b.Stats(context.Background())
+	s, err := b.Stats(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestLVMThinSetupBootstrapsPool(t *testing.T) {
 	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName,
 		Device: "/dev/disk/by-partlabel/r-miroir"}, fe.run)
 
-	if err := b.Setup(context.Background()); err != nil {
+	if err := b.Setup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "pvcreate /dev/disk/by-partlabel/r-miroir")
@@ -359,7 +359,7 @@ func TestLVMThinSetupBoundedPoolSize(t *testing.T) {
 	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName,
 		Device: "/dev/disk/by-partlabel/r-miroir", PoolSize: "400g"}, fe.run)
 
-	if err := b.Setup(context.Background()); err != nil {
+	if err := b.Setup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "lvcreate --type thin-pool --size 400g --poolmetadatasize 1g --name thinpool vg-miroir")
@@ -370,7 +370,7 @@ func TestLVMThinSetupIdempotent(t *testing.T) {
 	fe := &fakeExec{} // vgs + lvs succeed → VG and pool exist
 	b := newLVMThin(cfg, fe.run)
 
-	if err := b.Setup(context.Background()); err != nil {
+	if err := b.Setup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "pvcreate")
@@ -382,7 +382,7 @@ func TestLVMThinSetupNoDeviceFails(t *testing.T) {
 	fe.respond("vgs vg-miroir", "", errors.New("Volume group \"vg-miroir\" not found"))
 	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName}, fe.run)
 
-	if err := b.Setup(context.Background()); err == nil {
+	if err := b.Setup(t.Context()); err == nil {
 		t.Fatal("expected error when VG absent and no device configured")
 	}
 }
@@ -392,7 +392,7 @@ func TestZFSSetupCreatesParentDataset(t *testing.T) {
 	fe.respond("zfs list -H tank/miroir", "", errors.New("dataset does not exist"))
 	b := newZFS(cfg, fe.run)
 
-	if err := b.Setup(context.Background()); err != nil {
+	if err := b.Setup(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "zfs create -p tank/miroir")
@@ -406,10 +406,10 @@ func TestLVMCommandsHaveNoUdevSyncFlag(t *testing.T) {
 	fe.respond("lv_size", "  10737418240\n", nil)
 	b := newLVMThin(cfg, fe.run)
 
-	_, _ = b.Create(context.Background(), "pvc-1", 1<<30)
-	_ = b.Resize(context.Background(), "pvc-1", 1<<30)
-	_, _ = b.Stats(context.Background())
-	_ = b.Setup(context.Background())
+	_, _ = b.Create(t.Context(), "pvc-1", 1<<30)
+	_ = b.Resize(t.Context(), "pvc-1", 1<<30)
+	_, _ = b.Stats(t.Context())
+	_ = b.Setup(t.Context())
 
 	for _, call := range fe.calls {
 		if strings.Contains(call, "--noudevsync") {
@@ -439,12 +439,12 @@ func TestZFSAlignsVolsize(t *testing.T) {
 	fe.respond("zfs get -Hpo value volsize", "1000001536\n", nil)
 	b := newZFS(cfg, fe.run)
 
-	if _, err := b.Create(context.Background(), "pvc-1", 1_000_000_000); err != nil {
+	if _, err := b.Create(t.Context(), "pvc-1", 1_000_000_000); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "-V 1000001536") // 10^9 rounded up to the 4096 boundary
 
-	if err := b.Resize(context.Background(), "pvc-1", 2_000_000_000); err != nil {
+	if err := b.Resize(t.Context(), "pvc-1", 2_000_000_000); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "volsize=2000003072")
@@ -460,7 +460,7 @@ func TestZFSDeleteSnapshotFindsMigratedSnapshot(t *testing.T) {
 		"tank/miroir/pvc-clone@snap-1\n", nil)
 	b := newZFS(cfg, fe.run)
 
-	if err := b.DeleteSnapshot(context.Background(), "pvc-src", "snap-1"); err != nil {
+	if err := b.DeleteSnapshot(t.Context(), "pvc-src", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "zfs destroy -d tank/miroir/pvc-clone@snap-1")
@@ -472,7 +472,7 @@ func TestZFSDeleteSnapshotAbsentIsNoop(t *testing.T) {
 		"tank/miroir/other@unrelated\n", nil)
 	b := newZFS(cfg, fe.run)
 
-	if err := b.DeleteSnapshot(context.Background(), "pvc-src", "snap-1"); err != nil {
+	if err := b.DeleteSnapshot(t.Context(), "pvc-src", "snap-1"); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "destroy")
@@ -485,7 +485,7 @@ func TestLVMThinSetupSurfacesTransientVGSError(t *testing.T) {
 	fe.respond("vgs vg-miroir", "", errors.New("global/lvmetad lock contention"))
 	b := newLVMThin(Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName, Device: "/dev/sdz"}, fe.run)
 
-	if err := b.Setup(context.Background()); err == nil {
+	if err := b.Setup(t.Context()); err == nil {
 		t.Fatal("transient vgs error must fail Setup")
 	}
 	fe.notCalledWith(t, "pvcreate")
