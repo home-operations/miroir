@@ -52,6 +52,12 @@
     },
     "controller": {
       "properties": {
+        "autoTieBreaker": {
+          "default": true,
+          "description": "Add a diskless tie-breaker replica to 2-replica freeze volumes when a\nspare storage node exists, so majority quorum survives a single node\nloss. Also retrofits existing freeze volumes at controller startup.",
+          "title": "autoTieBreaker",
+          "type": "boolean"
+        },
         "overcommitRatio": {
           "default": 2,
           "description": "Thin-provisioning overcommit guardrail: CreateVolume is refused when a\nnode's provisioned total would exceed capacity × this ratio. 2× is the\nclassic CoW headroom; raise it only if you trust your usage to stay\nsparse, lower it toward 1 to provision conservatively.",
@@ -307,7 +313,8 @@
           "type": "string"
         },
         "quorum": {
-          "default": "last-man-standing",
+          "default": "freeze",
+          "description": "freeze (majority quorum + suspend I/O without it) is split-brain-free;\nwith autoTieBreaker a third node keeps volumes writable through a\nsingle node loss. last-man-standing keeps the survivor writable even\nwithout quorum, at the cost of possible divergence.",
           "title": "quorum",
           "type": "string"
         },

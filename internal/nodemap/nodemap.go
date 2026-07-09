@@ -23,6 +23,7 @@ package nodemap
 import (
 	"fmt"
 	"os"
+	"slices"
 
 	"sigs.k8s.io/yaml"
 
@@ -54,6 +55,36 @@ type Node struct {
 // Map is node name → storage config. Nodes absent from the map hold no
 // replicas.
 type Map map[string]Node
+
+// TieBreakerNode picks a storage node to host a diskless tie-breaker for
+// the given replicas: one not already holding a replica, preferring a zone
+// none of them occupy, ties by name. Empty when no spare node exists.
+func (m Map) TieBreakerNode(replicas []miroirv1alpha1.Replica) string {
+	usedNode := make(map[string]bool, len(replicas))
+	usedZone := make(map[string]bool, len(replicas))
+	for _, r := range replicas {
+		usedNode[r.Node] = true
+		if z := m[r.Node].Zone; z != "" {
+			usedZone[z] = true
+		}
+	}
+	spare := make([]string, 0, len(m))
+	for n := range m {
+		if !usedNode[n] {
+			spare = append(spare, n)
+		}
+	}
+	slices.Sort(spare)
+	for _, n := range spare {
+		if z := m[n].Zone; z == "" || !usedZone[z] {
+			return n
+		}
+	}
+	if len(spare) > 0 {
+		return spare[0]
+	}
+	return ""
+}
 
 // Load reads and validates the node map from a YAML file.
 func Load(path string) (Map, error) {

@@ -83,7 +83,7 @@ tests:
           value: "2"
       - equal:
           path: parameters["miroir.home-operations.com/quorum"]
-          value: last-man-standing
+          value: freeze
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
           value: ext4
@@ -137,7 +137,7 @@ tests:
       replicatedStorageClass:
         create: true
         name: custom-replicated
-        quorum: freeze
+        quorum: last-man-standing
         fsType: zfs
     documentSelector:
       path: metadata.name
@@ -148,7 +148,7 @@ tests:
           value: StorageClass
       - equal:
           path: parameters["miroir.home-operations.com/quorum"]
-          value: freeze
+          value: last-man-standing
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
           value: zfs

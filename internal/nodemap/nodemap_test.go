@@ -24,6 +24,13 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
+const (
+	nodeKharkiv = "kharkiv"
+	nodeParis   = "paris"
+	nodeOslo    = "oslo"
+	nodeBergen  = "bergen"
+)
+
 func writeMap(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "nodes.yaml")
@@ -87,5 +94,44 @@ func TestLoadErrors(t *testing.T) {
 func TestLoadMissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("expected an error for a missing file")
+	}
+}
+
+func TestTieBreakerNode(t *testing.T) {
+	replicas := []miroirv1alpha1.Replica{{Node: nodeKharkiv}, {Node: nodeParis}}
+	cases := map[string]struct {
+		m    Map
+		want string
+	}{
+		"prefers a zone no replica occupies": {
+			m: Map{
+				nodeKharkiv: {Zone: "a"}, nodeParis: {Zone: "b"},
+				nodeOslo: {Zone: "a"}, nodeBergen: {Zone: "c"},
+			},
+			want: nodeBergen,
+		},
+		"zoneless spare is unconstrained": {
+			m:    Map{nodeKharkiv: {Zone: "a"}, nodeParis: {Zone: "b"}, nodeOslo: {}},
+			want: nodeOslo,
+		},
+		"falls back to an occupied zone when none is free": {
+			m:    Map{nodeKharkiv: {Zone: "a"}, nodeParis: {Zone: "b"}, nodeOslo: {Zone: "a"}},
+			want: nodeOslo,
+		},
+		"name order breaks ties": {
+			m:    Map{nodeKharkiv: {}, nodeParis: {}, nodeOslo: {}, nodeBergen: {}},
+			want: nodeBergen,
+		},
+		"no spare node": {
+			m:    Map{nodeKharkiv: {}, nodeParis: {}},
+			want: "",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.m.TieBreakerNode(replicas); got != tc.want {
+				t.Fatalf("TieBreakerNode = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

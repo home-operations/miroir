@@ -43,6 +43,8 @@ const (
 	nodeParis   = "paris"
 	nodeOslo    = "oslo"
 	addrKharkiv = "192.168.1.41"
+	addrParis   = "192.168.1.42"
+	addrOslo    = "192.168.1.43"
 	volPvc1     = "pvc-1"
 	volSrc      = "pvc-src"
 	volNew      = "pvc-new"
@@ -254,7 +256,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 		Parameters: map[string]string{
 			constants.ParamReplicas: "2",
-			constants.ParamQuorum:   "last-man-standing",
+			constants.ParamQuorum:   string(miroirv1alpha1.QuorumLastManStanding),
 		},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
@@ -308,6 +310,139 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	}
 	if vol2.Spec.DRBD.Port != 7001 {
 		t.Fatalf("allocator must advance: %+v", vol2.Spec.DRBD)
+	}
+}
+
+// tieBreakerController is a 3-node controller whose fake client flips
+// created volumes to Ready, for exercising the auto-tie-breaker path.
+func tieBreakerController(t *testing.T, autoTieBreaker bool) *Controller {
+	t.Helper()
+	return &Controller{
+		Client: fake.NewClientBuilder().WithScheme(newScheme(t)).
+			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis), nodeObj(nodeOslo, addrOslo)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := cl.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
+						vol.Status.Phase = miroirv1alpha1.VolumeReady
+					}
+					return nil
+				},
+			}).Build(),
+		Nodes: nodemap.Map{
+			nodeKharkiv: {Backend: miroirv1alpha1.BackendLVMThin},
+			nodeParis:   {Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
+			nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin},
+		},
+		ProvisionTimeout: 2 * time.Second,
+		AutoTieBreaker:   autoTieBreaker,
+	}
+}
+
+// A 2-replica volume with the default quorum (now freeze) gets a diskless
+// tie-breaker on the spare node (#70).
+func TestCreateVolumeAutoTieBreaker(t *testing.T) {
+	c := tieBreakerController(t, true)
+
+	resp, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-tb",
+		VolumeCapabilities: volCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		AccessibilityRequirements: &csi.TopologyRequirement{
+			Preferred: []*csi.Topology{
+				{Segments: map[string]string{constants.TopologyKey: nodeKharkiv}},
+				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Volume.AccessibleTopology) != 2 {
+		t.Fatalf("topology must cover only diskful nodes: %+v", resp.Volume.AccessibleTopology)
+	}
+
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-tb"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if vol.Spec.QuorumPolicy != miroirv1alpha1.QuorumFreeze {
+		t.Fatalf("default quorum must be freeze, got %s", vol.Spec.QuorumPolicy)
+	}
+	if len(vol.Spec.Replicas) != 3 {
+		t.Fatalf("want 2 diskful + 1 tie-breaker, got %+v", vol.Spec.Replicas)
+	}
+	tb := vol.Spec.Replicas[2]
+	if tb.Node != nodeOslo || !tb.Diskless || tb.NodeID != 2 || tb.Address != addrOslo {
+		t.Fatalf("unexpected tie-breaker %+v", tb)
+	}
+	if tb.Backend != "" {
+		t.Fatalf("tie-breaker must carry no backend: %+v", tb)
+	}
+	if len(vol.Finalizers) != 3 {
+		t.Fatalf("tie-breaker node needs a teardown finalizer: %v", vol.Finalizers)
+	}
+}
+
+func TestCreateVolumeAutoTieBreakerSkips(t *testing.T) {
+	cases := map[string]struct {
+		controller *Controller
+		params     map[string]string
+	}{
+		"opted out": {
+			controller: tieBreakerController(t, false),
+			params:     map[string]string{constants.ParamReplicas: "2"},
+		},
+		"last-man-standing": {
+			controller: tieBreakerController(t, true),
+			params: map[string]string{
+				constants.ParamReplicas: "2",
+				constants.ParamQuorum:   string(miroirv1alpha1.QuorumLastManStanding),
+			},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := tc.controller.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+				Name:               "pvc-plain",
+				VolumeCapabilities: volCaps(),
+				Parameters:         tc.params,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			vol := &miroirv1alpha1.MiroirVolume{}
+			if err := tc.controller.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-plain"}, vol); err != nil {
+				t.Fatal(err)
+			}
+			if len(vol.Spec.Replicas) != 2 {
+				t.Fatalf("no tie-breaker expected: %+v", vol.Spec.Replicas)
+			}
+		})
+	}
+}
+
+// With every storage node holding a replica there is nothing to place the
+// tie-breaker on — the volume is created without one.
+func TestCreateVolumeAutoTieBreakerNoSpareNode(t *testing.T) {
+	c := tieBreakerController(t, true)
+	c.Nodes = testNodes // kharkiv + paris only
+
+	if _, err := c.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name:               "pvc-nospare",
+		VolumeCapabilities: volCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(context.Background(), types.NamespacedName{Name: "pvc-nospare"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if len(vol.Spec.Replicas) != 2 || vol.Spec.QuorumPolicy != miroirv1alpha1.QuorumFreeze {
+		t.Fatalf("want 2 diskful freeze replicas, got %+v (quorum %s)",
+			vol.Spec.Replicas, vol.Spec.QuorumPolicy)
 	}
 }
 
