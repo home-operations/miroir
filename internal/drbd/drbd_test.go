@@ -32,6 +32,8 @@ const (
 	cmdDrbdsetupStatus = "drbdsetup status"
 	cmdDumpMD          = "dump-md"
 	mockCurrentUUID    = "current-uuid 0xDEADBEEF00000001;"
+	addrKharkiv        = "192.168.1.41"
+	addrParis          = "192.168.1.42"
 )
 
 func testResource(local string) Resource {
@@ -43,8 +45,8 @@ func testResource(local string) Resource {
 		LocalNode: local,
 		LocalDisk: "/dev/vg-miroir/pvc-1",
 		Peers: []Peer{
-			{Node: nodeKharkiv, NodeID: 0, Address: "192.168.1.41"},
-			{Node: nodeParis, NodeID: 1, Address: "192.168.1.42"},
+			{Node: nodeKharkiv, NodeID: 0, Address: addrKharkiv},
+			{Node: nodeParis, NodeID: 1, Address: addrParis},
 		},
 	}
 }

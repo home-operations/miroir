@@ -348,6 +348,17 @@ func (d *Driver) AllocateMinor(volume string) (int32, error) {
 	if m, ok := assigned[volume]; ok {
 		return m, nil
 	}
+	// A .res without an assignment record is our own partially-recorded
+	// state (crash between render and record, or a lost minor.assign):
+	// recover the volume's minor from its own file instead of assigning a
+	// fresh one — the kernel resource may still be running on it.
+	if m, ok := d.minorFromOwnRes(volume); ok {
+		assigned[volume] = m
+		if err := d.writeAssignments(assigned); err != nil {
+			return 0, err
+		}
+		return m, nil
+	}
 	used := d.scanUsedMinors(assigned)
 	m := minorBase
 	for used[m] {
@@ -358,6 +369,35 @@ func (d *Driver) AllocateMinor(volume string) (int32, error) {
 		return 0, err
 	}
 	return m, nil
+}
+
+// minorsInRes parses the device minors out of a rendered .res: miroir's
+// own form ("device minor N;") and the classic named form
+// ("device drbdX minor N;").
+func minorsInRes(raw []byte) []int32 {
+	var minors []int32
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 3 && f[0] == "device" && f[len(f)-2] == "minor" {
+			if n, err := strconv.Atoi(strings.TrimSuffix(f[len(f)-1], ";")); err == nil {
+				minors = append(minors, int32(n)) //nolint:gosec // drbd minors are small
+			}
+		}
+	}
+	return minors
+}
+
+// minorFromOwnRes recovers the minor a previous render of this volume
+// already claimed, if its .res survives.
+func (d *Driver) minorFromOwnRes(volume string) (int32, bool) {
+	raw, err := os.ReadFile(d.path(volume + ".res"))
+	if err != nil {
+		return 0, false
+	}
+	if minors := minorsInRes(raw); len(minors) > 0 {
+		return minors[0], true
+	}
+	return 0, false
 }
 
 func (d *Driver) readAssignments() (map[string]int32, error) {
@@ -422,14 +462,8 @@ func (d *Driver) scanUsedMinors(assigned map[string]int32) map[int32]bool {
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 4 && f[0] == "device" && f[2] == "minor" {
-				n, err := strconv.Atoi(strings.TrimSuffix(f[3], ";"))
-				if err == nil {
-					used[int32(n)] = true
-				}
-			}
+		for _, m := range minorsInRes(raw) {
+			used[m] = true
 		}
 	}
 	return used

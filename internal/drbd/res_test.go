@@ -38,8 +38,8 @@ func tieBreakerResource(localNode string) Resource {
 		LocalNode: localNode,
 		LocalDisk: "/dev/vg-miroir/pvc-1",
 		Peers: []Peer{
-			{Node: nodeKharkiv, NodeID: 0, Address: "192.168.1.41"},
-			{Node: nodeParis, NodeID: 1, Address: "192.168.1.42"},
+			{Node: nodeKharkiv, NodeID: 0, Address: addrKharkiv},
+			{Node: nodeParis, NodeID: 1, Address: addrParis},
 			{Node: nodeOslo, NodeID: 2, Address: "192.168.1.43", Diskless: true},
 		},
 	}
@@ -101,5 +101,25 @@ func TestSeedWinnerSkipsDiskless(t *testing.T) {
 	r.LocalNode = nodeOslo
 	if isWinner(r) {
 		t.Fatal("a diskless tie-breaker must never be the seed winner")
+	}
+}
+
+func TestRenderIPv6Address(t *testing.T) {
+	out := Render(Resource{
+		Name:      "pvc-1",
+		Minor:     1000,
+		Port:      7000,
+		LocalNode: nodeKharkiv,
+		LocalDisk: "/dev/mapper/x",
+		Peers: []Peer{
+			{Node: nodeKharkiv, NodeID: 0, Address: "fd00::41"},
+			{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
+		},
+	})
+	if !strings.Contains(out, "address ipv6 [fd00::41]:7000;") {
+		t.Fatalf("IPv6 peer must render family + brackets:\n%s", out)
+	}
+	if !strings.Contains(out, "address ipv4 192.168.1.43:7000;") {
+		t.Fatalf("IPv4 peer must stay ipv4:\n%s", out)
 	}
 }

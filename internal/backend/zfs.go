@@ -77,6 +77,18 @@ func (z *zfsBackend) Exists(ctx context.Context, vol string) (bool, error) {
 	return z.exists(ctx, z.name(vol))
 }
 
+// zvolBlockSize is the volblocksize passed to zfs create (-b); volsize
+// must be a multiple of it or OpenZFS rejects the create/set with EINVAL.
+const zvolBlockSize = 4096
+
+// alignSize rounds sizeBytes up to the zvol block size: PVC sizes are not
+// necessarily 4KiB-multiples (1G = 10^9), and the other backends already
+// realize >= the requested size, so rounding up is harmless — DRBD sizes
+// the device to the smallest leg.
+func alignSize(sizeBytes int64) int64 {
+	return (sizeBytes + zvolBlockSize - 1) &^ (zvolBlockSize - 1)
+}
+
 func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (string, error) {
 	ok, err := z.exists(ctx, z.name(vol))
 	if err != nil {
@@ -85,11 +97,11 @@ func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (s
 	if !ok {
 		_, err = z.exec(ctx, "zfs", "create",
 			"-s", // sparse: thin semantics, matching the lvm-thin leg
-			"-b", "4096",
+			"-b", strconv.Itoa(zvolBlockSize),
 			// lz4 early-aborts on incompressible data (≈free) and cuts
 			// physical I/O; a near-universal default for zvols.
 			"-o", "compression=lz4",
-			"-V", strconv.FormatInt(sizeBytes, 10),
+			"-V", strconv.FormatInt(alignSize(sizeBytes), 10),
 			z.name(vol))
 		if err != nil {
 			return "", fmt.Errorf("zfs create %s: %w", vol, err)
@@ -107,7 +119,7 @@ func (z *zfsBackend) Resize(ctx context.Context, vol string, sizeBytes int64) er
 		return nil // already big enough (idempotent retry)
 	}
 	if _, err := z.exec(ctx, "zfs", "set",
-		fmt.Sprintf("volsize=%d", sizeBytes), z.name(vol)); err != nil {
+		fmt.Sprintf("volsize=%d", alignSize(sizeBytes)), z.name(vol)); err != nil {
 		return fmt.Errorf("zfs set volsize %s to %d: %w", vol, sizeBytes, err)
 	}
 	return nil
@@ -196,14 +208,28 @@ func (z *zfsBackend) promoteClones(ctx context.Context, vol string) error {
 }
 
 func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error {
-	ok, err := z.exists(ctx, z.name(vol)+"@"+snap)
-	if err != nil || !ok {
+	// The snapshot may have migrated: deleting a volume with restore
+	// clones promotes them, and zfs promote reparents every snapshot
+	// at-or-older than the clone's origin onto the clone. Snapshot names
+	// are CR names — cluster-unique — so match by @suffix anywhere under
+	// the parent dataset; without this, a migrated snapshot's deletion
+	// false-succeeds and the leftover blocks its clone's destroy forever.
+	out, err := z.exec(ctx, "zfs", "list", "-Hpo", "name", "-t", "snapshot", "-r", z.dataset)
+	if err != nil {
 		return err
 	}
-	// -d defers destruction while restore clones still reference the
-	// snapshot (ZFS removes it with the last clone); immediate otherwise.
-	_, err = z.exec(ctx, "zfs", "destroy", "-d", z.name(vol)+"@"+snap)
-	return err
+	for line := range strings.SplitSeq(out, "\n") {
+		name := strings.TrimSpace(line)
+		if !strings.HasSuffix(name, "@"+snap) {
+			continue
+		}
+		// -d defers destruction while restore clones still reference the
+		// snapshot (ZFS removes it with the last clone); immediate otherwise.
+		if _, err := z.exec(ctx, "zfs", "destroy", "-d", name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (z *zfsBackend) volSize(ctx context.Context, vol string) (int64, error) {

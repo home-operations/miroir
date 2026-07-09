@@ -73,6 +73,26 @@ func (lf *loopfile) Setup(ctx context.Context) error {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
 	}
+	// Loop numbers are kernel-assigned per boot, but the volume symlinks
+	// live on the persistent base filesystem: after a reboot a stale link
+	// can point at a device losetup has since handed to a DIFFERENT
+	// volume, and a pod staged before this volume's reconcile re-attaches
+	// would mount the wrong data. Prune every link that does not match
+	// its backing file's current attachment; reconciles re-point them.
+	if entries, err := os.ReadDir(lf.devDir()); err == nil {
+		for _, e := range entries {
+			link := filepath.Join(lf.devDir(), e.Name())
+			target, err := os.Readlink(link)
+			if err != nil {
+				continue
+			}
+			actual, err := lf.loopDev(ctx, lf.imgPath(e.Name()))
+			if err != nil || actual != target {
+				_ = os.Remove(link)
+			}
+		}
+	}
+
 	src := filepath.Join(lf.baseDir, ".reflink-probe")
 	dst := src + ".clone"
 	if _, err := lf.exec(ctx, "truncate", "-s", "4096", src); err != nil {

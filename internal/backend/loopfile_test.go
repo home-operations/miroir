@@ -19,6 +19,8 @@ package backend
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -214,5 +216,41 @@ func TestNewSelectsLoopfile(t *testing.T) {
 	fe := &fakeExec{}
 	if _, err := New("loopfile", lcfg, fe.run); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// After a reboot the persistent symlinks can point at loop devices the
+// kernel has since handed to other volumes; Setup prunes the mismatches
+// so a stale link can never stage another volume's data.
+func TestLoopfileSetupPrunesStaleSymlinks(t *testing.T) {
+	base := t.TempDir()
+	fe := &fakeExec{}
+	// pvc-stale's image is attached nowhere; pvc-live's matches its link.
+	fe.respond("losetup -j "+filepath.Join(base, "volumes", "pvc-stale.img"), "", nil)
+	fe.respond("losetup -j "+filepath.Join(base, "volumes", "pvc-live.img"),
+		"/dev/loop3\n", nil)
+	b := newLoopfile(Config{BaseDir: base}, fe.run)
+
+	devDir := filepath.Join(base, "dev")
+	if err := os.MkdirAll(devDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{
+		"pvc-stale": "/dev/loop0",
+		"pvc-live":  "/dev/loop3",
+	} {
+		if err := os.Symlink(target, filepath.Join(devDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := b.Setup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(devDir, "pvc-stale")); !os.IsNotExist(err) {
+		t.Fatal("stale symlink must be pruned")
+	}
+	if _, err := os.Lstat(filepath.Join(devDir, "pvc-live")); err != nil {
+		t.Fatal("matching symlink must survive")
 	}
 }

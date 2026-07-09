@@ -63,6 +63,58 @@ func TestAllocateMinorStableSequentialPersistent(t *testing.T) {
 // A minor already claimed by a .res file on disk (a resource created out of
 // band, or a partially-recorded assignment) must be skipped so two resources
 // never collide on /dev/drbd<minor>.
+// The scan must parse miroir's OWN rendered device form ("device minor
+// N;", no device name) — a fixture built from Render itself, so the two
+// cannot drift apart again.
+func TestAllocateMinorSkipsMinorsFromOwnRender(t *testing.T) {
+	dir := t.TempDir()
+	d := &Driver{StateDir: dir}
+
+	res := Render(Resource{
+		Name:      "legacy",
+		Minor:     minorBase,
+		Port:      7000,
+		LocalNode: "kharkiv",
+		LocalDisk: "/dev/mapper/x",
+		Peers: []Peer{
+			{Node: "kharkiv", NodeID: 0, Address: addrKharkiv},
+			{Node: "paris", NodeID: 1, Address: addrParis},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(dir, "legacy.res"), []byte(res), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.AllocateMinor("pvc-new")
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	if got != minorBase+1 {
+		t.Errorf("minor = %d, want %d (must skip the rendered minor)", got, minorBase+1)
+	}
+}
+
+// A volume whose .res survived but whose assignment record was lost must
+// recover its own minor, not claim a fresh one — the kernel resource may
+// still be running on it.
+func TestAllocateMinorRecoversOwnMinorFromRes(t *testing.T) {
+	dir := t.TempDir()
+	d := &Driver{StateDir: dir}
+
+	if err := os.WriteFile(filepath.Join(dir, "pvc-1.res"),
+		[]byte("resource \"pvc-1\" {\n    device minor 1004;\n}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := d.AllocateMinor("pvc-1")
+	if err != nil {
+		t.Fatalf("allocate: %v", err)
+	}
+	if got != 1004 {
+		t.Errorf("minor = %d, want the recovered 1004", got)
+	}
+}
+
 func TestAllocateMinorSkipsMinorsUsedInResFiles(t *testing.T) {
 	dir := t.TempDir()
 	d := &Driver{StateDir: dir}
