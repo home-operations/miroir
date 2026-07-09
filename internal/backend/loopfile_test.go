@@ -41,6 +41,7 @@ func TestLoopfileCreateAttachesNewFile(t *testing.T) {
 	}
 	fe.calledWith(t, "truncate -s 10737418240 /var/lib/miroir/volumes/pvc-1.img")
 	fe.calledWith(t, "losetup --find --show /var/lib/miroir/volumes/pvc-1.img")
+	fe.calledWith(t, "losetup --direct-io=on /dev/loop0")
 	fe.calledWith(t, "ln -sfn /dev/loop0 /var/lib/miroir/dev/pvc-1")
 }
 

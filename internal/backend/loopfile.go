@@ -129,6 +129,11 @@ func (lf *loopfile) attach(ctx context.Context, vol, file string) (string, error
 			return "", fmt.Errorf("losetup --find %s: %w", file, aerr)
 		}
 		dev = strings.TrimSpace(out)
+		// Direct I/O drops the host page cache under the loop device: the
+		// filesystem above it already caches, so buffered mode double-caches
+		// (wasted memory, extra copy). Best-effort — a backing filesystem
+		// without O_DIRECT (e.g. some ZFS builds) must not fail the attach.
+		_, _ = lf.exec(ctx, "losetup", "--direct-io=on", dev)
 	}
 	link := lf.DevicePath(vol)
 	if _, err := lf.exec(ctx, "ln", "-sfn", dev, link); err != nil {
