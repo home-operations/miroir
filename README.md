@@ -17,8 +17,8 @@ synchronous 2-node replication via DRBD9.
 - You need >3 replicas. DRBD9 itself supports more, but the
   controller validates `1..3` and reserves DRBD metadata slots for 7
   (`--max-peers 7`). Going higher means lifting the cap, raising
-  `--max-peers`, and picking a quorum policy beyond
-  `last-man-standing` — not built.
+  `--max-peers`, and revisiting the quorum policies, which are built
+  around 2 data replicas plus a tie-breaker — not done.
 - You need `RWX`. Volumes are `ReadWriteOnce`.
 - You need iSCSI/NFS exports. Block devices only.
 
@@ -116,14 +116,12 @@ spec:
             storage: 10Gi
 ```
 
-| Parameter                           | Values                        | Default             |
-| ----------------------------------- | ----------------------------- | ------------------- |
+| Parameter                           | Values                        | Default  |
+| ----------------------------------- | ----------------------------- | -------- |
 | `miroir.home-operations.com/quorum` | `freeze`, `last-man-standing` | `freeze` |
 
-`freeze` gives 2-replica volumes majority quorum via an automatically
-placed diskless tie-breaker on a spare node (opt out with
-`controller.autoTieBreaker=false`); without a spare node — or with
-`last-man-standing` — the volume runs on the two diskful replicas alone.
+See [Replication and quorum](#replication-and-quorum) for what the two
+policies do and how the automatic diskless tie-breaker fits in.
 
 ### 4. Snapshot and restore
 
@@ -169,6 +167,86 @@ other.
 Edit the PVC's `spec.resources.requests.storage`. The agent grows
 the backing device (`lvextend` / `zfs set volsize` / `truncate`) and
 the filesystem in place if the volume is mounted.
+
+## Replication and quorum
+
+Replicated volumes are 2-way synchronous (DRBD protocol C): a write
+completes only once both legs have it. The quorum policy decides what
+happens when the nodes can no longer see each other, and is set per
+StorageClass via the `miroir.home-operations.com/quorum` parameter
+(the chart's `miroir-replicated` class uses
+`replicatedStorageClass.quorum`).
+
+### `freeze` (default)
+
+DRBD majority quorum with `on-no-quorum io-error`: a replica that
+cannot reach a majority of the volume's peers refuses writes — the
+workload sees I/O errors — instead of carrying on alone. Two isolated
+sides can never both write, so there is nothing to un-diverge later;
+when connectivity returns, the stale side simply resyncs. Expect the
+filesystem on top to have gone read-only in the meantime, so the pod
+usually needs a restart once the volume recovers.
+
+Two data replicas on their own are only 2 votes, and majority of 2 is
+2 — *any* disconnect would halt writes on both sides. That is what
+the tie-breaker fixes.
+
+### The diskless tie-breaker
+
+When a 2-replica `freeze` volume is created and a third storage node
+in the `nodes` map holds neither leg, the controller adds that node
+as a diskless tie-breaker: a DRBD peer rendered with `disk none` that
+joins quorum voting but stores nothing — no backing device, no
+capacity used, no part in snapshots or CSI topology. With 3 votes,
+losing any single node (a data leg _or_ the tie-breaker) leaves a
+majority of 2 and the volume keeps serving.
+
+Behavior and knobs:
+
+- **Placement is zone-aware.** A spare node in a zone neither data
+  leg occupies is preferred (`nodes.<node>.zone`); ties break by node
+  name.
+- **Existing volumes are retrofitted.** Adding a third node to
+  `nodes` (a Helm upgrade, which restarts the controller) appends a
+  tie-breaker to every 2-replica `freeze` volume that lacks one.
+  Editing a volume's `spec.quorumPolicy` from `last-man-standing` to
+  `freeze` triggers the same reconciler.
+- **No spare node, no tie-breaker.** On a 2-node cluster the volume
+  is created with majority quorum on 2 votes: never diverges, but a
+  single node loss stops I/O until the node returns. If availability
+  matters more, use `last-man-standing` — or add a third node and let
+  the retrofit pick it up.
+- **Opt out** with `controller.autoTieBreaker=false` in Helm values.
+  This disables both placement at create time and the retrofit;
+  tie-breakers can still be added manually by appending
+  `{node: <name>, diskless: true}` to a volume's `spec.replicas`.
+- **Remove or move one** by deleting its entry from
+  `spec.replicas`; the node's agent detaches and cleans up (removal
+  waits until both data legs are connected and `UpToDate`). The
+  `diskless` flag itself is immutable — remove and re-add the entry
+  instead of editing it.
+
+### `last-man-standing`
+
+`quorum off`: the surviving replica keeps accepting writes even with
+no peers in sight. Maximum availability — but if both sides run while
+partitioned they diverge. DRBD detects the split-brain on reconnect
+and deliberately stays disconnected (`after-sb-* disconnect`, never
+auto-resolve); an operator inspects both legs and picks the loser.
+Volumes with this policy never get a tie-breaker.
+
+### At a glance
+
+| Failure                     | `freeze` + tie-breaker                                        | `freeze`, 2 nodes            | `last-man-standing`                                |
+| --------------------------- | ------------------------------------------------------------- | ---------------------------- | -------------------------------------------------- |
+| One node down               | keeps serving (2/3 votes)                                      | I/O errors until it returns  | survivor keeps writing                             |
+| Replication link partitioned | the majority side serves; the minority side refuses writes    | both sides refuse writes     | both sides may write → split-brain, manual resolve |
+| Two nodes down              | remaining node refuses writes                                  | I/O errors                   | survivor keeps writing                             |
+
+The default was `last-man-standing` before v0.3. Volumes keep
+whatever `quorumPolicy` is stored in their spec — nothing is
+rewritten on upgrade; the new default only applies to volumes created
+after it.
 
 ## Coexistence with other provisioners
 
