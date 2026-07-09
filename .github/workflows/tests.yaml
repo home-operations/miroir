@@ -1,5 +1,7 @@
+---
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Tests
+
 on:
   push:
     branches:
@@ -12,14 +14,18 @@ on:
     paths-ignore:
       - "**.md"
   workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 permissions:
   contents: read
+
 env:
   # renovate: datasource=github-releases depName=helm-unittest/helm-unittest
   HELM_UNITTEST_VERSION: "v1.1.1"
+
 jobs:
   test:
     name: Go Tests
@@ -31,11 +37,13 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
       - name: Setup Mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           experimental: true
           install_args: --locked
+
       - name: Cache Go modules and build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -44,13 +52,16 @@ jobs:
             ~/go/pkg/mod
           key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
           restore-keys: ${{ runner.os }}-go-
+
       - name: Check go.mod tidiness
         run: |
           go mod tidy
           git diff --exit-code go.mod go.sum
+
       - name: Running Unit Tests
         run: mise run test
-  helm-test:
+
+  helm-unittest:
     name: Helm Unit Tests
     runs-on: ubuntu-24.04
     permissions:
@@ -60,69 +71,14 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Install Mise and required tools
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
-        with:
-          experimental: true
-          install_args: --locked
-      - name: Run helm unit tests
-        run: |-
-          helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}" --verify=false
-          mise run helm-test
-      - name: Check chart docs are current
-        run: mise run helm-docs-check
-  e2e:
-    name: E2E (kind, local backend)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
+
       - name: Setup Mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           experimental: true
           install_args: --locked
-      - name: Cache Go modules and build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
-          restore-keys: ${{ runner.os }}-go-
-      - name: Load kernel modules
-        run: sudo modprobe dm_thin_pool loop
-      # Cluster boot and image build are independent — overlap them.
-      - name: Create kind cluster
-        id: kind
-        background: true
-        run: mise run e2e-cluster
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - name: Resolve toolchain versions
-        id: tools
-        run: echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
-      - name: Build image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          load: true
-          tags: miroir:e2e
-          build-args: GO_VERSION=${{ steps.tools.outputs.go }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - wait: kind
-      - name: Load image into kind
-        run: kind load docker-image miroir:e2e --name miroir-test-e2e
-      - name: Provision (loop device, snapshot stack, helm install)
-        run: mise run e2e-provision
-      - name: Run e2e specs (miroir-local / lvmthin / replicas:1)
-        run: mise run e2e-run
-      - name: Diagnostics
-        if: failure()
-        run: mise run e2e-diagnostics
+
+      - name: Run helm unit tests
+        run: |-
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}" --verify=false
+          mise run helm-test

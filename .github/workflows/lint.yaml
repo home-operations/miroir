@@ -1,5 +1,7 @@
+---
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Lint
+
 on:
   push:
     branches:
@@ -12,11 +14,14 @@ on:
     paths-ignore:
       - "**.md"
   workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
   golangci-lint:
     name: Go Lint
@@ -28,11 +33,13 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
       - name: Setup Mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           experimental: true
           install_args: --locked
+
       - name: Cache Go modules and build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -41,14 +48,17 @@ jobs:
             ~/go/pkg/mod
           key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
           restore-keys: ${{ runner.os }}-go-
+
       - name: Cache golangci-lint
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/golangci-lint
           key: ${{ runner.os }}-golangci-lint-${{ hashFiles('go.sum', '.golangci.yml') }}
           restore-keys: ${{ runner.os }}-golangci-lint-
+
       - name: Run linter
         run: mise run lint
+
   helm-lint:
     name: Helm Lint
     runs-on: ubuntu-24.04
@@ -59,10 +69,15 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
       - name: Setup Mise
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         with:
           experimental: true
           install_args: --locked
+
       - name: Run helm lint
         run: mise run helm-lint
+
+      - name: Check generated chart files are current
+        run: mise run helm-docs-check
