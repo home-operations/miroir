@@ -250,7 +250,7 @@ func main() {
 			os.Exit(1)
 		}
 		// Lift any IO barrier left by a previous agent crash.
-		if err := resumeStaleBarriers(drbdDriver); err != nil {
+		if err := resumeStaleBarriers(drbdDriver, apiStartupWait); err != nil {
 			setupLog.Error(err, "barrier resume sweep failed")
 			os.Exit(1)
 		}
@@ -321,12 +321,16 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "manager exited")
-		os.Exit(1)
-	}
+	err = mgr.Start(ctrl.SetupSignalHandler())
+	// The sweep must run even when the manager exits with an error — a
+	// runnable blowing the shutdown grace is exactly the case where a
+	// cordoned node still needs its DRBD backings released for reboot.
 	if shutdownSweep != nil {
 		shutdownSweep()
+	}
+	if err != nil {
+		setupLog.Error(err, "manager exited")
+		os.Exit(1)
 	}
 }
 
@@ -339,12 +343,18 @@ const apiStartupWait = 45 * time.Second
 // drbdShutdownTimeout bounds the Secondary-teardown sweep at shutdown.
 const drbdShutdownTimeout = 15 * time.Second
 
+// apiShutdownWait bounds the shutdown barrier sweep's API access: the
+// termination grace budget is 60s and the manager stop plus
+// DownSecondaries can already spend 45s of it. apiStartupWait would
+// guarantee a SIGKILL mid-sweep.
+const apiShutdownWait = 5 * time.Second
+
 // listWithRetry retries an API list until it succeeds, hits a terminal
 // (non-transient) error, or apiStartupWait elapses — so a control plane still
 // coming back up does not crash the agent on startup.
-func listWithRetry(c client.Client, list client.ObjectList) error {
+func listWithRetry(c client.Client, list client.ObjectList, budget time.Duration) error {
 	var lastErr error
-	waitErr := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, apiStartupWait, true,
+	waitErr := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, budget, true,
 		func(ctx context.Context) (bool, error) {
 			lastErr = c.List(ctx, list)
 			if lastErr == nil {
@@ -393,7 +403,11 @@ func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver) {
 			setupLog.Error(err, "DRBD shutdown teardown failed; node reboot may stall")
 		}
 	}
-	if err := resumeStaleBarriers(driver); err != nil {
+	// Short API budget: the chart grants 60s of termination grace and the
+	// manager stop + DownSecondaries already spend up to 45s of it. A
+	// stranded barrier missed here is lifted by the startup sweep on the
+	// next boot.
+	if err := resumeStaleBarriers(driver, apiShutdownWait); err != nil {
 		setupLog.Error(err, "shutdown barrier sweep failed")
 	}
 }
@@ -406,7 +420,7 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 		return err
 	}
 	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := listWithRetry(c, vols); err != nil {
+	if err := listWithRetry(c, vols, apiStartupWait); err != nil {
 		return err
 	}
 	owned := map[string]bool{}
@@ -433,13 +447,13 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 // The kernel's view drives the sweep: a crash between suspend-io and the
 // status patch leaves a frozen device no snapshot records. Barriers whose
 // round is still within the deadline are the reconciler's to drive.
-func resumeStaleBarriers(driver *drbd.Driver) error {
+func resumeStaleBarriers(driver *drbd.Driver, apiBudget time.Duration) error {
 	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
 		return err
 	}
 	snaps := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := listWithRetry(c, snaps); err != nil {
+	if err := listWithRetry(c, snaps, apiBudget); err != nil {
 		return err
 	}
 	fresh := map[string]bool{}

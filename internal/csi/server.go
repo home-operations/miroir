@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
@@ -29,6 +30,11 @@ import (
 )
 
 var log = ctrl.Log.WithName("csi")
+
+// gracefulStopTimeout bounds the drain of in-flight CSI RPCs at shutdown;
+// kept under the manager's runnable shutdown grace so a hung RPC fails a
+// single call, not the whole process teardown.
+const gracefulStopTimeout = 10 * time.Second
 
 // Serve listens on a unix socket and serves the given CSI services until ctx
 // is cancelled. controller and node may each be nil (controller pod serves
@@ -63,7 +69,17 @@ func Serve(ctx context.Context, socketPath string, identity csi.IdentityServer, 
 
 	go func() {
 		<-ctx.Done()
-		srv.GracefulStop()
+		// An RPC blocked in the kernel (a stuck mount, a device frozen
+		// under a stranded barrier) can hang GracefulStop past the
+		// manager's runnable grace, failing the whole shutdown. Fall
+		// back to a hard stop so Serve always returns.
+		done := make(chan struct{})
+		go func() { srv.GracefulStop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(gracefulStopTimeout):
+			srv.Stop()
+		}
 	}()
 	log.Info("serving CSI", "socket", socketPath)
 	return srv.Serve(lis)
