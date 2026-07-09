@@ -86,6 +86,9 @@ func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (s
 		_, err = z.exec(ctx, "zfs", "create",
 			"-s", // sparse: thin semantics, matching the lvm-thin leg
 			"-b", "4096",
+			// lz4 early-aborts on incompressible data (≈free) and cuts
+			// physical I/O; a near-universal default for zvols.
+			"-o", "compression=lz4",
 			"-V", strconv.FormatInt(sizeBytes, 10),
 			z.name(vol))
 		if err != nil {
