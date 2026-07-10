@@ -61,30 +61,32 @@ kubeletDir: /var/lib/kubelet
 #     baseDir: /var/lib/miroir
 nodes: {}
 
-controller:
-  # system-cluster-critical protects the single controller from eviction
-  # under node pressure — while it is down, no volume can be provisioned,
-  # expanded, or snapshotted.
-  priorityClassName: system-cluster-critical
-  # Wait for agents to realise a new volume. Keep sidecars.*.timeout at or
-  # above this, or the sidecar RPC deadline fires before this one and the
-  # knob has no effect.
-  provisionTimeout: 120s
-  # Thin-provisioning overcommit guardrail: CreateVolume is refused when a
-  # node's provisioned total would exceed capacity × this ratio. 2× is the
-  # classic CoW headroom; raise it only if you trust your usage to stay
-  # sparse, lower it toward 1 to provision conservatively.
-  overcommitRatio: 2
-  # Add a diskless tie-breaker replica to 2-replica freeze volumes when a
-  # spare storage node exists, so majority quorum survives a single node
-  # loss. Also retrofits existing freeze volumes at controller startup.
-  autoTieBreaker: true
-  resources:
-    requests:
-      cpu: 10m
-      memory: 32Mi
-    limits:
-      memory: 128Mi
+# Controller settings live at the top level (kopiur layout); other
+# components are nested (agent, sidecars, monitoring).
+# -- system-cluster-critical protects the single controller from eviction
+# under node pressure — while it is down, no volume can be provisioned,
+# expanded, or snapshotted.
+priorityClassName: system-cluster-critical
+# -- Wait for agents to realise a new volume. Keep sidecars.*.timeout at or
+# above this, or the sidecar RPC deadline fires before this one and the
+# knob has no effect.
+provisionTimeout: 120s
+# -- Thin-provisioning overcommit guardrail: CreateVolume is refused when a
+# node's provisioned total would exceed capacity × this ratio. 2× is the
+# classic CoW headroom; raise it only if you trust your usage to stay
+# sparse, lower it toward 1 to provision conservatively.
+overcommitRatio: 2
+# -- Add a diskless tie-breaker replica to 2-replica freeze volumes when a
+# spare storage node exists, so majority quorum survives a single node
+# loss. Also retrofits existing freeze volumes at controller startup.
+autoTieBreaker: true
+# -- Controller resources.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
 
 agent:
   # Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent and the

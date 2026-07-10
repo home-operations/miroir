@@ -21,7 +21,7 @@ spec:
         app.kubernetes.io/component: controller
     spec:
       serviceAccountName: {{ include "miroir.controllerName" . }}
-      priorityClassName: {{ .Values.controller.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -34,9 +34,9 @@ spec:
             - --mode=controller
             - --csi-socket=/csi/csi.sock
             - --nodes-config=/etc/miroir/nodes.yaml
-            - --provision-timeout={{ .Values.controller.provisionTimeout }}
-            - --overcommit-ratio={{ .Values.controller.overcommitRatio }}
-            - --auto-tie-breaker={{ .Values.controller.autoTieBreaker }}
+            - --provision-timeout={{ .Values.provisionTimeout }}
+            - --overcommit-ratio={{ .Values.overcommitRatio }}
+            - --auto-tie-breaker={{ .Values.autoTieBreaker }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
@@ -50,7 +50,7 @@ spec:
             initialDelaySeconds: 10
           readinessProbe:
             httpGet: { path: /readyz, port: metrics }
-          resources: {{- toYaml .Values.controller.resources | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi

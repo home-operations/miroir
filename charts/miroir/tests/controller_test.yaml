@@ -105,18 +105,18 @@ tests:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.port
           value: metrics
 
-  - it: flows controller.provisionTimeout into the controller args
+  - it: flows provisionTimeout into the controller args
     set:
-      controller.provisionTimeout: 90s
+      provisionTimeout: 90s
     documentIndex: 0
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
           content: "--provision-timeout=90s"
 
-  - it: controller.autoTieBreaker=false opts out of tie-breaker placement
+  - it: autoTieBreaker=false opts out of tie-breaker placement
     set:
-      controller.autoTieBreaker: false
+      autoTieBreaker: false
     documentIndex: 0
     asserts:
       - contains:

@@ -43,13 +43,7 @@ Kubernetes: `>=1.31.0`
 | agent.resources.limits.memory | string | `"128Mi"` |  |
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
-| controller.autoTieBreaker | bool | `true` |  |
-| controller.overcommitRatio | int | `2` |  |
-| controller.priorityClassName | string | `"system-cluster-critical"` |  |
-| controller.provisionTimeout | string | `"120s"` |  |
-| controller.resources.limits.memory | string | `"128Mi"` |  |
-| controller.resources.requests.cpu | string | `"10m"` |  |
-| controller.resources.requests.memory | string | `"32Mi"` |  |
+| autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
 | drbd.onIoError | string | `"detach"` |  |
 | drbd.resync.discardGranularity | string | `""` | rs-discard-granularity: during a full resync, runs of zeroes are sent as discards of this size instead of written out (e.g. "65536"), keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on clusters with loopfile-backed replicated volumes (loop devices mishandle it) or entirely to keep DRBD's default (off). |
 | drbd.resync.fillTarget | string | `""` | c-fill-target, the resync controller's target fill level (e.g. "1M"). |
@@ -85,12 +79,16 @@ Kubernetes: `>=1.31.0`
 | monitoring.prometheusRule.enabled | bool | `false` | Create a PrometheusRule with alerting rules (requires the Prometheus Operator CRDs). |
 | monitoring.prometheusRule.labels | object | `{}` | PrometheusRule labels. |
 | nodes | object | `{}` |  |
+| overcommitRatio | int | `2` | Thin-provisioning overcommit guardrail: CreateVolume is refused when a node's provisioned total would exceed capacity × this ratio. 2× is the classic CoW headroom; raise it only if you trust your usage to stay sparse, lower it toward 1 to provision conservatively. |
+| priorityClassName | string | `"system-cluster-critical"` | system-cluster-critical protects the single controller from eviction under node pressure — while it is down, no volume can be provisioned, expanded, or snapshotted. |
+| provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
 | replicatedStorageClass.create | bool | `true` |  |
 | replicatedStorageClass.fsType | string | `"ext4"` |  |
 | replicatedStorageClass.isDefault | bool | `false` |  |
 | replicatedStorageClass.name | string | `"miroir-replicated"` |  |
 | replicatedStorageClass.quorum | string | `"freeze"` |  |
 | replicatedStorageClass.reclaimPolicy | string | `"Delete"` |  |
+| resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Controller resources. |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
 | sidecars.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |

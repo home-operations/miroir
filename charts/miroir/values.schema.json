@@ -80,72 +80,11 @@
       "title": "agent",
       "type": "object"
     },
-    "controller": {
-      "properties": {
-        "autoTieBreaker": {
-          "default": true,
-          "description": "Add a diskless tie-breaker replica to 2-replica freeze volumes when a\nspare storage node exists, so majority quorum survives a single node\nloss. Also retrofits existing freeze volumes at controller startup.",
-          "title": "autoTieBreaker",
-          "type": "boolean"
-        },
-        "overcommitRatio": {
-          "default": 2,
-          "description": "Thin-provisioning overcommit guardrail: CreateVolume is refused when a\nnode's provisioned total would exceed capacity × this ratio. 2× is the\nclassic CoW headroom; raise it only if you trust your usage to stay\nsparse, lower it toward 1 to provision conservatively.",
-          "title": "overcommitRatio",
-          "type": "integer"
-        },
-        "priorityClassName": {
-          "default": "system-cluster-critical",
-          "description": "system-cluster-critical protects the single controller from eviction\nunder node pressure — while it is down, no volume can be provisioned,\nexpanded, or snapshotted.",
-          "title": "priorityClassName",
-          "type": "string"
-        },
-        "provisionTimeout": {
-          "default": "120s",
-          "description": "Wait for agents to realise a new volume. Keep sidecars.*.timeout at or\nabove this, or the sidecar RPC deadline fires before this one and the\nknob has no effect.",
-          "title": "provisionTimeout",
-          "type": "string"
-        },
-        "resources": {
-          "properties": {
-            "limits": {
-              "properties": {
-                "memory": {
-                  "default": "128Mi",
-                  "title": "memory",
-                  "type": "string"
-                }
-              },
-              "required": [],
-              "title": "limits",
-              "type": "object"
-            },
-            "requests": {
-              "properties": {
-                "cpu": {
-                  "default": "10m",
-                  "title": "cpu",
-                  "type": "string"
-                },
-                "memory": {
-                  "default": "32Mi",
-                  "title": "memory",
-                  "type": "string"
-                }
-              },
-              "required": [],
-              "title": "requests",
-              "type": "object"
-            }
-          },
-          "required": [],
-          "title": "resources",
-          "type": "object"
-        }
-      },
-      "required": [],
-      "title": "controller",
-      "type": "object"
+    "autoTieBreaker": {
+      "default": true,
+      "description": "Add a diskless tie-breaker replica to 2-replica freeze volumes when a\nspare storage node exists, so majority quorum survives a single node\nloss. Also retrofits existing freeze volumes at controller startup.",
+      "title": "autoTieBreaker",
+      "type": "boolean"
     },
     "drbd": {
       "description": "DRBD replication tuning applied cluster-wide through the common{} section of\nglobal_common.conf; every resource inherits it. Leave a value empty to use\nDRBD's built-in default. Tune to your replication network — see the LINBIT\n\"Tuning the DRBD Resync Controller\" guide.",
@@ -443,6 +382,24 @@
       "title": "nodes",
       "type": "object"
     },
+    "overcommitRatio": {
+      "default": 2,
+      "description": "Thin-provisioning overcommit guardrail: CreateVolume is refused when a\nnode's provisioned total would exceed capacity × this ratio. 2× is the\nclassic CoW headroom; raise it only if you trust your usage to stay\nsparse, lower it toward 1 to provision conservatively.",
+      "title": "overcommitRatio",
+      "type": "integer"
+    },
+    "priorityClassName": {
+      "default": "system-cluster-critical",
+      "description": "Controller settings live at the top level (kopiur layout); other\ncomponents are nested (agent, sidecars, monitoring).\nsystem-cluster-critical protects the single controller from eviction\nunder node pressure — while it is down, no volume can be provisioned,\nexpanded, or snapshotted.",
+      "title": "priorityClassName",
+      "type": "string"
+    },
+    "provisionTimeout": {
+      "default": "120s",
+      "description": "Wait for agents to realise a new volume. Keep sidecars.*.timeout at or\nabove this, or the sidecar RPC deadline fires before this one and the\nknob has no effect.",
+      "title": "provisionTimeout",
+      "type": "string"
+    },
     "replicatedStorageClass": {
       "properties": {
         "create": {
@@ -479,6 +436,43 @@
       },
       "required": [],
       "title": "replicatedStorageClass",
+      "type": "object"
+    },
+    "resources": {
+      "description": "Controller resources.",
+      "properties": {
+        "limits": {
+          "properties": {
+            "memory": {
+              "default": "128Mi",
+              "title": "memory",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "limits",
+          "type": "object"
+        },
+        "requests": {
+          "properties": {
+            "cpu": {
+              "default": "10m",
+              "title": "cpu",
+              "type": "string"
+            },
+            "memory": {
+              "default": "32Mi",
+              "title": "memory",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "requests",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "resources",
       "type": "object"
     },
     "sidecars": {
