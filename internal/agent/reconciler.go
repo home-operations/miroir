@@ -223,6 +223,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Connected:     connected,
 		SplitBrain:    st.SplitBrain,
 		Diskless:      localDiskless,
+		Message:       detachedDiskMessage(vol, r.NodeName, st, localDiskless),
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -516,6 +517,22 @@ func (r *VolumeReconciler) assignMinor(_ context.Context, vol *miroirv1alpha1.Mi
 
 // computePhase aggregates per-node states into the volume phase the CSI
 // controller waits on (notes/DESIGN.md §4.5.1).
+// detachedDiskMessage explains a diskful leg DRBD dropped to Diskless
+// after a backing-device I/O error (on-io-error detach): the volume keeps
+// serving via the peer, but the operator otherwise sees only
+// "DiskState: Diskless" with no cause. Gated on the leg having previously
+// been attached so a normal bring-up (briefly Diskless) does not cry wolf.
+func detachedDiskMessage(vol *miroirv1alpha1.MiroirVolume, self string, st drbd.Status, localDiskless bool) string {
+	if localDiskless || st.DiskState != drbd.DiskDiskless {
+		return ""
+	}
+	if prev := vol.Status.PerNode[self].DiskState; prev == "" || prev == drbd.DiskDiskless {
+		return ""
+	}
+	return "backing device detached after an I/O error; serving via the peer — " +
+		"replace the disk, then remove and re-add this replica"
+}
+
 func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0

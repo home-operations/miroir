@@ -773,6 +773,46 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 	}
 }
 
+// A diskful leg DRBD detached after an I/O error reads Diskless while the
+// volume serves via the peer. The reconcile must explain it (actionable
+// Message) and keep the leg DeviceCreated=true so the volume stays
+// Degraded, not hard-Failed.
+func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	// The leg was UpToDate before the disk errored.
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+	}
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	// DRBD reports the local leg detached (Diskless).
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Diskless"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status.PerNode[nodeKharkiv]
+	if !strings.Contains(st.Message, "detached") {
+		t.Fatalf("detached leg must carry an actionable message: %q", st.Message)
+	}
+	if !st.DeviceCreated {
+		t.Fatalf("detached leg must stay DeviceCreated (Degraded, not Failed): %+v", st)
+	}
+}
+
 // A diskless tie-breaker joins DRBD for quorum only: no backend device,
 // no metadata seed, DeviceCreated stays false so CSI never stages here.
 // A FullSync joiner on a restored volume must create a fresh backing,
