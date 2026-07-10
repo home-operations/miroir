@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/home-operations/miroir/compare/0.3.3...0.4.0) (2026-07-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* split the image — distroless controller, Debian agent ([#118](https://github.com/home-operations/miroir/issues/118))
+
+### Features
+
+* split the image — distroless controller, Debian agent ([#118](https://github.com/home-operations/miroir/issues/118)) ([6fa1469](https://github.com/home-operations/miroir/commit/6fa1469c3050611d906e2a580e92a0dedd71497c))
+
 ## [0.3.3](https://github.com/home-operations/miroir/compare/0.3.2...0.3.3) (2026-07-10)
 
 
