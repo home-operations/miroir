@@ -122,6 +122,12 @@
           "required": [],
           "title": "resources",
           "type": "object"
+        },
+        "volumeWorkers": {
+          "default": 4,
+          "description": "Concurrent volume reconciles per agent. Per-volume work is\nserialized by controller-runtime regardless; this bounds how many\ndistinct volumes one agent works at once.",
+          "title": "volumeWorkers",
+          "type": "integer"
         }
       },
       "required": [],

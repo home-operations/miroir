@@ -20,16 +20,20 @@ limitations under the License.
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -56,7 +60,33 @@ type VolumeReconciler struct {
 	// DRBDEvents delivers kernel state changes (drbdsetup events2) as
 	// reconcile triggers, ahead of the poll.
 	DRBDEvents <-chan event.GenericEvent
+	// Workers bounds concurrent volume reconciles (default 4). Per-key
+	// serialization is controller-runtime's guarantee; the storage CLIs
+	// are cross-resource-safe and minor allocation holds its own lock.
+	Workers int
+
+	// realized caches the last fully realized state per volume so the
+	// steady-state poll only re-execs `drbdsetup status` instead of the
+	// whole realize/adjust/probe pipeline. See fastPath.
+	realizedMu sync.Mutex
+	realized   map[string]realizedState
 }
+
+// realizedState is the fingerprint of a completed full pass: repeating
+// it is pure waste until the spec changes, the kernel reports different
+// state, or the deep-check interval elapses (the out-of-band-drift net —
+// e.g. a backing device deleted behind the agent's back).
+type realizedState struct {
+	generation int64
+	status     drbd.Status
+	replicated bool
+	fullPassAt time.Time
+}
+
+// deepCheckInterval bounds how long the fast path may skip the full
+// realize pipeline; backend drift with no kernel signature (unreplicated
+// volumes especially) is caught within one interval.
+const deepCheckInterval = 5 * time.Minute
 
 // drbdPollInterval refreshes DRBD state in the CRD: connection/disk state
 // changes in the kernel without generating Kubernetes events.
@@ -81,27 +111,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	localDiskless := mine && vol.Spec.Replicas[idx].Diskless
 
 	if !vol.DeletionTimestamp.IsZero() {
-		// Only the agent owning a replica may release the finalizer, and
-		// only after its local teardown succeeded — a foreign agent
-		// touching it would race the owner and leak the backing device.
-		// A pending-removal replica (finalizer held, not in spec) takes
-		// the same path: volume deletion supersedes the removal gates.
-		if !mine && !controllerutil.ContainsFinalizer(vol, constants.FinalizerPrefix+r.NodeName) {
-			return ctrl.Result{}, nil
-		}
-		if err := r.teardown(ctx, vol); err != nil {
-			if errors.Is(err, backend.ErrBusy) {
-				// A force-deleted pod can leave the device open past
-				// NodeUnstage; retry until the mount goes away.
-				log.Info("device busy during teardown, retrying", "volume", vol.Name)
-				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-			}
-			return ctrl.Result{}, err
-		}
-		// Drop metrics only once the device is gone: a retrying teardown
-		// must not blank a volume that still exists.
-		dropVolumeMetrics(vol.Name)
-		return ctrl.Result{}, r.removeFinalizer(ctx, vol)
+		return r.reconcileDeletion(ctx, vol, mine)
 	}
 	if !mine {
 		// Not placed here, but a held finalizer means this replica was
@@ -117,6 +127,18 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		log.Info("replica entry incomplete; waiting for membership completion", "volume", vol.Name)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
+
+	// Steady state: when nothing changed since the last full pass, one
+	// status exec (or none for unreplicated volumes) replaces the whole
+	// realize/adjust/probe pipeline. Peer status writes re-trigger this
+	// reconcile every poll cycle; without the short-circuit each of those
+	// re-runs ~6 execs per volume.
+	if done, res := r.fastPath(ctx, vol, localDiskless); done {
+		return res, nil
+	}
+	// Any pass that reaches the pipeline invalidates the fingerprint; it
+	// is re-stored only after the pass completes cleanly.
+	r.dropRealized(vol.Name)
 
 	var dev string
 	var forceFullSync bool
@@ -153,12 +175,16 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			recordVolumeMetrics(vol.Name, miroirReplicaView{
 				upToDate: true, connected: true, quorum: true, resyncRatio: 1,
 			})
-			return ctrl.Result{}, r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
+			if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 				DeviceCreated: true,
 				DevicePath:    dev,
 				SizeBytes:     vol.Spec.SizeBytes,
 				Connected:     true,
-			})
+			}); err != nil {
+				return ctrl.Result{}, err
+			}
+			r.storeRealized(vol.Generation, vol.Name, drbd.Status{}, false)
+			return ctrl.Result{}, nil
 		}
 	} else {
 		// Diskless tie-breaker: join DRBD for quorum only, no backing.
@@ -236,7 +262,108 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Cache only the settled state: a mid-grow pass (short requeue, size
+	// withheld) must keep taking the full pipeline until the grow lands.
+	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes {
+		r.storeRealized(vol.Generation, vol.Name, st, true)
+	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// fastPath reports whether this reconcile can settle without the realize
+// pipeline: same generation, settled size, a fresh-enough full pass, and —
+// for replicated volumes — kernel state identical to the fingerprint. On
+// the hit it refreshes the metrics (cheap sets) and skips the status patch
+// entirely: the CRD already reflects this state, and phase converges via
+// whichever peer actually changed.
+func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, localDiskless bool) (bool, ctrl.Result) {
+	r.realizedMu.Lock()
+	entry, ok := r.realized[vol.Name]
+	r.realizedMu.Unlock()
+	if !ok || entry.generation != vol.Generation ||
+		time.Since(entry.fullPassAt) >= deepCheckInterval ||
+		(!localDiskless && vol.Status.PerNode[r.NodeName].SizeBytes != vol.Spec.SizeBytes) {
+		return false, ctrl.Result{}
+	}
+	if !entry.replicated {
+		recordVolumeMetrics(vol.Name, miroirReplicaView{
+			upToDate: true, connected: true, quorum: true, resyncRatio: 1,
+		})
+		return true, ctrl.Result{}
+	}
+	st, err := r.DRBD.Status(ctx, vol.Name)
+	if err != nil || !statusEqual(st, entry.status) {
+		return false, ctrl.Result{}
+	}
+	if !localDiskless {
+		recordVolumeMetrics(vol.Name, miroirReplicaView{
+			upToDate:       st.DiskState == drbd.DiskUpToDate,
+			connected:      diskfulPeersConnected(st, vol, r.NodeName),
+			splitBrain:     st.SplitBrain,
+			suspended:      st.Suspended,
+			quorum:         st.Quorum,
+			diskFailed:     diskFailedLatch(vol, r.NodeName, st, localDiskless),
+			resyncRatio:    st.ResyncPercent / 100,
+			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
+		})
+	}
+	return true, ctrl.Result{RequeueAfter: drbdPollInterval}
+}
+
+func statusEqual(a, b drbd.Status) bool {
+	return a.DiskState == b.DiskState &&
+		a.Primary == b.Primary &&
+		a.PeerPrimary == b.PeerPrimary &&
+		a.Suspended == b.Suspended &&
+		a.SplitBrain == b.SplitBrain &&
+		a.Resyncing == b.Resyncing &&
+		a.ResyncPercent == b.ResyncPercent &&
+		a.Quorum == b.Quorum &&
+		a.OutOfSyncKiB == b.OutOfSyncKiB &&
+		maps.Equal(a.PeerConnected, b.PeerConnected)
+}
+
+func (r *VolumeReconciler) storeRealized(gen int64, name string, st drbd.Status, replicated bool) {
+	r.realizedMu.Lock()
+	defer r.realizedMu.Unlock()
+	if r.realized == nil {
+		r.realized = map[string]realizedState{}
+	}
+	r.realized[name] = realizedState{
+		generation: gen, status: st, replicated: replicated, fullPassAt: time.Now(),
+	}
+}
+
+func (r *VolumeReconciler) dropRealized(name string) {
+	r.realizedMu.Lock()
+	defer r.realizedMu.Unlock()
+	delete(r.realized, name)
+}
+
+// reconcileDeletion tears down the local leg of a deleted volume. Only
+// the agent owning a replica may release the finalizer, and only after
+// its local teardown succeeded — a foreign agent touching it would race
+// the owner and leak the backing device. A pending-removal replica
+// (finalizer held, not in spec) takes the same path: volume deletion
+// supersedes the removal gates.
+func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, mine bool) (ctrl.Result, error) {
+	if !mine && !controllerutil.ContainsFinalizer(vol, constants.FinalizerPrefix+r.NodeName) {
+		return ctrl.Result{}, nil
+	}
+	if err := r.teardown(ctx, vol); err != nil {
+		if errors.Is(err, backend.ErrBusy) {
+			// A force-deleted pod can leave the device open past
+			// NodeUnstage; retry until the mount goes away.
+			ctrl.LoggerFrom(ctx).Info("device busy during teardown, retrying", "volume", vol.Name)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	// Drop metrics only once the device is gone: a retrying teardown
+	// must not blank a volume that still exists.
+	dropVolumeMetrics(vol.Name)
+	r.dropRealized(vol.Name)
+	return ctrl.Result{}, r.removeFinalizer(ctx, vol)
 }
 
 // diskfulPeersConnected reports whether this node's replication links to
@@ -396,6 +523,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		return ctrl.Result{}, err
 	}
 	dropVolumeMetrics(vol.Name)
+	r.dropRealized(vol.Name)
 	// Drop this node's status slot — merge-patch null deletes the key.
 	// Best-effort ordering: a crash here leaves a stale slot, which
 	// nothing reads (phase and growth iterate spec.replicas only).
@@ -661,9 +789,12 @@ func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
 
 // SetupWithManager registers the reconciler.
 func (r *VolumeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// The snapshot controller stays single-worker (its round protocol
+	// assumes head-of-line ordering); volumes have no cross-key coupling.
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{}).
-		Named("agent-volume")
+		Named("agent-volume").
+		WithOptions(controller.Options{MaxConcurrentReconciles: cmp.Or(r.Workers, 4)})
 	if r.DRBDEvents != nil {
 		b = b.WatchesRawSource(source.Channel(r.DRBDEvents, &handler.EnqueueRequestForObject{}))
 	}
