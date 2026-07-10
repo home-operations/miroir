@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2](https://github.com/home-operations/miroir/compare/0.3.1...0.3.2) (2026-07-10)
+
+
+### Features
+
+* **agent:** latch failed disks and skip re-attach ([#101](https://github.com/home-operations/miroir/issues/101)) ([#113](https://github.com/home-operations/miroir/issues/113)) ([f381e84](https://github.com/home-operations/miroir/commit/f381e845a01c127de24b374626e3230062cbad29))
+
+
+### Bug Fixes
+
+* parse replication-state from peer_devices; expose resync percent ([#111](https://github.com/home-operations/miroir/issues/111)) ([0ca4baf](https://github.com/home-operations/miroir/commit/0ca4bafc7c936370129c29a3c7d5715c95e4b315))
+
 ## [0.3.1](https://github.com/home-operations/miroir/compare/0.3.0...0.3.1) (2026-07-10)
 
 
