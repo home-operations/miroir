@@ -97,6 +97,34 @@ func TestAllocateMinorSkipsMinorsFromOwnRender(t *testing.T) {
 // A volume whose .res survived but whose assignment record was lost must
 // recover its own minor, not claim a fresh one — the kernel resource may
 // still be running on it.
+// Down releases the volume's minor.assign entry so the minor is reused,
+// not leaked for the lifetime of the StateDir.
+func TestDownReleasesMinorAssignment(t *testing.T) {
+	dir := t.TempDir()
+	fe := &fakeExec{}
+	d := &Driver{StateDir: dir, Exec: fe.run, Mknod: fakeMknod}
+
+	first, err := d.AllocateMinor("pvc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A .res must exist or Down short-circuits as never-configured.
+	if err := os.WriteFile(filepath.Join(dir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Down(t.Context(), "pvc-1"); err != nil {
+		t.Fatal(err)
+	}
+	// A fresh volume reclaims the freed minor instead of advancing past it.
+	reused, err := d.AllocateMinor("pvc-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != first {
+		t.Fatalf("freed minor %d must be reused, got %d", first, reused)
+	}
+}
+
 func TestAllocateMinorRecoversOwnMinorFromRes(t *testing.T) {
 	dir := t.TempDir()
 	d := &Driver{StateDir: dir}
