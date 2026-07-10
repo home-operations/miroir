@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/home-operations/miroir/compare/0.4.2...0.4.3) (2026-07-10)
+
+
+### Features
+
+* **deps:** update module sigs.k8s.io/structured-merge-diff/v6 (v6.3.2 → v6.4.2) ([#130](https://github.com/home-operations/miroir/issues/130)) ([642925e](https://github.com/home-operations/miroir/commit/642925e65c9874838b3e9ffa47d575ca81a6614f))
+
 ## [0.4.2](https://github.com/home-operations/miroir/compare/0.4.1...0.4.2) (2026-07-10)
 
 
