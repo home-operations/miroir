@@ -30,6 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
+
+	acv1alpha1 "github.com/home-operations/miroir/api/v1alpha1/applyconfiguration/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
 	"github.com/home-operations/miroir/internal/drbd"
 )
@@ -452,11 +455,45 @@ func (r *SnapshotReconciler) patchOwnState(ctx context.Context, snap *miroirv1al
 
 func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, mutate func(*miroirv1alpha1.MiroirSnapshot)) error {
 	mutate(snap)
-	snap.SetGroupVersionKind(miroirv1alpha1.GroupVersion.WithKind("MiroirSnapshot"))
-	snap.ManagedFields = nil
-	return r.Status().Patch(ctx, snap, client.Apply, //nolint:staticcheck
+	// Apply name + status only. The previous full-object apply also
+	// serialized the live metadata, force-co-owning whatever labels and
+	// finalizers this agent had last read — the stale-metadata hazard the
+	// volume patchStatus was built to avoid.
+	return r.SubResource("status").Apply(ctx,
+		acv1alpha1.MiroirSnapshot(snap.Name).WithStatus(snapshotStatusAC(snap.Status)),
 		client.FieldOwner("agent-snapshot-"+r.NodeName),
 		client.ForceOwnership)
+}
+
+// snapshotStatusAC mirrors MiroirSnapshotStatus's wire shape: readyToUse
+// and ioSuspended have no omitempty (false is a statement — ioSuspended
+// false IS the barrier release), the rest only when non-zero.
+func snapshotStatusAC(st miroirv1alpha1.MiroirSnapshotStatus) *acv1alpha1.MiroirSnapshotStatusApplyConfiguration {
+	ac := acv1alpha1.MiroirSnapshotStatus().
+		WithReadyToUse(st.ReadyToUse).
+		WithIOSuspended(st.IOSuspended)
+	if len(st.PerNode) > 0 {
+		ac = ac.WithPerNode(st.PerNode)
+	}
+	if st.SizeBytes != 0 {
+		ac = ac.WithSizeBytes(st.SizeBytes)
+	}
+	if st.SourceFormatted {
+		ac = ac.WithSourceFormatted(true)
+	}
+	if st.SuspendedAt != nil {
+		ac = ac.WithSuspendedAt(*st.SuspendedAt)
+	}
+	for _, c := range st.Conditions {
+		ac = ac.WithConditions(metav1ac.Condition().
+			WithType(c.Type).
+			WithStatus(c.Status).
+			WithObservedGeneration(c.ObservedGeneration).
+			WithLastTransitionTime(c.LastTransitionTime).
+			WithReason(c.Reason).
+			WithMessage(c.Message))
+	}
+	return ac
 }
 
 func (r *SnapshotReconciler) removeFinalizer(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) error {

@@ -20,8 +20,11 @@ description = "Generate CRD and RBAC manifests"
 run = "controller-gen rbac:roleName=miroir-controller crd paths='./...' output:crd:artifacts:config=config/crd/bases"
 
 [tasks.generate]
-description = "Generate DeepCopy methods"
-run = "controller-gen object:headerFile=hack/boilerplate.go.txt paths='./...'"
+description = "Generate DeepCopy methods and apply configurations"
+run = [
+  "controller-gen object:headerFile=hack/boilerplate.go.txt paths='./...'",
+  "controller-gen applyconfiguration:headerFile=hack/boilerplate.go.txt paths='./api/...'",
+]
 
 [tasks.fmt]
 description = "Run go fmt against code"
