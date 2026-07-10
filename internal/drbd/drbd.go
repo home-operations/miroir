@@ -809,6 +809,18 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	return s, nil
 }
 
+// KernelAvailable reports whether the DRBD kernel module is usable on
+// this node. The module ships with the host (the Talos drbd extension),
+// not the container, so probe by loading: the explicit modprobe pulls it
+// in through the pod's /lib/modules hostPath on nodes that have it but
+// have not loaded it yet, and fails harmlessly on local-only nodes.
+// `drbdsetup status` then answers exit 0 iff the kernel side is up.
+func (d *Driver) KernelAvailable(ctx context.Context) bool {
+	_, _ = d.Exec(ctx, "modprobe", "drbd")
+	_, err := d.Exec(ctx, "drbdsetup", "status")
+	return err == nil
+}
+
 // DiscardGranularity probes the backing device's discard granularity
 // (lsblk DISC-GRAN, bytes), clamped to [4096, 1MiB] — DRBD's sane range
 // for rs-discard-granularity. 0 means the device does not support
