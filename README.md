@@ -328,13 +328,13 @@ PodMonitor scraping the controller **and every agent** on their
 each storage node; a `node` label is added to every series). The
 agent exports, per volume on that node:
 
-| Metric                         | Meaning                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------------------------ |
-| `miroir_volume_up_to_date`     | 1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created)    |
-| `miroir_volume_connected`      | 1 when all replication links to diskful peers are established (tie-breaker links excluded) |
-| `miroir_volume_split_brain`    | 1 when DRBD refused to reconnect after divergence — manual resolution required             |
-| `miroir_volume_suspended`      | 1 while the snapshot write barrier freezes IO; sustained means a stranded barrier          |
-| `miroir_volume_resync_percent` | percent in sync of the least-synced diskful peer; 100 when fully in sync                   |
+| Metric                       | Meaning                                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------ |
+| `miroir_volume_up_to_date`   | 1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created)    |
+| `miroir_volume_connected`    | 1 when all replication links to diskful peers are established (tie-breaker links excluded) |
+| `miroir_volume_split_brain`  | 1 when DRBD refused to reconnect after divergence — manual resolution required             |
+| `miroir_volume_suspended`    | 1 while the snapshot write barrier freezes IO; sustained means a stranded barrier          |
+| `miroir_volume_resync_ratio` | fraction (0-1) in sync of the least-synced diskful peer; 1 when fully in sync              |
 
 Both processes also expose controller-runtime metrics
 (`controller_runtime_reconcile_errors_total` is the wedged-reconcile
@@ -386,7 +386,7 @@ shows the failing call to clean up manually.
 - [x] Capacity-aware placement
 - [ ] CSI `CSIStorageCapacity` reporting per pool
 - [x] Per-volume DRBD state metrics (`miroir_volume_up_to_date` /
-      `connected` / `split_brain` / `suspended` / `resync_percent`;
+      `connected` / `split_brain` / `suspended` / `resync_ratio`;
       opt-in PodMonitor via `monitoring.podMonitor.enabled`)
 - [ ] Per-volume quorum / failed-disk / out-of-sync gauges and pool
       capacity metrics

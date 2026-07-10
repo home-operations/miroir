@@ -54,11 +54,11 @@ func hasSeries(t *testing.T, family, volume string) bool {
 func TestVolumeMetricsLifecycle(t *testing.T) {
 	const volume = "pvc-metrics-lifecycle"
 	recordVolumeMetrics(volume, miroirReplicaView{
-		upToDate:      true,
-		connected:     false,
-		splitBrain:    true,
-		suspended:     false,
-		resyncPercent: 42.5,
+		upToDate:    true,
+		connected:   false,
+		splitBrain:  true,
+		suspended:   false,
+		resyncRatio: 0.425,
 	})
 
 	if got := testutil.ToFloat64(metricUpToDate.WithLabelValues(volume)); got != 1 {
@@ -73,8 +73,8 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 	if got := testutil.ToFloat64(metricSuspended.WithLabelValues(volume)); got != 0 {
 		t.Fatalf("suspended = %v, want 0", got)
 	}
-	if got := testutil.ToFloat64(metricResyncPercent.WithLabelValues(volume)); got != 42.5 {
-		t.Fatalf("resync_percent = %v, want 42.5", got)
+	if got := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volume)); got != 0.425 {
+		t.Fatalf("resync_ratio = %v, want 0.425", got)
 	}
 
 	dropVolumeMetrics(volume)
@@ -83,7 +83,7 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 		"miroir_volume_connected",
 		"miroir_volume_split_brain",
 		"miroir_volume_suspended",
-		"miroir_volume_resync_percent",
+		"miroir_volume_resync_ratio",
 	} {
 		if hasSeries(t, family, volume) {
 			t.Fatalf("%s{volume=%q} still exposed after drop", family, volume)

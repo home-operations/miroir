@@ -42,14 +42,14 @@ var (
 		Name: "miroir_volume_suspended",
 		Help: "1 while a user suspend-io (the snapshot write barrier) freezes this node's IO; sustained means a stranded barrier (snapshot rounds last seconds).",
 	}, []string{volumeLabel})
-	metricResyncPercent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "miroir_volume_resync_percent",
-		Help: "Percent in sync of the least-synced diskful peer while resyncing; 100 when fully in sync (unreplicated volumes report 100).",
+	metricResyncRatio = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_resync_ratio",
+		Help: "Fraction in sync (0-1) of the least-synced diskful peer while resyncing; 1 when fully in sync (unreplicated volumes report 1).",
 	}, []string{volumeLabel})
 )
 
 func init() {
-	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain, metricSuspended, metricResyncPercent)
+	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain, metricSuspended, metricResyncRatio)
 }
 
 func recordVolumeMetrics(volume string, st miroirReplicaView) {
@@ -57,7 +57,7 @@ func recordVolumeMetrics(volume string, st miroirReplicaView) {
 	metricConnected.WithLabelValues(volume).Set(boolGauge(st.connected))
 	metricSplitBrain.WithLabelValues(volume).Set(boolGauge(st.splitBrain))
 	metricSuspended.WithLabelValues(volume).Set(boolGauge(st.suspended))
-	metricResyncPercent.WithLabelValues(volume).Set(st.resyncPercent)
+	metricResyncRatio.WithLabelValues(volume).Set(st.resyncRatio)
 }
 
 func dropVolumeMetrics(volume string) {
@@ -65,15 +65,15 @@ func dropVolumeMetrics(volume string) {
 	metricConnected.DeleteLabelValues(volume)
 	metricSplitBrain.DeleteLabelValues(volume)
 	metricSuspended.DeleteLabelValues(volume)
-	metricResyncPercent.DeleteLabelValues(volume)
+	metricResyncRatio.DeleteLabelValues(volume)
 }
 
 type miroirReplicaView struct {
-	upToDate      bool
-	connected     bool
-	splitBrain    bool
-	suspended     bool
-	resyncPercent float64
+	upToDate    bool
+	connected   bool
+	splitBrain  bool
+	suspended   bool
+	resyncRatio float64
 }
 
 func boolGauge(b bool) float64 {

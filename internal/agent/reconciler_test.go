@@ -198,9 +198,9 @@ func TestReconcileRealizesReplica(t *testing.T) {
 		t.Fatalf("unexpected status %+v", got.Status.PerNode)
 	}
 	// No peers means fully in sync: the zero value would perma-fire any
-	// <100 resync alert for every unreplicated volume.
-	if pct := testutil.ToFloat64(metricResyncPercent.WithLabelValues(volPvc1)); pct != 100 {
-		t.Fatalf("unreplicated resync_percent = %v, want 100", pct)
+	// <1 resync alert for every unreplicated volume.
+	if ratio := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volPvc1)); ratio != 1 {
+		t.Fatalf("unreplicated resync_ratio = %v, want 1", ratio)
 	}
 }
 
