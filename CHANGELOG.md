@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.3](https://github.com/home-operations/miroir/compare/0.3.2...0.3.3) (2026-07-10)
+
+
+### Features
+
+* **chart:** starter PrometheusRule alerts and Grafana dashboard ([#117](https://github.com/home-operations/miroir/issues/117)) ([bb1ec30](https://github.com/home-operations/miroir/commit/bb1ec3046175f5ca79b4f8d306b94a91049597ac))
+* **metrics:** quorum, disk-failed, out-of-sync, and pool capacity gauges ([#116](https://github.com/home-operations/miroir/issues/116)) ([d02097e](https://github.com/home-operations/miroir/commit/d02097ef5e0ce4e744fc58388dfb609a729c92de))
+
+
+### Bug Fixes
+
+* **observability:** scrape agent metrics via PodMonitor; correct gauge accuracy ([#114](https://github.com/home-operations/miroir/issues/114)) ([edd19a6](https://github.com/home-operations/miroir/commit/edd19a656f5053db6b0b9d7adbf6c9965f9c828f))
+
 ## [0.3.2](https://github.com/home-operations/miroir/compare/0.3.1...0.3.2) (2026-07-10)
 
 
