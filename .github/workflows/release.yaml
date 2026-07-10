@@ -25,7 +25,6 @@ jobs:
     outputs:
       go-version: ${{ steps.versions.outputs.go-version }}
     steps:
-
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -42,8 +41,12 @@ jobs:
         id: versions
         run: echo "go-version=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
 
-  release:
-    name: Release
+  # Two images from one Dockerfile (#110): the controller ships distroless
+  # (it never execs a storage CLI), the agent ships the Debian storage
+  # userland. Separate jobs keep each builder's first-class `digest`
+  # output addressable for the pin step (kopiur's layout).
+  release-controller:
+    name: Release (controller)
     needs: versions
     permissions:
       contents: read
@@ -56,7 +59,43 @@ jobs:
         REVISION=${{ github.sha }}
         GO_VERSION=${{ needs.versions.outputs.go-version }}
       cache: true
-      meta-images: ghcr.io/${{ github.repository }}
+      cache-scope: controller
+      target: controller
+      meta-images: ghcr.io/${{ github.repository }}-controller
+      meta-tags: |
+        type=semver,pattern={{version}}
+        type=raw,value=rolling,enable=${{ github.event_name == 'release' }}
+        type=ref,event=branch
+      output: image
+      platforms: linux/amd64,linux/arm64
+      push: true
+      sbom: true
+      set-meta-annotations: true
+      set-meta-labels: true
+      sign: true
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  release-agent:
+    name: Release (agent)
+    needs: versions
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: docker/github-builder/.github/workflows/build.yml@c4a1b216d96a8c85b45a9974b37857828274c808 # v1.13.0
+    with:
+      build-args: |
+        VERSION=${{ github.ref_name }}
+        REVISION=${{ github.sha }}
+        GO_VERSION=${{ needs.versions.outputs.go-version }}
+      cache: true
+      cache-scope: agent
+      target: agent
+      meta-images: ghcr.io/${{ github.repository }}-agent
       meta-tags: |
         type=semver,pattern={{version}}
         type=raw,value=rolling,enable=${{ github.event_name == 'release' }}
@@ -76,7 +115,7 @@ jobs:
 
   helm:
     name: Helm
-    needs: release
+    needs: [release-controller, release-agent]
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -86,7 +125,6 @@ jobs:
     env:
       VERSION: ${{ github.event.release.tag_name }}
     steps:
-
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -102,12 +140,28 @@ jobs:
       - name: Generate manifests and CRDs
         run: mise run helm-crds
 
-      - name: Pin the released image digest into the chart
+      # Pin both component images to the exact digests the builders produced
+      # (the signed multi-arch indexes) so installs are immutable. Fail
+      # closed if either digest is missing.
+      - name: Pin the released image digests into the chart
         env:
-          DIGEST: ${{ needs.release.outputs.digest }}
+          CONTROLLER_DIGEST: ${{ needs.release-controller.outputs.digest }}
+          AGENT_DIGEST: ${{ needs.release-agent.outputs.digest }}
         run: |
-          [ -n "${DIGEST}" ] || { echo "::error::empty image digest from build job"; exit 1; }
-          yq -i '.image.digest = strenv(DIGEST)' charts/miroir/values.yaml
+          for pair in "controller:${CONTROLLER_DIGEST}" "agent:${AGENT_DIGEST}"; do
+            comp="${pair%%:*}"
+            digest="${pair#*:}"
+            case "${digest}" in
+              sha256:*) ;;
+              *) echo "::error::build produced no digest for ${comp} (got: '${digest}')"; exit 1 ;;
+            esac
+            case "${comp}" in
+              controller) path=".image.digest" ;;
+              agent)      path=".agent.image.digest" ;;
+            esac
+            yq -i "${path} = \"${digest}\"" charts/miroir/values.yaml
+            echo "pinned ${comp} -> ${digest}"
+          done
 
       - name: Package Helm chart
         run: helm package charts/miroir --version "${VERSION}" --app-version "${VERSION}"

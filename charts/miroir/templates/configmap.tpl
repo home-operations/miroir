@@ -58,10 +58,8 @@ data:
         {{- end }}
         }
         net {
-        {{- with .Values.drbd.resync }}
-        {{- if .maxBuffers }}
-            max-buffers {{ .maxBuffers }};
-        {{- end }}
+        {{- with .Values.drbd.net.maxBuffers }}
+            max-buffers {{ . }};
         {{- end }}
         {{- with .Values.drbd.verifyAlg }}
             verify-alg {{ . }};

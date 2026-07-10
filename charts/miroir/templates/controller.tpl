@@ -19,9 +19,29 @@ spec:
       labels:
         {{- include "miroir.labels" . | nindent 8 }}
         app.kubernetes.io/component: controller
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.controllerName" . }}
-      priorityClassName: {{ .Values.controller.priorityClassName }}
+      {{- include "miroir.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.global.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      priorityClassName: {{ .Values.priorityClassName }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -34,9 +54,18 @@ spec:
             - --mode=controller
             - --csi-socket=/csi/csi.sock
             - --nodes-config=/etc/miroir/nodes.yaml
-            - --provision-timeout={{ .Values.controller.provisionTimeout }}
-            - --overcommit-ratio={{ .Values.controller.overcommitRatio }}
-            - --auto-tie-breaker={{ .Values.controller.autoTieBreaker }}
+            - --provision-timeout={{ .Values.provisionTimeout }}
+            - --overcommit-ratio={{ .Values.overcommitRatio }}
+            - --auto-tie-breaker={{ .Values.autoTieBreaker }}
+            - --zap-log-level={{ .Values.logging.level }}
+            - --zap-encoder={{ .Values.logging.format }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
@@ -50,7 +79,7 @@ spec:
             initialDelaySeconds: 10
           readinessProbe:
             httpGet: { path: /readyz, port: metrics }
-          resources: {{- toYaml .Values.controller.resources | nindent 12 }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi

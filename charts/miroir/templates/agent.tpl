@@ -27,6 +27,13 @@ spec:
       labels:
         {{- include "miroir.labels" . | nindent 8 }}
         app.kubernetes.io/component: agent
+        {{- with .Values.agent.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.agent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.agentName" . }}
       # hostNetwork so the pod IP is the node IP and the container
@@ -41,6 +48,7 @@ spec:
       # after workloads — their DRBD legs are then Secondary and safe to
       # release (see agentShutdownSweep). Needs Talos
       # shutdownGracePeriodCriticalPods >= the grace period below (see README).
+      {{- include "miroir.imagePullSecrets" . | nindent 6 }}
       priorityClassName: system-node-critical
       # Longer grace lets the cordon-gated DRBD teardown finish before SIGKILL;
       # routine restarts stay schedulable and skip it.
@@ -49,19 +57,27 @@ spec:
         - operator: Exists # CSI node service must run on every schedulable node
       containers:
         - name: agent
-          image: {{ include "miroir.image" . }}
-          imagePullPolicy: {{ include "miroir.imagePullPolicy" . }}
+          image: {{ include "miroir.agentImage" . }}
+          imagePullPolicy: {{ include "miroir.agentImagePullPolicy" . }}
           args:
             - --mode=agent
             - --csi-socket=/csi/csi.sock
             - --nodes-config=/etc/miroir/nodes.yaml
             - --metrics-bind-address=:9810
             - --pool-stats-interval={{ .Values.agent.poolStatsInterval }}
+            - --zap-log-level={{ .Values.logging.level }}
+            - --zap-encoder={{ .Values.logging.format }}
+            {{- with .Values.agent.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- with .Values.agent.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           securityContext:
             privileged: true
           ports:
@@ -87,7 +103,7 @@ spec:
               mountPath: /etc/miroir
               readOnly: true
             - name: kubelet
-              mountPath: {{ .Values.kubeletDir }}
+              mountPath: {{ .Values.agent.kubeletDir }}
               mountPropagation: Bidirectional
             # Plain bind of host /dev (no mountPropagation): the
             # container must share the host's devtmpfs inode table so
@@ -125,10 +141,10 @@ spec:
               mountPath: {{ $dir }}
 {{- end }}
         - name: node-driver-registrar
-          image: {{ .Values.sidecars.registrar.image }}
+          image: {{ .Values.agent.registrar.image }}
           args:
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path={{ .Values.kubeletDir }}/plugins/miroir.home-operations.com/csi.sock
+            - --kubelet-registration-path={{ .Values.agent.kubeletDir }}/plugins/miroir.home-operations.com/csi.sock
           resources:
             requests: { cpu: 5m, memory: 16Mi }
             limits: { memory: 64Mi }
@@ -143,15 +159,15 @@ spec:
             name: {{ include "miroir.nodesConfigName" . }}
         - name: socket-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins/miroir.home-operations.com
+            path: {{ .Values.agent.kubeletDir }}/plugins/miroir.home-operations.com
             type: DirectoryOrCreate
         - name: registration
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins_registry
+            path: {{ .Values.agent.kubeletDir }}/plugins_registry
             type: Directory
         - name: kubelet
           hostPath:
-            path: {{ .Values.kubeletDir }}
+            path: {{ .Values.agent.kubeletDir }}
             type: Directory
         - name: dev
           hostPath:

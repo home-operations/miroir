@@ -3,9 +3,15 @@
 # path are only known after the cluster is up). Local backend only — kind has
 # no DRBD, so the replicated class is omitted.
 image:
-  repository: miroir
+  repository: miroir-controller
   tag: e2e
   pullPolicy: IfNotPresent
+
+agent:
+  image:
+    repository: miroir-agent
+    tag: e2e
+    pullPolicy: IfNotPresent
 
 storageClass:
   create: true

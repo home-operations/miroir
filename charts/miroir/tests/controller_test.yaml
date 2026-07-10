@@ -67,7 +67,7 @@ tests:
           value: controller
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/home-operations/miroir:0.0.1"
+          value: "ghcr.io/home-operations/miroir-controller:0.0.1"
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: IfNotPresent
@@ -105,18 +105,18 @@ tests:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.port
           value: metrics
 
-  - it: flows controller.provisionTimeout into the controller args
+  - it: flows provisionTimeout into the controller args
     set:
-      controller.provisionTimeout: 90s
+      provisionTimeout: 90s
     documentIndex: 0
     asserts:
       - contains:
           path: spec.template.spec.containers[0].args
           content: "--provision-timeout=90s"
 
-  - it: controller.autoTieBreaker=false opts out of tie-breaker placement
+  - it: autoTieBreaker=false opts out of tie-breaker placement
     set:
-      controller.autoTieBreaker: false
+      autoTieBreaker: false
     documentIndex: 0
     asserts:
       - contains:
@@ -196,7 +196,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/home-operations/miroir@sha256:abc123"
+          value: "ghcr.io/home-operations/miroir-controller@sha256:abc123"
 
   - it: respects a non-default Release namespace
     release:
@@ -224,3 +224,90 @@ tests:
             name: nodes
             configMap:
               name: miroir-nodes
+
+  - it: applies global pull secrets, scheduling, and common labels
+    set:
+      global:
+        imagePullSecrets:
+          - name: ghcr-pull
+        nodeSelector:
+          kubernetes.io/arch: amd64
+        tolerations:
+          - key: dedicated
+            operator: Equal
+            value: storage
+            effect: NoSchedule
+        commonLabels:
+          team: platform
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: ghcr-pull
+      - equal:
+          path: spec.template.spec.nodeSelector["kubernetes.io/arch"]
+          value: amd64
+      - equal:
+          path: spec.template.spec.tolerations[0].key
+          value: dedicated
+      - equal:
+          path: metadata.labels.team
+          value: platform
+
+  - it: renders no scheduling or pull-secret fields by default
+    documentIndex: 0
+    asserts:
+      - notExists:
+          path: spec.template.spec.imagePullSecrets
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.tolerations
+
+  - it: honours fullnameOverride and nameOverride
+    set:
+      fullnameOverride: replicator
+      nameOverride: mir
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: replicator-controller
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: mir
+
+  - it: wires logging, pod metadata, and extra args/env
+    set:
+      logging:
+        level: debug
+        format: console
+      podLabels:
+        sidecar.istio.io/inject: "false"
+      podAnnotations:
+        reloader.stakater.com/auto: "true"
+      extraArgs:
+        - --leak-check=true
+      extraEnv:
+        - name: GOMEMLIMIT
+          value: 100MiB
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-log-level=debug
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-encoder=console
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leak-check=true
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: GOMEMLIMIT
+      - equal:
+          path: spec.template.metadata.labels["sidecar.istio.io/inject"]
+          value: "false"
+      - equal:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+          value: "true"

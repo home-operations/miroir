@@ -1,5 +1,37 @@
+# -- Override the chart name used in labels and default object names.
+nameOverride: ""
+# -- Override the fully qualified name prefix of every rendered object.
+fullnameOverride: ""
+
+# Fleet-wide defaults (kopiur layout). imagePullSecrets and commonLabels
+# reach every pod/object; the scheduling globals apply to the controller —
+# the only freely schedulable workload (the agent DaemonSet must run on
+# every schedulable node for the CSI node service, and the setup Job is
+# node-pinned).
+global:
+  # -- Pull secrets added to every pod (controller, agent, setup, uninstall).
+  imagePullSecrets: []
+  # -- Labels stamped on every rendered object (fleet-wide labelling).
+  commonLabels: {}
+  # -- Controller scheduling defaults.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Both processes bind the controller-runtime zap flags.
+logging:
+  # -- Log level: debug | info | error (or any zapcore level).
+  level: info
+  # -- Encoder: json (structured, default) or console (human-readable).
+  format: json
+
+# =============================================================================
+# Controller (root = controller, kopiur layout; components nest below)
+# =============================================================================
+# -- Controller image (distroless, no storage userland — the controller never
+# execs a storage CLI).
 image:
-  repository: ghcr.io/home-operations/miroir
+  repository: ghcr.io/home-operations/miroir-controller
   # Overrides the image tag; defaults to the chart appVersion so the chart and
   # image versions stay in lock-step (set to e.g. "main" to track the rolling tag).
   tag: ""
@@ -8,6 +40,42 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+# -- system-cluster-critical protects the single controller from eviction
+# under node pressure — while it is down, no volume can be provisioned,
+# expanded, or snapshotted.
+priorityClassName: system-cluster-critical
+# -- Wait for agents to realise a new volume. Keep sidecars.*.timeout at or
+# above this, or the sidecar RPC deadline fires before this one and the
+# knob has no effect.
+provisionTimeout: 120s
+# -- Thin-provisioning overcommit guardrail: CreateVolume is refused when a
+# node's provisioned total would exceed capacity × this ratio. 2× is the
+# classic CoW headroom; raise it only if you trust your usage to stay
+# sparse, lower it toward 1 to provision conservatively.
+overcommitRatio: 2
+# -- Add a diskless tie-breaker replica to 2-replica freeze volumes when a
+# spare storage node exists, so majority quorum survives a single node
+# loss. Also retrofits existing freeze volumes at controller startup.
+autoTieBreaker: true
+# -- Controller resources.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+# -- Extra labels on the controller pod.
+podLabels: {}
+# -- Extra annotations on the controller pod.
+podAnnotations: {}
+# -- Extra arguments for the controller container.
+extraArgs: []
+# -- Extra environment variables for the controller container.
+extraEnv: []
+
+# =============================================================================
+# CSI sidecars (upstream sig-storage images)
+# =============================================================================
 sidecars:
   provisioner:
     image: registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
@@ -15,8 +83,6 @@ sidecars:
     # default; the driver returns DeadlineExceeded and the provisioner
     # retries, but a roomier timeout avoids churn.
     timeout: 120s
-  registrar:
-    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
   snapshotter:
     image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
     # CreateSnapshot returns fast (readiness is polled), so the default
@@ -24,16 +90,55 @@ sidecars:
     timeout: 120s
   resizer:
     image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
-    # Online grow can block on a rebooting node; keep >= controller.provisionTimeout.
+    # Online grow can block on a rebooting node; keep >= provisionTimeout.
     timeout: 120s
 
-# Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
-# tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
-uninstall:
-  image: registry.k8s.io/kubectl:v1.36.2
+# =============================================================================
+# Agent (per-node DaemonSet: storage userland + CSI node service)
+# =============================================================================
+agent:
+  # Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent and the
+  # setup Job exec on each storage node).
+  image:
+    repository: ghcr.io/home-operations/miroir-agent
+    # Overrides the image tag; defaults to the chart appVersion.
+    tag: ""
+    # Pins the image by digest (sha256:…); takes precedence over the tag.
+    # The release pipeline fills this with the published image's digest.
+    digest: ""
+    pullPolicy: IfNotPresent
+  # Per-node backend selection comes from node annotations:
+  #   miroir.home-operations.com/backend: lvmthin | zfs
+  #   miroir.home-operations.com/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)
+  #   miroir.home-operations.com/zfs-dataset: data-pool/miroir              (zfs)
+  # Nodes also need the label miroir.home-operations.com/storage: "true" to receive replicas.
+  #
+  # How often each agent republishes its pool capacity to its MiroirNode
+  # (read by the controller for capacity-aware placement).
+  poolStatsInterval: 60s
+  # kubelet plugin-registration sidecar riding the agent DaemonSet.
+  registrar:
+    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+  # -- Kubelet root on the nodes; CSI sockets and mounts hang off it.
+  kubeletDir: /var/lib/kubelet
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+  # -- Extra labels on the agent pods.
+  podLabels: {}
+  # -- Extra annotations on the agent pods.
+  podAnnotations: {}
+  # -- Extra arguments for the agent container.
+  extraArgs: []
+  # -- Extra environment variables for the agent container.
+  extraEnv: []
 
-kubeletDir: /var/lib/kubelet
-
+# =============================================================================
+# Storage topology
+# =============================================================================
 # Per-node storage topology — the single source of truth for which nodes
 # hold volumes and how. Rendered into the miroir-nodes ConfigMap, read by
 # the controller (placement) and each agent (backend selection).
@@ -59,89 +164,10 @@ kubeletDir: /var/lib/kubelet
 #     baseDir: /var/lib/miroir
 nodes: {}
 
-controller:
-  # system-cluster-critical protects the single controller from eviction
-  # under node pressure — while it is down, no volume can be provisioned,
-  # expanded, or snapshotted.
-  priorityClassName: system-cluster-critical
-  # Wait for agents to realise a new volume. Keep sidecars.*.timeout at or
-  # above this, or the sidecar RPC deadline fires before this one and the
-  # knob has no effect.
-  provisionTimeout: 120s
-  # Thin-provisioning overcommit guardrail: CreateVolume is refused when a
-  # node's provisioned total would exceed capacity × this ratio. 2× is the
-  # classic CoW headroom; raise it only if you trust your usage to stay
-  # sparse, lower it toward 1 to provision conservatively.
-  overcommitRatio: 2
-  # Add a diskless tie-breaker replica to 2-replica freeze volumes when a
-  # spare storage node exists, so majority quorum survives a single node
-  # loss. Also retrofits existing freeze volumes at controller startup.
-  autoTieBreaker: true
-  resources:
-    requests:
-      cpu: 10m
-      memory: 32Mi
-    limits:
-      memory: 128Mi
 
-agent:
-  # Per-node backend selection comes from node annotations:
-  #   miroir.home-operations.com/backend: lvmthin | zfs
-  #   miroir.home-operations.com/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)
-  #   miroir.home-operations.com/zfs-dataset: data-pool/miroir              (zfs)
-  # Nodes also need the label miroir.home-operations.com/storage: "true" to receive replicas.
-  #
-  # How often each agent republishes its pool capacity to its MiroirNode
-  # (read by the controller for capacity-aware placement).
-  poolStatsInterval: 60s
-  resources:
-    requests:
-      cpu: 10m
-      memory: 32Mi
-    limits:
-      memory: 128Mi
-
-# DRBD replication tuning applied cluster-wide through the common{} section of
-# global_common.conf; every resource inherits it. Leave a value empty to use
-# DRBD's built-in default. Tune to your replication network — see the LINBIT
-# "Tuning the DRBD Resync Controller" guide.
-drbd:
-  # How a diskful replica reacts to a backing-device I/O error. detach
-  # (the LINSTOR/DRBD-recommended default) drops the failing leg to
-  # Diskless and serves reads/writes via the peer instead of surfacing
-  # EIO into the pod. Set to pass_on to propagate errors instead.
-  onIoError: detach
-  resync:
-    # -- c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller.
-    planAhead: ""
-    # -- c-fill-target, the resync controller's target fill level (e.g. "1M").
-    fillTarget: ""
-    # -- c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M").
-    maxRate: ""
-    # -- c-min-rate, the resync floor guaranteed even under application I/O.
-    # Defaulted to 10M: DRBD's kernel default (250 KiB/s) leaves a degraded
-    # volume resyncing for days under load; 10 MiB/s heals a 100Gi leg in
-    # hours while still yielding most of a 1GbE link to applications. Lower
-    # on a slow shared link.
-    minRate: 10M
-    # -- resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0).
-    rate: ""
-    # -- max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864").
-    maxBuffers: ""
-    # -- rs-discard-granularity: during a full resync, runs of zeroes are
-    # sent as discards of this size instead of written out (e.g. "65536"),
-    # keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on
-    # clusters with loopfile-backed replicated volumes (loop devices
-    # mishandle it) or entirely to keep DRBD's default (off).
-    discardGranularity: ""
-  # -- verify-alg arms `drbdadm verify <res>` — the only cross-leg
-  # integrity check (a zfs scrub only validates one leg against itself).
-  # Defaulted to crc32c: drbd.ko depends on libcrc32c so it is present on
-  # every node, and it costs nothing until a verify runs. Schedule the
-  # verify pass yourself (cron, quiet hours); out-of-sync blocks surface
-  # in the kernel log and `drbdsetup status`. Empty disables verification.
-  verifyAlg: crc32c
-
+# =============================================================================
+# Storage classes
+# =============================================================================
 storageClass:
   create: true
   name: miroir-local
@@ -171,6 +197,55 @@ volumeSnapshotClass:
   name: miroir-snap
   deletionPolicy: Delete
 
+# =============================================================================
+# DRBD replication tuning
+# =============================================================================
+# DRBD replication tuning applied cluster-wide through the common{} section of
+# global_common.conf; every resource inherits it. Leave a value empty to use
+# DRBD's built-in default. Tune to your replication network — see the LINBIT
+# "Tuning the DRBD Resync Controller" guide.
+drbd:
+  # How a diskful replica reacts to a backing-device I/O error. detach
+  # (the LINSTOR/DRBD-recommended default) drops the failing leg to
+  # Diskless and serves reads/writes via the peer instead of surfacing
+  # EIO into the pod. Set to pass_on to propagate errors instead.
+  onIoError: detach
+  resync:
+    # -- c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller.
+    planAhead: ""
+    # -- c-fill-target, the resync controller's target fill level (e.g. "1M").
+    fillTarget: ""
+    # -- c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M").
+    maxRate: ""
+    # -- c-min-rate, the resync floor guaranteed even under application I/O.
+    # Defaulted to 10M: DRBD's kernel default (250 KiB/s) leaves a degraded
+    # volume resyncing for days under load; 10 MiB/s heals a 100Gi leg in
+    # hours while still yielding most of a 1GbE link to applications. Lower
+    # on a slow shared link.
+    minRate: 10M
+    # -- resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0).
+    rate: ""
+    # -- rs-discard-granularity: during a full resync, runs of zeroes are
+    # sent as discards of this size instead of written out (e.g. "65536"),
+    # keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on
+    # clusters with loopfile-backed replicated volumes (loop devices
+    # mishandle it) or entirely to keep DRBD's default (off).
+    discardGranularity: ""
+  net:
+    # -- max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises
+    # resync throughput on fast links.
+    maxBuffers: ""
+  # -- verify-alg arms `drbdadm verify <res>` — the only cross-leg
+  # integrity check (a zfs scrub only validates one leg against itself).
+  # Defaulted to crc32c: drbd.ko depends on libcrc32c so it is present on
+  # every node, and it costs nothing until a verify runs. Schedule the
+  # verify pass yourself (cron, quiet hours); out-of-sync blocks surface
+  # in the kernel log and `drbdsetup status`. Empty disables verification.
+  verifyAlg: crc32c
+
+# =============================================================================
+# Monitoring
+# =============================================================================
 # Requires the Prometheus Operator CRDs (deployed separately).
 monitoring:
   podMonitor:
@@ -228,3 +303,11 @@ monitoring:
       resyncPeriod: "10m"
       # -- Selected labels for Grafana instance.
       matchLabels: {}
+
+# =============================================================================
+# Uninstall hook
+# =============================================================================
+# Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
+# tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
+uninstall:
+  image: registry.k8s.io/kubectl:v1.36.2

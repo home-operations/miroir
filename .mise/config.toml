@@ -101,12 +101,14 @@ kind export kubeconfig --name "$cluster" --kubeconfig "$KUBECONFIG"
 '''
 
 [tasks.e2e-image]
-description = "Build the miroir:e2e image and load it into the kind cluster"
+description = "Build the miroir controller+agent e2e images and load them into the kind cluster"
 run = '''
 set -eu
 cluster="${KIND_CLUSTER:-miroir-test-e2e}"
-docker build -t miroir:e2e .
-kind load docker-image miroir:e2e --name "$cluster"
+docker build --target controller -t miroir-controller:e2e .
+docker build --target agent -t miroir-agent:e2e .
+kind load docker-image miroir-controller:e2e --name "$cluster"
+kind load docker-image miroir-agent:e2e --name "$cluster"
 '''
 
 [tasks.e2e-provision]

@@ -16,6 +16,7 @@ spec:
   template:
     spec:
       serviceAccountName: {{ include "miroir.setupServiceAccountName" $ }}
+      {{- include "miroir.imagePullSecrets" $ | nindent 6 }}
       nodeName: {{ $name }}
       restartPolicy: Never
       hostNetwork: true
@@ -24,8 +25,10 @@ spec:
         - operator: Exists
       containers:
         - name: setup
-          image: {{ include "miroir.image" $ }}
-          imagePullPolicy: {{ include "miroir.imagePullPolicy" $ }}
+          # The setup Job bootstraps the node pool with the same storage
+          # userland the agent uses.
+          image: {{ include "miroir.agentImage" $ }}
+          imagePullPolicy: {{ include "miroir.agentImagePullPolicy" $ }}
           args:
             - --mode=setup
             - --node-name={{ $name }}

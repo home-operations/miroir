@@ -14,6 +14,7 @@ spec:
   template:
     spec:
       serviceAccountName: {{ include "miroir.uninstallServiceAccountName" . }}
+      {{- include "miroir.imagePullSecrets" . | nindent 6 }}
       restartPolicy: Never
       containers:
         - name: kubectl
