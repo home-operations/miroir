@@ -42,6 +42,10 @@ RUN sed -i 's|^Components: main$|Components: main contrib|' /etc/apt/sources.lis
     zfsutils-linux \
     e2fsprogs \
     xfsprogs \
+    # modprobe: lvm2 and drbdsetup load missing dm/drbd kernel targets on
+    # demand through the pod's read-only /lib/modules hostPath (Alpine got
+    # this implicitly from busybox; trixie-slim ships no kmod).
+    kmod \
     # explicit though present in the base: losetup/blkid/lsblk (util-linux),
     # mount, and GNU cp for reflink clones (cp --reflink → FICLONE).
     util-linux \
