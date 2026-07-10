@@ -139,32 +139,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	var source *miroirv1alpha1.VolumeSource
-	var sourceFormatted bool
-	var srcReplicas []miroirv1alpha1.Replica
 	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
-	if snapID != "" {
-		// Restore: clones are local CoW, so replicas must live on the
-		// nodes holding the snapshot — placement follows the source.
-		srcVol, snap, err := c.snapshotSource(ctx, snapID)
-		if err != nil {
-			return nil, err
-		}
-		sourceFormatted = snap.Status.SourceFormatted
-		if sizeBytes < snap.Status.SizeBytes {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"requested %d below snapshot size %d", sizeBytes, snap.Status.SizeBytes)
-		}
-		if len(srcVol.Spec.DiskfulReplicas()) != replicas {
-			return nil, status.Errorf(codes.InvalidArgument,
-				"restore replica count %d must match source diskful replicas %d",
-				replicas, len(srcVol.Spec.DiskfulReplicas()))
-		}
-		source = &miroirv1alpha1.VolumeSource{SnapshotName: snapID}
-		srcReplicas, err = c.restoreReplicas(ctx, srcVol, snap)
-		if err != nil {
-			return nil, err
-		}
+	source, srcReplicas, sourceFormatted, err := c.resolveSource(ctx, snapID, sizeBytes, replicas)
+	if err != nil {
+		return nil, err
 	}
 
 	// Serialise placement, port allocation, and Create as one critical
@@ -173,9 +151,18 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	// yet would otherwise be invisible to both — two RPCs could pass the
 	// guard or claim the same port. waitReady is deliberately left outside.
 	c.allocMu.Lock()
+	// One volume List serves both the overcommit guard (place) and the
+	// DRBD port scan (allocateDRBD); they need identical data and both run
+	// under the lock. Fetched only when a placing or replicated path needs
+	// it, so a 1-replica restore still does zero volume Lists.
+	vols, err := c.allocVolumes(ctx, snapID == "" || replicas > 1)
+	if err != nil {
+		c.allocMu.Unlock()
+		return nil, err
+	}
 	placed := srcReplicas
 	if snapID == "" {
-		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName())
+		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
@@ -199,7 +186,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 	if replicas > 1 {
 		vol.Spec.QuorumPolicy = quorum
-		drbdSpec, err := c.allocateDRBD(ctx)
+		drbdSpec, err := c.allocateDRBD(vols)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
@@ -293,7 +280,51 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 	}, nil
 }
 
-// place selects count replica nodes: the scheduler's preference first
+// resolveSource resolves a restore's source: on a clone (snapID set) it
+// validates the snapshot and size, and returns the placement replicas
+// (following the source, FullSyncing post-snapshot legs). Returns zero
+// values for a fresh volume (no content source).
+func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes int64, replicas int) (*miroirv1alpha1.VolumeSource, []miroirv1alpha1.Replica, bool, error) {
+	if snapID == "" {
+		return nil, nil, false, nil
+	}
+	// Clones are local CoW, so replicas must live on the nodes holding the
+	// snapshot — placement follows the source.
+	srcVol, snap, err := c.snapshotSource(ctx, snapID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if sizeBytes < snap.Status.SizeBytes {
+		return nil, nil, false, status.Errorf(codes.InvalidArgument,
+			"requested %d below snapshot size %d", sizeBytes, snap.Status.SizeBytes)
+	}
+	if len(srcVol.Spec.DiskfulReplicas()) != replicas {
+		return nil, nil, false, status.Errorf(codes.InvalidArgument,
+			"restore replica count %d must match source diskful replicas %d",
+			replicas, len(srcVol.Spec.DiskfulReplicas()))
+	}
+	srcReplicas, err := c.restoreReplicas(ctx, srcVol, snap)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return &miroirv1alpha1.VolumeSource{SnapshotName: snapID}, srcReplicas, snap.Status.SourceFormatted, nil
+}
+
+// allocVolumes lists every volume once// allocVolumes lists every volume once for the allocMu critical section
+// (the overcommit guard and the DRBD port scan share it). Skipped when
+// unneeded — a 1-replica restore does zero volume Lists.
+func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1alpha1.MiroirVolume, error) {
+	if !needed {
+		return nil, nil
+	}
+	list := &miroirv1alpha1.MiroirVolumeList{}
+	if err := c.reader().List(ctx, list); err != nil {
+		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
+	}
+	return list.Items, nil
+}
+
+// place selects count replica nodes:// place selects count replica nodes: the scheduler's preference first
 // (WaitForFirstConsumer), then the remaining eligible storage nodes by
 // free space — capacity-aware spread (notes/DESIGN.md §4.6). Nodes whose
 // projected provisioned total would breach the overcommit ratio are
@@ -303,7 +334,7 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 // provisions. For replicated volumes it resolves each node's InternalIP
 // and assigns DRBD node ids by slice position — replicas[0] is the GI-seed
 // winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string) ([]miroirv1alpha1.Replica, error) {
+func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume) ([]miroirv1alpha1.Replica, error) {
 	if len(c.Nodes) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"need %d storage nodes, have %d (Helm values: nodes)", count, len(c.Nodes))
@@ -313,10 +344,7 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 	if err != nil {
 		return nil, err
 	}
-	provisioned, err := c.provisionedPerNode(ctx, name)
-	if err != nil {
-		return nil, err
-	}
+	provisioned := provisionedPerNode(vols, name)
 	ratio := c.OvercommitRatio
 	if ratio <= 0 {
 		ratio = defaultOvercommitRatio
@@ -508,13 +536,12 @@ func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.M
 // with a replica on each node, excluding exclude (the volume being
 // (re)created, so an idempotent retry does not count itself). Clones share
 // backing on disk but are counted in full — a conservative overcommit guard.
-func (c *Controller) provisionedPerNode(ctx context.Context, exclude string) (map[string]int64, error) {
-	list := &miroirv1alpha1.MiroirVolumeList{}
-	if err := c.reader().List(ctx, list); err != nil {
-		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
-	}
+// provisionedPerNode sums the provisioned (virtual) bytes per node from a
+// pre-fetched volume list, excluding the named volume (the one being
+// (re)created, so an idempotent retry does not count itself).
+func provisionedPerNode(vols []miroirv1alpha1.MiroirVolume, exclude string) map[string]int64 {
 	out := map[string]int64{}
-	for _, v := range list.Items {
+	for _, v := range vols {
 		if v.Name == exclude {
 			continue
 		}
@@ -525,7 +552,7 @@ func (c *Controller) provisionedPerNode(ctx context.Context, exclude string) (ma
 			out[r.Node] += v.Spec.SizeBytes
 		}
 	}
-	return out, nil
+	return out
 }
 
 // allocateDRBD picks the lowest free TCP port by scanning existing
@@ -533,14 +560,10 @@ func (c *Controller) provisionedPerNode(ctx context.Context, exclude string) (ma
 // allocMu across allocate+Create — CreateVolume RPCs run concurrently
 // within the pod. The minor is per-node and allocated locally by each
 // agent.
-func (c *Controller) allocateDRBD(ctx context.Context) (*miroirv1alpha1.DRBDSpec, error) {
+func (c *Controller) allocateDRBD(vols []miroirv1alpha1.MiroirVolume) (*miroirv1alpha1.DRBDSpec, error) {
 	const portBase = 7000
-	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := c.reader().List(ctx, vols); err != nil {
-		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
-	}
 	usedPort := map[int32]bool{}
-	for _, v := range vols.Items {
+	for _, v := range vols {
 		if v.Spec.DRBD != nil {
 			usedPort[v.Spec.DRBD.Port] = true
 		}
