@@ -49,8 +49,8 @@ spec:
         - operator: Exists # CSI node service must run on every schedulable node
       containers:
         - name: agent
-          image: {{ include "miroir.image" . }}
-          imagePullPolicy: {{ include "miroir.imagePullPolicy" . }}
+          image: {{ include "miroir.agentImage" . }}
+          imagePullPolicy: {{ include "miroir.agentImagePullPolicy" . }}
           args:
             - --mode=agent
             - --csi-socket=/csi/csi.sock

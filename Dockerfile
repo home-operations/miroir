@@ -12,29 +12,42 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpat
     -ldflags "-X main.version=${VERSION} -X main.commit=${REVISION}" \
     -o /miroir cmd/main.go
 
-# The agent drives lvm/zfs/mkfs on the host through this container's
+# Controller: talks to the Kubernetes API only — it never execs a storage
+# CLI, so it ships without one (and without a shell). The chart already
+# runs it as 65532, this base's nonroot user.
+FROM gcr.io/distroless/static:nonroot AS controller
+COPY --from=build /miroir /usr/local/bin/miroir
+ENTRYPOINT ["/usr/local/bin/miroir"]
+
+# Agent: drives lvm/zfs/drbd/mkfs on the host through this container's
 # userland; the kernel modules come from the Talos kernel + extensions.
-# Alpine's zfs userland (2.4.x) must share a minor version with the
-# siderolabs/zfs extension's module — verify on upgrades.
-# drbd-utils is pinned to the Alpine 3.24 series (bumped 9.33 → 9.34 with
-# the repo): GI seeding depends on drbdmeta CLI behavior — re-validate
-# against smoke.sh + conformance (the kind e2e does not exercise DRBD)
-# before bumping further.
-FROM alpine:3.24
-RUN apk add --no-cache \
+# Debian (glibc) because the DRBD/ZFS ecosystem — LINBIT, Piraeus,
+# blockstor — builds and tests the storage stack against glibc only.
+# zfsutils-linux lives in contrib. Version notes (trixie, no backports):
+#   - drbd-utils 9.22: every CLI/JSON surface miroir uses predates it
+#     (adjust --skip-disk 8.9.7, status --json 8.9.8, quorum 8.9.11;
+#     peer_devices/percent-in-sync/out-of-sync verified in the v9.22.0
+#     source). GI seeding depends on drbdmeta CLI behavior — re-validate
+#     with smoke.sh + conformance on real DRBD (the kind e2e exercises
+#     the local backend only) before shipping a base bump.
+#   - zfs userland 2.3 against the siderolabs/zfs 2.4 module: userland
+#     older than the module is the supported direction, and miroir only
+#     uses ancient ops (create -V/snapshot/clone/promote/volsize).
+FROM debian:trixie-slim AS agent
+RUN sed -i 's|^Components: main$|Components: main contrib|' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    drbd-utils \
     lvm2 \
-    zfs \
-    'drbd-utils=~9.34' \
+    zfsutils-linux \
     e2fsprogs \
-    e2fsprogs-extra \
     xfsprogs \
-    xfsprogs-extra \
-    blkid \
-    util-linux-misc \
-    # loopfile backend: full losetup (-j/-O/-c, beyond busybox's) and GNU cp
-    # for reflink (cp --reflink → FICLONE); both shadow busybox via PATH.
-    losetup \
-    coreutils
+    # explicit though present in the base: losetup/blkid/lsblk (util-linux),
+    # mount, and GNU cp for reflink clones (cp --reflink → FICLONE).
+    util-linux \
+    mount \
+    coreutils && \
+    rm -rf /var/lib/apt/lists/*
 # No udevd is reachable from the container: stop libdevmapper from waiting
 # on udev cookies and lvm from querying udev for the device list.
 # global_filter rejects DRBD devices: lvm's device scan would block in D

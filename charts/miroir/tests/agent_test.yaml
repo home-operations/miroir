@@ -49,7 +49,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/home-operations/miroir:0.0.1"
+          value: "ghcr.io/home-operations/miroir-agent:0.0.1"
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: IfNotPresent
@@ -233,3 +233,19 @@ tests:
             hostPath:
               path: /var/lib/miroir
               type: DirectoryOrCreate
+
+  - it: pins the agent image by digest when set, overriding the tag
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      agent:
+        image:
+          tag: 1.2.3
+          digest: sha256:def456
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/home-operations/miroir-agent@sha256:def456"

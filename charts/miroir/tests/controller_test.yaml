@@ -67,7 +67,7 @@ tests:
           value: controller
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/home-operations/miroir:0.0.1"
+          value: "ghcr.io/home-operations/miroir-controller:0.0.1"
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: IfNotPresent
@@ -196,7 +196,7 @@ tests:
     asserts:
       - equal:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/home-operations/miroir@sha256:abc123"
+          value: "ghcr.io/home-operations/miroir-controller@sha256:abc123"
 
   - it: respects a non-default Release namespace
     release:

@@ -3,6 +3,36 @@
   "properties": {
     "agent": {
       "properties": {
+        "image": {
+          "description": "Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent and the\nsetup Job exec on each storage node).",
+          "properties": {
+            "digest": {
+              "default": "",
+              "description": "Pins the image by digest (sha256:…); takes precedence over the tag.\nThe release pipeline fills this with the published image's digest.",
+              "title": "digest",
+              "type": "string"
+            },
+            "pullPolicy": {
+              "default": "IfNotPresent",
+              "title": "pullPolicy",
+              "type": "string"
+            },
+            "repository": {
+              "default": "ghcr.io/home-operations/miroir-agent",
+              "title": "repository",
+              "type": "string"
+            },
+            "tag": {
+              "default": "",
+              "description": "Overrides the image tag; defaults to the chart appVersion.",
+              "title": "tag",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "image",
+          "type": "object"
+        },
         "poolStatsInterval": {
           "default": "60s",
           "description": "Per-node backend selection comes from node annotations:\n  miroir.home-operations.com/backend: lvmthin | zfs\n  miroir.home-operations.com/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)\n  miroir.home-operations.com/zfs-dataset: data-pool/miroir              (zfs)\nNodes also need the label miroir.home-operations.com/storage: \"true\" to receive replicas.\n\nHow often each agent republishes its pool capacity to its MiroirNode\n(read by the controller for capacity-aware placement).",
@@ -193,6 +223,7 @@
       "type": "object"
     },
     "image": {
+      "description": "Controller image (distroless, no storage userland — the controller never\nexecs a storage CLI).",
       "properties": {
         "digest": {
           "default": "",
@@ -206,7 +237,7 @@
           "type": "string"
         },
         "repository": {
-          "default": "ghcr.io/home-operations/miroir",
+          "default": "ghcr.io/home-operations/miroir-controller",
           "title": "repository",
           "type": "string"
         },

@@ -66,20 +66,42 @@ jobs:
         id: tools
         run: echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
 
-      - name: Build image
+      # Both builds run concurrently against the same BuildKit daemon, which
+      # dedupes the shared Go builder stage in flight — the agent's Debian
+      # layer pull overlaps the compile. Distinct cache scopes: concurrent
+      # cache-to writes to one scope evict each other.
+      - name: Build controller image
+        id: controller-image
+        background: true
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           load: true
-          tags: miroir:e2e
+          target: controller
+          tags: miroir-controller:e2e
           build-args: GO_VERSION=${{ steps.tools.outputs.go }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=e2e-controller
+          cache-to: type=gha,mode=max,scope=e2e-controller
 
-      - wait: kind
+      - name: Build agent image
+        id: agent-image
+        background: true
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          load: true
+          target: agent
+          tags: miroir-agent:e2e
+          build-args: GO_VERSION=${{ steps.tools.outputs.go }}
+          cache-from: type=gha,scope=e2e-agent
+          cache-to: type=gha,mode=max,scope=e2e-agent
 
-      - name: Load image into kind
-        run: kind load docker-image miroir:e2e --name miroir-test-e2e
+      - wait: [kind, controller-image, agent-image]
+
+      - name: Load images into kind
+        run: |
+          kind load docker-image miroir-controller:e2e --name miroir-test-e2e
+          kind load docker-image miroir-agent:e2e --name miroir-test-e2e
 
       - name: Provision (loop device, snapshot stack, helm install)
         run: mise run e2e-provision

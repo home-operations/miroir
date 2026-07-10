@@ -52,6 +52,22 @@ Return the image pull policy, defaulting to IfNotPresent.
 {{- end -}}
 
 {{/*
+Agent image ref — the Debian image carrying the storage userland; used by
+the agent DaemonSet and the setup Job.
+*/}}
+{{- define "miroir.agentImage" -}}
+{{- if .Values.agent.image.digest -}}
+{{- printf "%s@%s" .Values.agent.image.repository .Values.agent.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.agent.image.repository (.Values.agent.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "miroir.agentImagePullPolicy" -}}
+{{- .Values.agent.image.pullPolicy | default "IfNotPresent" -}}
+{{- end -}}
+
+{{/*
 Standard labels applied to every resource this chart produces. Component is added at the
 call site so each workload remains self-describing ("controller", "agent", "setup",
 "uninstall").

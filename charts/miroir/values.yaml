@@ -1,5 +1,7 @@
+# -- Controller image (distroless, no storage userland — the controller never
+# execs a storage CLI).
 image:
-  repository: ghcr.io/home-operations/miroir
+  repository: ghcr.io/home-operations/miroir-controller
   # Overrides the image tag; defaults to the chart appVersion so the chart and
   # image versions stay in lock-step (set to e.g. "main" to track the rolling tag).
   tag: ""
@@ -85,6 +87,16 @@ controller:
       memory: 128Mi
 
 agent:
+  # Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent and the
+  # setup Job exec on each storage node).
+  image:
+    repository: ghcr.io/home-operations/miroir-agent
+    # Overrides the image tag; defaults to the chart appVersion.
+    tag: ""
+    # Pins the image by digest (sha256:…); takes precedence over the tag.
+    # The release pipeline fills this with the published image's digest.
+    digest: ""
+    pullPolicy: IfNotPresent
   # Per-node backend selection comes from node annotations:
   #   miroir.home-operations.com/backend: lvmthin | zfs
   #   miroir.home-operations.com/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)

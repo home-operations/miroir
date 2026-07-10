@@ -35,6 +35,10 @@ Kubernetes: `>=1.31.0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| agent.image.digest | string | `""` |  |
+| agent.image.pullPolicy | string | `"IfNotPresent"` |  |
+| agent.image.repository | string | `"ghcr.io/home-operations/miroir-agent"` |  |
+| agent.image.tag | string | `""` |  |
 | agent.poolStatsInterval | string | `"60s"` |  |
 | agent.resources.limits.memory | string | `"128Mi"` |  |
 | agent.resources.requests.cpu | string | `"10m"` |  |
@@ -55,10 +59,7 @@ Kubernetes: `>=1.31.0`
 | drbd.resync.planAhead | string | `""` | c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller. |
 | drbd.resync.rate | string | `""` | resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0). |
 | drbd.verifyAlg | string | `"crc32c"` | verify-alg arms `drbdadm verify <res>` — the only cross-leg integrity check (a zfs scrub only validates one leg against itself). Defaulted to crc32c: drbd.ko depends on libcrc32c so it is present on every node, and it costs nothing until a verify runs. Schedule the verify pass yourself (cron, quiet hours); out-of-sync blocks surface in the kernel log and `drbdsetup status`. Empty disables verification. |
-| image.digest | string | `""` |  |
-| image.pullPolicy | string | `"IfNotPresent"` |  |
-| image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
-| image.tag | string | `""` |  |
+| image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/home-operations/miroir-controller","tag":""}` | Controller image (distroless, no storage userland — the controller never execs a storage CLI). |
 | kubeletDir | string | `"/var/lib/kubelet"` |  |
 | monitoring.dashboards.annotations | object | `{}` | Annotations added to the dashboard ConfigMap. |
 | monitoring.dashboards.enabled | bool | `false` | Render the Grafana dashboard ConfigMap (for grafana-operator or the kube-prometheus-stack sidecar). |
