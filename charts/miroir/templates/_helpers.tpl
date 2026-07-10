@@ -77,6 +77,20 @@ helm.sh/chart: {{ include "miroir.chart" . }}
 {{ include "miroir.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- with .Values.global.commonLabels }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Pod-level imagePullSecrets from global; emits nothing when unset so
+callers can use it verbatim.
+*/}}
+{{- define "miroir.imagePullSecrets" -}}
+{{- with .Values.global.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 {{- end -}}
 
 {{/*

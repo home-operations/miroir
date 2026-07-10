@@ -1,3 +1,18 @@
+# Fleet-wide defaults (kopiur layout). imagePullSecrets and commonLabels
+# reach every pod/object; the scheduling globals apply to the controller —
+# the only freely schedulable workload (the agent DaemonSet must run on
+# every schedulable node for the CSI node service, and the setup Job is
+# node-pinned).
+global:
+  # -- Pull secrets added to every pod (controller, agent, setup, uninstall).
+  imagePullSecrets: []
+  # -- Labels stamped on every rendered object (fleet-wide labelling).
+  commonLabels: {}
+  # -- Controller scheduling defaults.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 # -- Controller image (distroless, no storage userland — the controller never
 # execs a storage CLI).
 image:

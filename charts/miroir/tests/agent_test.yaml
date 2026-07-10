@@ -249,3 +249,22 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].image
           value: "ghcr.io/home-operations/miroir-agent@sha256:def456"
+
+  - it: applies global pull secrets but not global scheduling (agent runs everywhere)
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      global:
+        imagePullSecrets:
+          - name: ghcr-pull
+        nodeSelector:
+          kubernetes.io/arch: amd64
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: ghcr-pull
+      - notExists:
+          path: spec.template.spec.nodeSelector

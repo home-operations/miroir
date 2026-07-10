@@ -156,7 +156,41 @@
       "type": "object"
     },
     "global": {
-      "description": "Global values are values that can be accessed from any chart or subchart by exactly the same name.",
+      "description": "Fleet-wide defaults (kopiur layout). imagePullSecrets and commonLabels\nreach every pod/object; the scheduling globals apply to the controller —\nthe only freely schedulable workload (the agent DaemonSet must run on\nevery schedulable node for the CSI node service, and the setup Job is\nnode-pinned).",
+      "properties": {
+        "affinity": {
+          "required": [],
+          "title": "affinity",
+          "type": "object"
+        },
+        "commonLabels": {
+          "description": "Labels stamped on every rendered object (fleet-wide labelling).",
+          "required": [],
+          "title": "commonLabels",
+          "type": "object"
+        },
+        "imagePullSecrets": {
+          "description": "Pull secrets added to every pod (controller, agent, setup, uninstall).",
+          "items": {
+            "required": []
+          },
+          "title": "imagePullSecrets",
+          "type": "array"
+        },
+        "nodeSelector": {
+          "description": "Controller scheduling defaults.",
+          "required": [],
+          "title": "nodeSelector",
+          "type": "object"
+        },
+        "tolerations": {
+          "items": {
+            "required": []
+          },
+          "title": "tolerations",
+          "type": "array"
+        }
+      },
       "required": [],
       "title": "global",
       "type": "object"

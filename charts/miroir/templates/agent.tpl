@@ -41,6 +41,7 @@ spec:
       # after workloads — their DRBD legs are then Secondary and safe to
       # release (see agentShutdownSweep). Needs Talos
       # shutdownGracePeriodCriticalPods >= the grace period below (see README).
+      {{- include "miroir.imagePullSecrets" . | nindent 6 }}
       priorityClassName: system-node-critical
       # Longer grace lets the cordon-gated DRBD teardown finish before SIGKILL;
       # routine restarts stay schedulable and skip it.

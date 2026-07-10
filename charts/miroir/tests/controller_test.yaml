@@ -224,3 +224,42 @@ tests:
             name: nodes
             configMap:
               name: miroir-nodes
+
+  - it: applies global pull secrets, scheduling, and common labels
+    set:
+      global:
+        imagePullSecrets:
+          - name: ghcr-pull
+        nodeSelector:
+          kubernetes.io/arch: amd64
+        tolerations:
+          - key: dedicated
+            operator: Equal
+            value: storage
+            effect: NoSchedule
+        commonLabels:
+          team: platform
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.imagePullSecrets[0].name
+          value: ghcr-pull
+      - equal:
+          path: spec.template.spec.nodeSelector["kubernetes.io/arch"]
+          value: amd64
+      - equal:
+          path: spec.template.spec.tolerations[0].key
+          value: dedicated
+      - equal:
+          path: metadata.labels.team
+          value: platform
+
+  - it: renders no scheduling or pull-secret fields by default
+    documentIndex: 0
+    asserts:
+      - notExists:
+          path: spec.template.spec.imagePullSecrets
+      - notExists:
+          path: spec.template.spec.nodeSelector
+      - notExists:
+          path: spec.template.spec.tolerations

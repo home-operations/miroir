@@ -16,6 +16,7 @@ spec:
   template:
     spec:
       serviceAccountName: {{ include "miroir.setupServiceAccountName" $ }}
+      {{- include "miroir.imagePullSecrets" $ | nindent 6 }}
       nodeName: {{ $name }}
       restartPolicy: Never
       hostNetwork: true

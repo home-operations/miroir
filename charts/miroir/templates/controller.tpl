@@ -21,6 +21,19 @@ spec:
         app.kubernetes.io/component: controller
     spec:
       serviceAccountName: {{ include "miroir.controllerName" . }}
+      {{- include "miroir.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.global.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       priorityClassName: {{ .Values.priorityClassName }}
       securityContext:
         runAsNonRoot: true
