@@ -19,8 +19,13 @@ sidecars:
     image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
   snapshotter:
     image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
+    # CreateSnapshot returns fast (readiness is polled), so the default
+    # suffices; raise if snapshot RPCs are slow.
+    timeout: 120s
   resizer:
     image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
+    # Online grow can block on a rebooting node; keep >= controller.provisionTimeout.
+    timeout: 120s
 
 # Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
 # tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
@@ -55,6 +60,13 @@ kubeletDir: /var/lib/kubelet
 nodes: {}
 
 controller:
+  # system-cluster-critical protects the single controller from eviction
+  # under node pressure — while it is down, no volume can be provisioned,
+  # expanded, or snapshotted.
+  priorityClassName: system-cluster-critical
+  # Wait for agents to realise a new volume. Keep sidecars.*.timeout at or
+  # above this, or the sidecar RPC deadline fires before this one and the
+  # knob has no effect.
   provisionTimeout: 120s
   # Thin-provisioning overcommit guardrail: CreateVolume is refused when a
   # node's provisioned total would exceed capacity × this ratio. 2× is the
@@ -106,8 +118,12 @@ drbd:
     fillTarget: ""
     # -- c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M").
     maxRate: ""
-    # -- c-min-rate, the resync floor guaranteed even under application I/O (e.g. "20M"); keep low on shared links.
-    minRate: ""
+    # -- c-min-rate, the resync floor guaranteed even under application I/O.
+    # Defaulted to 10M: DRBD's kernel default (250 KiB/s) leaves a degraded
+    # volume resyncing for days under load; 10 MiB/s heals a 100Gi leg in
+    # hours while still yielding most of a 1GbE link to applications. Lower
+    # on a slow shared link.
+    minRate: 10M
     # -- resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0).
     rate: ""
     # -- max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864").
@@ -118,12 +134,13 @@ drbd:
     # clusters with loopfile-backed replicated volumes (loop devices
     # mishandle it) or entirely to keep DRBD's default (off).
     discardGranularity: ""
-  # -- verify-alg enables `drbdadm verify <res>` — the only cross-leg
-  # integrity check (zfs scrub validates one leg against itself). Set to a
-  # kernel digest (e.g. "crc32c") and run verify from cron/manually during
-  # quiet hours; out-of-sync blocks surface in the kernel log and
-  # `drbdsetup status`. Empty keeps verification unavailable.
-  verifyAlg: ""
+  # -- verify-alg arms `drbdadm verify <res>` — the only cross-leg
+  # integrity check (a zfs scrub only validates one leg against itself).
+  # Defaulted to crc32c: drbd.ko depends on libcrc32c so it is present on
+  # every node, and it costs nothing until a verify runs. Schedule the
+  # verify pass yourself (cron, quiet hours); out-of-sync blocks surface
+  # in the kernel log and `drbdsetup status`. Empty disables verification.
+  verifyAlg: crc32c
 
 storageClass:
   create: true

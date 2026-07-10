@@ -90,7 +90,7 @@ tests:
       - matchRegex:
           path: data["global_common.conf"]
           pattern: "handlers \\{\\}"
-      # Default emits no resync options — common{} keeps DRBD's built-ins.
+      # Default emits no bandwidth ceiling — the kernel controller adapts.
       - notMatchRegex:
           path: data["global_common.conf"]
           pattern: "c-max-rate"
@@ -99,6 +99,16 @@ tests:
       - matchRegex:
           path: data["global_common.conf"]
           pattern: "on-io-error detach;"
+      # c-min-rate is defaulted so a degraded volume heals in hours, not
+      # days, under application I/O.
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "c-min-rate 10M;"
+      # verify-alg is defaulted (crc32c is always present); free until a
+      # verify runs.
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "verify-alg crc32c;"
 
   - it: renders cluster-wide resync tuning into common{} when set
     set:
@@ -150,7 +160,7 @@ tests:
           path: data["global_common.conf"]
           pattern: "verify-alg crc32c;"
 
-  - it: default emits neither discard granularity nor verify-alg
+  - it: default emits no discard granularity (loopfile-unsafe, opt-in)
     set:
       nodes:
         kharkiv:
@@ -161,9 +171,6 @@ tests:
       - notMatchRegex:
           path: data["global_common.conf"]
           pattern: "rs-discard-granularity"
-      - notMatchRegex:
-          path: data["global_common.conf"]
-          pattern: "verify-alg"
 
   - it: honours a non-default Release namespace for both ConfigMaps
     release:

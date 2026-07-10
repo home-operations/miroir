@@ -21,6 +21,7 @@ spec:
         app.kubernetes.io/component: controller
     spec:
       serviceAccountName: {{ include "miroir.controllerName" . }}
+      priorityClassName: {{ .Values.controller.priorityClassName }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -73,7 +74,7 @@ spec:
           image: {{ .Values.sidecars.snapshotter.image }}
           args:
             - --csi-address=/csi/csi.sock
-            - --timeout={{ .Values.sidecars.provisioner.timeout }}
+            - --timeout={{ .Values.sidecars.snapshotter.timeout }}
             - --leader-election=false
           resources:
             requests: { cpu: 10m, memory: 32Mi }
@@ -85,7 +86,7 @@ spec:
           image: {{ .Values.sidecars.resizer.image }}
           args:
             - --csi-address=/csi/csi.sock
-            - --timeout={{ .Values.sidecars.provisioner.timeout }}
+            - --timeout={{ .Values.sidecars.resizer.timeout }}
             - --leader-election=false
           resources:
             requests: { cpu: 10m, memory: 32Mi }

@@ -64,8 +64,15 @@
           "title": "overcommitRatio",
           "type": "integer"
         },
+        "priorityClassName": {
+          "default": "system-cluster-critical",
+          "description": "system-cluster-critical protects the single controller from eviction\nunder node pressure — while it is down, no volume can be provisioned,\nexpanded, or snapshotted.",
+          "title": "priorityClassName",
+          "type": "string"
+        },
         "provisionTimeout": {
           "default": "120s",
+          "description": "Wait for agents to realise a new volume. Keep sidecars.*.timeout at or\nabove this, or the sidecar RPC deadline fires before this one and the\nknob has no effect.",
           "title": "provisionTimeout",
           "type": "string"
         },
@@ -146,8 +153,8 @@
               "type": "string"
             },
             "minRate": {
-              "default": "",
-              "description": "c-min-rate, the resync floor guaranteed even under application I/O (e.g. \"20M\"); keep low on shared links.",
+              "default": "10M",
+              "description": "c-min-rate, the resync floor guaranteed even under application I/O.\nDefaulted to 10M: DRBD's kernel default (250 KiB/s) leaves a degraded\nvolume resyncing for days under load; 10 MiB/s heals a 100Gi leg in\nhours while still yielding most of a 1GbE link to applications. Lower\non a slow shared link.",
               "title": "minRate",
               "type": "string"
             },
@@ -169,8 +176,8 @@
           "type": "object"
         },
         "verifyAlg": {
-          "default": "",
-          "description": "verify-alg enables `drbdadm verify \u003cres\u003e` — the only cross-leg\nintegrity check (zfs scrub validates one leg against itself). Set to a\nkernel digest (e.g. \"crc32c\") and run verify from cron/manually during\nquiet hours; out-of-sync blocks surface in the kernel log and\n`drbdsetup status`. Empty keeps verification unavailable.",
+          "default": "crc32c",
+          "description": "verify-alg arms `drbdadm verify \u003cres\u003e` — the only cross-leg\nintegrity check (a zfs scrub only validates one leg against itself).\nDefaulted to crc32c: drbd.ko depends on libcrc32c so it is present on\nevery node, and it costs nothing until a verify runs. Schedule the\nverify pass yourself (cron, quiet hours); out-of-sync blocks surface\nin the kernel log and `drbdsetup status`. Empty disables verification.",
           "title": "verifyAlg",
           "type": "string"
         }
@@ -384,6 +391,12 @@
               "default": "registry.k8s.io/sig-storage/csi-resizer:v2.2.1",
               "title": "image",
               "type": "string"
+            },
+            "timeout": {
+              "default": "120s",
+              "description": "Online grow can block on a rebooting node; keep \u003e= controller.provisionTimeout.",
+              "title": "timeout",
+              "type": "string"
             }
           },
           "required": [],
@@ -395,6 +408,12 @@
             "image": {
               "default": "registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0",
               "title": "image",
+              "type": "string"
+            },
+            "timeout": {
+              "default": "120s",
+              "description": "CreateSnapshot returns fast (readiness is polled), so the default\nsuffices; raise if snapshot RPCs are slow.",
+              "title": "timeout",
               "type": "string"
             }
           },
