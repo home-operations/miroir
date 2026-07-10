@@ -352,21 +352,51 @@ const minorBase int32 = 1000
 // AllocateMinor assigns a DRBD minor to a volume, returning the same
 // minor on future calls. Serialised by an advisory flock the kernel
 // releases on close or process death, then persisted via atomic rename.
-func (d *Driver) AllocateMinor(volume string) (int32, error) {
-	// flock, not an O_EXCL sentinel: a sentinel orphaned by a crash between
-	// create and remove would deadlock every future allocation (nothing
-	// sweeps minor.lock). LOCK_EX blocks until acquired and the kernel drops
-	// it when the fd closes — including on SIGKILL/OOM — so a crash cannot
-	// wedge allocation. The file is intentionally left on disk as the stable
-	// lock target.
+// lockMinors serialises minor.assign access. flock, not an O_EXCL
+// sentinel: a sentinel orphaned by a crash between create and remove would
+// deadlock every future allocation (nothing sweeps minor.lock). LOCK_EX
+// blocks until acquired and the kernel drops it when the fd closes —
+// including on SIGKILL/OOM — so a crash cannot wedge allocation. The file
+// is intentionally left on disk as the stable lock target.
+func (d *Driver) lockMinors() (func(), error) {
 	f, err := os.OpenFile(d.path("minor.lock"), os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
-		return 0, fmt.Errorf("open minor lock: %w", err)
+		return nil, fmt.Errorf("open minor lock: %w", err)
 	}
-	defer func() { _ = f.Close() }()
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
-		return 0, fmt.Errorf("lock minor allocation: %w", err)
+		_ = f.Close()
+		return nil, fmt.Errorf("lock minor allocation: %w", err)
 	}
+	return func() { _ = f.Close() }, nil
+}
+
+// releaseMinor drops a volume's minor.assign entry so the minor can be
+// reused. Called on teardown; without it the map grows for the lifetime of
+// the StateDir. Absent entry (unreplicated volume, or already released) is
+// a no-op.
+func (d *Driver) releaseMinor(volume string) error {
+	unlock, err := d.lockMinors()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	assigned, err := d.readAssignments()
+	if err != nil {
+		return err
+	}
+	if _, ok := assigned[volume]; !ok {
+		return nil
+	}
+	delete(assigned, volume)
+	return d.writeAssignments(assigned)
+}
+
+func (d *Driver) AllocateMinor(volume string) (int32, error) {
+	unlock, err := d.lockMinors()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
 
 	assigned, err := d.readAssignments()
 	if err != nil {
@@ -639,7 +669,9 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 			return err
 		}
 	}
-	return nil
+	// Free the minor for reuse — the .res is gone, so scanUsedMinors no
+	// longer covers it, and the assignment would otherwise leak forever.
+	return d.releaseMinor(name)
 }
 
 // DiskUpToDate is the disk state of a replica holding current data.
