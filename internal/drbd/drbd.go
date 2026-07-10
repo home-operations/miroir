@@ -98,7 +98,10 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 	// A diskless tie-breaker has no backing device — no metadata, no
 	// device-node, no marker. It only needs the .res rendered (writeConfig
 	// above) and drbdadm up/adjust so DRBD joins the resource for quorum.
-	if !r.LocalDiskless {
+	// A SkipDiskAttach leg is latched failed: leave its backing disk alone
+	// (no create-md on a disk DRBD dropped on I/O error). The disk phase is
+	// skipped below, so nothing reads or writes the failing device.
+	if !r.LocalDiskless && !r.SkipDiskAttach {
 		if err := d.ensureMarkedMetadata(ctx, r); err != nil {
 			return err
 		}
@@ -107,13 +110,22 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 	// adjust is idempotent: up when down, reconfigure on change, no-op
 	// otherwise. A half-torn kernel slot can answer "Unknown resource"
 	// to adjust but accept a plain up — fall back rather than loop.
-	if _, err := d.adm(ctx, "adjust", r.Name); err != nil {
+	// --skip-disk reconciles net/connection state but leaves the disk
+	// detached (drbdadm_adjust.c drops the ADJUST_DISK phase), so a latched
+	// leg is not re-attached. It is always up (Diskless is an up-resource
+	// state), so the Unknown-resource up fallback below is unreachable.
+	adjustArgs := []string{"adjust", r.Name}
+	if r.SkipDiskAttach {
+		adjustArgs = []string{"adjust", "--skip-disk", r.Name}
+	}
+	if _, err := d.adm(ctx, adjustArgs...); err != nil {
 		// A stale .md-created marker surviving a backing-disk replacement
 		// (data disk swapped, /etc/drbd.d intact) makes ensureMarkedMetadata
 		// skip create-md, so adjust attaches a blank device and fails "no
 		// valid meta-data". Drop the marker and re-run: probeMetadata sees
 		// no metadata and create-md + SkipSeed makes this a full SyncTarget.
-		if !r.LocalDiskless && isMissingMetadata(err) {
+		// Unreachable with --skip-disk (no attach → no metadata read).
+		if !r.LocalDiskless && !r.SkipDiskAttach && isMissingMetadata(err) {
 			if rmErr := os.Remove(d.path(r.Name + ".md-created")); rmErr != nil && !os.IsNotExist(rmErr) {
 				return rmErr
 			}

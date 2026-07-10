@@ -195,6 +195,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			resyncPercent: st.ResyncPercent,
 		})
 	}
+	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: !localDiskless,
 		DevicePath:    drbd.DevicePath(minor),
@@ -204,7 +205,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Connected:     connected,
 		SplitBrain:    st.SplitBrain,
 		Diskless:      localDiskless,
-		Message:       detachedDiskMessage(vol, r.NodeName, st, localDiskless),
+		DiskFailed:    diskFailed,
+		Message:       detachedDiskMessage(diskFailed),
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -328,7 +330,11 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 		LocalDiskless: localDiskless,
 		Secret:        vol.Spec.DRBD.SharedSecret,
 		SkipSeed:      skipSeed,
-		Peers:         peers,
+		// Latched failed: render adjust --skip-disk so the failing disk is
+		// not re-attached. Read from prior status, so it lags the detach by
+		// one reconcile. Cleared by a replica re-add (removal drops the slot).
+		SkipDiskAttach: !localDiskless && vol.Status.PerNode[localNode].DiskFailed,
+		Peers:          peers,
 	}
 }
 
@@ -511,6 +517,12 @@ func (r *VolumeReconciler) growIfCoordinator(ctx context.Context, vol *miroirv1a
 	if !behind || coord == nil || coord.Node != r.NodeName {
 		return reportSize, drbdPollInterval, nil
 	}
+	// A latched-failed coordinator has no local disk (Diskless): drbdadm
+	// resize would error, and removing the replica re-elects the coordinator
+	// to a healthy peer anyway. Withhold and poll rather than error-loop.
+	if st.DiskState == drbd.DiskDiskless {
+		return vol.Status.PerNode[r.NodeName].SizeBytes, 5 * time.Second, nil
+	}
 	// drbdadm resize is refused mid-resync, so withhold the size and retry
 	// on the next poll instead of failing the reconcile.
 	if !peerBackingsGrown(vol, r.NodeName) || st.Resyncing {
@@ -529,16 +541,29 @@ func (r *VolumeReconciler) growIfCoordinator(ctx context.Context, vol *miroirv1a
 	return reportSize, drbdPollInterval, nil
 }
 
-// detachedDiskMessage explains a diskful leg DRBD dropped to Diskless// detachedDiskMessage explains a diskful leg DRBD dropped to Diskless
-// after a backing-device I/O error (on-io-error detach): the volume keeps
-// serving via the peer, but the operator otherwise sees only
-// "DiskState: Diskless" with no cause. Gated on the leg having previously
-// been attached so a normal bring-up (briefly Diskless) does not cry wolf.
-func detachedDiskMessage(vol *miroirv1alpha1.MiroirVolume, self string, st drbd.Status, localDiskless bool) string {
+// diskFailedLatch reports whether this diskful leg is latched failed: DRBD
+// detached it to Diskless after a backing-device I/O error (on-io-error
+// detach) and it must not be re-attached (drbdResource renders
+// adjust --skip-disk while latched). It is sticky — once a prior reconcile
+// recorded DiskFailed it stays latched even though prev DiskState is now
+// Diskless (the fresh-detach test alone would clear it). It clears only
+// when the leg reaches a non-Diskless state again (a re-add re-attaches a
+// fresh disk) or the replica is removed (removal drops this status slot).
+// Gated on the leg having previously been attached so a normal bring-up
+// (briefly Diskless) does not cry wolf.
+func diskFailedLatch(vol *miroirv1alpha1.MiroirVolume, self string, st drbd.Status, localDiskless bool) bool {
 	if localDiskless || st.DiskState != drbd.DiskDiskless {
-		return ""
+		return false
 	}
-	if prev := vol.Status.PerNode[self].DiskState; prev == "" || prev == drbd.DiskDiskless {
+	prev := vol.Status.PerNode[self]
+	return prev.DiskFailed || (prev.DiskState != "" && prev.DiskState != drbd.DiskDiskless)
+}
+
+// detachedDiskMessage explains a latched-failed leg to the operator, who
+// otherwise sees only "DiskState: Diskless" with no cause. Persists as long
+// as the leg is latched, not just the reconcile the detach was first seen.
+func detachedDiskMessage(diskFailed bool) string {
+	if !diskFailed {
 		return ""
 	}
 	return "backing device detached after an I/O error; serving via the peer — " +

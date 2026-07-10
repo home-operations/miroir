@@ -275,6 +275,14 @@ spec:
                         DevicePath is the node-local path pods attach to (backing device for
                         replicas:1; /dev/drbd<minor> when replicated).
                       type: string
+                    diskFailed:
+                      description: |-
+                        DiskFailed latches a diskful leg DRBD detached after a backing I/O
+                        error (on-io-error detach): the agent renders `adjust --skip-disk`
+                        so the next reconcile does not re-attach the failing disk and
+                        re-trigger the error. Sticky until the replica is removed and
+                        re-added (a fresh backing clears it). Serving continues via the peer.
+                      type: boolean
                     diskState:
                       description: |-
                         DiskState is the DRBD disk state on this node (UpToDate,

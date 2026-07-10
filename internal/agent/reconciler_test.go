@@ -811,6 +811,82 @@ func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
 	if !st.DeviceCreated {
 		t.Fatalf("detached leg must stay DeviceCreated (Degraded, not Failed): %+v", st)
 	}
+	if !st.DiskFailed {
+		t.Fatalf("first detach must latch DiskFailed so the next reconcile skips re-attach: %+v", st)
+	}
+	// The latch is read from the prior reconcile's status, so this first
+	// detection still ran a bare adjust (one re-attach), then latched.
+	fe.calledWith(t, "drbdadm adjust "+volPvc1)
+	fe.notCalledWith(t, "--skip-disk")
+}
+
+// Once a leg is latched failed (prior reconcile set DiskFailed), the agent
+// renders adjust --skip-disk so DRBD reconciles net/connection state but
+// does not re-attach the failing disk — stopping the on-io-error flap
+// (#101). The latch is sticky: it stays set though prev DiskState is now
+// Diskless, and clears only on a replica re-add.
+func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	// Already latched by a prior reconcile: Diskless and DiskFailed.
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateDiskless, DiskFailed: true, SizeBytes: 1 << 30},
+	}
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Diskless"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+
+	fe.calledWith(t, "drbdadm adjust --skip-disk "+volPvc1)
+	fe.notCalledWith(t, "adjust "+volPvc1) // never a bare re-attach
+	fe.notCalledWith(t, "create-md")       // never touch the failing disk
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if st := got.Status.PerNode[nodeKharkiv]; !st.DiskFailed {
+		t.Fatalf("latch must stay set while the leg is Diskless: %+v", st)
+	}
+}
+
+// A latched-failed coordinator (Diskless) cannot drbdadm resize its absent
+// local disk. The grow must be withheld, not attempted — otherwise the
+// reconcile error-loops on a resize the diskless node can never do.
+func TestReconcileLatchedCoordinatorSkipsResize(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.SizeBytes = 2 << 30 // grown; the coordinator is behind
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	// kharkiv is replicas[0] (coordinator), latched failed and still at the
+	// old size.
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateDiskless, DiskFailed: true, SizeBytes: 1 << 30},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 2 << 30},
+	}
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Diskless"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdadm resize")
 }
 
 // The resize coordinator must not run drbdadm resize once its realized
