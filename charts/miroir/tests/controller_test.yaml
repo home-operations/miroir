@@ -263,3 +263,16 @@ tests:
           path: spec.template.spec.nodeSelector
       - notExists:
           path: spec.template.spec.tolerations
+
+  - it: honours fullnameOverride and nameOverride
+    set:
+      fullnameOverride: replicator
+      nameOverride: mir
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.name
+          value: replicator-controller
+      - equal:
+          path: metadata.labels["app.kubernetes.io/name"]
+          value: mir

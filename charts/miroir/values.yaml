@@ -1,3 +1,8 @@
+# -- Override the chart name used in labels and default object names.
+nameOverride: ""
+# -- Override the fully qualified name prefix of every rendered object.
+fullnameOverride: ""
+
 # Fleet-wide defaults (kopiur layout). imagePullSecrets and commonLabels
 # reach every pod/object; the scheduling globals apply to the controller —
 # the only freely schedulable workload (the agent DaemonSet must run on

@@ -155,6 +155,12 @@
       "title": "drbd",
       "type": "object"
     },
+    "fullnameOverride": {
+      "default": "",
+      "description": "Override the fully qualified name prefix of every rendered object.",
+      "title": "fullnameOverride",
+      "type": "string"
+    },
     "global": {
       "description": "Fleet-wide defaults (kopiur layout). imagePullSecrets and commonLabels\nreach every pod/object; the scheduling globals apply to the controller —\nthe only freely schedulable workload (the agent DaemonSet must run on\nevery schedulable node for the CSI node service, and the setup Job is\nnode-pinned).",
       "properties": {
@@ -409,6 +415,12 @@
       "required": [],
       "title": "monitoring",
       "type": "object"
+    },
+    "nameOverride": {
+      "default": "",
+      "description": "Override the chart name used in labels and default object names.",
+      "title": "nameOverride",
+      "type": "string"
     },
     "nodes": {
       "description": "Per-node storage topology — the single source of truth for which nodes\nhold volumes and how. Rendered into the miroir-nodes ConfigMap, read by\nthe controller (placement) and each agent (backend selection).\nOptional per-node `zone` (rack, host group, AZ): when set, the controller\nspreads a volume's replicas across distinct zones; empty is unconstrained.\nnodes:\n  kharkiv:\n    backend: lvmthin\n    device: /dev/disk/by-partlabel/r-miroir\n    # thinPoolSize: 400g   # bound the pool when sharing the VG\n    # zone: rack-1         # spread replicas across failure domains\n  paris:\n    backend: zfs\n    zfsDataset: data-pool/miroir\n    # zone: rack-2\n  le-havre:\n    # loopfile: sparse files on the node's existing filesystem — no\n    # dedicated disk or pool. baseDir must be reflink-capable (XFS\n    # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the agent\n    # refuses to start otherwise. The dir is hostPath-mounted into the\n    # agent at the same path.\n    backend: loopfile\n    baseDir: /var/lib/miroir",
