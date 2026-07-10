@@ -328,13 +328,22 @@ PodMonitor scraping the controller **and every agent** on their
 each storage node; a `node` label is added to every series). The
 agent exports, per volume on that node:
 
-| Metric                       | Meaning                                                                                    |
-| ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `miroir_volume_up_to_date`   | 1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created)    |
-| `miroir_volume_connected`    | 1 when all replication links to diskful peers are established (tie-breaker links excluded) |
-| `miroir_volume_split_brain`  | 1 when DRBD refused to reconnect after divergence — manual resolution required             |
-| `miroir_volume_suspended`    | 1 while the snapshot write barrier freezes IO; sustained means a stranded barrier          |
-| `miroir_volume_resync_ratio` | fraction (0-1) in sync of the least-synced diskful peer; 1 when fully in sync              |
+| Metric                            | Meaning                                                                                                                                     |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `miroir_volume_up_to_date`        | 1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created)                                                     |
+| `miroir_volume_connected`         | 1 when all replication links to diskful peers are established (tie-breaker links excluded)                                                  |
+| `miroir_volume_split_brain`       | 1 when DRBD refused to reconnect after divergence — manual resolution required                                                              |
+| `miroir_volume_suspended`         | 1 while the snapshot write barrier freezes IO; sustained means a stranded barrier                                                           |
+| `miroir_volume_resync_ratio`      | fraction (0-1) in sync of the least-synced diskful peer; 1 when fully in sync                                                               |
+| `miroir_volume_quorum`            | 0 while a `freeze` volume has lost quorum and its IO is suspended — the "workloads are hanging" signal (always 1 under `last-man-standing`) |
+| `miroir_volume_disk_failed`       | 1 when this leg's disk was detached after an I/O error and latched failed — replace the disk, then remove and re-add the replica            |
+| `miroir_volume_out_of_sync_bytes` | worst per-peer out-of-sync bytes: the exposure if the healthiest peer is lost; also counts online-verify findings                           |
+
+Each agent additionally exports its pool capacity
+(`miroir_pool_capacity_bytes` / `miroir_pool_allocated_bytes` /
+`miroir_pool_meta_used_ratio`) — the same sample that feeds
+capacity-aware placement and the `PoolUsageHigh` condition, so pool
+exhaustion is alertable, not just an Event.
 
 Both processes also expose controller-runtime metrics
 (`controller_runtime_reconcile_errors_total` is the wedged-reconcile
@@ -388,7 +397,7 @@ shows the failing call to clean up manually.
 - [x] Per-volume DRBD state metrics (`miroir_volume_up_to_date` /
       `connected` / `split_brain` / `suspended` / `resync_ratio`;
       opt-in PodMonitor via `monitoring.podMonitor.enabled`)
-- [ ] Per-volume quorum / failed-disk / out-of-sync gauges and pool
+- [x] Per-volume quorum / failed-disk / out-of-sync gauges and pool
       capacity metrics
 
 **Natural extensions**

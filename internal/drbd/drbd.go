@@ -726,6 +726,14 @@ type Status struct {
 	// ResyncPercent is the least-synced diskful peer's percent-in-sync
 	// while resyncing; 100 when fully in sync (nothing to catch up).
 	ResyncPercent float64
+	// Quorum is the device quorum flag: false while a freeze-policy
+	// volume has lost quorum and DRBD is suspending its IO. Always true
+	// when quorum is off (last-man-standing).
+	Quorum bool
+	// OutOfSyncKiB is the largest per-peer out-of-sync amount (KiB, as
+	// drbdsetup reports it) — the data-loss exposure if the healthiest
+	// peer is lost. Grows while a peer is down with no resync running.
+	OutOfSyncKiB int64
 }
 
 // drbdsetup status --json shapes (the fields miroir reads).
@@ -735,6 +743,7 @@ type jsonStatus struct {
 	SuspendedUser bool   `json:"suspended-user"`
 	Devices       []struct {
 		DiskState string `json:"disk-state"`
+		Quorum    bool   `json:"quorum"`
 	} `json:"devices"`
 	Connections []struct {
 		PeerNodeID      int32  `json:"peer-node-id"`
@@ -746,6 +755,7 @@ type jsonStatus struct {
 		PeerDevices []struct {
 			ReplicationState string  `json:"replication-state"`
 			PercentInSync    float64 `json:"percent-in-sync"`
+			OutOfSyncKiB     int64   `json:"out-of-sync"`
 		} `json:"peer_devices"`
 	} `json:"connections"`
 }
@@ -773,6 +783,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	}
 	if len(res.Devices) > 0 {
 		s.DiskState = res.Devices[0].DiskState
+		s.Quorum = res.Devices[0].Quorum
 	}
 	for _, c := range res.Connections {
 		if c.PeerRole == "Primary" {
@@ -788,6 +799,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 					s.ResyncPercent = pd.PercentInSync
 				}
 			}
+			s.OutOfSyncKiB = max(s.OutOfSyncKiB, pd.OutOfSyncKiB)
 		}
 		s.PeerConnected[c.PeerNodeID] = c.ConnectionState == "Connected"
 		if c.ConnectionState == "StandAlone" {

@@ -92,6 +92,9 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read pool stats: %w", err)
 	}
+	// Publish the sample even when the CRD update below conflicts: the
+	// gauges describe the pool, not the API object.
+	recordPoolMetrics(stats.SizeBytes, stats.UsedBytes, stats.MetaUsedPercent/100)
 
 	node := &miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: p.NodeName}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, p.Client, node, func() error {
