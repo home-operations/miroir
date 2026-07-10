@@ -58,6 +58,11 @@ type Resource struct {
 	// Secret authenticates peers (cram-hmac challenge-response). Empty
 	// renders no auth — volumes created before secrets existed.
 	Secret string
+	// SkipDiskAttach renders `drbdadm adjust --skip-disk`: reconcile the
+	// net/connection state but leave the disk detached. Set when a leg is
+	// latched failed (DiskFailed) so adjust does not re-attach a disk DRBD
+	// detached on an I/O error — the flap the latch exists to stop.
+	SkipDiskAttach bool
 	// SkipSeed leaves fresh metadata at create-md's just-created state
 	// instead of day0 GI seeding: a replica joining an existing volume
 	// must full-sync from its peers, not pose as a pristine twin.

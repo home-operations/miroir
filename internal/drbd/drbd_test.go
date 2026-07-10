@@ -258,6 +258,27 @@ func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
 	}
 }
 
+// A latched-failed leg (SkipDiskAttach) renders adjust --skip-disk and
+// leaves the backing disk untouched: no create-md, no bare adjust that
+// would re-attach the failing disk and re-trigger the I/O error (#101).
+func TestApplySkipDiskAttachLeavesDiskDetached(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	r := testResource(nodeKharkiv)
+	r.SkipDiskAttach = true
+
+	if err := d.Apply(t.Context(), r); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm adjust --skip-disk pvc-1")
+	// The failing disk is never re-attached or re-created.
+	fe.notCalledWith(t, "adjust pvc-1")
+	fe.notCalledWith(t, "create-md")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); !os.IsNotExist(err) {
+		t.Fatal("skip-disk leg must not create metadata")
+	}
+}
+
 // A backing disk replaced under a surviving .md-created marker makes the
 // first adjust fail "no valid meta-data"; Apply drops the stale marker,
 // recreates metadata (SkipSeed → full SyncTarget), and retries adjust.
