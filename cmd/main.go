@@ -131,6 +131,7 @@ func main() {
 		thinPool          string
 		drbdStateDir      string
 		poolStatsInterval time.Duration
+		volumeWorkers     int
 	)
 	flag.StringVar(&mode, "mode", "", "controller | agent | setup")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
@@ -145,6 +146,8 @@ func main() {
 		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
 	flag.BoolVar(&autoTieBreaker, "auto-tie-breaker", true,
 		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
+	flag.IntVar(&volumeWorkers, "volume-workers", 4,
+		"concurrent volume reconciles per agent (agent)")
 	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
 		"how often the agent republishes pool capacity (agent; 0 → default 60s)")
 	flag.StringVar(&vg, "lvm-vg", "vg-miroir", "LVM volume group (agent, lvmthin)")
@@ -312,6 +315,7 @@ func main() {
 			BackendType: backendType,
 			DRBD:        drbdDriver,
 			DRBDEvents:  drbdEvents,
+			Workers:     volumeWorkers,
 		}
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")

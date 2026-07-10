@@ -65,6 +65,7 @@ spec:
             - --nodes-config=/etc/miroir/nodes.yaml
             - --metrics-bind-address=:9810
             - --pool-stats-interval={{ .Values.agent.poolStatsInterval }}
+            - --volume-workers={{ .Values.agent.volumeWorkers }}
             - --zap-log-level={{ .Values.logging.level }}
             - --zap-encoder={{ .Values.logging.format }}
             {{- with .Values.agent.extraArgs }}

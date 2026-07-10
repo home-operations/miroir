@@ -116,6 +116,10 @@ agent:
   # How often each agent republishes its pool capacity to its MiroirNode
   # (read by the controller for capacity-aware placement).
   poolStatsInterval: 60s
+  # -- Concurrent volume reconciles per agent. Per-volume work is
+  # serialized by controller-runtime regardless; this bounds how many
+  # distinct volumes one agent works at once.
+  volumeWorkers: 4
   # kubelet plugin-registration sidecar riding the agent DaemonSet.
   registrar:
     image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
@@ -163,7 +167,6 @@ agent:
 #     backend: loopfile
 #     baseDir: /var/lib/miroir
 nodes: {}
-
 
 # =============================================================================
 # Storage classes

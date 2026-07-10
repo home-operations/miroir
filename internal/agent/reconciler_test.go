@@ -1501,3 +1501,140 @@ func TestReconcileLoopfileSkipsDiscardProbe(t *testing.T) {
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "lsblk")
 }
+
+// countCalls counts fake exec invocations containing substr.
+func countCalls(fe *fakeDRBDExec, substr string) int {
+	n := 0
+	for _, c := range fe.calls {
+		if strings.Contains(c, substr) {
+			n++
+		}
+	}
+	return n
+}
+
+// steadyVolume builds a settled replicated volume + exec fake for the
+// fast-path tests: status at spec size, kernel UpToDate and connected.
+func steadyVolume(t *testing.T) (*miroirv1alpha1.MiroirVolume, *fakeDRBDExec, *VolumeReconciler) {
+	t.Helper()
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+	}
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		BackendType: miroirv1alpha1.BackendLVMThin,
+		DRBD:        &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+	return v, fe, r
+}
+
+// A second reconcile over unchanged state must cost one status exec, not
+// the realize/adjust/probe pipeline — peer status writes re-trigger the
+// reconcile every poll cycle and would otherwise re-run everything.
+func TestReconcileFastPathSkipsPipeline(t *testing.T) {
+	_, fe, r := steadyVolume(t)
+
+	reconcile(t, r, volPvc1) // full pass, stores the fingerprint
+	adjusts, statuses := countCalls(fe, "adjust"), countCalls(fe, "drbdsetup status --json")
+
+	reconcile(t, r, volPvc1) // steady state: fast path
+	if got := countCalls(fe, "adjust"); got != adjusts {
+		t.Fatalf("fast path ran adjust (%d -> %d):\n%v", adjusts, got, fe.calls)
+	}
+	if got := countCalls(fe, "lsblk"); got != 1 {
+		t.Fatalf("fast path must not re-probe discard granularity: %v", fe.calls)
+	}
+	if got := countCalls(fe, "drbdsetup status --json"); got != statuses+1 {
+		t.Fatalf("fast path must still read kernel state once (%d -> %d)", statuses, got)
+	}
+}
+
+// Kernel drift breaks the fingerprint: the next pass takes the full
+// pipeline and re-converges.
+func TestReconcileFastPathInvalidatedByStatusDrift(t *testing.T) {
+	_, fe, r := steadyVolume(t)
+	reconcile(t, r, volPvc1)
+	adjusts := countCalls(fe, "adjust")
+
+	// A peer drops: connection state changes under the same generation.
+	fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`
+	reconcile(t, r, volPvc1)
+	if got := countCalls(fe, "adjust"); got <= adjusts {
+		t.Fatalf("status drift must force the full pipeline: %v", fe.calls)
+	}
+}
+
+// A spec change (generation bump) breaks the fingerprint.
+func TestReconcileFastPathInvalidatedByGeneration(t *testing.T) {
+	v, fe, r := steadyVolume(t)
+	reconcile(t, r, volPvc1)
+	adjusts := countCalls(fe, "adjust")
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	got.Generation = v.Generation + 1
+	if err := r.Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "adjust"); n <= adjusts {
+		t.Fatalf("generation bump must force the full pipeline: %v", fe.calls)
+	}
+}
+
+// A mid-grow pass (reported size withheld) must not be cached: the next
+// reconcile keeps taking the full pipeline until the grow settles.
+func TestReconcileFastPathSkipsMidGrow(t *testing.T) {
+	_, fe, r := steadyVolume(t)
+	reconcile(t, r, volPvc1)
+
+	// Spec grows; the local slot lags behind.
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	got.Spec.SizeBytes = 2 << 30
+	got.Generation++
+	if err := r.Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, volPvc1) // grow pass: withholds size, must not cache
+	adjusts := countCalls(fe, "adjust")
+	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "adjust"); n <= adjusts {
+		t.Fatalf("mid-grow state must keep the full pipeline: %v", fe.calls)
+	}
+}
+
+// The deep-check interval bounds how long drift with no kernel signature
+// (a backing device deleted out-of-band) can hide behind the fast path.
+func TestReconcileFastPathDeepCheckExpiry(t *testing.T) {
+	_, fe, r := steadyVolume(t)
+	reconcile(t, r, volPvc1)
+	adjusts := countCalls(fe, "adjust")
+
+	r.realizedMu.Lock()
+	e := r.realized[volPvc1]
+	e.fullPassAt = time.Now().Add(-deepCheckInterval - time.Minute)
+	r.realized[volPvc1] = e
+	r.realizedMu.Unlock()
+
+	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "adjust"); n <= adjusts {
+		t.Fatalf("expired fingerprint must force the full pipeline: %v", fe.calls)
+	}
+}
