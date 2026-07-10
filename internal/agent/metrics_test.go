@@ -54,11 +54,14 @@ func hasSeries(t *testing.T, family, volume string) bool {
 func TestVolumeMetricsLifecycle(t *testing.T) {
 	const volume = "pvc-metrics-lifecycle"
 	recordVolumeMetrics(volume, miroirReplicaView{
-		upToDate:    true,
-		connected:   false,
-		splitBrain:  true,
-		suspended:   false,
-		resyncRatio: 0.425,
+		upToDate:       true,
+		connected:      false,
+		splitBrain:     true,
+		suspended:      false,
+		quorum:         true,
+		diskFailed:     true,
+		resyncRatio:    0.425,
+		outOfSyncBytes: 2048 * 1024,
 	})
 
 	if got := testutil.ToFloat64(metricUpToDate.WithLabelValues(volume)); got != 1 {
@@ -76,6 +79,15 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 	if got := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volume)); got != 0.425 {
 		t.Fatalf("resync_ratio = %v, want 0.425", got)
 	}
+	if got := testutil.ToFloat64(metricQuorum.WithLabelValues(volume)); got != 1 {
+		t.Fatalf("quorum = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volume)); got != 1 {
+		t.Fatalf("disk_failed = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(metricOutOfSyncBytes.WithLabelValues(volume)); got != 2048*1024 {
+		t.Fatalf("out_of_sync_bytes = %v, want %v", got, 2048*1024)
+	}
 
 	dropVolumeMetrics(volume)
 	for _, family := range []string{
@@ -84,6 +96,9 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 		"miroir_volume_split_brain",
 		"miroir_volume_suspended",
 		"miroir_volume_resync_ratio",
+		"miroir_volume_quorum",
+		"miroir_volume_disk_failed",
+		"miroir_volume_out_of_sync_bytes",
 	} {
 		if hasSeries(t, family, volume) {
 			t.Fatalf("%s{volume=%q} still exposed after drop", family, volume)

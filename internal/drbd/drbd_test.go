@@ -671,9 +671,9 @@ func TestStatusSplitBrain(t *testing.T) {
 func TestStatusResyncPercent(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
-			"devices":[{"disk-state":"Inconsistent"}],
+			"devices":[{"disk-state":"Inconsistent","quorum":true}],
 			"connections":[{"peer-node-id":1,"connection-state":"Connected",
-				"peer_devices":[{"replication-state":"SyncTarget","percent-in-sync":42.5}]}]}]`,
+				"peer_devices":[{"replication-state":"SyncTarget","percent-in-sync":42.5,"out-of-sync":2048}]}]}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	s, err := d.Status(t.Context(), volPvc1)
@@ -682,6 +682,37 @@ func TestStatusResyncPercent(t *testing.T) {
 	}
 	if !s.Resyncing || s.ResyncPercent != 42.5 {
 		t.Fatalf("want Resyncing with ResyncPercent 42.5, got %+v", s)
+	}
+	if !s.Quorum || s.OutOfSyncKiB != 2048 {
+		t.Fatalf("want Quorum with OutOfSyncKiB 2048, got %+v", s)
+	}
+}
+
+// The device quorum flag surfaces a freeze-policy volume whose partition
+// lost quorum (IO suspending); out-of-sync tracks the worst peer.
+func TestStatusQuorumLost(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"UpToDate","quorum":false}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connecting",
+					"peer_devices":[{"replication-state":"Off","out-of-sync":4096}]},
+				{"peer-node-id":2,"connection-state":"Connecting",
+					"peer_devices":[{"replication-state":"Off","out-of-sync":1024}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Quorum {
+		t.Fatalf("quorum lost must surface as Quorum=false: %+v", s)
+	}
+	if s.OutOfSyncKiB != 4096 {
+		t.Fatalf("OutOfSyncKiB must track the worst peer (4096), got %d", s.OutOfSyncKiB)
+	}
+	if s.Resyncing {
+		t.Fatalf("Off replication must not read as resync: %+v", s)
 	}
 }
 

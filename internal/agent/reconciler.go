@@ -141,9 +141,12 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		if vol.Spec.DRBD == nil {
 			log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
-			// resyncRatio 1, not the zero value: no peers means fully in
-			// sync — 0 would perma-fire any <1 alert.
-			recordVolumeMetrics(vol.Name, miroirReplicaView{upToDate: true, connected: true, resyncRatio: 1})
+			// resyncRatio 1 and quorum true, not the zero values: an
+			// unreplicated volume is fully in sync with itself and has no
+			// quorum to lose — zeros would perma-fire the alerts.
+			recordVolumeMetrics(vol.Name, miroirReplicaView{
+				upToDate: true, connected: true, quorum: true, resyncRatio: 1,
+			})
 			return ctrl.Result{}, r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 				DeviceCreated: true,
 				DevicePath:    dev,
@@ -188,18 +191,21 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			"volume", vol.Name)
 	}
 	connected := diskfulPeersConnected(st, vol, r.NodeName)
+	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
 		recordVolumeMetrics(vol.Name, miroirReplicaView{
 			upToDate:   st.DiskState == drbd.DiskUpToDate,
 			connected:  connected,
 			splitBrain: st.SplitBrain,
 			suspended:  st.Suspended,
-			// drbdsetup reports percent-in-sync; the exported gauge is a
-			// 0-1 ratio per Prometheus base-unit conventions.
-			resyncRatio: st.ResyncPercent / 100,
+			quorum:     st.Quorum,
+			diskFailed: diskFailed,
+			// drbdsetup reports percent-in-sync and KiB; the exported
+			// gauges are a 0-1 ratio and bytes per Prometheus base units.
+			resyncRatio:    st.ResyncPercent / 100,
+			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
 		})
 	}
-	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: !localDiskless,
 		DevicePath:    drbd.DevicePath(minor),

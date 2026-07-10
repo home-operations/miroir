@@ -19,6 +19,8 @@ package agent
 import (
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -150,6 +152,15 @@ func TestPoolStatsPublisherRaisesHighMetadataUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := get()
+	if v := testutil.ToFloat64(metricPoolCapacity); v != 100*poolGiB {
+		t.Fatalf("miroir_pool_capacity_bytes = %v, want %v", v, 100*poolGiB)
+	}
+	if v := testutil.ToFloat64(metricPoolAllocated); v != 10*poolGiB {
+		t.Fatalf("miroir_pool_allocated_bytes = %v, want %v", v, 10*poolGiB)
+	}
+	if v := testutil.ToFloat64(metricPoolMetaUsedRatio); v != 0.9 {
+		t.Fatalf("miroir_pool_meta_used_ratio = %v, want 0.9", v)
+	}
 	if n.Status.MetaUsedPercent != 90 {
 		t.Fatalf("MetaUsedPercent = %d, want 90", n.Status.MetaUsedPercent)
 	}

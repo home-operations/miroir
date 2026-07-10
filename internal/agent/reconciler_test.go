@@ -863,6 +863,10 @@ func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 	if st := got.Status.PerNode[nodeKharkiv]; !st.DiskFailed {
 		t.Fatalf("latch must stay set while the leg is Diskless: %+v", st)
 	}
+	// The latch is the actionable hardware-failure alert signal.
+	if v := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volPvc1)); v != 1 {
+		t.Fatalf("miroir_volume_disk_failed = %v, want 1", v)
+	}
 }
 
 // A latched-failed coordinator (Diskless) cannot drbdadm resize its absent
@@ -893,6 +897,39 @@ func TestReconcileLatchedCoordinatorSkipsResize(t *testing.T) {
 
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "drbdadm resize")
+}
+
+// A freeze-policy volume that lost quorum suspends IO while its local
+// disk stays UpToDate — quorum is the only signal distinguishing "frozen,
+// workloads hanging" from a benign peer outage. The gauge must go 0.
+func TestReconcileQuorumLostExportsGauge(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+	}
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":false}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+
+	if v := testutil.ToFloat64(metricQuorum.WithLabelValues(volPvc1)); v != 0 {
+		t.Fatalf("miroir_volume_quorum = %v, want 0 on quorum loss", v)
+	}
+	// Local disk is fine — up_to_date must stay 1 (quorum is the signal).
+	if v := testutil.ToFloat64(metricUpToDate.WithLabelValues(volPvc1)); v != 1 {
+		t.Fatalf("miroir_volume_up_to_date = %v, want 1", v)
+	}
 }
 
 // The resize coordinator must not run drbdadm resize once its realized

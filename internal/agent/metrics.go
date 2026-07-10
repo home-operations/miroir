@@ -46,10 +46,41 @@ var (
 		Name: "miroir_volume_resync_ratio",
 		Help: "Fraction in sync (0-1) of the least-synced diskful peer while resyncing; 1 when fully in sync (unreplicated volumes report 1).",
 	}, []string{volumeLabel})
+	metricQuorum = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_quorum",
+		Help: "1 when this node's replica sees DRBD quorum; 0 while a freeze-policy volume has lost quorum and its IO is suspended (always 1 under last-man-standing, and for unreplicated volumes).",
+	}, []string{volumeLabel})
+	metricDiskFailed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_disk_failed",
+		Help: "1 when this leg's backing disk was detached after an I/O error and is latched failed — replace the disk, then remove and re-add the replica.",
+	}, []string{volumeLabel})
+	metricOutOfSyncBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_out_of_sync_bytes",
+		Help: "Largest per-peer out-of-sync amount in bytes: the exposure if the healthiest peer is lost. Grows while a peer is down with no resync running; also counts online-verify findings.",
+	}, []string{volumeLabel})
+
+	// Pool gauges are unlabelled: each node runs exactly one backend pool,
+	// and the PodMonitor stamps a node label on every series.
+	metricPoolCapacity = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "miroir_pool_capacity_bytes",
+		Help: "Total capacity of this node's backend pool.",
+	})
+	metricPoolAllocated = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "miroir_pool_allocated_bytes",
+		Help: "Bytes allocated from this node's backend pool.",
+	})
+	metricPoolMetaUsedRatio = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "miroir_pool_meta_used_ratio",
+		Help: "Fraction (0-1) of dm-thin metadata used; 0 for backends without a metadata pool.",
+	})
 )
 
 func init() {
-	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain, metricSuspended, metricResyncRatio)
+	metrics.Registry.MustRegister(
+		metricUpToDate, metricConnected, metricSplitBrain, metricSuspended,
+		metricResyncRatio, metricQuorum, metricDiskFailed, metricOutOfSyncBytes,
+		metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
+	)
 }
 
 func recordVolumeMetrics(volume string, st miroirReplicaView) {
@@ -58,6 +89,17 @@ func recordVolumeMetrics(volume string, st miroirReplicaView) {
 	metricSplitBrain.WithLabelValues(volume).Set(boolGauge(st.splitBrain))
 	metricSuspended.WithLabelValues(volume).Set(boolGauge(st.suspended))
 	metricResyncRatio.WithLabelValues(volume).Set(st.resyncRatio)
+	metricQuorum.WithLabelValues(volume).Set(boolGauge(st.quorum))
+	metricDiskFailed.WithLabelValues(volume).Set(boolGauge(st.diskFailed))
+	metricOutOfSyncBytes.WithLabelValues(volume).Set(st.outOfSyncBytes)
+}
+
+// recordPoolMetrics publishes the node pool sample; one pool per node, so
+// the gauges carry no labels and are never deleted.
+func recordPoolMetrics(capacityBytes, allocatedBytes int64, metaUsedRatio float64) {
+	metricPoolCapacity.Set(float64(capacityBytes))
+	metricPoolAllocated.Set(float64(allocatedBytes))
+	metricPoolMetaUsedRatio.Set(metaUsedRatio)
 }
 
 func dropVolumeMetrics(volume string) {
@@ -66,14 +108,20 @@ func dropVolumeMetrics(volume string) {
 	metricSplitBrain.DeleteLabelValues(volume)
 	metricSuspended.DeleteLabelValues(volume)
 	metricResyncRatio.DeleteLabelValues(volume)
+	metricQuorum.DeleteLabelValues(volume)
+	metricDiskFailed.DeleteLabelValues(volume)
+	metricOutOfSyncBytes.DeleteLabelValues(volume)
 }
 
 type miroirReplicaView struct {
-	upToDate    bool
-	connected   bool
-	splitBrain  bool
-	suspended   bool
-	resyncRatio float64
+	upToDate       bool
+	connected      bool
+	splitBrain     bool
+	suspended      bool
+	quorum         bool
+	diskFailed     bool
+	resyncRatio    float64
+	outOfSyncBytes float64
 }
 
 func boolGauge(b bool) float64 {
