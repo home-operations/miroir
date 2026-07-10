@@ -258,6 +258,35 @@ func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
 	}
 }
 
+// DiscardGranularity parses lsblk bytes output and clamps to DRBD's sane
+// range; 0 (no discard support) and garbage both mean "render nothing".
+func TestDiscardGranularity(t *testing.T) {
+	cases := map[string]struct {
+		out  string
+		want int64
+		err  bool
+	}{
+		"typical thin chunk": {out: "65536\n", want: 65536},
+		"clamped up":         {out: "512\n", want: 4096},
+		"clamped down":       {out: "4194304\n", want: 1 << 20},
+		"no discard support": {out: "0\n", want: 0},
+		"unparseable output": {out: "DISC-GRAN\n", err: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fe := &fakeExec{responses: map[string]string{"lsblk": tc.out}}
+			d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+			got, err := d.DiscardGranularity(t.Context(), "/dev/vg-miroir/pvc-1")
+			if tc.err != (err != nil) {
+				t.Fatalf("err = %v, want err=%v", err, tc.err)
+			}
+			if got != tc.want {
+				t.Fatalf("granularity = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // A latched-failed leg (SkipDiskAttach) renders adjust --skip-disk and
 // leaves the backing disk untouched: no create-md, no bare adjust that
 // would re-attach the failing disk and re-trigger the I/O error (#101).

@@ -308,10 +308,13 @@ for that node — replace the disk, then remove and re-add the replica.
 **Rebuilding a node is safe.** A reinstall (e.g. Talos wipe) destroys
 the backing devices and miroir's node-local state together; when the
 node rejoins, the agent detects the wipe and makes each recreated leg
-a full sync target rather than trusting its empty disk. Set
-`drbd.resync.discardGranularity` (lvmthin/zfs only) to keep those
-full syncs thin — zero runs are sent as discards, so a re-synced leg
-consumes what the data needs, not the volume's virtual size.
+a full sync target rather than trusting its empty disk. Full
+syncs stay thin automatically: the agent probes each lvmthin/zfs
+backing device's discard granularity and renders it per leg, so zero
+runs are sent as discards and a re-synced leg consumes what the data
+needs, not the volume's virtual size (loopfile legs are skipped — loop
+devices mishandle it; `drbd.resync.discardGranularity` remains as a
+manual cluster-wide fallback).
 
 **Verification** is the only cross-leg integrity check (a ZFS scrub
 validates one leg against itself). Set `drbd.verifyAlg` (e.g.

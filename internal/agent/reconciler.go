@@ -48,6 +48,9 @@ type VolumeReconciler struct {
 	client.Client
 	NodeName string
 	Backend  backend.Backend
+	// BackendType gates behavior that depends on the backing implementation
+	// (auto rs-discard-granularity is skipped for loopfile).
+	BackendType miroirv1alpha1.BackendType
 	// DRBD drives the replication layer for multi-replica volumes.
 	DRBD *drbd.Driver
 	// DRBDEvents delivers kernel state changes (drbdsetup events2) as
@@ -168,7 +171,17 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor, localDiskless, forceFullSync)); err != nil {
+	// Best-effort: a resync sends zero-runs as discards of this size so a
+	// FullSync-joining thin leg stays thin. Never loopfile (loop devices
+	// mishandle it) and never worth failing the reconcile over.
+	var discardGranularity int64
+	if !localDiskless && r.BackendType != miroirv1alpha1.BackendLoopfile {
+		if discardGranularity, err = r.DRBD.DiscardGranularity(ctx, dev); err != nil {
+			log.V(1).Info("discard granularity probe failed; rendering without it",
+				"volume", vol.Name, "error", err)
+		}
+	}
+	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor, localDiskless, forceFullSync, discardGranularity)); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	// Online growth: once every peer's backing device is at the new size
@@ -313,7 +326,7 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alph
 // membership reconciler has not completed yet (no address) are left out:
 // rendering them would produce a config DRBD cannot parse, and the peer
 // cannot connect before completion anyway.
-func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless, forceFullSync bool) drbd.Resource {
+func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless, forceFullSync bool, discardGranularity int64) drbd.Resource {
 	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
 	skipSeed := forceFullSync
 	for _, rep := range vol.Spec.Replicas {
@@ -343,8 +356,9 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 		// Latched failed: render adjust --skip-disk so the failing disk is
 		// not re-attached. Read from prior status, so it lags the detach by
 		// one reconcile. Cleared by a replica re-add (removal drops the slot).
-		SkipDiskAttach: !localDiskless && vol.Status.PerNode[localNode].DiskFailed,
-		Peers:          peers,
+		SkipDiskAttach:          !localDiskless && vol.Status.PerNode[localNode].DiskFailed,
+		DiscardGranularityBytes: discardGranularity,
+		Peers:                   peers,
 	}
 }
 

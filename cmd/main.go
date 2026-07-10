@@ -287,11 +287,12 @@ func main() {
 			os.Exit(1)
 		}
 		reconciler := &agent.VolumeReconciler{
-			Client:     mgr.GetClient(),
-			NodeName:   nodeName,
-			Backend:    be,
-			DRBD:       drbdDriver,
-			DRBDEvents: drbdEvents,
+			Client:      mgr.GetClient(),
+			NodeName:    nodeName,
+			Backend:     be,
+			BackendType: backendType,
+			DRBD:        drbdDriver,
+			DRBDEvents:  drbdEvents,
 		}
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")

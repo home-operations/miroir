@@ -225,11 +225,13 @@ drbd:
     minRate: 10M
     # -- resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0).
     rate: ""
-    # -- rs-discard-granularity: during a full resync, runs of zeroes are
-    # sent as discards of this size instead of written out (e.g. "65536"),
-    # keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on
-    # clusters with loopfile-backed replicated volumes (loop devices
-    # mishandle it) or entirely to keep DRBD's default (off).
+    # -- rs-discard-granularity cluster-wide fallback: during a full resync,
+    # runs of zeroes are sent as discards of this size instead of written
+    # out (e.g. "65536"), keeping a re-added thin leg thin. Normally leave
+    # empty — the agent probes each lvmthin/zfs backing device and renders
+    # an exact per-leg value that overrides this (loopfile is never probed:
+    # loop devices mishandle it, so also leave this empty on clusters with
+    # loopfile-backed replicated volumes).
     discardGranularity: ""
   net:
     # -- max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises
