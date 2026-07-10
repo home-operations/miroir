@@ -27,7 +27,6 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -37,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	acv1alpha1 "github.com/home-operations/miroir/api/v1alpha1/applyconfiguration/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/drbd"
@@ -508,13 +508,48 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.
 	vol.Status.PerNode[r.NodeName] = mine
 	vol.Status.Phase = computePhase(vol)
 
-	patch := &miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: vol.Name}}
-	patch.SetGroupVersionKind(miroirv1alpha1.GroupVersion.WithKind("MiroirVolume"))
-	patch.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{r.NodeName: mine}
-	patch.Status.Phase = vol.Status.Phase
-	return r.Status().Patch(ctx, patch, client.Apply, //nolint:staticcheck
+	ac := acv1alpha1.MiroirVolume(vol.Name).
+		WithStatus(acv1alpha1.MiroirVolumeStatus().
+			WithPhase(vol.Status.Phase).
+			WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
+				r.NodeName: *replicaStatusAC(mine),
+			}))
+	return r.SubResource("status").Apply(ctx, ac,
 		client.FieldOwner("agent-volume-"+r.NodeName),
 		client.ForceOwnership)
+}
+
+// replicaStatusAC mirrors ReplicaStatus's wire shape: fields without
+// omitempty are always set (SSA must own them even at zero — Connected
+// false is a statement, not an absence), omitempty fields only when
+// non-zero (absent → SSA clears the previous value this manager owned).
+func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusApplyConfiguration {
+	ac := acv1alpha1.ReplicaStatus().
+		WithDeviceCreated(st.DeviceCreated).
+		WithConnected(st.Connected).
+		WithSplitBrain(st.SplitBrain)
+	if st.DevicePath != "" {
+		ac = ac.WithDevicePath(st.DevicePath)
+	}
+	if st.SizeBytes != 0 {
+		ac = ac.WithSizeBytes(st.SizeBytes)
+	}
+	if st.DRBDMinor != 0 {
+		ac = ac.WithDRBDMinor(st.DRBDMinor)
+	}
+	if st.DiskState != "" {
+		ac = ac.WithDiskState(st.DiskState)
+	}
+	if st.Diskless {
+		ac = ac.WithDiskless(true)
+	}
+	if st.DiskFailed {
+		ac = ac.WithDiskFailed(true)
+	}
+	if st.Message != "" {
+		ac = ac.WithMessage(st.Message)
+	}
+	return ac
 }
 
 // assignMinor returns the DRBD minor for this volume, allocating a free one if unset.

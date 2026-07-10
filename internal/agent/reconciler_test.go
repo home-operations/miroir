@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	acv1alpha1 "github.com/home-operations/miroir/api/v1alpha1/applyconfiguration/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/drbd"
@@ -431,17 +432,17 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
 
-	var applies []miroirv1alpha1.MiroirVolumeStatus
+	var applies []*acv1alpha1.MiroirVolumeStatusApplyConfiguration
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			SubResourcePatch: func(ctx context.Context, cl client.Client, sub string,
-				obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
-				if patch.Type() == types.ApplyPatchType {
-					applies = append(applies, obj.(*miroirv1alpha1.MiroirVolume).Status)
+			SubResourceApply: func(ctx context.Context, cl client.Client, sub string,
+				obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+				if ac, ok := obj.(*acv1alpha1.MiroirVolumeApplyConfiguration); ok && ac.Status != nil {
+					applies = append(applies, ac.Status)
 				}
-				return cl.Status().Patch(ctx, obj, patch, opts...)
+				return cl.SubResource(sub).Apply(ctx, obj, opts...)
 			},
 		}).
 		Build()
@@ -465,7 +466,7 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 		if _, ok := st.PerNode[nodeParis]; ok {
 			t.Errorf("apply %d names the peer's slot (would force-own it): %+v", i, st.PerNode)
 		}
-		if st.Formatted {
+		if st.Formatted != nil {
 			t.Errorf("apply %d sets Formatted (would force-own a CSI field)", i)
 		}
 	}
