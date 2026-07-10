@@ -644,6 +644,48 @@ func TestStatusSplitBrain(t *testing.T) {
 	}
 }
 
+// percent-in-sync is a peer-device field; Status surfaces the least-synced
+// leg as ResyncPercent (100 when fully in sync). Verified against the
+// drbdsetup source JSON shape.
+func TestStatusResyncPercent(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"Inconsistent"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected",
+				"peer_devices":[{"replication-state":"SyncTarget","percent-in-sync":42.5}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Resyncing || s.ResyncPercent != 42.5 {
+		t.Fatalf("want Resyncing with ResyncPercent 42.5, got %+v", s)
+	}
+}
+
+// A fully in-sync volume reports ResyncPercent 100, and connection-level
+// replication-state (the pre-fix wrong nesting) is correctly ignored.
+func TestStatusResyncPercentDefaultsFull(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"UpToDate"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"SyncTarget",
+				"peer_devices":[{"replication-state":"Established","percent-in-sync":100}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Resyncing {
+		t.Fatalf("connection-level replication-state must be ignored (peer-device is Established): %+v", s)
+	}
+	if s.ResyncPercent != 100 {
+		t.Fatalf("in-sync volume must report 100, got %v", s.ResyncPercent)
+	}
+}
+
 func TestStatusResyncing(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -657,14 +699,16 @@ func TestStatusResyncing(t *testing.T) {
 		{"paused", "PausedSyncT", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			repl := ""
+			// replication-state is a peer-device field, nested under the
+			// connection (verified against drbdsetup source).
+			peerDevs := ""
 			if tc.repl != "" {
-				repl = `,"replication-state":"` + tc.repl + `"`
+				peerDevs = `,"peer_devices":[{"replication-state":"` + tc.repl + `"}]`
 			}
 			fe := &fakeExec{responses: map[string]string{
 				cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
 					"devices":[{"disk-state":"UpToDate"}],
-					"connections":[{"connection-state":"Connected"` + repl + `}]}]`,
+					"connections":[{"connection-state":"Connected"` + peerDevs + `}]}]`,
 			}}
 			d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 

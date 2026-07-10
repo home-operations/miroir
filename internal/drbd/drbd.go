@@ -711,6 +711,9 @@ type Status struct {
 	// Resyncing is true while a peer connection is mid-resync; drbdadm
 	// resize is refused in this window.
 	Resyncing bool
+	// ResyncPercent is the least-synced diskful peer's percent-in-sync
+	// while resyncing; 100 when fully in sync (nothing to catch up).
+	ResyncPercent float64
 }
 
 // drbdsetup status --json shapes (the fields miroir reads).
@@ -722,10 +725,16 @@ type jsonStatus struct {
 		DiskState string `json:"disk-state"`
 	} `json:"devices"`
 	Connections []struct {
-		PeerNodeID       int32  `json:"peer-node-id"`
-		ConnectionState  string `json:"connection-state"`
-		PeerRole         string `json:"peer-role"`
-		ReplicationState string `json:"replication-state"`
+		PeerNodeID      int32  `json:"peer-node-id"`
+		ConnectionState string `json:"connection-state"`
+		PeerRole        string `json:"peer-role"`
+		// replication-state and percent-in-sync are per peer-device,
+		// nested under the connection — NOT connection-level fields
+		// (verified against drbd-utils user/v9/drbdsetup.c).
+		PeerDevices []struct {
+			ReplicationState string  `json:"replication-state"`
+			PercentInSync    float64 `json:"percent-in-sync"`
+		} `json:"peer_devices"`
 	} `json:"connections"`
 }
 
@@ -748,6 +757,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		Primary:       res.Role == "Primary",
 		Suspended:     res.SuspendedUser,
 		PeerConnected: make(map[int32]bool, len(res.Connections)),
+		ResyncPercent: 100,
 	}
 	if len(res.Devices) > 0 {
 		s.DiskState = res.Devices[0].DiskState
@@ -756,9 +766,16 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		if c.PeerRole == "Primary" {
 			s.PeerPrimary = true
 		}
-		// Anything other than Established/Off is an active resync.
-		if rs := c.ReplicationState; rs != "" && rs != "Established" && rs != "Off" {
-			s.Resyncing = true
+		// replication-state / percent-in-sync live per peer-device.
+		// Anything other than Established/Off is active resync/verify;
+		// track the least-synced leg for progress reporting.
+		for _, pd := range c.PeerDevices {
+			if rs := pd.ReplicationState; rs != "" && rs != "Established" && rs != "Off" {
+				s.Resyncing = true
+				if pd.PercentInSync < s.ResyncPercent {
+					s.ResyncPercent = pd.PercentInSync
+				}
+			}
 		}
 		s.PeerConnected[c.PeerNodeID] = c.ConnectionState == "Connected"
 		if c.ConnectionState == "StandAlone" {

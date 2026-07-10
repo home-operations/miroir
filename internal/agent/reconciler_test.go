@@ -487,7 +487,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	// sync should withhold the resize.
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"SyncSource"}]}]`}
+		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer_devices":[{"replication-state":"SyncSource"}]}]}]`}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -524,7 +524,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	// Resync completes: the next pass grows DRBD and publishes the size.
 	fe.statusJSON = `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"Established"}]}]`
+		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer_devices":[{"replication-state":"Established"}]}]}]`
 	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
 		t.Fatal(err)
@@ -561,7 +561,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	fe := &fakeDRBDExec{
 		statusJSON: `[{"name":"` + volPvc1 + `",
 			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-			"connections":[{"peer-node-id":1,"connection-state":"Connected","replication-state":"Established"}]}]`,
+			"connections":[{"peer-node-id":1,"connection-state":"Connected","peer_devices":[{"replication-state":"Established"}]}]}]`,
 		errOn: map[string]error{
 			"drbdadm resize": errors.New("exit status 10: Resize not allowed during resync."),
 		},
