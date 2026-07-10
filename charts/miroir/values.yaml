@@ -18,6 +18,13 @@ global:
   tolerations: []
   affinity: {}
 
+# Both processes bind the controller-runtime zap flags.
+logging:
+  # -- Log level: debug | info | error (or any zapcore level).
+  level: info
+  # -- Encoder: json (structured, default) or console (human-readable).
+  format: json
+
 # =============================================================================
 # Controller (root = controller, kopiur layout; components nest below)
 # =============================================================================
@@ -57,6 +64,14 @@ resources:
     memory: 32Mi
   limits:
     memory: 128Mi
+# -- Extra labels on the controller pod.
+podLabels: {}
+# -- Extra annotations on the controller pod.
+podAnnotations: {}
+# -- Extra arguments for the controller container.
+extraArgs: []
+# -- Extra environment variables for the controller container.
+extraEnv: []
 
 # =============================================================================
 # CSI sidecars (upstream sig-storage images)
@@ -112,6 +127,14 @@ agent:
       memory: 32Mi
     limits:
       memory: 128Mi
+  # -- Extra labels on the agent pods.
+  podLabels: {}
+  # -- Extra annotations on the agent pods.
+  podAnnotations: {}
+  # -- Extra arguments for the agent container.
+  extraArgs: []
+  # -- Extra environment variables for the agent container.
+  extraEnv: []
 
 # =============================================================================
 # Storage topology

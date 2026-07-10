@@ -4,6 +4,22 @@
     "agent": {
       "description": "=============================================================================\nAgent (per-node DaemonSet: storage userland + CSI node service)\n=============================================================================",
       "properties": {
+        "extraArgs": {
+          "description": "Extra arguments for the agent container.",
+          "items": {
+            "required": []
+          },
+          "title": "extraArgs",
+          "type": "array"
+        },
+        "extraEnv": {
+          "description": "Extra environment variables for the agent container.",
+          "items": {
+            "required": []
+          },
+          "title": "extraEnv",
+          "type": "array"
+        },
         "image": {
           "description": "Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent and the\nsetup Job exec on each storage node).",
           "properties": {
@@ -39,6 +55,18 @@
           "description": "Kubelet root on the nodes; CSI sockets and mounts hang off it.",
           "title": "kubeletDir",
           "type": "string"
+        },
+        "podAnnotations": {
+          "description": "Extra annotations on the agent pods.",
+          "required": [],
+          "title": "podAnnotations",
+          "type": "object"
+        },
+        "podLabels": {
+          "description": "Extra labels on the agent pods.",
+          "required": [],
+          "title": "podLabels",
+          "type": "object"
         },
         "poolStatsInterval": {
           "default": "60s",
@@ -182,6 +210,22 @@
       "title": "drbd",
       "type": "object"
     },
+    "extraArgs": {
+      "description": "Extra arguments for the controller container.",
+      "items": {
+        "required": []
+      },
+      "title": "extraArgs",
+      "type": "array"
+    },
+    "extraEnv": {
+      "description": "Extra environment variables for the controller container.",
+      "items": {
+        "required": []
+      },
+      "title": "extraEnv",
+      "type": "array"
+    },
     "fullnameOverride": {
       "default": "",
       "description": "Override the fully qualified name prefix of every rendered object.",
@@ -256,6 +300,26 @@
       },
       "required": [],
       "title": "image",
+      "type": "object"
+    },
+    "logging": {
+      "description": "Both processes bind the controller-runtime zap flags.",
+      "properties": {
+        "format": {
+          "default": "json",
+          "description": "Encoder: json (structured, default) or console (human-readable).",
+          "title": "format",
+          "type": "string"
+        },
+        "level": {
+          "default": "info",
+          "description": "Log level: debug | info | error (or any zapcore level).",
+          "title": "level",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "logging",
       "type": "object"
     },
     "monitoring": {
@@ -455,6 +519,18 @@
       "description": "Thin-provisioning overcommit guardrail: CreateVolume is refused when a\nnode's provisioned total would exceed capacity × this ratio. 2× is the\nclassic CoW headroom; raise it only if you trust your usage to stay\nsparse, lower it toward 1 to provision conservatively.",
       "title": "overcommitRatio",
       "type": "integer"
+    },
+    "podAnnotations": {
+      "description": "Extra annotations on the controller pod.",
+      "required": [],
+      "title": "podAnnotations",
+      "type": "object"
+    },
+    "podLabels": {
+      "description": "Extra labels on the controller pod.",
+      "required": [],
+      "title": "podLabels",
+      "type": "object"
     },
     "priorityClassName": {
       "default": "system-cluster-critical",

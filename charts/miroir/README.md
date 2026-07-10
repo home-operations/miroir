@@ -35,11 +35,15 @@ Kubernetes: `>=1.31.0`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| agent.extraArgs | list | `[]` | Extra arguments for the agent container. |
+| agent.extraEnv | list | `[]` | Extra environment variables for the agent container. |
 | agent.image.digest | string | `""` |  |
 | agent.image.pullPolicy | string | `"IfNotPresent"` |  |
 | agent.image.repository | string | `"ghcr.io/home-operations/miroir-agent"` |  |
 | agent.image.tag | string | `""` |  |
 | agent.kubeletDir | string | `"/var/lib/kubelet"` | Kubelet root on the nodes; CSI sockets and mounts hang off it. |
+| agent.podAnnotations | object | `{}` | Extra annotations on the agent pods. |
+| agent.podLabels | object | `{}` | Extra labels on the agent pods. |
 | agent.poolStatsInterval | string | `"60s"` |  |
 | agent.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |
 | agent.resources.limits.memory | string | `"128Mi"` |  |
@@ -55,6 +59,8 @@ Kubernetes: `>=1.31.0`
 | drbd.resync.planAhead | string | `""` | c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller. |
 | drbd.resync.rate | string | `""` | resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0). |
 | drbd.verifyAlg | string | `"crc32c"` | verify-alg arms `drbdadm verify <res>` — the only cross-leg integrity check (a zfs scrub only validates one leg against itself). Defaulted to crc32c: drbd.ko depends on libcrc32c so it is present on every node, and it costs nothing until a verify runs. Schedule the verify pass yourself (cron, quiet hours); out-of-sync blocks surface in the kernel log and `drbdsetup status`. Empty disables verification. |
+| extraArgs | list | `[]` | Extra arguments for the controller container. |
+| extraEnv | list | `[]` | Extra environment variables for the controller container. |
 | fullnameOverride | string | `""` | Override the fully qualified name prefix of every rendered object. |
 | global.affinity | object | `{}` |  |
 | global.commonLabels | object | `{}` | Labels stamped on every rendered object (fleet-wide labelling). |
@@ -62,6 +68,8 @@ Kubernetes: `>=1.31.0`
 | global.nodeSelector | object | `{}` | Controller scheduling defaults. |
 | global.tolerations | list | `[]` |  |
 | image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/home-operations/miroir-controller","tag":""}` | Controller image (distroless, no storage userland — the controller never execs a storage CLI). |
+| logging.format | string | `"json"` | Encoder: json (structured, default) or console (human-readable). |
+| logging.level | string | `"info"` | Log level: debug | info | error (or any zapcore level). |
 | monitoring.dashboards.annotations | object | `{}` | Annotations added to the dashboard ConfigMap. |
 | monitoring.dashboards.enabled | bool | `false` | Render the Grafana dashboard ConfigMap (for grafana-operator or the kube-prometheus-stack sidecar). |
 | monitoring.dashboards.grafanaOperator.allowCrossNamespaceImport | bool | `true` | If true allows for a Grafana in any namespace to access this GrafanaDashboard. |
@@ -88,6 +96,8 @@ Kubernetes: `>=1.31.0`
 | nameOverride | string | `""` | Override the chart name used in labels and default object names. |
 | nodes | object | `{}` |  |
 | overcommitRatio | int | `2` | Thin-provisioning overcommit guardrail: CreateVolume is refused when a node's provisioned total would exceed capacity × this ratio. 2× is the classic CoW headroom; raise it only if you trust your usage to stay sparse, lower it toward 1 to provision conservatively. |
+| podAnnotations | object | `{}` | Extra annotations on the controller pod. |
+| podLabels | object | `{}` | Extra labels on the controller pod. |
 | priorityClassName | string | `"system-cluster-critical"` | system-cluster-critical protects the single controller from eviction under node pressure — while it is down, no volume can be provisioned, expanded, or snapshotted. |
 | provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
 | replicatedStorageClass.create | bool | `true` |  |

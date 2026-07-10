@@ -276,3 +276,38 @@ tests:
       - equal:
           path: metadata.labels["app.kubernetes.io/name"]
           value: mir
+
+  - it: wires logging, pod metadata, and extra args/env
+    set:
+      logging:
+        level: debug
+        format: console
+      podLabels:
+        sidecar.istio.io/inject: "false"
+      podAnnotations:
+        reloader.stakater.com/auto: "true"
+      extraArgs:
+        - --leak-check=true
+      extraEnv:
+        - name: GOMEMLIMIT
+          value: 100MiB
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-log-level=debug
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --zap-encoder=console
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --leak-check=true
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: GOMEMLIMIT
+      - equal:
+          path: spec.template.metadata.labels["sidecar.istio.io/inject"]
+          value: "false"
+      - equal:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+          value: "true"

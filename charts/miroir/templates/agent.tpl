@@ -27,6 +27,13 @@ spec:
       labels:
         {{- include "miroir.labels" . | nindent 8 }}
         app.kubernetes.io/component: agent
+        {{- with .Values.agent.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.agent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.agentName" . }}
       # hostNetwork so the pod IP is the node IP and the container
@@ -58,11 +65,19 @@ spec:
             - --nodes-config=/etc/miroir/nodes.yaml
             - --metrics-bind-address=:9810
             - --pool-stats-interval={{ .Values.agent.poolStatsInterval }}
+            - --zap-log-level={{ .Values.logging.level }}
+            - --zap-encoder={{ .Values.logging.format }}
+            {{- with .Values.agent.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           env:
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+            {{- with .Values.agent.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           securityContext:
             privileged: true
           ports:

@@ -268,3 +268,32 @@ tests:
           value: ghcr-pull
       - notExists:
           path: spec.template.spec.nodeSelector
+
+  - it: wires agent pod metadata and extra args/env after NODE_NAME
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      agent:
+        podAnnotations:
+          reloader.stakater.com/auto: "true"
+        extraArgs:
+          - --drbd-poll-interval=10s
+        extraEnv:
+          - name: GOMEMLIMIT
+            value: 100MiB
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --drbd-poll-interval=10s
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: NODE_NAME
+      - equal:
+          path: spec.template.spec.containers[0].env[1].name
+          value: GOMEMLIMIT
+      - equal:
+          path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
+          value: "true"

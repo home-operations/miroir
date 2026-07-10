@@ -19,6 +19,13 @@ spec:
       labels:
         {{- include "miroir.labels" . | nindent 8 }}
         app.kubernetes.io/component: controller
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.controllerName" . }}
       {{- include "miroir.imagePullSecrets" . | nindent 6 }}
@@ -50,6 +57,15 @@ spec:
             - --provision-timeout={{ .Values.provisionTimeout }}
             - --overcommit-ratio={{ .Values.overcommitRatio }}
             - --auto-tie-breaker={{ .Values.autoTieBreaker }}
+            - --zap-log-level={{ .Values.logging.level }}
+            - --zap-encoder={{ .Values.logging.format }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
