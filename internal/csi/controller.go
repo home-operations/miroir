@@ -161,7 +161,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 				replicas, len(srcVol.Spec.DiskfulReplicas()))
 		}
 		source = &miroirv1alpha1.VolumeSource{SnapshotName: snapID}
-		srcReplicas, err = c.restoreReplicas(ctx, srcVol)
+		srcReplicas, err = c.restoreReplicas(ctx, srcVol, snap)
 		if err != nil {
 			return nil, err
 		}
@@ -568,9 +568,14 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 	if !apierrors.IsAlreadyExists(err) {
 		return status.Errorf(codes.Internal, "create MiroirVolume: %v", err)
 	}
+	// AlreadyExists proves the object is on the API server; the informer
+	// cache can still lag it, so read through APIReader. A read failure is
+	// in-flight, not terminal — Unavailable keeps the provisioner retrying
+	// (Internal is a final error → it would record "volume not created"
+	// for a volume that demonstrably exists, and leak the CR).
 	existing := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Name: vol.Name}, existing); err != nil {
-		return status.Errorf(codes.Internal, "get existing MiroirVolume: %v", err)
+	if err := c.reader().Get(ctx, types.NamespacedName{Name: vol.Name}, existing); err != nil {
+		return status.Errorf(codes.Unavailable, "get existing MiroirVolume: %v", err)
 	}
 	existingSource := ""
 	if existing.Spec.Source != nil {
@@ -726,8 +731,9 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 			return nil, status.Errorf(codes.Internal, "create MiroirSnapshot: %v", err)
 		}
 		existing := &miroirv1alpha1.MiroirSnapshot{}
-		if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetName()}, existing); err != nil {
-			return nil, status.Errorf(codes.Internal, "get existing snapshot: %v", err)
+		if err := c.reader().Get(ctx, types.NamespacedName{Name: req.GetName()}, existing); err != nil {
+			// Cache may lag the just-created object; retryable, not terminal.
+			return nil, status.Errorf(codes.Unavailable, "get existing snapshot: %v", err)
 		}
 		if existing.Spec.VolumeName != req.GetSourceVolumeId() {
 			return nil, status.Errorf(codes.AlreadyExists,
@@ -846,10 +852,16 @@ func csiSnapshot(snap *miroirv1alpha1.MiroirSnapshot, sizeBytes int64) *csi.Snap
 // local snapshot, so a carried flag would full-resync one for nothing —
 // and replication addresses are re-resolved from the live Node objects
 // (the source's were captured at its creation and can be stale).
-func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1.MiroirVolume) ([]miroirv1alpha1.Replica, error) {
+func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1.MiroirVolume, snap *miroirv1alpha1.MiroirSnapshot) ([]miroirv1alpha1.Replica, error) {
 	reps := slices.Clone(srcVol.Spec.Replicas)
 	for i := range reps {
-		reps[i].FullSync = false
+		// A leg clones from that node's local snapshot only if the node
+		// actually cut one. A replica added AFTER the snapshot was taken
+		// has no local snapshot: mark it FullSync so the agent creates a
+		// fresh backing and DRBD full-syncs it from a Done peer, instead
+		// of failing CreateFromSnapshot and flipping the clone to Failed.
+		done := snap.Status.PerNode[reps[i].Node] == miroirv1alpha1.SnapshotDone
+		reps[i].FullSync = !reps[i].Diskless && !done
 		if reps[i].Address == "" {
 			continue
 		}
@@ -859,7 +871,26 @@ func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1
 		}
 		reps[i].Address = addr
 	}
+	// The GI-seed winner (first diskful replica) is the clone's sync
+	// source, so it must hold real data — refuse a restore whose seed leg
+	// was added after the snapshot (no complete leg to seed from). A
+	// ReadyToUse snapshot has every pre-existing diskful leg Done, so this
+	// only rejects the pathological post-snapshot seed case.
+	if seed := firstDiskful(reps); seed != nil && seed.FullSync {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"snapshot %s has no complete leg on seed node %s; cannot restore", snap.Name, seed.Node)
+	}
 	return reps, nil
+}
+
+// firstDiskful returns the first non-diskless replica, or nil.
+func firstDiskful(reps []miroirv1alpha1.Replica) *miroirv1alpha1.Replica {
+	for i := range reps {
+		if !reps[i].Diskless {
+			return &reps[i]
+		}
+	}
+	return nil
 }
 
 // snapshotSource resolves a ready snapshot and its source volume.

@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -551,7 +552,11 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
-		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{
+				nodeKharkiv: miroirv1alpha1.SnapshotDone,
+				nodeParis:   miroirv1alpha1.SnapshotDone,
+			}},
 	}
 	cl := readyOnGet(s)
 	for _, obj := range []client.Object{srcVol, srcSnap,
@@ -593,6 +598,106 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 	}
 }
 
+// A restore whose source gained a replica AFTER the snapshot was cut: the
+// new node holds no local snapshot, so its clone leg must be marked
+// FullSync (fresh backing, synced from a Done peer) instead of failing
+// CreateFromSnapshot and flipping the clone to Failed.
+func TestCreateVolumeFromSnapshotFullSyncsPostSnapshotReplica(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
+				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2"},
+			},
+		},
+	}
+	// The snapshot captured only kharkiv Done; paris was added afterward.
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
+	}
+	cl := readyOnGet(s)
+	for _, obj := range []client.Object{srcVol, srcSnap,
+		nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
+		if err := cl.Create(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cl.Status().Update(t.Context(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapSnap1},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	byNode := map[string]miroirv1alpha1.Replica{}
+	for _, r := range got.Spec.Replicas {
+		byNode[r.Node] = r
+	}
+	if byNode[nodeKharkiv].FullSync {
+		t.Fatalf("the Done seed leg must clone, not full-sync: %+v", byNode[nodeKharkiv])
+	}
+	if !byNode[nodeParis].FullSync {
+		t.Fatalf("the post-snapshot leg must full-sync (no local snapshot): %+v", byNode[nodeParis])
+	}
+}
+
+// A lagging informer after AlreadyExists must surface as Unavailable
+// (retryable) — not Internal, which the provisioner treats as final and
+// would record "volume not created" for a volume that exists.
+func TestCreateVolumeAlreadyExistsCacheLagIsUnavailable(t *testing.T) {
+	s := newScheme(t)
+	// APIReader has the volume; the cached Client (interceptor) 404s it,
+	// simulating an informer that has not caught up.
+	existing := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
+		},
+	}
+	apiReader := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).Build()
+	cached := fake.NewClientBuilder().WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+				return apierrors.NewAlreadyExists(
+					miroirv1alpha1.GroupVersion.WithResource("miroirvolumes").GroupResource(), volPvc1)
+			},
+		}).Build()
+	c := &Controller{Client: cached, APIReader: apiReader, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	// Same shape as the existing volume, so handleCreateErr reaches the Get.
+	err := c.handleCreateErr(t.Context(),
+		apierrors.NewAlreadyExists(miroirv1alpha1.GroupVersion.WithResource("miroirvolumes").GroupResource(), volPvc1),
+		&miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: volPvc1}},
+		5<<30, 1, miroirv1alpha1.QuorumLastManStanding, "")
+	if err != nil {
+		t.Fatalf("APIReader has the volume; compatible retry must succeed: %v", err)
+	}
+}
+
 func TestPickNodeNoStorageNodes(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).Build(), Nodes: nodemap.Map{}}
@@ -618,7 +723,8 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
-		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
 	}
 	cl := readyOnGet(s)
 	if err := cl.Create(t.Context(), srcVol); err != nil {
@@ -680,6 +786,7 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{
 			ReadyToUse: true, SizeBytes: 5 << 30, SourceFormatted: true,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone},
 		},
 	}
 	cl := readyOnGet(s)
@@ -749,12 +856,14 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 	snap1 := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
-		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
 	}
 	snap2 := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-2"},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
-		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
 	}
 	if err := cl.Create(t.Context(), snap1); err != nil {
 		t.Fatal(err)
