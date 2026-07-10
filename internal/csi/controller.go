@@ -940,7 +940,10 @@ func (c *Controller) snapshotSource(ctx context.Context, snapID string) (*miroir
 // volumes (idempotent CreateVolume retries).
 func (c *Controller) markVolumeFormatted(ctx context.Context, name string) error {
 	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
+	// Read through APIReader: this runs right after Create, and the
+	// informer cache reliably lags a just-created object — a cached Get
+	// here 404s and fails the whole CreateVolume into a retry loop.
+	if err := c.reader().Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 		return err
 	}
 	return markFormatted(ctx, c.Client, vol)

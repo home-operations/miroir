@@ -34,8 +34,10 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -186,6 +188,16 @@ func main() {
 		HealthProbeBindAddress: "0",
 		// No leader election: the controller is a 1-replica Deployment and
 		// agents are per-node singletons (notes/DESIGN.md §4.2).
+		Controller: config.Controller{
+			// The priority queue (default-on since controller-runtime
+			// v0.22) enqueues initial-list events at low priority, and a
+			// steadily busy queue never drains them: a volume created
+			// moments before an agent start is delivered only through the
+			// initial list, so its realization starves indefinitely —
+			// silently, and again after every restart. FIFO restores the
+			// guarantee that startup work eventually runs.
+			UsePriorityQueue: ptr.To(false),
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")

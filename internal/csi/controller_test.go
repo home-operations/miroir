@@ -698,6 +698,42 @@ func TestCreateVolumeAlreadyExistsCacheLagIsUnavailable(t *testing.T) {
 	}
 }
 
+// markVolumeFormatted runs right after Create, when the informer cache
+// reliably lags the just-created object: it must read through APIReader,
+// or every fresh clone fails CreateVolume into a retry loop.
+func TestMarkVolumeFormattedReadsThroughAPIReader(t *testing.T) {
+	s := newScheme(t)
+	existing := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
+		},
+	}
+	// One store: reads through the cached client 404 (informer lag), while
+	// APIReader and the write path see the real object.
+	real := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	cached := interceptor.NewClient(real, interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return apierrors.NewNotFound(
+				miroirv1alpha1.GroupVersion.WithResource("miroirvolumes").GroupResource(), volPvc1)
+		},
+	})
+	c := &Controller{Client: cached, APIReader: real, Nodes: testNodes}
+
+	if err := c.markVolumeFormatted(t.Context(), volPvc1); err != nil {
+		t.Fatalf("APIReader has the volume; formatted flag must be recorded: %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := real.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.Formatted {
+		t.Fatal("formatted flag must be recorded on the volume")
+	}
+}
+
 func TestPickNodeNoStorageNodes(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).Build(), Nodes: nodemap.Map{}}
