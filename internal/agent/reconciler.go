@@ -176,29 +176,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	reportSize := vol.Spec.SizeBytes
-	requeue := drbdPollInterval
-	if coord := vol.Spec.FirstDiskfulReplica(); coord != nil && coord.Node == r.NodeName {
-		// drbdadm resize is refused mid-resync, so withhold the size and
-		// retry on the next poll instead of failing the reconcile.
-		switch {
-		case peerBackingsGrown(vol, r.NodeName) && !st.Resyncing:
-			// assumeClean=true: all miroir backends are thin/sparse, so
-			// the grown region is zeroed on every replica and a resync
-			// of the new extents is unnecessary.
-			if err := r.DRBD.Resize(ctx, vol.Name, true); err != nil {
-				if !drbd.IsResizeDuringResync(err) {
-					return ctrl.Result{}, r.reportError(ctx, vol, err)
-				}
-				// A resync started between the status read and the resize:
-				// withhold and retry, same as the pre-checked branch below.
-				reportSize = vol.Status.PerNode[r.NodeName].SizeBytes
-				requeue = 5 * time.Second
-			}
-		default:
-			reportSize = vol.Status.PerNode[r.NodeName].SizeBytes
-			requeue = 5 * time.Second
-		}
+	reportSize, requeue, err := r.growIfCoordinator(ctx, vol, st)
+	if err != nil {
+		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	if st.SplitBrain && !vol.Status.PerNode[r.NodeName].SplitBrain {
 		log.Error(errSplitBrain,
@@ -517,7 +497,38 @@ func (r *VolumeReconciler) assignMinor(_ context.Context, vol *miroirv1alpha1.Mi
 
 // computePhase aggregates per-node states into the volume phase the CSI
 // controller waits on (notes/DESIGN.md §4.5.1).
-// detachedDiskMessage explains a diskful leg DRBD dropped to Diskless
+// growIfCoordinator runs drbdadm resize when this node is the resize
+// coordinator (first diskful replica) and its realized size still trails
+// the spec — first bring-up and expansion. Once its status reaches spec
+// the device is grown, so the steady state does nothing (no resize exec
+// every poll). Returns the size to report and the requeue interval;
+// resize is withheld (short requeue) while a resync is in flight.
+func (r *VolumeReconciler) growIfCoordinator(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status) (int64, time.Duration, error) {
+	reportSize := vol.Spec.SizeBytes
+	coord := vol.Spec.FirstDiskfulReplica()
+	behind := vol.Status.PerNode[r.NodeName].SizeBytes < vol.Spec.SizeBytes
+	if !behind || coord == nil || coord.Node != r.NodeName {
+		return reportSize, drbdPollInterval, nil
+	}
+	// drbdadm resize is refused mid-resync, so withhold the size and retry
+	// on the next poll instead of failing the reconcile.
+	if !peerBackingsGrown(vol, r.NodeName) || st.Resyncing {
+		return vol.Status.PerNode[r.NodeName].SizeBytes, 5 * time.Second, nil
+	}
+	// assumeClean=true: all miroir backends are thin/sparse, so the grown
+	// region is zeroed on every replica and a resync of the new extents is
+	// unnecessary.
+	if err := r.DRBD.Resize(ctx, vol.Name, true); err != nil {
+		if !drbd.IsResizeDuringResync(err) {
+			return 0, 0, err
+		}
+		// A resync started between the status read and the resize: withhold.
+		return vol.Status.PerNode[r.NodeName].SizeBytes, 5 * time.Second, nil
+	}
+	return reportSize, drbdPollInterval, nil
+}
+
+// detachedDiskMessage explains a diskful leg DRBD dropped to Diskless// detachedDiskMessage explains a diskful leg DRBD dropped to Diskless
 // after a backing-device I/O error (on-io-error detach): the volume keeps
 // serving via the peer, but the operator otherwise sees only
 // "DiskState: Diskless" with no cause. Gated on the leg having previously

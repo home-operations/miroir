@@ -813,6 +813,33 @@ func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
 	}
 }
 
+// The resize coordinator must not run drbdadm resize once its realized
+// size already matches the spec — the steady state, every poll.
+func TestReconcileResizeCoordinatorSkipsWhenAtSize(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	// kharkiv is replicas[0] (the coordinator) and already at spec size.
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+	}
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdadm resize")
+}
+
 // A diskless tie-breaker joins DRBD for quorum only: no backend device,
 // no metadata seed, DeviceCreated stays false so CSI never stages here.
 // A FullSync joiner on a restored volume must create a fresh backing,
