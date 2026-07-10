@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.2](https://github.com/home-operations/miroir/compare/0.4.1...0.4.2) (2026-07-10)
+
+
+### Bug Fixes
+
+* **agent:** gate DRBD EventWatcher + startup sweeps on drbdsetup presence ([#127](https://github.com/home-operations/miroir/issues/127)) ([#129](https://github.com/home-operations/miroir/issues/129)) ([e51d5e1](https://github.com/home-operations/miroir/commit/e51d5e11024f8e8ffb5bb416922ce074efc49fb5))
+* opt out of the workqueue priority queue — starved initial-list events wedge volume realization ([#122](https://github.com/home-operations/miroir/issues/122)) ([ecc1675](https://github.com/home-operations/miroir/commit/ecc167526c71a6e32a91a4c8e81ed437b31312f3))
+
+
+### Performance Improvements
+
+* **agent:** concurrent volume workers + realized-state fast path ([#128](https://github.com/home-operations/miroir/issues/128)) ([b481a77](https://github.com/home-operations/miroir/commit/b481a77c6dbe805725a9b57364b00ce02b8fc105))
+* strip managedFields from cached objects ([#126](https://github.com/home-operations/miroir/issues/126)) ([77f57bd](https://github.com/home-operations/miroir/commit/77f57bd4e678f81af1fd4e34329009f2db295e97))
+
+
+### Code Refactoring
+
+* migrate SSA status patches to typed apply configurations ([#127](https://github.com/home-operations/miroir/issues/127)) ([2644372](https://github.com/home-operations/miroir/commit/264437268106f689d054c49b16ce09fabb6670b8))
+
 ## [0.4.1](https://github.com/home-operations/miroir/compare/0.4.0...0.4.1) (2026-07-10)
 
 
