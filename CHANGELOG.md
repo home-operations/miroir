@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/home-operations/miroir/compare/0.4.0...0.4.1) (2026-07-10)
+
+
+### Features
+
+* **agent:** auto rs-discard-granularity per leg ([#120](https://github.com/home-operations/miroir/issues/120)) ([48fb768](https://github.com/home-operations/miroir/commit/48fb768457839530d42d7099506ab63e73814bd3))
+
 ## [0.4.0](https://github.com/home-operations/miroir/compare/0.3.3...0.4.0) (2026-07-10)
 
 
