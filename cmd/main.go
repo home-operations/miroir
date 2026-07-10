@@ -36,6 +36,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -181,6 +182,12 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: metricsAddr},
+		// SSA-heavy objects grow a managedFields entry per field manager
+		// (every agent + the CSI controller write each volume), and every
+		// agent caches all volumes cluster-wide — strip them from cached
+		// copies. Nothing reads them locally: conflict detection is
+		// server-side, and the SSA patches build fresh objects.
+		Cache: cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
 		// The dedicated health-probe server is disabled; the probes are
 		// co-hosted on the (plain HTTP) metrics listener so each workload
 		// exposes a single operational port — the agent runs hostNetwork,
