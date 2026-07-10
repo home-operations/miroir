@@ -173,9 +173,10 @@ volumeSnapshotClass:
 
 # Requires the Prometheus Operator CRDs (deployed separately).
 monitoring:
-  serviceMonitor:
-    # -- Create a Prometheus Operator ServiceMonitor (requires its CRDs).
-    # Enabling this also creates the metrics Service the ServiceMonitor scrapes.
+  podMonitor:
+    # -- Create a Prometheus Operator PodMonitor (requires its CRDs) scraping
+    # the controller and every agent pod on their metrics ports. The
+    # per-volume miroir_volume_* gauges are exported by the agents.
     enabled: false
     # -- Scrape interval.
     interval: 30s
@@ -183,15 +184,14 @@ monitoring:
     scrapeTimeout: 10s
     # -- Metrics path.
     path: /metrics
-    # -- ServiceMonitor labels.
+    # -- PodMonitor labels.
     labels: {}
-    # -- ServiceMonitor annotations.
+    # -- PodMonitor annotations.
     annotations: {}
     # -- Prometheus metric relabelings.
     metricRelabelings: []
-    # -- Prometheus relabelings (applied before scraping).
+    # -- Extra Prometheus relabelings (applied before scraping); a node
+    # label from the pod's node name is always added.
     relabelings: []
-    # -- Target labels to copy from the Service.
-    targetLabels: []
     # -- Pod target labels to copy from pods.
     podTargetLabels: []

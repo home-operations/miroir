@@ -60,16 +60,15 @@ Kubernetes: `>=1.31.0`
 | image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
 | image.tag | string | `""` |  |
 | kubeletDir | string | `"/var/lib/kubelet"` |  |
-| monitoring.serviceMonitor.annotations | object | `{}` | ServiceMonitor annotations. |
-| monitoring.serviceMonitor.enabled | bool | `false` | Create a Prometheus Operator ServiceMonitor (requires its CRDs). Enabling this also creates the metrics Service the ServiceMonitor scrapes. |
-| monitoring.serviceMonitor.interval | string | `"30s"` | Scrape interval. |
-| monitoring.serviceMonitor.labels | object | `{}` | ServiceMonitor labels. |
-| monitoring.serviceMonitor.metricRelabelings | list | `[]` | Prometheus metric relabelings. |
-| monitoring.serviceMonitor.path | string | `"/metrics"` | Metrics path. |
-| monitoring.serviceMonitor.podTargetLabels | list | `[]` | Pod target labels to copy from pods. |
-| monitoring.serviceMonitor.relabelings | list | `[]` | Prometheus relabelings (applied before scraping). |
-| monitoring.serviceMonitor.scrapeTimeout | string | `"10s"` | Scrape timeout. |
-| monitoring.serviceMonitor.targetLabels | list | `[]` | Target labels to copy from the Service. |
+| monitoring.podMonitor.annotations | object | `{}` | PodMonitor annotations. |
+| monitoring.podMonitor.enabled | bool | `false` | Create a Prometheus Operator PodMonitor (requires its CRDs) scraping the controller and every agent pod on their metrics ports. The per-volume miroir_volume_* gauges are exported by the agents. |
+| monitoring.podMonitor.interval | string | `"30s"` | Scrape interval. |
+| monitoring.podMonitor.labels | object | `{}` | PodMonitor labels. |
+| monitoring.podMonitor.metricRelabelings | list | `[]` | Prometheus metric relabelings. |
+| monitoring.podMonitor.path | string | `"/metrics"` | Metrics path. |
+| monitoring.podMonitor.podTargetLabels | list | `[]` | Pod target labels to copy from pods. |
+| monitoring.podMonitor.relabelings | list | `[]` | Extra Prometheus relabelings (applied before scraping); a node label from the pod's node name is always added. |
+| monitoring.podMonitor.scrapeTimeout | string | `"10s"` | Scrape timeout. |
 | nodes | object | `{}` |  |
 | replicatedStorageClass.create | bool | `true` |  |
 | replicatedStorageClass.fsType | string | `"ext4"` |  |
