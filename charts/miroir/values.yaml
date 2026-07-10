@@ -68,10 +68,6 @@ sidecars:
     # default; the driver returns DeadlineExceeded and the provisioner
     # retries, but a roomier timeout avoids churn.
     timeout: 120s
-  registrar:
-    # Runs in the agent DaemonSet (kubelet plugin registration), not the
-    # controller pod; kept here so the sig-storage images share one block.
-    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
   snapshotter:
     image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
     # CreateSnapshot returns fast (readiness is polled), so the default
@@ -105,6 +101,11 @@ agent:
   # How often each agent republishes its pool capacity to its MiroirNode
   # (read by the controller for capacity-aware placement).
   poolStatsInterval: 60s
+  # kubelet plugin-registration sidecar riding the agent DaemonSet.
+  registrar:
+    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+  # -- Kubelet root on the nodes; CSI sockets and mounts hang off it.
+  kubeletDir: /var/lib/kubelet
   resources:
     requests:
       cpu: 10m
@@ -140,7 +141,6 @@ agent:
 #     baseDir: /var/lib/miroir
 nodes: {}
 
-kubeletDir: /var/lib/kubelet
 
 # =============================================================================
 # Storage classes
@@ -202,14 +202,16 @@ drbd:
     minRate: 10M
     # -- resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0).
     rate: ""
-    # -- max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864").
-    maxBuffers: ""
     # -- rs-discard-granularity: during a full resync, runs of zeroes are
     # sent as discards of this size instead of written out (e.g. "65536"),
     # keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on
     # clusters with loopfile-backed replicated volumes (loop devices
     # mishandle it) or entirely to keep DRBD's default (off).
     discardGranularity: ""
+  net:
+    # -- max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises
+    # resync throughput on fast links.
+    maxBuffers: ""
   # -- verify-alg arms `drbdadm verify <res>` — the only cross-leg
   # integrity check (a zfs scrub only validates one leg against itself).
   # Defaulted to crc32c: drbd.ko depends on libcrc32c so it is present on

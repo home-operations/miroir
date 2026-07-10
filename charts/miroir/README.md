@@ -39,15 +39,17 @@ Kubernetes: `>=1.31.0`
 | agent.image.pullPolicy | string | `"IfNotPresent"` |  |
 | agent.image.repository | string | `"ghcr.io/home-operations/miroir-agent"` |  |
 | agent.image.tag | string | `""` |  |
+| agent.kubeletDir | string | `"/var/lib/kubelet"` | Kubelet root on the nodes; CSI sockets and mounts hang off it. |
 | agent.poolStatsInterval | string | `"60s"` |  |
+| agent.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |
 | agent.resources.limits.memory | string | `"128Mi"` |  |
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
+| drbd.net.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises resync throughput on fast links. |
 | drbd.onIoError | string | `"detach"` |  |
 | drbd.resync.discardGranularity | string | `""` | rs-discard-granularity: during a full resync, runs of zeroes are sent as discards of this size instead of written out (e.g. "65536"), keeping a re-added thin leg thin. lvmthin/zfs only — leave empty on clusters with loopfile-backed replicated volumes (loop devices mishandle it) or entirely to keep DRBD's default (off). |
 | drbd.resync.fillTarget | string | `""` | c-fill-target, the resync controller's target fill level (e.g. "1M"). |
-| drbd.resync.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864"). |
 | drbd.resync.maxRate | string | `""` | c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M"). |
 | drbd.resync.minRate | string | `"10M"` | c-min-rate, the resync floor guaranteed even under application I/O. Defaulted to 10M: DRBD's kernel default (250 KiB/s) leaves a degraded volume resyncing for days under load; 10 MiB/s heals a 100Gi leg in hours while still yielding most of a 1GbE link to applications. Lower on a slow shared link. |
 | drbd.resync.planAhead | string | `""` | c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller. |
@@ -60,7 +62,6 @@ Kubernetes: `>=1.31.0`
 | global.nodeSelector | object | `{}` | Controller scheduling defaults. |
 | global.tolerations | list | `[]` |  |
 | image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/home-operations/miroir-controller","tag":""}` | Controller image (distroless, no storage userland — the controller never execs a storage CLI). |
-| kubeletDir | string | `"/var/lib/kubelet"` |  |
 | monitoring.dashboards.annotations | object | `{}` | Annotations added to the dashboard ConfigMap. |
 | monitoring.dashboards.enabled | bool | `false` | Render the Grafana dashboard ConfigMap (for grafana-operator or the kube-prometheus-stack sidecar). |
 | monitoring.dashboards.grafanaOperator.allowCrossNamespaceImport | bool | `true` | If true allows for a Grafana in any namespace to access this GrafanaDashboard. |
@@ -98,7 +99,6 @@ Kubernetes: `>=1.31.0`
 | resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Controller resources. |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
-| sidecars.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |
 | sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.2.1"` |  |
 | sidecars.resizer.timeout | string | `"120s"` |  |
 | sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0"` |  |

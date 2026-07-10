@@ -88,7 +88,7 @@ spec:
               mountPath: /etc/miroir
               readOnly: true
             - name: kubelet
-              mountPath: {{ .Values.kubeletDir }}
+              mountPath: {{ .Values.agent.kubeletDir }}
               mountPropagation: Bidirectional
             # Plain bind of host /dev (no mountPropagation): the
             # container must share the host's devtmpfs inode table so
@@ -126,10 +126,10 @@ spec:
               mountPath: {{ $dir }}
 {{- end }}
         - name: node-driver-registrar
-          image: {{ .Values.sidecars.registrar.image }}
+          image: {{ .Values.agent.registrar.image }}
           args:
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path={{ .Values.kubeletDir }}/plugins/miroir.home-operations.com/csi.sock
+            - --kubelet-registration-path={{ .Values.agent.kubeletDir }}/plugins/miroir.home-operations.com/csi.sock
           resources:
             requests: { cpu: 5m, memory: 16Mi }
             limits: { memory: 64Mi }
@@ -144,15 +144,15 @@ spec:
             name: {{ include "miroir.nodesConfigName" . }}
         - name: socket-dir
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins/miroir.home-operations.com
+            path: {{ .Values.agent.kubeletDir }}/plugins/miroir.home-operations.com
             type: DirectoryOrCreate
         - name: registration
           hostPath:
-            path: {{ .Values.kubeletDir }}/plugins_registry
+            path: {{ .Values.agent.kubeletDir }}/plugins_registry
             type: Directory
         - name: kubelet
           hostPath:
-            path: {{ .Values.kubeletDir }}
+            path: {{ .Values.agent.kubeletDir }}
             type: Directory
         - name: dev
           hostPath:

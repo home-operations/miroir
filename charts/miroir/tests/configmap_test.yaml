@@ -122,6 +122,7 @@ tests:
           planAhead: "20"
           maxRate: 720M
           minRate: 20M
+        net:
           maxBuffers: "36864"
     documentIndex: 1
     asserts:

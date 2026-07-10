@@ -115,7 +115,7 @@ tests:
 
   - it: binds /var/lib/kubelet at kubeletDir with Bidirectional propagation
     set:
-      kubeletDir: /var/snap/kubelet
+      agent.kubeletDir: /var/snap/kubelet
       nodes:
         kharkiv:
           backend: lvmthin

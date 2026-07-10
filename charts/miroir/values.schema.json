@@ -34,11 +34,30 @@
           "title": "image",
           "type": "object"
         },
+        "kubeletDir": {
+          "default": "/var/lib/kubelet",
+          "description": "Kubelet root on the nodes; CSI sockets and mounts hang off it.",
+          "title": "kubeletDir",
+          "type": "string"
+        },
         "poolStatsInterval": {
           "default": "60s",
           "description": "Per-node backend selection comes from node annotations:\n  miroir.home-operations.com/backend: lvmthin | zfs\n  miroir.home-operations.com/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)\n  miroir.home-operations.com/zfs-dataset: data-pool/miroir              (zfs)\nNodes also need the label miroir.home-operations.com/storage: \"true\" to receive replicas.\n\nHow often each agent republishes its pool capacity to its MiroirNode\n(read by the controller for capacity-aware placement).",
           "title": "poolStatsInterval",
           "type": "string"
+        },
+        "registrar": {
+          "description": "kubelet plugin-registration sidecar riding the agent DaemonSet.",
+          "properties": {
+            "image": {
+              "default": "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0",
+              "title": "image",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "registrar",
+          "type": "object"
         },
         "resources": {
           "properties": {
@@ -90,6 +109,19 @@
     "drbd": {
       "description": "=============================================================================\nDRBD replication tuning\n=============================================================================\nDRBD replication tuning applied cluster-wide through the common{} section of\nglobal_common.conf; every resource inherits it. Leave a value empty to use\nDRBD's built-in default. Tune to your replication network — see the LINBIT\n\"Tuning the DRBD Resync Controller\" guide.",
       "properties": {
+        "net": {
+          "properties": {
+            "maxBuffers": {
+              "default": "",
+              "description": "max-buffers, the DRBD receive-buffer count (e.g. \"36864\"); raises\nresync throughput on fast links.",
+              "title": "maxBuffers",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "net",
+          "type": "object"
+        },
         "onIoError": {
           "default": "detach",
           "description": "How a diskful replica reacts to a backing-device I/O error. detach\n(the LINSTOR/DRBD-recommended default) drops the failing leg to\nDiskless and serves reads/writes via the peer instead of surfacing\nEIO into the pod. Set to pass_on to propagate errors instead.",
@@ -108,12 +140,6 @@
               "default": "",
               "description": "c-fill-target, the resync controller's target fill level (e.g. \"1M\").",
               "title": "fillTarget",
-              "type": "string"
-            },
-            "maxBuffers": {
-              "default": "",
-              "description": "max-buffers, the DRBD receive-buffer count in the net{} section (e.g. \"36864\").",
-              "title": "maxBuffers",
               "type": "string"
             },
             "maxRate": {
@@ -231,11 +257,6 @@
       "required": [],
       "title": "image",
       "type": "object"
-    },
-    "kubeletDir": {
-      "default": "/var/lib/kubelet",
-      "title": "kubeletDir",
-      "type": "string"
     },
     "monitoring": {
       "description": "=============================================================================\nMonitoring\n=============================================================================\nRequires the Prometheus Operator CRDs (deployed separately).",
@@ -541,19 +562,6 @@
           },
           "required": [],
           "title": "provisioner",
-          "type": "object"
-        },
-        "registrar": {
-          "properties": {
-            "image": {
-              "default": "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0",
-              "description": "Runs in the agent DaemonSet (kubelet plugin registration), not the\ncontroller pod; kept here so the sig-storage images share one block.",
-              "title": "image",
-              "type": "string"
-            }
-          },
-          "required": [],
-          "title": "registrar",
           "type": "object"
         },
         "resizer": {
