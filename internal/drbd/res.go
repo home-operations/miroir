@@ -63,6 +63,12 @@ type Resource struct {
 	// latched failed (DiskFailed) so adjust does not re-attach a disk DRBD
 	// detached on an I/O error — the flap the latch exists to stop.
 	SkipDiskAttach bool
+	// DiscardGranularityBytes renders rs-discard-granularity in the local
+	// leg's disk{} options (0 renders nothing): a resync sends zero-runs
+	// as discards of this size, keeping a FullSync-joining thin leg thin.
+	// Probed from the backing device; never set for loopfile (loop devices
+	// mishandle it). Overrides the cluster-wide common{} knob.
+	DiscardGranularityBytes int64
 	// SkipSeed leaves fresh metadata at create-md's just-created state
 	// instead of day0 GI seeding: a replica joining an existing volume
 	// must full-sync from its peers, not pose as a pristine twin.
@@ -150,6 +156,11 @@ func Render(r Resource) string {
 			}
 			fmt.Fprintf(&b, "            disk %q;\n", disk)
 			b.WriteString("            meta-disk internal;\n")
+			if p.Node == r.LocalNode && r.DiscardGranularityBytes > 0 {
+				b.WriteString("            disk {\n")
+				fmt.Fprintf(&b, "                rs-discard-granularity %d;\n", r.DiscardGranularityBytes)
+				b.WriteString("            }\n")
+			}
 		}
 		b.WriteString("        }\n")
 		b.WriteString("    }\n")

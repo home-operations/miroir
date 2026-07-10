@@ -809,6 +809,25 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	return s, nil
 }
 
+// DiscardGranularity probes the backing device's discard granularity
+// (lsblk DISC-GRAN, bytes), clamped to [4096, 1MiB] — DRBD's sane range
+// for rs-discard-granularity. 0 means the device does not support
+// discards and nothing should be rendered.
+func (d *Driver) DiscardGranularity(ctx context.Context, dev string) (int64, error) {
+	out, err := d.Exec(ctx, "lsblk", "-bndo", "DISC-GRAN", dev)
+	if err != nil {
+		return 0, fmt.Errorf("probe discard granularity of %s: %w", dev, err)
+	}
+	gran, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse discard granularity of %s (%q): %w", dev, out, err)
+	}
+	if gran <= 0 {
+		return 0, nil
+	}
+	return min(max(gran, 4096), 1<<20), nil
+}
+
 // UserSuspended lists resources whose IO is frozen by suspend-io. The
 // kernel is the authority here: a crash between suspend-io and the status
 // patch leaves a frozen device that no snapshot status records.

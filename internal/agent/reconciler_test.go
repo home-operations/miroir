@@ -613,6 +613,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 type fakeDRBDExec struct {
 	calls      []string
 	statusJSON string
+	responses  map[string]string
 	errOn      map[string]error
 }
 
@@ -626,6 +627,11 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 	}
 	if strings.HasPrefix(line, "drbdsetup status") {
 		return f.statusJSON, nil
+	}
+	for key, out := range f.responses {
+		if strings.Contains(line, key) {
+			return out, nil
+		}
 	}
 	if strings.Contains(line, "dump-md") {
 		return "", errFreshDevice
@@ -1438,4 +1444,59 @@ func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 	if len(fb.created) != 0 {
 		t.Fatalf("must not realize an incomplete entry: %+v", fb.created)
 	}
+}
+
+// The probed granularity lands in the local leg's rendered .res for a
+// thin backend; loopfile never probes (loop devices mishandle the option).
+func TestReconcileRendersDiscardGranularity(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	fb := newFakeBackend()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{
+		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"UpToDate","quorum":true}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+		responses: map[string]string{"lsblk": "65536\n"},
+	}
+	stateDir := t.TempDir()
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		BackendType: miroirv1alpha1.BackendLVMThin,
+		DRBD:        &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+
+	fe.calledWith(t, "lsblk -bndo DISC-GRAN")
+	res, err := os.ReadFile(filepath.Join(stateDir, volPvc1+".res"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(res), "rs-discard-granularity 65536;") {
+		t.Fatalf("rendered .res must carry the probed granularity:\n%s", res)
+	}
+}
+
+func TestReconcileLoopfileSkipsDiscardProbe(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	fb := newFakeBackend()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+		responses: map[string]string{"lsblk": "65536\n"}}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		BackendType: miroirv1alpha1.BackendLoopfile,
+		DRBD:        &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "lsblk")
 }

@@ -45,6 +45,27 @@ func tieBreakerResource(localNode string) Resource {
 	}
 }
 
+// rs-discard-granularity renders only in the LOCAL leg's volume disk{}
+// (each node renders its own .res, so per-leg granularity), and only when
+// probed non-zero — the resource-level option overrides the common{} knob.
+func TestRenderDiscardGranularityLocalOnly(t *testing.T) {
+	r := tieBreakerResource(nodeKharkiv)
+	r.DiscardGranularityBytes = 65536
+	out := Render(r)
+	if !strings.Contains(out, "rs-discard-granularity 65536;") {
+		t.Fatalf("local leg must render the granularity:\n%s", out)
+	}
+	// Exactly one render: the local volume block, not the peers'.
+	if strings.Count(out, "rs-discard-granularity") != 1 {
+		t.Fatalf("granularity must render once (local leg only):\n%s", out)
+	}
+
+	r.DiscardGranularityBytes = 0
+	if out := Render(r); strings.Contains(out, "rs-discard-granularity") {
+		t.Fatalf("zero granularity must render nothing:\n%s", out)
+	}
+}
+
 // A diskless tie-breaker peer renders "disk none" with no meta-disk; the
 // diskful peers keep the placeholder/local-disk + internal metadata.
 func TestRenderDisklessTieBreaker(t *testing.T) {

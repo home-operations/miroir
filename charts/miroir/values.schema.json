@@ -160,7 +160,7 @@
           "properties": {
             "discardGranularity": {
               "default": "",
-              "description": "rs-discard-granularity: during a full resync, runs of zeroes are\nsent as discards of this size instead of written out (e.g. \"65536\"),\nkeeping a re-added thin leg thin. lvmthin/zfs only — leave empty on\nclusters with loopfile-backed replicated volumes (loop devices\nmishandle it) or entirely to keep DRBD's default (off).",
+              "description": "rs-discard-granularity cluster-wide fallback: during a full resync,\nruns of zeroes are sent as discards of this size instead of written\nout (e.g. \"65536\"), keeping a re-added thin leg thin. Normally leave\nempty — the agent probes each lvmthin/zfs backing device and renders\nan exact per-leg value that overrides this (loopfile is never probed:\nloop devices mishandle it, so also leave this empty on clusters with\nloopfile-backed replicated volumes).",
               "title": "discardGranularity",
               "type": "string"
             },
