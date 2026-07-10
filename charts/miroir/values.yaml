@@ -195,3 +195,36 @@ monitoring:
     relabelings: []
     # -- Pod target labels to copy from pods.
     podTargetLabels: []
+
+  prometheusRule:
+    # -- Create a PrometheusRule with alerting rules (requires the Prometheus Operator CRDs).
+    enabled: false
+    # -- PrometheusRule annotations.
+    annotations: {}
+    # -- PrometheusRule labels.
+    labels: {}
+    # -- Extra labels added to every alert rule.
+    additionalRuleLabels: {}
+    # -- Extra annotations added to every alert rule.
+    additionalRuleAnnotations: {}
+
+  dashboards:
+    # -- Render the Grafana dashboard ConfigMap (for grafana-operator or the kube-prometheus-stack sidecar).
+    enabled: false
+    # -- Namespace for the dashboard objects; defaults to the release namespace.
+    namespace: ""
+    # -- Annotations added to the dashboard ConfigMap.
+    annotations: {}
+    # -- Labels added to the dashboard ConfigMap.
+    labels: {}
+    grafanaOperator:
+      # -- Render a GrafanaDashboard CR (grafana-operator) instead of a sidecar ConfigMap.
+      enabled: false
+      # -- If true allows for a Grafana in any namespace to access this GrafanaDashboard.
+      allowCrossNamespaceImport: true
+      # -- Folder to create the dashboard in.
+      folder: ""
+      # -- Resync period for the Grafana operator to check for updates to the dashboard.
+      resyncPeriod: "10m"
+      # -- Selected labels for Grafana instance.
+      matchLabels: {}

@@ -60,6 +60,15 @@ Kubernetes: `>=1.31.0`
 | image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
 | image.tag | string | `""` |  |
 | kubeletDir | string | `"/var/lib/kubelet"` |  |
+| monitoring.dashboards.annotations | object | `{}` | Annotations added to the dashboard ConfigMap. |
+| monitoring.dashboards.enabled | bool | `false` | Render the Grafana dashboard ConfigMap (for grafana-operator or the kube-prometheus-stack sidecar). |
+| monitoring.dashboards.grafanaOperator.allowCrossNamespaceImport | bool | `true` | If true allows for a Grafana in any namespace to access this GrafanaDashboard. |
+| monitoring.dashboards.grafanaOperator.enabled | bool | `false` | Render a GrafanaDashboard CR (grafana-operator) instead of a sidecar ConfigMap. |
+| monitoring.dashboards.grafanaOperator.folder | string | `""` | Folder to create the dashboard in. |
+| monitoring.dashboards.grafanaOperator.matchLabels | object | `{}` | Selected labels for Grafana instance. |
+| monitoring.dashboards.grafanaOperator.resyncPeriod | string | `"10m"` | Resync period for the Grafana operator to check for updates to the dashboard. |
+| monitoring.dashboards.labels | object | `{}` | Labels added to the dashboard ConfigMap. |
+| monitoring.dashboards.namespace | string | `""` | Namespace for the dashboard objects; defaults to the release namespace. |
 | monitoring.podMonitor.annotations | object | `{}` | PodMonitor annotations. |
 | monitoring.podMonitor.enabled | bool | `false` | Create a Prometheus Operator PodMonitor (requires its CRDs) scraping the controller and every agent pod on their metrics ports. The per-volume miroir_volume_* gauges are exported by the agents. |
 | monitoring.podMonitor.interval | string | `"30s"` | Scrape interval. |
@@ -69,6 +78,11 @@ Kubernetes: `>=1.31.0`
 | monitoring.podMonitor.podTargetLabels | list | `[]` | Pod target labels to copy from pods. |
 | monitoring.podMonitor.relabelings | list | `[]` | Extra Prometheus relabelings (applied before scraping); a node label from the pod's node name is always added. |
 | monitoring.podMonitor.scrapeTimeout | string | `"10s"` | Scrape timeout. |
+| monitoring.prometheusRule.additionalRuleAnnotations | object | `{}` | Extra annotations added to every alert rule. |
+| monitoring.prometheusRule.additionalRuleLabels | object | `{}` | Extra labels added to every alert rule. |
+| monitoring.prometheusRule.annotations | object | `{}` | PrometheusRule annotations. |
+| monitoring.prometheusRule.enabled | bool | `false` | Create a PrometheusRule with alerting rules (requires the Prometheus Operator CRDs). |
+| monitoring.prometheusRule.labels | object | `{}` | PrometheusRule labels. |
 | nodes | object | `{}` |  |
 | replicatedStorageClass.create | bool | `true` |  |
 | replicatedStorageClass.fsType | string | `"ext4"` |  |

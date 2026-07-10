@@ -345,6 +345,13 @@ Each agent additionally exports its pool capacity
 capacity-aware placement and the `PoolUsageHigh` condition, so pool
 exhaustion is alertable, not just an Event.
 
+`monitoring.prometheusRule.enabled: true` ships starter alerts for all
+of the above (split-brain, quorum lost, stranded barrier, disk failed,
+degraded replication, sustained out-of-sync, pool and thin-metadata
+usage), and `monitoring.dashboards.enabled: true` installs a Grafana
+dashboard — as a sidecar-labelled ConfigMap, or a grafana-operator
+`GrafanaDashboard` CR via `monitoring.dashboards.grafanaOperator`.
+
 Both processes also expose controller-runtime metrics
 (`controller_runtime_reconcile_errors_total` is the wedged-reconcile
 signal), and mounted volumes get `kubelet_volume_stats_*` for free

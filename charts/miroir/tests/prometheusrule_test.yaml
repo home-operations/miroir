@@ -1,0 +1,101 @@
+suite: prometheusrule
+templates:
+  - prometheusrule.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: should not create a PrometheusRule by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should create a PrometheusRule when enabled
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - isKind:
+          of: PrometheusRule
+      - equal:
+          path: metadata.name
+          value: miroir
+      - equal:
+          path: metadata.namespace
+          value: miroir-system
+
+  - it: should have the volume and pool rule groups
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.groups
+          count: 2
+      - equal:
+          path: spec.groups[0].name
+          value: miroir.volumes
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 7
+      - equal:
+          path: spec.groups[1].name
+          value: miroir.pools
+      - lengthEqual:
+          path: spec.groups[1].rules
+          count: 2
+
+  - it: should mark IO-freezing conditions critical
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[0].alert
+          value: MiroirVolumeSplitBrain
+      - equal:
+          path: spec.groups[0].rules[0].labels.severity
+          value: critical
+      - equal:
+          path: spec.groups[0].rules[1].alert
+          value: MiroirVolumeQuorumLost
+      - equal:
+          path: spec.groups[0].rules[1].labels.severity
+          value: critical
+      - equal:
+          path: spec.groups[0].rules[3].alert
+          value: MiroirVolumeDiskFailed
+      - equal:
+          path: spec.groups[0].rules[3].labels.severity
+          value: warning
+
+  - it: should add extra labels to the PrometheusRule
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.labels:
+        role: alert-rules
+    asserts:
+      - equal:
+          path: metadata.labels.role
+          value: alert-rules
+
+  - it: should add additional labels and annotations to every rule
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.additionalRuleLabels:
+        team: platform
+      monitoring.prometheusRule.additionalRuleAnnotations:
+        runbook_url: https://example.com/runbooks/miroir
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[0].labels.team
+          value: platform
+      - equal:
+          path: spec.groups[0].rules[0].labels.severity
+          value: critical
+      - equal:
+          path: spec.groups[0].rules[0].annotations.runbook_url
+          value: https://example.com/runbooks/miroir
+      - equal:
+          path: spec.groups[1].rules[1].labels.team
+          value: platform
+      - equal:
+          path: spec.groups[1].rules[1].annotations.runbook_url
+          value: https://example.com/runbooks/miroir

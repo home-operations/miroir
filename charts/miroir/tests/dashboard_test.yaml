@@ -1,0 +1,74 @@
+suite: dashboard
+templates:
+  - dashboard.tpl
+  - grafanadashboard.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: should not create dashboard objects by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should create a sidecar ConfigMap when enabled
+    set:
+      monitoring.dashboards.enabled: true
+    template: dashboard.tpl
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: miroir-dashboard
+      - equal:
+          path: metadata.labels.grafana_dashboard
+          value: "1"
+      - exists:
+          path: data["miroir.json"]
+
+  - it: should not render a GrafanaDashboard without the operator flag
+    set:
+      monitoring.dashboards.enabled: true
+    template: grafanadashboard.tpl
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render a GrafanaDashboard CR for the grafana-operator
+    set:
+      monitoring.dashboards.enabled: true
+      monitoring.dashboards.grafanaOperator.enabled: true
+      monitoring.dashboards.grafanaOperator.matchLabels:
+        dashboards: grafana
+    template: grafanadashboard.tpl
+    asserts:
+      - isKind:
+          of: GrafanaDashboard
+      - equal:
+          path: spec.instanceSelector.matchLabels.dashboards
+          value: grafana
+      - equal:
+          path: spec.configMapRef.key
+          value: miroir.json
+
+  - it: should drop the sidecar label when the operator imports the ConfigMap
+    set:
+      monitoring.dashboards.enabled: true
+      monitoring.dashboards.grafanaOperator.enabled: true
+      monitoring.dashboards.grafanaOperator.matchLabels:
+        dashboards: grafana
+    template: dashboard.tpl
+    asserts:
+      - notExists:
+          path: metadata.labels.grafana_dashboard
+
+  - it: should honor a custom namespace
+    set:
+      monitoring.dashboards.enabled: true
+      monitoring.dashboards.namespace: monitoring
+    template: dashboard.tpl
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: monitoring
