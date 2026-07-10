@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.1](https://github.com/home-operations/miroir/compare/0.3.0...0.3.1) (2026-07-10)
+
+
+### Features
+
+* explain a detached backing disk in volume status ([#100](https://github.com/home-operations/miroir/issues/100)) ([cdca6ff](https://github.com/home-operations/miroir/commit/cdca6ff55c03186ea793e8cc16db845c71402b5e))
+* tune chart defaults for redundancy-restore, integrity, and control-plane resilience ([#105](https://github.com/home-operations/miroir/issues/105)) ([10d769e](https://github.com/home-operations/miroir/commit/10d769eb4140cc9c6ed389e1ea93362e1a30efb6))
+
+
+### Bug Fixes
+
+* bound host commands, classify held-open teardown, self-heal stale metadata marker ([#98](https://github.com/home-operations/miroir/issues/98)) ([e32eed9](https://github.com/home-operations/miroir/commit/e32eed9a14010938006a39edc9ab238d44c67e9d))
+* CSI restore + AlreadyExists idempotency edges ([#103](https://github.com/home-operations/miroir/issues/103)) ([49f7468](https://github.com/home-operations/miroir/commit/49f7468164ea419a80f783e39fcc8d9ea46f008d))
+* release a volume's DRBD minor on teardown ([#109](https://github.com/home-operations/miroir/issues/109)) ([b5d6cdf](https://github.com/home-operations/miroir/commit/b5d6cdf4b6f7674c290dd0527341519018253795))
+* snapshot coordinator fails over from a dead replicas[0] ([#99](https://github.com/home-operations/miroir/issues/99)) ([66b7eb9](https://github.com/home-operations/miroir/commit/66b7eb951a53838e60b6323dbf813cd144e204eb))
+
+
+### Performance Improvements
+
+* stop per-poll drbdadm resize and dedup CreateVolume's volume List ([#104](https://github.com/home-operations/miroir/issues/104)) ([6e01ea3](https://github.com/home-operations/miroir/commit/6e01ea317b04841d58a29fcd983723ac6743a235))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool helm (4.2.2 → 4.2.3) ([#96](https://github.com/home-operations/miroir/issues/96)) ([15eee90](https://github.com/home-operations/miroir/commit/15eee9047874733c619bb1a75bdd0ce5b0a21167))
+
 ## [0.3.0](https://github.com/home-operations/miroir/compare/0.2.11...0.3.0) (2026-07-09)
 
 
