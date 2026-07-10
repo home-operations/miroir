@@ -18,6 +18,9 @@ global:
   tolerations: []
   affinity: {}
 
+# =============================================================================
+# Controller (root = controller, kopiur layout; components nest below)
+# =============================================================================
 # -- Controller image (distroless, no storage userland — the controller never
 # execs a storage CLI).
 image:
@@ -30,59 +33,6 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
-sidecars:
-  provisioner:
-    image: registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
-    # LVM/ZFS provisioning on a cold node can exceed the 10s sidecar
-    # default; the driver returns DeadlineExceeded and the provisioner
-    # retries, but a roomier timeout avoids churn.
-    timeout: 120s
-  registrar:
-    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
-  snapshotter:
-    image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
-    # CreateSnapshot returns fast (readiness is polled), so the default
-    # suffices; raise if snapshot RPCs are slow.
-    timeout: 120s
-  resizer:
-    image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
-    # Online grow can block on a rebooting node; keep >= controller.provisionTimeout.
-    timeout: 120s
-
-# Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
-# tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
-uninstall:
-  image: registry.k8s.io/kubectl:v1.36.2
-
-kubeletDir: /var/lib/kubelet
-
-# Per-node storage topology — the single source of truth for which nodes
-# hold volumes and how. Rendered into the miroir-nodes ConfigMap, read by
-# the controller (placement) and each agent (backend selection).
-# Optional per-node `zone` (rack, host group, AZ): when set, the controller
-# spreads a volume's replicas across distinct zones; empty is unconstrained.
-# nodes:
-#   kharkiv:
-#     backend: lvmthin
-#     device: /dev/disk/by-partlabel/r-miroir
-#     # thinPoolSize: 400g   # bound the pool when sharing the VG
-#     # zone: rack-1         # spread replicas across failure domains
-#   paris:
-#     backend: zfs
-#     zfsDataset: data-pool/miroir
-#     # zone: rack-2
-#   le-havre:
-#     # loopfile: sparse files on the node's existing filesystem — no
-#     # dedicated disk or pool. baseDir must be reflink-capable (XFS
-#     # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the agent
-#     # refuses to start otherwise. The dir is hostPath-mounted into the
-#     # agent at the same path.
-#     backend: loopfile
-#     baseDir: /var/lib/miroir
-nodes: {}
-
-# Controller settings live at the top level (kopiur layout); other
-# components are nested (agent, sidecars, monitoring).
 # -- system-cluster-critical protects the single controller from eviction
 # under node pressure — while it is down, no volume can be provisioned,
 # expanded, or snapshotted.
@@ -108,6 +58,33 @@ resources:
   limits:
     memory: 128Mi
 
+# =============================================================================
+# CSI sidecars (upstream sig-storage images)
+# =============================================================================
+sidecars:
+  provisioner:
+    image: registry.k8s.io/sig-storage/csi-provisioner:v6.3.0
+    # LVM/ZFS provisioning on a cold node can exceed the 10s sidecar
+    # default; the driver returns DeadlineExceeded and the provisioner
+    # retries, but a roomier timeout avoids churn.
+    timeout: 120s
+  registrar:
+    # Runs in the agent DaemonSet (kubelet plugin registration), not the
+    # controller pod; kept here so the sig-storage images share one block.
+    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+  snapshotter:
+    image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
+    # CreateSnapshot returns fast (readiness is polled), so the default
+    # suffices; raise if snapshot RPCs are slow.
+    timeout: 120s
+  resizer:
+    image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
+    # Online grow can block on a rebooting node; keep >= provisionTimeout.
+    timeout: 120s
+
+# =============================================================================
+# Agent (per-node DaemonSet: storage userland + CSI node service)
+# =============================================================================
 agent:
   # Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent and the
   # setup Job exec on each storage node).
@@ -135,6 +112,71 @@ agent:
     limits:
       memory: 128Mi
 
+# =============================================================================
+# Storage topology
+# =============================================================================
+# Per-node storage topology — the single source of truth for which nodes
+# hold volumes and how. Rendered into the miroir-nodes ConfigMap, read by
+# the controller (placement) and each agent (backend selection).
+# Optional per-node `zone` (rack, host group, AZ): when set, the controller
+# spreads a volume's replicas across distinct zones; empty is unconstrained.
+# nodes:
+#   kharkiv:
+#     backend: lvmthin
+#     device: /dev/disk/by-partlabel/r-miroir
+#     # thinPoolSize: 400g   # bound the pool when sharing the VG
+#     # zone: rack-1         # spread replicas across failure domains
+#   paris:
+#     backend: zfs
+#     zfsDataset: data-pool/miroir
+#     # zone: rack-2
+#   le-havre:
+#     # loopfile: sparse files on the node's existing filesystem — no
+#     # dedicated disk or pool. baseDir must be reflink-capable (XFS
+#     # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the agent
+#     # refuses to start otherwise. The dir is hostPath-mounted into the
+#     # agent at the same path.
+#     backend: loopfile
+#     baseDir: /var/lib/miroir
+nodes: {}
+
+kubeletDir: /var/lib/kubelet
+
+# =============================================================================
+# Storage classes
+# =============================================================================
+storageClass:
+  create: true
+  name: miroir-local
+  # Coexists with OpenEBS: openebs-zfs stays the cluster default.
+  isDefault: false
+  fsType: ext4
+  replicas: 1
+  reclaimPolicy: Delete
+
+replicatedStorageClass:
+  create: true
+  name: miroir-replicated
+  isDefault: false
+  fsType: ext4
+  # freeze: refuse writes (I/O errors) without a peer majority — never
+  # diverges; with autoTieBreaker a third node keeps 2-replica volumes
+  # writable through a single node loss. last-man-standing: the survivor
+  # keeps writing even alone, at the risk of split-brain. See the root
+  # README, "Replication and quorum".
+  quorum: freeze # | last-man-standing
+  reclaimPolicy: Delete
+
+# Requires the cluster-wide snapshot-controller + CRDs (deployed
+# separately; kube-system/snapshot-controller in the homelab).
+volumeSnapshotClass:
+  create: true
+  name: miroir-snap
+  deletionPolicy: Delete
+
+# =============================================================================
+# DRBD replication tuning
+# =============================================================================
 # DRBD replication tuning applied cluster-wide through the common{} section of
 # global_common.conf; every resource inherits it. Leave a value empty to use
 # DRBD's built-in default. Tune to your replication network — see the LINBIT
@@ -176,35 +218,9 @@ drbd:
   # in the kernel log and `drbdsetup status`. Empty disables verification.
   verifyAlg: crc32c
 
-storageClass:
-  create: true
-  name: miroir-local
-  # Coexists with OpenEBS: openebs-zfs stays the cluster default.
-  isDefault: false
-  fsType: ext4
-  replicas: 1
-  reclaimPolicy: Delete
-
-replicatedStorageClass:
-  create: true
-  name: miroir-replicated
-  isDefault: false
-  fsType: ext4
-  # freeze: refuse writes (I/O errors) without a peer majority — never
-  # diverges; with autoTieBreaker a third node keeps 2-replica volumes
-  # writable through a single node loss. last-man-standing: the survivor
-  # keeps writing even alone, at the risk of split-brain. See the root
-  # README, "Replication and quorum".
-  quorum: freeze # | last-man-standing
-  reclaimPolicy: Delete
-
-# Requires the cluster-wide snapshot-controller + CRDs (deployed
-# separately; kube-system/snapshot-controller in the homelab).
-volumeSnapshotClass:
-  create: true
-  name: miroir-snap
-  deletionPolicy: Delete
-
+# =============================================================================
+# Monitoring
+# =============================================================================
 # Requires the Prometheus Operator CRDs (deployed separately).
 monitoring:
   podMonitor:
@@ -262,3 +278,11 @@ monitoring:
       resyncPeriod: "10m"
       # -- Selected labels for Grafana instance.
       matchLabels: {}
+
+# =============================================================================
+# Uninstall hook
+# =============================================================================
+# Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
+# tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
+uninstall:
+  image: registry.k8s.io/kubectl:v1.36.2
