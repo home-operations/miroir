@@ -32,7 +32,7 @@ var (
 	}, []string{volumeLabel})
 	metricConnected = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_connected",
-		Help: "1 when all replication links from this node are established.",
+		Help: "1 when all replication links from this node to diskful peers are established (a diskless tie-breaker's link is excluded).",
 	}, []string{volumeLabel})
 	metricSplitBrain = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_split_brain",
@@ -40,11 +40,11 @@ var (
 	}, []string{volumeLabel})
 	metricSuspended = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_suspended",
-		Help: "1 while suspend-io holds this node's write barrier; sustained means a stranded barrier (snapshot rounds last seconds).",
+		Help: "1 while a user suspend-io (the snapshot write barrier) freezes this node's IO; sustained means a stranded barrier (snapshot rounds last seconds).",
 	}, []string{volumeLabel})
 	metricResyncPercent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_resync_percent",
-		Help: "Percent in sync of the least-synced peer while resyncing; 100 when fully in sync.",
+		Help: "Percent in sync of the least-synced diskful peer while resyncing; 100 when fully in sync (unreplicated volumes report 100).",
 	}, []string{volumeLabel})
 )
 

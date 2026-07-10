@@ -141,7 +141,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		if vol.Spec.DRBD == nil {
 			log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
-			recordVolumeMetrics(vol.Name, miroirReplicaView{upToDate: true, connected: true})
+			// resyncPercent 100, not the zero value: no peers means fully
+			// in sync — 0 would perma-fire any <100 alert.
+			recordVolumeMetrics(vol.Name, miroirReplicaView{upToDate: true, connected: true, resyncPercent: 100})
 			return ctrl.Result{}, r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 				DeviceCreated: true,
 				DevicePath:    dev,

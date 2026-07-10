@@ -43,7 +43,7 @@ difference is the control plane.
   replacing the JVM and database with CRDs. Architecturally it is
   miroir's closest relative.
 - **miroir** cuts the scope to what 2–3 nodes actually need. The
-  Kubernetes API is the *only* control plane: the controller writes
+  Kubernetes API is the _only_ control plane: the controller writes
   MiroirVolume objects, node agents watch and realize them — no
   controller database, no inter-node RPC protocol, no operator
   managing an operator. One small static image serves as both the
@@ -235,7 +235,7 @@ filesystem on top to have gone read-only in the meantime, so the pod
 usually needs a restart once the volume recovers.
 
 Two data replicas on their own are only 2 votes, and majority of 2 is
-2 — *any* disconnect would halt writes on both sides. That is what
+2 — _any_ disconnect would halt writes on both sides. That is what
 the tie-breaker fixes.
 
 ### The diskless tie-breaker
@@ -284,11 +284,11 @@ Volumes with this policy never get a tie-breaker.
 
 ### At a glance
 
-| Failure                     | `freeze` + tie-breaker                                        | `freeze`, 2 nodes            | `last-man-standing`                                |
-| --------------------------- | ------------------------------------------------------------- | ---------------------------- | -------------------------------------------------- |
-| One node down               | keeps serving (2/3 votes)                                      | I/O errors until it returns  | survivor keeps writing                             |
-| Replication link partitioned | the majority side serves; the minority side refuses writes    | both sides refuse writes     | both sides may write → split-brain, manual resolve |
-| Two nodes down              | remaining node refuses writes                                  | I/O errors                   | survivor keeps writing                             |
+| Failure                      | `freeze` + tie-breaker                                     | `freeze`, 2 nodes           | `last-man-standing`                                |
+| ---------------------------- | ---------------------------------------------------------- | --------------------------- | -------------------------------------------------- |
+| One node down                | keeps serving (2/3 votes)                                  | I/O errors until it returns | survivor keeps writing                             |
+| Replication link partitioned | the majority side serves; the minority side refuses writes | both sides refuse writes    | both sides may write → split-brain, manual resolve |
+| Two nodes down               | remaining node refuses writes                              | I/O errors                  | survivor keeps writing                             |
 
 The default was `last-man-standing` before v0.3. Volumes keep
 whatever `quorumPolicy` is stored in their spec — nothing is
@@ -319,6 +319,27 @@ validates one leg against itself). Set `drbd.verifyAlg` (e.g.
 during quiet hours — cron is the DRBD-documented pattern.
 Out-of-sync blocks are reported in the kernel log and
 `drbdsetup status`.
+
+## Monitoring
+
+`monitoring.podMonitor.enabled: true` creates a Prometheus Operator
+PodMonitor scraping the controller **and every agent** on their
+`metrics` ports (the per-volume gauges are exported by the agent on
+each storage node; a `node` label is added to every series). The
+agent exports, per volume on that node:
+
+| Metric                         | Meaning                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `miroir_volume_up_to_date`     | 1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created)    |
+| `miroir_volume_connected`      | 1 when all replication links to diskful peers are established (tie-breaker links excluded) |
+| `miroir_volume_split_brain`    | 1 when DRBD refused to reconnect after divergence — manual resolution required             |
+| `miroir_volume_suspended`      | 1 while the snapshot write barrier freezes IO; sustained means a stranded barrier          |
+| `miroir_volume_resync_percent` | percent in sync of the least-synced diskful peer; 100 when fully in sync                   |
+
+Both processes also expose controller-runtime metrics
+(`controller_runtime_reconcile_errors_total` is the wedged-reconcile
+signal), and mounted volumes get `kubelet_volume_stats_*` for free
+via CSI.
 
 ## Coexistence with other provisioners
 
@@ -365,9 +386,10 @@ shows the failing call to clean up manually.
 - [x] Capacity-aware placement
 - [ ] CSI `CSIStorageCapacity` reporting per pool
 - [x] Per-volume DRBD state metrics (`miroir_volume_up_to_date` /
-      `connected` / `split_brain` / `suspended`; opt-in
-      ServiceMonitor via `monitoring.serviceMonitor.enabled`)
-- [ ] Per-volume performance metrics (IOPS, latency, resync progress)
+      `connected` / `split_brain` / `suspended` / `resync_percent`;
+      opt-in PodMonitor via `monitoring.podMonitor.enabled`)
+- [ ] Per-volume quorum / failed-disk / out-of-sync gauges and pool
+      capacity metrics
 
 **Natural extensions**
 

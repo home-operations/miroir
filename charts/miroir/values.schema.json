@@ -229,17 +229,17 @@
     "monitoring": {
       "description": "Requires the Prometheus Operator CRDs (deployed separately).",
       "properties": {
-        "serviceMonitor": {
+        "podMonitor": {
           "properties": {
             "annotations": {
-              "description": "ServiceMonitor annotations.",
+              "description": "PodMonitor annotations.",
               "required": [],
               "title": "annotations",
               "type": "object"
             },
             "enabled": {
               "default": false,
-              "description": "Create a Prometheus Operator ServiceMonitor (requires its CRDs).\nEnabling this also creates the metrics Service the ServiceMonitor scrapes.",
+              "description": "Create a Prometheus Operator PodMonitor (requires its CRDs) scraping\nthe controller and every agent pod on their metrics ports. The\nper-volume miroir_volume_* gauges are exported by the agents.",
               "title": "enabled",
               "type": "boolean"
             },
@@ -250,7 +250,7 @@
               "type": "string"
             },
             "labels": {
-              "description": "ServiceMonitor labels.",
+              "description": "PodMonitor labels.",
               "required": [],
               "title": "labels",
               "type": "object"
@@ -278,7 +278,7 @@
               "type": "array"
             },
             "relabelings": {
-              "description": "Prometheus relabelings (applied before scraping).",
+              "description": "Extra Prometheus relabelings (applied before scraping); a node\nlabel from the pod's node name is always added.",
               "items": {
                 "required": []
               },
@@ -290,18 +290,10 @@
               "description": "Scrape timeout.",
               "title": "scrapeTimeout",
               "type": "string"
-            },
-            "targetLabels": {
-              "description": "Target labels to copy from the Service.",
-              "items": {
-                "required": []
-              },
-              "title": "targetLabels",
-              "type": "array"
             }
           },
           "required": [],
-          "title": "serviceMonitor",
+          "title": "podMonitor",
           "type": "object"
         }
       },

@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -195,6 +196,11 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	}
 	if got.Status.PerNode[nodeKharkiv].DevicePath != "/dev/fake/pvc-1" {
 		t.Fatalf("unexpected status %+v", got.Status.PerNode)
+	}
+	// No peers means fully in sync: the zero value would perma-fire any
+	// <100 resync alert for every unreplicated volume.
+	if pct := testutil.ToFloat64(metricResyncPercent.WithLabelValues(volPvc1)); pct != 100 {
+		t.Fatalf("unreplicated resync_percent = %v, want 100", pct)
 	}
 }
 
