@@ -123,11 +123,13 @@ tests:
           path: spec.template.spec.containers[0].args
           content: "--auto-tie-breaker=false"
 
-  - it: sidecars pick up their image + the provisioner timeout
+  - it: each sidecar picks up its own image and timeout
     set:
       sidecars.provisioner.timeout: 75s
       sidecars.provisioner.image: registry.k8s.io/sig-storage/csi-provisioner:v9.9.9
+      sidecars.snapshotter.timeout: 76s
       sidecars.snapshotter.image: registry.k8s.io/sig-storage/csi-snapshotter:v9.9.9
+      sidecars.resizer.timeout: 77s
       sidecars.resizer.image: registry.k8s.io/sig-storage/csi-resizer:v9.9.9
     documentIndex: 0
     asserts:
@@ -150,7 +152,7 @@ tests:
             image: registry.k8s.io/sig-storage/csi-snapshotter:v9.9.9
             args:
               - "--csi-address=/csi/csi.sock"
-              - "--timeout=75s"
+              - "--timeout=76s"
               - "--leader-election=false"
       - contains:
           any: true
@@ -160,8 +162,15 @@ tests:
             image: registry.k8s.io/sig-storage/csi-resizer:v9.9.9
             args:
               - "--csi-address=/csi/csi.sock"
-              - "--timeout=75s"
+              - "--timeout=77s"
               - "--leader-election=false"
+
+  - it: the controller pod is cluster-critical by default
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.priorityClassName
+          value: system-cluster-critical
 
   - it: respects a custom image repository + tag
     set:

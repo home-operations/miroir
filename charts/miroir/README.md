@@ -41,6 +41,7 @@ Kubernetes: `>=1.31.0`
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | controller.autoTieBreaker | bool | `true` |  |
 | controller.overcommitRatio | int | `2` |  |
+| controller.priorityClassName | string | `"system-cluster-critical"` |  |
 | controller.provisionTimeout | string | `"120s"` |  |
 | controller.resources.limits.memory | string | `"128Mi"` |  |
 | controller.resources.requests.cpu | string | `"10m"` |  |
@@ -50,10 +51,10 @@ Kubernetes: `>=1.31.0`
 | drbd.resync.fillTarget | string | `""` | c-fill-target, the resync controller's target fill level (e.g. "1M"). |
 | drbd.resync.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count in the net{} section (e.g. "36864"). |
 | drbd.resync.maxRate | string | `""` | c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M"). |
-| drbd.resync.minRate | string | `""` | c-min-rate, the resync floor guaranteed even under application I/O (e.g. "20M"); keep low on shared links. |
+| drbd.resync.minRate | string | `"10M"` | c-min-rate, the resync floor guaranteed even under application I/O. Defaulted to 10M: DRBD's kernel default (250 KiB/s) leaves a degraded volume resyncing for days under load; 10 MiB/s heals a 100Gi leg in hours while still yielding most of a 1GbE link to applications. Lower on a slow shared link. |
 | drbd.resync.planAhead | string | `""` | c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller. |
 | drbd.resync.rate | string | `""` | resync-rate, the fixed rate used only when the controller is off (planAhead empty or 0). |
-| drbd.verifyAlg | string | `""` | verify-alg enables `drbdadm verify <res>` — the only cross-leg integrity check (zfs scrub validates one leg against itself). Set to a kernel digest (e.g. "crc32c") and run verify from cron/manually during quiet hours; out-of-sync blocks surface in the kernel log and `drbdsetup status`. Empty keeps verification unavailable. |
+| drbd.verifyAlg | string | `"crc32c"` | verify-alg arms `drbdadm verify <res>` — the only cross-leg integrity check (a zfs scrub only validates one leg against itself). Defaulted to crc32c: drbd.ko depends on libcrc32c so it is present on every node, and it costs nothing until a verify runs. Schedule the verify pass yourself (cron, quiet hours); out-of-sync blocks surface in the kernel log and `drbdsetup status`. Empty disables verification. |
 | image.digest | string | `""` |  |
 | image.pullPolicy | string | `"IfNotPresent"` |  |
 | image.repository | string | `"ghcr.io/home-operations/miroir"` |  |
@@ -80,7 +81,9 @@ Kubernetes: `>=1.31.0`
 | sidecars.provisioner.timeout | string | `"120s"` |  |
 | sidecars.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |
 | sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.2.1"` |  |
+| sidecars.resizer.timeout | string | `"120s"` |  |
 | sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0"` |  |
+| sidecars.snapshotter.timeout | string | `"120s"` |  |
 | storageClass.create | bool | `true` |  |
 | storageClass.fsType | string | `"ext4"` |  |
 | storageClass.isDefault | bool | `false` |  |
