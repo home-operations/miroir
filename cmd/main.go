@@ -26,7 +26,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -271,26 +270,41 @@ func main() {
 			os.Exit(1)
 		}
 		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
-		if _, err := exec.LookPath("drbdsetup"); err != nil {
-			setupLog.Info("drbdsetup not found; running without DRBD (miroir-local mode)")
-		} else {
+		// The binary is always in the image; what a local-only node lacks
+		// is the kernel module. Probe once (the modprobe inside also loads
+		// it proactively on nodes that ship it) and run without the DRBD
+		// machinery when the kernel side is absent — otherwise the events
+		// watcher hot-loops "exit status 20" every 5s forever.
+		drbdReady := drbdDriver.KernelAvailable(context.Background())
+		if !drbdReady {
+			setupLog.Info("DRBD kernel module unavailable; running local-only " +
+				"(no events watcher, no orphan/barrier/shutdown sweeps)")
+		}
+		if drbdReady {
+			// Reap kernel resources and rendered config orphaned by a crash
+			// between up and down — they hold backing devices open forever.
 			if err := sweepOrphans(nodeName, drbdDriver); err != nil {
 				setupLog.Error(err, "orphan sweep failed")
 				os.Exit(1)
 			}
+			// Lift any IO barrier left by a previous agent crash.
 			if err := resumeStaleBarriers(drbdDriver, apiStartupWait); err != nil {
 				setupLog.Error(err, "barrier resume sweep failed")
 				os.Exit(1)
 			}
 		}
+		// Tracks this node's cordon state so shutdownSweep can tell a node
+		// reboot/upgrade (drained, so cordoned) from a routine pod restart.
 		cordon := &agent.CordonWatcher{Client: mgr.GetClient(), NodeName: nodeName}
 		if err := cordon.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up cordon watcher")
 			os.Exit(1)
 		}
 		var drbdEvents chan event.GenericEvent
-		if _, err := exec.LookPath("drbdsetup"); err == nil {
+		if drbdReady {
 			shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver) }
+			// events2 turns kernel state changes into immediate reconciles;
+			// the 30s poll remains as the safety net.
 			drbdEvents = make(chan event.GenericEvent, 64)
 			watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
 				ev := event.GenericEvent{Object: &miroirv1alpha1.MiroirVolume{

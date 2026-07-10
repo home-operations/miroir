@@ -258,6 +258,26 @@ func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
 	}
 }
 
+// KernelAvailable keys on the kernel answering, not the binary being on
+// PATH — the image always ships drbdsetup; a local-only node lacks the
+// module and answers exit 20 to everything.
+func TestKernelAvailable(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if !d.KernelAvailable(t.Context()) {
+		t.Fatal("kernel answering must read as available")
+	}
+	fe.calledWith(t, "modprobe drbd") // proactive load through /lib/modules
+
+	fe = &fakeExec{errOn: map[string]error{
+		"drbdsetup status": errors.New("exit status 20: Failed to modprobe drbd"),
+	}}
+	d = &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if d.KernelAvailable(t.Context()) {
+		t.Fatal("module-less node must read as unavailable")
+	}
+}
+
 // DiscardGranularity parses lsblk bytes output and clamps to DRBD's sane
 // range; 0 (no discard support) and garbage both mean "render nothing".
 func TestDiscardGranularity(t *testing.T) {
