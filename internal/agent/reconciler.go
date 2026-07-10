@@ -54,7 +54,7 @@ type VolumeReconciler struct {
 	// DRBD drives the replication layer for multi-replica volumes.
 	DRBD *drbd.Driver
 	// DRBDEvents delivers kernel state changes (drbdsetup events2) as
-	// reconcile triggers, ahead of the next poll.
+	// reconcile triggers, ahead of the poll.
 	DRBDEvents <-chan event.GenericEvent
 }
 
@@ -111,7 +111,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	if vol.Spec.DRBD != nil && vol.Spec.Replicas[idx].Address == "" {
 		// A just-added entry the membership reconciler has not completed
-		// yet (no NodeID/address): nothing can be realized safely.
+		// yet (no NodeID/address): nothing can be realized safely. Logged
+		// so a volume stuck waiting is visible — this wait is normally a
+		// single pass, never a steady state.
+		log.Info("replica entry incomplete; waiting for membership completion", "volume", vol.Name)
 		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
