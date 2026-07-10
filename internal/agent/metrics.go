@@ -42,10 +42,14 @@ var (
 		Name: "miroir_volume_suspended",
 		Help: "1 while suspend-io holds this node's write barrier; sustained means a stranded barrier (snapshot rounds last seconds).",
 	}, []string{volumeLabel})
+	metricResyncPercent = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_resync_percent",
+		Help: "Percent in sync of the least-synced peer while resyncing; 100 when fully in sync.",
+	}, []string{volumeLabel})
 )
 
 func init() {
-	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain, metricSuspended)
+	metrics.Registry.MustRegister(metricUpToDate, metricConnected, metricSplitBrain, metricSuspended, metricResyncPercent)
 }
 
 func recordVolumeMetrics(volume string, st miroirReplicaView) {
@@ -53,6 +57,7 @@ func recordVolumeMetrics(volume string, st miroirReplicaView) {
 	metricConnected.WithLabelValues(volume).Set(boolGauge(st.connected))
 	metricSplitBrain.WithLabelValues(volume).Set(boolGauge(st.splitBrain))
 	metricSuspended.WithLabelValues(volume).Set(boolGauge(st.suspended))
+	metricResyncPercent.WithLabelValues(volume).Set(st.resyncPercent)
 }
 
 func dropVolumeMetrics(volume string) {
@@ -60,13 +65,15 @@ func dropVolumeMetrics(volume string) {
 	metricConnected.DeleteLabelValues(volume)
 	metricSplitBrain.DeleteLabelValues(volume)
 	metricSuspended.DeleteLabelValues(volume)
+	metricResyncPercent.DeleteLabelValues(volume)
 }
 
 type miroirReplicaView struct {
-	upToDate   bool
-	connected  bool
-	splitBrain bool
-	suspended  bool
+	upToDate      bool
+	connected     bool
+	splitBrain    bool
+	suspended     bool
+	resyncPercent float64
 }
 
 func boolGauge(b bool) float64 {

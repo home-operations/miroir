@@ -188,10 +188,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	connected := diskfulPeersConnected(st, vol, r.NodeName)
 	if !localDiskless {
 		recordVolumeMetrics(vol.Name, miroirReplicaView{
-			upToDate:   st.DiskState == drbd.DiskUpToDate,
-			connected:  connected,
-			splitBrain: st.SplitBrain,
-			suspended:  st.Suspended,
+			upToDate:      st.DiskState == drbd.DiskUpToDate,
+			connected:     connected,
+			splitBrain:    st.SplitBrain,
+			suspended:     st.Suspended,
+			resyncPercent: st.ResyncPercent,
 		})
 	}
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
