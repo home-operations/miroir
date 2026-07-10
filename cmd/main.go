@@ -26,6 +26,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -270,40 +271,40 @@ func main() {
 			os.Exit(1)
 		}
 		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
-		// Reap kernel resources and rendered config orphaned by a crash
-		// between up and down — they hold backing devices open forever.
-		if err := sweepOrphans(nodeName, drbdDriver); err != nil {
-			setupLog.Error(err, "orphan sweep failed")
-			os.Exit(1)
+		if _, err := exec.LookPath("drbdsetup"); err != nil {
+			setupLog.Info("drbdsetup not found; running without DRBD (miroir-local mode)")
+		} else {
+			if err := sweepOrphans(nodeName, drbdDriver); err != nil {
+				setupLog.Error(err, "orphan sweep failed")
+				os.Exit(1)
+			}
+			if err := resumeStaleBarriers(drbdDriver, apiStartupWait); err != nil {
+				setupLog.Error(err, "barrier resume sweep failed")
+				os.Exit(1)
+			}
 		}
-		// Lift any IO barrier left by a previous agent crash.
-		if err := resumeStaleBarriers(drbdDriver, apiStartupWait); err != nil {
-			setupLog.Error(err, "barrier resume sweep failed")
-			os.Exit(1)
-		}
-		// Tracks this node's cordon state so shutdownSweep can tell a node
-		// reboot/upgrade (drained, so cordoned) from a routine pod restart.
 		cordon := &agent.CordonWatcher{Client: mgr.GetClient(), NodeName: nodeName}
 		if err := cordon.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up cordon watcher")
 			os.Exit(1)
 		}
-		shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver) }
-		// events2 turns kernel state changes into immediate reconciles;
-		// the 30s poll remains as the safety net.
-		drbdEvents := make(chan event.GenericEvent, 64)
-		watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
-			ev := event.GenericEvent{Object: &miroirv1alpha1.MiroirVolume{
-				ObjectMeta: metav1.ObjectMeta{Name: resource},
+		var drbdEvents chan event.GenericEvent
+		if _, err := exec.LookPath("drbdsetup"); err == nil {
+			shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver) }
+			drbdEvents = make(chan event.GenericEvent, 64)
+			watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
+				ev := event.GenericEvent{Object: &miroirv1alpha1.MiroirVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: resource},
+				}}
+				select {
+				case drbdEvents <- ev:
+				case <-ctx.Done():
+				}
 			}}
-			select {
-			case drbdEvents <- ev:
-			case <-ctx.Done():
+			if err := mgr.Add(watcher); err != nil {
+				setupLog.Error(err, "unable to add DRBD event watcher")
+				os.Exit(1)
 			}
-		}}
-		if err := mgr.Add(watcher); err != nil {
-			setupLog.Error(err, "unable to add DRBD event watcher")
-			os.Exit(1)
 		}
 		reconciler := &agent.VolumeReconciler{
 			Client:      mgr.GetClient(),
