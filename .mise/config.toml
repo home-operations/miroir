@@ -171,71 +171,12 @@ description = "Run the upstream external-storage conformance suite against the p
 env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
 run = "TESTDRIVER=testdriver-local.yaml ./test/conformance/run.sh"
 
-[tasks.e2e-cluster-replicated]
-description = "Create (or reuse) a 3-node kind cluster for the replicated (DRBD) e2e suite"
-env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
-run = '''
-set -eu
-cluster="${KIND_CLUSTER:-miroir-test-e2e}"
-mkdir -p "$(dirname "$KUBECONFIG")"
-kind get clusters 2>/dev/null | grep -qx "$cluster" \
-  || kind create cluster --name "$cluster" --config test/e2e/kind-replicated.yaml
-kind export kubeconfig --name "$cluster" --kubeconfig "$KUBECONFIG"
-'''
-
-[tasks.e2e-provision-replicated]
-description = "Seed a loop-backed lvmthin device on every kind node and helm-install miroir for the replicated suite"
-depends = ["manifests"]
-env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
-run = '''
-set -eu
-cluster="${KIND_CLUSTER:-miroir-test-e2e}"
-
-# Every node gets its own loop-backed lvmthin pool — DRBD replicates across
-# them. Same node plumbing as e2e-provision, applied to all nodes.
-set_args=""
-for node in $(kind get nodes --name "$cluster"); do
-  echo "==> seeding loop-backed block device on $node"
-  docker exec -e DISK_SIZE="${MIROIR_E2E_DISK_SIZE:-10G}" "$node" sh -c '
-    set -e
-    modprobe dm_thin_pool 2>/dev/null || true
-    modprobe loop 2>/dev/null || true
-    for i in 0 1 2 3 4 5 6 7; do [ -e /dev/loop$i ] || mknod /dev/loop$i b 7 $i; done
-    mkdir -p /run/udev /run/lvm /var/lib/miroir-e2e
-    [ -f /var/lib/miroir-e2e/disk.img ] || truncate -s "$DISK_SIZE" /var/lib/miroir-e2e/disk.img
-    losetup -j /var/lib/miroir-e2e/disk.img | grep -q . || losetup -f /var/lib/miroir-e2e/disk.img
-  '
-  device="$(docker exec "$node" losetup -j /var/lib/miroir-e2e/disk.img -O NAME -n | tr -d ' ')"
-  [ -n "$device" ] || { echo "error: no loop device bound on $node" >&2; exit 1; }
-  echo "==> lvmthin device on $node: $device"
-  set_args="$set_args --set nodes.${node}.backend=lvmthin --set nodes.${node}.device=${device}"
-done
-
-snap_ver="v8.6.0"
-echo "==> installing CSI snapshot stack ($snap_ver)"
-kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//client/config/crd?ref=$snap_ver"
-kubectl wait --for=condition=established --timeout=60s \
-  crd/volumesnapshotclasses.snapshot.storage.k8s.io \
-  crd/volumesnapshotcontents.snapshot.storage.k8s.io \
-  crd/volumesnapshots.snapshot.storage.k8s.io
-kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//deploy/kubernetes/snapshot-controller?ref=$snap_ver"
-kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
-
-echo "==> helm install miroir (replicated)"
-# deploy/e2e/values.yaml omits the replicated class (the local suite has no
-# DRBD); enable it here so miroir-replicated exists for this suite.
-# shellcheck disable=SC2086
-helm upgrade --install miroir charts/miroir \
-  --namespace miroir-system --create-namespace \
-  --wait --timeout 5m \
-  -f deploy/e2e/values.yaml \
-  --set replicatedStorageClass.create=true \
-  $set_args
-'''
-
+# The replicated spec needs a real multi-node DRBD cluster: kind nodes share
+# one host kernel module and each sits in its own network namespace, so DRBD9
+# connections fail ("connection assigned to a different network namespace").
+# Point KUBECONFIG at a real cluster (same as test/smoke/smoke.sh).
 [tasks.e2e-run-replicated]
-description = "Run the replicated (DRBD) Go e2e spec against the provisioned kind cluster"
-env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
+description = "Run the replicated (DRBD) Go e2e spec against a real DRBD cluster (KUBECONFIG)"
 run = 'go test -tags "e2e,replicated" ./test/e2e/ -v -ginkgo.v -ginkgo.focus="miroir-replicated volume health" -timeout 30m'
 
 [tasks.e2e-diagnostics]
