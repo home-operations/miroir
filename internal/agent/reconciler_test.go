@@ -1747,9 +1747,9 @@ func splitBrainSetup(t *testing.T, nodeName, peerNodeID string, activated bool) 
 func TestReconcileSplitBrainWinnerReconnectsWhenNeverActivated(t *testing.T) {
 	r, fe := splitBrainSetup(t, nodeKharkiv, "1", false)
 	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect pvc-1")
 	fe.notCalledWith(t, "discard-my-data")
-	fe.notCalledWith(t, "drbdadm disconnect")
 }
 
 // The losing leg (paris, node id 1) discards its own generation so it
@@ -1765,6 +1765,24 @@ func TestReconcileSplitBrainLoserDiscardsWhenNeverActivated(t *testing.T) {
 // is left for an operator.
 func TestReconcileSplitBrainNoAutoRecoveryWhenActivated(t *testing.T) {
 	r, fe := splitBrainSetup(t, nodeParis, "0", true)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "discard-my-data")
+	fe.notCalledWith(t, "drbdadm disconnect")
+}
+
+// A formatted-but-not-activated volume (e.g. a clone whose stage failed at
+// grow-to-fill after mkfs/mount) carries data and must not be auto-discarded,
+// even though Activated is still false.
+func TestReconcileSplitBrainNoAutoRecoveryWhenFormatted(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeParis, "0", false)
+	var v miroirv1alpha1.MiroirVolume
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
+		t.Fatal(err)
+	}
+	v.Status.Formatted = true
+	if err := r.Status().Update(t.Context(), &v); err != nil {
+		t.Fatal(err)
+	}
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "discard-my-data")
 	fe.notCalledWith(t, "drbdadm disconnect")

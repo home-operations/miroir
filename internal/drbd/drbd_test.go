@@ -144,13 +144,15 @@ func fakeMknod(string, uint32, int) error { return nil }
 func TestResolveSplitBrainWinnerReconnects(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	// kharkiv is node id 0 — the seed winner and the survivor.
+	// kharkiv is node id 0 — the seed winner and the survivor. It disconnects
+	// first (a bare connect aborts on a peer that already has a net-config)
+	// then reconnects without discarding data.
 	if err := d.ResolveSplitBrain(context.Background(), testResource(nodeKharkiv)); err != nil {
 		t.Fatalf("ResolveSplitBrain: %v", err)
 	}
+	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect pvc-1")
 	fe.notCalledWith(t, "discard-my-data")
-	fe.notCalledWith(t, "disconnect")
 }
 
 func TestResolveSplitBrainLoserDiscards(t *testing.T) {
@@ -173,6 +175,7 @@ func TestResolveSplitBrainDisklessReconnects(t *testing.T) {
 	if err := d.ResolveSplitBrain(context.Background(), r); err != nil {
 		t.Fatalf("ResolveSplitBrain: %v", err)
 	}
+	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect pvc-1")
 	fe.notCalledWith(t, "discard-my-data")
 }

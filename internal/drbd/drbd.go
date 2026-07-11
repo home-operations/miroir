@@ -666,26 +666,30 @@ func isWinner(r Resource) bool {
 }
 
 // ResolveSplitBrain runs DRBD's documented split-brain recovery around the
-// seed winner: the winner (lowest diskful node id, matching seedGI) leaves
-// StandAlone as the survivor; every other diskful leg disconnects and
-// reconnects with --discard-my-data, becoming SyncTarget. A diskless
-// tie-breaker only reconnects. Because the winner is derived the same way on
-// every node, the agents converge without coordinating.
+// seed winner: every leg disconnects, then the winner (lowest diskful node
+// id, matching seedGI) and the diskless tie-breaker reconnect as survivors
+// while every other diskful leg reconnects with --discard-my-data, becoming
+// SyncTarget. Because the winner is derived the same way on every node, the
+// agents converge without coordinating.
 //
 // --discard-my-data drops the loser leg's generation, so this is only valid
 // on a volume that never held data; the caller gates on that (see
 // VolumeReconciler.recoverSplitBrain).
 func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
+	// Disconnect first, on every role. A plain connect aborts (exit 10,
+	// "Device has a net-config") on any peer that already has one, and after a
+	// split-brain the local node holds a net-config toward at least one peer
+	// (StandAlone or Connecting); --discard-my-data is likewise only honored on
+	// a connect out of StandAlone. Clearing all connections first makes the
+	// connect below well-defined. A resource with nothing to disconnect errors
+	// here harmlessly, so the result is ignored.
+	_, _ = d.adm(ctx, "disconnect", r.Name)
+
 	if r.LocalDiskless || isWinner(r) {
 		if _, err := d.adm(ctx, "connect", r.Name); err != nil {
 			return fmt.Errorf("connect %s: %w", r.Name, err)
 		}
 		return nil
-	}
-	// --discard-my-data is honored only on a connect out of StandAlone, so
-	// disconnect first.
-	if _, err := d.adm(ctx, "disconnect", r.Name); err != nil {
-		return fmt.Errorf("disconnect %s: %w", r.Name, err)
 	}
 	if _, err := d.adm(ctx, "connect", "--discard-my-data", r.Name); err != nil {
 		return fmt.Errorf("connect --discard-my-data %s: %w", r.Name, err)
