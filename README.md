@@ -104,6 +104,10 @@ nodes:
         backend: zfs
         zfsDataset: data-pool/miroir
         zone: rack-b
+    le-havre:
+        backend: loopfile
+        baseDir: /var/lib/miroir # reflink-capable fs (XFS reflink=1, btrfs)
+        zone: rack-c
 ```
 
 `zone` is optional: when set, replicas — and the quorum tie-breaker —
