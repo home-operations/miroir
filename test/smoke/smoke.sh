@@ -162,6 +162,48 @@ while :; do
 done
 ok "filesystem grew online to ${kb}KB"
 
+step "delete -> recreate under same claim comes up healthy (issue #139)"
+# A fresh PVC under a reused claim name must provision clean — i.e. the prior
+# volume's DRBD state was fully released on teardown and the new legs do not
+# come up split-brain. This is the deterministic #139 reproduction.
+recycle_pvc() { # prints the bound PV name
+    kubectl apply -n "$NS" -f - >/dev/null <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: recycle
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: $SC
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+    pod_manifest recycle-consumer recycle | kubectl apply -f - >/dev/null
+    kubectl wait -n "$NS" pod/recycle-consumer --for=condition=Ready --timeout="$TIMEOUT" >/dev/null \
+        || die "recycle consumer not ready"
+    kubectl get pvc -n "$NS" recycle -o jsonpath='{.spec.volumeName}'
+}
+recycle_destroy() {
+    kubectl delete pod -n "$NS" recycle-consumer --wait >/dev/null
+    kubectl delete pvc -n "$NS" recycle --wait >/dev/null
+    deadline=$((SECONDS + 120))
+    while kubectl get miroirvolume "$1" >/dev/null 2>&1; do
+        [ "$SECONDS" -lt "$deadline" ] || die "recycle volume $1 not torn down"
+        sleep 3
+    done
+}
+pv_a=$(recycle_pvc)
+[ "$(kubectl get miroirvolume "$pv_a" -o jsonpath='{.status.phase}')" = Ready ] \
+    || die "first recycle volume $pv_a not Ready (both legs UpToDate)"
+recycle_destroy "$pv_a"
+pv_b=$(recycle_pvc)
+[ "$pv_b" != "$pv_a" ] || die "recreate must be a distinct PV"
+[ "$(kubectl get miroirvolume "$pv_b" -o jsonpath='{.status.phase}')" = Ready ] \
+    || die "recreated volume $pv_b not Ready — split-brain on recreate?"
+recycle_destroy "$pv_b"
+ok "recreate under reused claim came up healthy ($pv_a -> $pv_b)"
+
 step "teardown leaves nothing behind"
 pv2=$(kubectl get pvc -n "$NS" smoke-restore -o jsonpath='{.spec.volumeName}')
 kubectl delete namespace "$NS" --wait=true --timeout=120s

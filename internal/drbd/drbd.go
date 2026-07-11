@@ -665,6 +665,57 @@ func isWinner(r Resource) bool {
 	return lowestNode == r.LocalNode
 }
 
+// ResolveSplitBrain clears a StandAlone split-brain by re-establishing the
+// connections around the seed winner: the winner (lowest diskful node id)
+// reconnects as the sync source; every other diskful leg reconnects
+// discarding its own generation, so it becomes SyncTarget and pulls from
+// the winner. A diskless tie-breaker only reconnects. The winner/loser
+// split matches seedGI's day0 election, so the two agents converge without
+// coordinating.
+//
+// SAFE ONLY for a volume that provably never held data: --discard-my-data
+// throws away the loser leg's generation. The caller MUST gate on that
+// (see VolumeReconciler.recoverSplitBrain) — miroir never auto-resolves
+// divergence on a volume that has ever been written.
+func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
+	if r.LocalDiskless || isWinner(r) {
+		// Survivor / tie-breaker: leave StandAlone so the connection can
+		// re-form and the losing leg can discard toward us. connect out of
+		// StandAlone is the documented survivor step (drbd.org §7.3.3).
+		if _, err := d.adm(ctx, "connect", r.Name); err != nil {
+			return fmt.Errorf("connect %s: %w", r.Name, err)
+		}
+		return nil
+	}
+	// Loser: discard our generation and full-sync from the winner.
+	// --discard-my-data is honored only on a connect out of StandAlone, so
+	// disconnect first.
+	if _, err := d.adm(ctx, "disconnect", r.Name); err != nil {
+		return fmt.Errorf("disconnect %s: %w", r.Name, err)
+	}
+	if _, err := d.adm(ctx, "connect", "--discard-my-data", r.Name); err != nil {
+		return fmt.Errorf("connect --discard-my-data %s: %w", r.Name, err)
+	}
+	return nil
+}
+
+// WipeMetadata destroys the DRBD metadata on a backing device so it can
+// never carry a stale generation identifier into a later reuse. The
+// resource must be down first (drbdmeta refuses an attached device).
+// Best-effort by contract: teardown's Backend.Delete destroys the whole
+// backing device anyway, so callers log a failure rather than block a
+// volume deletion on it.
+func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int32) error {
+	// drbdmeta wants the minor as its DEVICE handle — fed a name the shipped
+	// utils derive minor -1 and flake (see seedGI). The resource is down, so
+	// the minor probes as unconfigured and wipe-md proceeds.
+	if _, err := d.Exec(ctx, "drbdmeta", "--force", strconv.Itoa(int(minor)),
+		"v09", disk, "internal", "wipe-md"); err != nil {
+		return fmt.Errorf("wipe-md %s: %w", name, err)
+	}
+	return nil
+}
+
 // Down stops the resource and removes its rendered state. Idempotent.
 // drbdsetup, not drbdadm: drbdadm refuses to do anything while any two
 // .res files in the directory conflict, and teardown is how a conflict

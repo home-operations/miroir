@@ -1,0 +1,10 @@
+# 3-node kind cluster for the replicated (DRBD) e2e suite: two diskful legs
+# plus a node for the diskless tie-breaker that miroir-replicated's freeze
+# quorum auto-adds. e2e-provision-replicated seeds a loop-backed lvmthin pool
+# on each node.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

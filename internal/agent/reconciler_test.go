@@ -746,6 +746,72 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 	}
 }
 
+// Teardown of a diskful DRBD leg explicitly wipes the metadata before the
+// backend destroys the device, so the freed blocks can never carry a stale
+// generation identifier into a reuse (issue #139).
+func TestReconcileTeardownWipesMetadata(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, DRBDMinor: 1000},
+	}
+	stateDir := t.TempDir()
+	// A .res must exist or Down short-circuits as never-configured.
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{}
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, volPvc1)
+
+	fe.calledWith(t, "drbdmeta --force 1000 v09 /dev/fake/pvc-1 internal wipe-md")
+	if len(fb.created) != 0 {
+		t.Fatalf("device must be deleted after wipe: %+v", fb.created)
+	}
+}
+
+// A diskless tie-breaker has no backing device: teardown must not attempt a
+// metadata wipe against a device that never existed.
+func TestReconcileTeardownDisklessSkipsWipe(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {Diskless: true},
+	}
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{}
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	reconcile(t, r, volPvc1)
+
+	fe.notCalledWith(t, "wipe-md")
+}
+
 // Teardown behind a still-staged device: drbdsetup down answers "held
 // open"; the error must classify as ErrBusy so teardown takes the 10s
 // retry, not the workqueue's minutes-long backoff, and the finalizer
@@ -1637,4 +1703,69 @@ func TestReconcileFastPathDeepCheckExpiry(t *testing.T) {
 	if n := countCalls(fe, "adjust"); n <= adjusts {
 		t.Fatalf("expired fingerprint must force the full pipeline: %v", fe.calls)
 	}
+}
+
+// splitBrainSetup builds a 2-replica DRBD volume (kharkiv node id 0 = seed
+// winner, paris node id 1) whose kernel status reports a StandAlone
+// connection to peerNodeID, plus a reconciler running on nodeName. activated
+// latches Status.Activated (the auto-recovery gate).
+func splitBrainSetup(t *testing.T, nodeName, peerNodeID string, activated bool) (*VolumeReconciler, *fakeDRBDExec) {
+	t.Helper()
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
+	v.Status.Activated = activated
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":` + peerNodeID + `,"connection-state":"StandAlone"}]}]`}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeName, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	return r, fe
+}
+
+// A never-activated volume that comes up split-brain self-heals: the seed
+// winner (kharkiv, node id 0) reconnects as the sync source and never
+// discards data (issue #139).
+func TestReconcileSplitBrainWinnerReconnectsWhenNeverActivated(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeKharkiv, "1", false)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdadm connect pvc-1")
+	fe.notCalledWith(t, "discard-my-data")
+	fe.notCalledWith(t, "drbdadm disconnect")
+}
+
+// The losing leg (paris, node id 1) discards its own generation so it
+// full-syncs from the winner.
+func TestReconcileSplitBrainLoserDiscardsWhenNeverActivated(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeParis, "0", false)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdadm disconnect pvc-1")
+	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
+}
+
+// An activated volume may hold data: split-brain is never auto-resolved, it
+// is left for an operator.
+func TestReconcileSplitBrainNoAutoRecoveryWhenActivated(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeParis, "0", true)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "discard-my-data")
+	fe.notCalledWith(t, "drbdadm disconnect")
 }

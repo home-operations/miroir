@@ -960,6 +960,19 @@ func markFormatted(ctx context.Context, cl client.Client, vol *miroirv1alpha1.Mi
 	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
+// markActivated latches the Activated status flag once, the first time a
+// node stages the volume for a consumer. It gates split-brain auto-recovery
+// (see agent VolumeReconciler.recoverSplitBrain): a staged volume may hold
+// data, so its divergence is never auto-discarded.
+func markActivated(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume) error {
+	if vol.Status.Activated {
+		return nil
+	}
+	base := vol.DeepCopy()
+	vol.Status.Activated = true
+	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
+}
+
 func parseReplicas(params map[string]string) (int, error) {
 	raw, ok := params[constants.ParamReplicas]
 	if !ok {

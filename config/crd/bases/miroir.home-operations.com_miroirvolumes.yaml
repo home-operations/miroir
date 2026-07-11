@@ -189,6 +189,15 @@ spec:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.
             properties:
+              activated:
+                description: |-
+                  Activated is set the first time any node successfully stages the
+                  volume for a consumer (filesystem or raw block). It latches "this
+                  volume may hold data": split-brain auto-recovery, which discards one
+                  leg's generation, runs only while this is false — on an activated
+                  volume divergence is never auto-resolved. Broader than Formatted,
+                  which a raw-block volume never sets.
+                type: boolean
               conditions:
                 description: Conditions follow the standard Kubernetes condition conventions.
                 items:

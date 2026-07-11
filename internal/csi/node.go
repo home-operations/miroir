@@ -160,6 +160,14 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, err
 	}
 
+	// Latch that this volume is now handed to a consumer: devicePath passed
+	// (UpToDate, not split), and the filesystem write probe / block publish
+	// that follow may write. This closes split-brain auto-recovery, which
+	// only runs while the volume provably never held data.
+	if err := n.markActivated(ctx, vol); err != nil {
+		return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
+	}
+
 	if req.GetVolumeCapability().GetBlock() != nil {
 		// Nothing to mount for raw block, but the device node must exist —
 		// an LV present in metadata yet not activated would otherwise fail
@@ -257,6 +265,12 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 // already recorded.
 func (n *Node) markFormatted(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
 	return markFormatted(ctx, n.Client, vol)
+}
+
+// markActivated latches that the volume has been staged for a consumer at
+// least once. No-op when already recorded.
+func (n *Node) markActivated(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+	return markActivated(ctx, n.Client, vol)
 }
 
 // NodeExpandVolume grows the filesystem to the (already grown) device,
