@@ -1,0 +1,30 @@
+# Driver definition for the kind e2e: miroir-local (lvmthin, replicas:1),
+# where volumes are pinned to their node — hence singleNodeVolume: true.
+StorageClass:
+  FromExistingClassName: miroir-local
+SnapshotClass:
+  FromExistingClassName: miroir-snap
+DriverInfo:
+  Name: miroir.home-operations.com
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 10Gi
+  SupportedFsType:
+    ext4: {}
+  Capabilities:
+    persistence: true
+    block: true
+    exec: true
+    fsGroup: true
+    multipods: true
+    controllerExpansion: true
+    nodeExpansion: true
+    onlineExpansion: true
+    offlineExpansion: true
+    snapshotDataSource: true
+    pvcDataSource: false
+    topology: true
+    singleNodeVolume: true
+    RWX: false
+    readWriteOncePod: true
+    capacity: false

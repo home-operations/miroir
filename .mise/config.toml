@@ -127,7 +127,7 @@ snap_ver="v8.6.0"
 # Back the lvmthin VG with a loop device on a sparse file in the node; the
 # agent's Setup() builds the PV/VG/thin-pool on it.
 echo "==> seeding loop-backed block device on $node"
-docker exec "$node" sh -c '
+docker exec -e DISK_SIZE="${MIROIR_E2E_DISK_SIZE:-10G}" "$node" sh -c '
   set -e
   modprobe dm_thin_pool 2>/dev/null || true
   modprobe loop 2>/dev/null || true
@@ -136,7 +136,7 @@ docker exec "$node" sh -c '
   # kind nodes run no udev and ship no /run/lvm; the agent hostPath-mounts both.
   mkdir -p /run/udev /run/lvm
   mkdir -p /var/lib/miroir-e2e
-  [ -f /var/lib/miroir-e2e/disk.img ] || truncate -s 10G /var/lib/miroir-e2e/disk.img
+  [ -f /var/lib/miroir-e2e/disk.img ] || truncate -s "$DISK_SIZE" /var/lib/miroir-e2e/disk.img
   losetup -j /var/lib/miroir-e2e/disk.img | grep -q . || losetup -f /var/lib/miroir-e2e/disk.img
 '
 device="$(docker exec "$node" losetup -j /var/lib/miroir-e2e/disk.img -O NAME -n | tr -d ' ')"
@@ -165,6 +165,11 @@ helm upgrade --install miroir charts/miroir \
 description = "Run the Go e2e specs against the provisioned kind cluster"
 env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
 run = "go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 20m"
+
+[tasks.e2e-conformance]
+description = "Run the upstream external-storage conformance suite against the provisioned kind cluster"
+env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
+run = "TESTDRIVER=testdriver-local.yaml ./test/conformance/run.sh"
 
 [tasks.e2e-diagnostics]
 description = "Dump kind cluster state for debugging a failed e2e"

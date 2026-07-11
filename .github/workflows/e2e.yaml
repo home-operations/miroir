@@ -24,9 +24,25 @@ permissions:
 
 jobs:
   e2e:
-    name: E2E (kind, local backend)
+    name: E2E (${{ matrix.suite }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Go e2e specs (lifecycle, placement, block) on miroir-local.
+          - suite: local
+            task: e2e-run
+            timeout: 20
+            disk: 10G
+          # Upstream Kubernetes external-storage suite on miroir-local.
+          # Bigger backing device: parallel specs provision many volumes
+          # and the controller's overcommit guard counts virtual size.
+          - suite: conformance
+            task: e2e-conformance
+            timeout: 45
+            disk: 40G
     permissions:
       contents: read
     steps:
@@ -69,7 +85,8 @@ jobs:
       # Both builds run concurrently against the same BuildKit daemon, which
       # dedupes the shared Go builder stage in flight — the agent's Debian
       # layer pull overlaps the compile. Distinct cache scopes: concurrent
-      # cache-to writes to one scope evict each other.
+      # cache-to writes to one scope evict each other, so only the local
+      # leg writes back; the conformance leg reads the same scopes.
       - name: Build controller image
         id: controller-image
         background: true
@@ -81,7 +98,7 @@ jobs:
           tags: miroir-controller:e2e
           build-args: GO_VERSION=${{ steps.tools.outputs.go }}
           cache-from: type=gha,scope=e2e-controller
-          cache-to: type=gha,mode=max,scope=e2e-controller
+          cache-to: ${{ matrix.suite == 'local' && 'type=gha,mode=max,scope=e2e-controller' || '' }}
 
       - name: Build agent image
         id: agent-image
@@ -94,7 +111,7 @@ jobs:
           tags: miroir-agent:e2e
           build-args: GO_VERSION=${{ steps.tools.outputs.go }}
           cache-from: type=gha,scope=e2e-agent
-          cache-to: type=gha,mode=max,scope=e2e-agent
+          cache-to: ${{ matrix.suite == 'local' && 'type=gha,mode=max,scope=e2e-agent' || '' }}
 
       - wait: [kind, controller-image, agent-image]
 
@@ -105,9 +122,20 @@ jobs:
 
       - name: Provision (loop device, snapshot stack, helm install)
         run: mise run e2e-provision
+        env:
+          MIROIR_E2E_DISK_SIZE: ${{ matrix.disk }}
 
-      - name: Run e2e specs (miroir-local / lvmthin / replicas:1)
-        run: mise run e2e-run
+      - name: Cache conformance test binaries
+        if: matrix.suite == 'conformance'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test/conformance/.bin
+          key: conformance-bin-${{ hashFiles('.mise/config.toml') }}
+
+      - name: Run ${{ matrix.suite }} suite
+        run: mise run "$TASK"
+        env:
+          TASK: ${{ matrix.task }}
 
       - name: Diagnostics
         if: failure()

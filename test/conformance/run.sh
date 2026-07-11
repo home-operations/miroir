@@ -5,6 +5,7 @@
 #   ./test/conformance/run.sh                 # parallel-safe set
 #   SKIP='\[Disruptive\]' ./run.sh PROCS=1    # include [Serial] specs
 #   FOCUS='.*snapshot.*' ./run.sh             # narrow down
+#   TESTDRIVER=testdriver-local.yaml ./run.sh # kind / miroir-local
 #
 # The e2e.test/ginkgo binaries are fetched to match the server version
 # and cached under .bin/.
@@ -22,6 +23,7 @@ if [ ! -x "$bin/e2e.test" ]; then
 fi
 
 KUBECONFIG=${KUBECONFIG:-$HOME/.kube/config}
+TESTDRIVER=${TESTDRIVER:-testdriver.yaml}
 FOCUS=${FOCUS:-'miroir.home-operations.com'}
 # Disruptive specs restart kubelet; Serial ones assume exclusive use of
 # the cluster; the volumeMode host check nsenters the node and runs sh,
@@ -33,6 +35,6 @@ mkdir -p report
 exec "$bin/ginkgo" -procs="$PROCS" \
     -focus="$FOCUS" -skip="$SKIP" -timeout=3h \
     "$bin/e2e.test" -- \
-    -storage.testdriver="$PWD/testdriver.yaml" \
+    -storage.testdriver="$PWD/$TESTDRIVER" \
     -kubeconfig="$KUBECONFIG" \
     -report-dir="$PWD/report"
