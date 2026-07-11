@@ -165,6 +165,111 @@ tests:
               - "--timeout=77s"
               - "--leader-election=false"
 
+  - it: renders no PodDisruptionBudget and no leader election by default
+    asserts:
+      - hasDocuments:
+          count: 1
+      - documentIndex: 0
+        notContains:
+          path: spec.template.spec.containers[0].args
+          content: "--leader-elect=true"
+
+  - it: replicaCount above 1 auto-enables leader election and RollingUpdate
+    set:
+      replicaCount: 3
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 3
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--leader-elect=true"
+      # release-scoped Lease name so two releases in one namespace never collide
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--leader-election-id=miroir-controller"
+      - contains:
+          path: spec.template.spec.containers[1].args
+          content: "--leader-election=true"
+      - contains:
+          path: spec.template.spec.containers[2].args
+          content: "--leader-election=true"
+      - contains:
+          path: spec.template.spec.containers[3].args
+          content: "--leader-election=true"
+
+  - it: leaderElection.enabled=false cannot switch election off above one replica
+    set:
+      replicaCount: 2
+      leaderElection:
+        enabled: false
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--leader-elect=true"
+      - contains:
+          path: spec.template.spec.containers[1].args
+          content: "--leader-election=true"
+
+  - it: leaderElection.enabled forces election at a single replica, without a PDB
+    set:
+      leaderElection:
+        enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - documentIndex: 0
+        equal:
+          path: spec.replicas
+          value: 1
+      - documentIndex: 0
+        equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - documentIndex: 0
+        contains:
+          path: spec.template.spec.containers[0].args
+          content: "--leader-elect=true"
+
+  - it: leaderElection.id overrides the Lease name
+    set:
+      replicaCount: 2
+      leaderElection:
+        id: my-lease
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: "--leader-election-id=my-lease"
+
+  - it: replicaCount above 1 adds a PodDisruptionBudget covering the controller
+    set:
+      replicaCount: 2
+    asserts:
+      - hasDocuments:
+          count: 2
+      - documentIndex: 1
+        equal:
+          path: kind
+          value: PodDisruptionBudget
+      - documentIndex: 1
+        equal:
+          path: metadata.name
+          value: miroir-controller
+      - documentIndex: 1
+        equal:
+          path: spec.maxUnavailable
+          value: 1
+      - documentIndex: 1
+        equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/component"]
+          value: controller
+
   - it: the controller pod is cluster-critical by default
     documentIndex: 0
     asserts:

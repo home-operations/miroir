@@ -7,9 +7,13 @@ metadata:
     {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   strategy:
+  {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
+    type: RollingUpdate # leader election arbitrates the rollout overlap
+  {{- else }}
     type: Recreate # one writer for allocations; no leader election
+  {{- end }}
   selector:
     matchLabels:
       {{- include "miroir.selectorLabels" . | nindent 6 }}
@@ -57,6 +61,10 @@ spec:
             - --provision-timeout={{ .Values.provisionTimeout }}
             - --overcommit-ratio={{ .Values.overcommitRatio }}
             - --auto-tie-breaker={{ .Values.autoTieBreaker }}
+            {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
+            - --leader-elect=true
+            - --leader-election-id={{ include "miroir.leaderElectionID" . }}
+            {{- end }}
             - --zap-log-level={{ .Values.logging.level }}
             - --zap-encoder={{ .Values.logging.format }}
             {{- with .Values.extraArgs }}
@@ -91,7 +99,7 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --timeout={{ .Values.sidecars.provisioner.timeout }}
-            - --leader-election=false
+            - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
             - --default-fstype=ext4
           resources:
             requests: { cpu: 10m, memory: 32Mi }
@@ -104,7 +112,7 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --timeout={{ .Values.sidecars.snapshotter.timeout }}
-            - --leader-election=false
+            - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 128Mi }
@@ -116,7 +124,7 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --timeout={{ .Values.sidecars.resizer.timeout }}
-            - --leader-election=false
+            - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 128Mi }
@@ -129,3 +137,22 @@ spec:
         - name: nodes
           configMap:
             name: {{ include "miroir.nodesConfigName" . }}
+{{- if gt (int .Values.replicaCount) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "miroir.controllerName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  # Drains take controllers one at a time, so the warm standby picks up the
+  # Lease instead of provisioning stalling on a full pod reschedule.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "miroir.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+{{- end }}

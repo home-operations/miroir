@@ -76,6 +76,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
+  # leader election (replicaCount > 1 or leaderElection.enabled): the
+  # controller manager and each CSI sidecar hold their own
+  # coordination.k8s.io Lease
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

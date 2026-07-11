@@ -125,6 +125,28 @@ Resource names. All derive from fullname so nameOverride / fullnameOverride flow
 {{- end -}}
 
 {{/*
+Effective leader-election state ("true"/"false"). Forced on whenever
+replicaCount > 1 — two active controllers racing port/minor allocation is
+the footgun this derivation exists to prevent — and leaderElection.enabled
+can only add election at one replica, never remove it above.
+*/}}
+{{- define "miroir.leaderElectionEnabled" -}}
+{{- if or (gt (int .Values.replicaCount) 1) .Values.leaderElection.enabled -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end -}}
+
+{{/*
+Leader-election Lease name; the release-scoped default keeps two releases
+in one namespace off the same Lease.
+*/}}
+{{- define "miroir.leaderElectionID" -}}
+{{- .Values.leaderElection.id | default (include "miroir.controllerName" .) -}}
+{{- end -}}
+
+{{/*
 CSI driver name — also the StorageClass provisioner and VolumeSnapshotClass driver.
 Always pinned to .Chart.Name so a nameOverride can't break volume provisioning.
 */}}

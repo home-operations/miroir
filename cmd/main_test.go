@@ -27,9 +27,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
+
+func TestCSIServerRunsOnEveryReplica(t *testing.T) {
+	// Under leader election (#132) the CSI server must not wait for the
+	// Lease: each pod's sidecars reach the driver over the pod-local
+	// socket, so a standby whose gRPC server never comes up would strand
+	// its sidecars the moment one of them wins its own lease.
+	var r manager.LeaderElectionRunnable = csiRunnable{}
+	if r.NeedLeaderElection() {
+		t.Fatal("csiRunnable must opt out of leader election")
+	}
+}
 
 func TestTransientAPIError(t *testing.T) {
 	cases := []struct {
