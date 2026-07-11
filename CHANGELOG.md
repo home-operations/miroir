@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/home-operations/miroir/compare/0.4.3...0.4.4) (2026-07-11)
+
+
+### Features
+
+* **controller:** optional leader election for HA replicas ([#133](https://github.com/home-operations/miroir/issues/133)) ([7d398c3](https://github.com/home-operations/miroir/commit/7d398c37903e6fce4d1382b9806b2b5d8645ebed))
+
 ## [0.4.3](https://github.com/home-operations/miroir/compare/0.4.2...0.4.3) (2026-07-10)
 
 
