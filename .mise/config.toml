@@ -222,11 +222,14 @@ kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//deploy
 kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 
 echo "==> helm install miroir (replicated)"
+# deploy/e2e/values.yaml omits the replicated class (the local suite has no
+# DRBD); enable it here so miroir-replicated exists for this suite.
 # shellcheck disable=SC2086
 helm upgrade --install miroir charts/miroir \
   --namespace miroir-system --create-namespace \
   --wait --timeout 5m \
   -f deploy/e2e/values.yaml \
+  --set replicatedStorageClass.create=true \
   $set_args
 '''
 
