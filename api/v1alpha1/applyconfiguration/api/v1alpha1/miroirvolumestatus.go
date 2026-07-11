@@ -37,6 +37,13 @@ type MiroirVolumeStatusApplyConfiguration struct {
 	// restore. A blank device on a formatted volume is data loss: the
 	// node refuses to mkfs again rather than silently wipe it.
 	Formatted *bool `json:"formatted,omitempty"`
+	// Activated is set the first time any node successfully stages the
+	// volume for a consumer (filesystem or raw block). It latches "this
+	// volume may hold data": split-brain auto-recovery, which discards one
+	// leg's generation, runs only while this is false — on an activated
+	// volume divergence is never auto-resolved. Broader than Formatted,
+	// which a raw-block volume never sets.
+	Activated *bool `json:"activated,omitempty"`
 	// Conditions follow the standard Kubernetes condition conventions.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
@@ -74,6 +81,14 @@ func (b *MiroirVolumeStatusApplyConfiguration) WithPerNode(entries map[string]Re
 // If called multiple times, the Formatted field is set to the value of the last call.
 func (b *MiroirVolumeStatusApplyConfiguration) WithFormatted(value bool) *MiroirVolumeStatusApplyConfiguration {
 	b.Formatted = &value
+	return b
+}
+
+// WithActivated sets the Activated field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Activated field is set to the value of the last call.
+func (b *MiroirVolumeStatusApplyConfiguration) WithActivated(value bool) *MiroirVolumeStatusApplyConfiguration {
+	b.Activated = &value
 	return b
 }
 

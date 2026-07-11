@@ -141,6 +141,51 @@ func TestDay0GIDeterministicAndEven(t *testing.T) {
 
 func fakeMknod(string, uint32, int) error { return nil }
 
+func TestResolveSplitBrainWinnerReconnects(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	// kharkiv is node id 0 — the seed winner and the survivor.
+	if err := d.ResolveSplitBrain(context.Background(), testResource(nodeKharkiv)); err != nil {
+		t.Fatalf("ResolveSplitBrain: %v", err)
+	}
+	fe.calledWith(t, "drbdadm connect pvc-1")
+	fe.notCalledWith(t, "discard-my-data")
+	fe.notCalledWith(t, "disconnect")
+}
+
+func TestResolveSplitBrainLoserDiscards(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	// paris is node id 1 — the loser: it must disconnect then reconnect
+	// discarding its own generation so it becomes SyncTarget.
+	if err := d.ResolveSplitBrain(context.Background(), testResource(nodeParis)); err != nil {
+		t.Fatalf("ResolveSplitBrain: %v", err)
+	}
+	fe.calledWith(t, "drbdadm disconnect pvc-1")
+	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
+}
+
+func TestResolveSplitBrainDisklessReconnects(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	r := testResource(nodeParis)
+	r.LocalDiskless = true // a tie-breaker never discards data
+	if err := d.ResolveSplitBrain(context.Background(), r); err != nil {
+		t.Fatalf("ResolveSplitBrain: %v", err)
+	}
+	fe.calledWith(t, "drbdadm connect pvc-1")
+	fe.notCalledWith(t, "discard-my-data")
+}
+
+func TestWipeMetadata(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := d.WipeMetadata(context.Background(), volPvc1, "/dev/vg-miroir/pvc-1", 1000); err != nil {
+		t.Fatalf("WipeMetadata: %v", err)
+	}
+	fe.calledWith(t, "drbdmeta --force 1000 v09 /dev/vg-miroir/pvc-1 internal wipe-md")
+}
+
 type fakeExec struct {
 	calls     []string
 	responses map[string]string

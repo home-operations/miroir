@@ -190,6 +190,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirVolumeStatus
   map:
     fields:
+    - name: activated
+      type:
+        scalar: boolean
     - name: conditions
       type:
         list:

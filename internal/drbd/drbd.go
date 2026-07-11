@@ -665,6 +665,49 @@ func isWinner(r Resource) bool {
 	return lowestNode == r.LocalNode
 }
 
+// ResolveSplitBrain runs DRBD's documented split-brain recovery around the
+// seed winner: the winner (lowest diskful node id, matching seedGI) leaves
+// StandAlone as the survivor; every other diskful leg disconnects and
+// reconnects with --discard-my-data, becoming SyncTarget. A diskless
+// tie-breaker only reconnects. Because the winner is derived the same way on
+// every node, the agents converge without coordinating.
+//
+// --discard-my-data drops the loser leg's generation, so this is only valid
+// on a volume that never held data; the caller gates on that (see
+// VolumeReconciler.recoverSplitBrain).
+func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
+	if r.LocalDiskless || isWinner(r) {
+		if _, err := d.adm(ctx, "connect", r.Name); err != nil {
+			return fmt.Errorf("connect %s: %w", r.Name, err)
+		}
+		return nil
+	}
+	// --discard-my-data is honored only on a connect out of StandAlone, so
+	// disconnect first.
+	if _, err := d.adm(ctx, "disconnect", r.Name); err != nil {
+		return fmt.Errorf("disconnect %s: %w", r.Name, err)
+	}
+	if _, err := d.adm(ctx, "connect", "--discard-my-data", r.Name); err != nil {
+		return fmt.Errorf("connect --discard-my-data %s: %w", r.Name, err)
+	}
+	return nil
+}
+
+// WipeMetadata destroys the DRBD metadata on a backing device so it cannot
+// carry a stale generation identifier into a reuse. The resource must be
+// down first — drbdmeta refuses an attached device. Callers treat it as
+// best-effort: teardown's Backend.Delete destroys the whole device anyway.
+func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int32) error {
+	// drbdmeta wants the minor as its DEVICE handle — fed a name the shipped
+	// utils derive minor -1 and flake (see seedGI). The resource is down, so
+	// the minor probes as unconfigured and wipe-md proceeds.
+	if _, err := d.Exec(ctx, "drbdmeta", "--force", strconv.Itoa(int(minor)),
+		"v09", disk, "internal", "wipe-md"); err != nil {
+		return fmt.Errorf("wipe-md %s: %w", name, err)
+	}
+	return nil
+}
+
 // Down stops the resource and removes its rendered state. Idempotent.
 // drbdsetup, not drbdadm: drbdadm refuses to do anything while any two
 // .res files in the directory conflict, and teardown is how a conflict

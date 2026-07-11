@@ -210,7 +210,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				"volume", vol.Name, "error", err)
 		}
 	}
-	if err := r.DRBD.Apply(ctx, drbdResource(vol, r.NodeName, dev, minor, localDiskless, forceFullSync, discardGranularity)); err != nil {
+	resource := drbdResource(vol, r.NodeName, dev, minor, localDiskless, forceFullSync, discardGranularity)
+	if err := r.DRBD.Apply(ctx, resource); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	// Online growth: once every peer's backing device is at the new size
@@ -227,10 +228,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	if st.SplitBrain && !vol.Status.PerNode[r.NodeName].SplitBrain {
-		log.Error(errSplitBrain,
-			"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
-			"volume", vol.Name)
+	if st.SplitBrain {
+		r.recoverSplitBrain(ctx, vol, resource)
 	}
 	connected := diskfulPeersConnected(st, vol, r.NodeName)
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
@@ -263,8 +262,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 	// Cache only the settled state: a mid-grow pass (short requeue, size
-	// withheld) must keep taking the full pipeline until the grow lands.
-	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes {
+	// withheld) must keep taking the full pipeline until the grow lands, and
+	// a split-brain volume must re-enter it every poll so recoverSplitBrain
+	// keeps retrying until the connections re-form.
+	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !st.SplitBrain {
 		r.storeRealized(vol.Generation, vol.Name, st, true)
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
@@ -492,6 +493,29 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 	}
 }
 
+// recoverSplitBrain reacts to a StandAlone split-brain. A volume that was
+// never activated holds no data, so it applies ResolveSplitBrain to self-heal
+// (issue #139: a fresh replicated volume that comes up split-brain otherwise
+// loops forever and blocks its consumer). An activated volume may hold data:
+// it logs the manual remedy on the transition edge and is left for an
+// operator. Failures are retried next poll — the split state is never
+// fast-path cached.
+func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource) {
+	log := ctrl.LoggerFrom(ctx)
+	if vol.Status.Activated {
+		if !vol.Status.PerNode[r.NodeName].SplitBrain {
+			log.Error(errSplitBrain,
+				"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
+				"volume", vol.Name)
+		}
+		return
+	}
+	log.Info("auto-recovering split-brain on never-activated volume", "volume", vol.Name)
+	if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
+		log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)
+	}
+}
+
 // reconcileRemoval tears down a replica that was removed from
 // spec.replicas while the volume lives on. It only proceeds when losing
 // this leg cannot lose data: every remaining replica must be UpToDate and
@@ -582,6 +606,17 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			// ErrBusy so teardown takes the 10s retry, not the workqueue's
 			// minutes-long backoff (NodeUnstage releases it shortly).
 			return backend.Busy(err)
+		}
+		// With the resource down, wipe the DRBD metadata before Backend.Delete
+		// removes the device, so freed blocks cannot carry a stale generation
+		// identifier into a reuse (issue #139). Best-effort: Backend.Delete
+		// destroys the whole device anyway, so a wipe failure must not block
+		// the deletion.
+		if slot := vol.Status.PerNode[r.NodeName]; slot.DeviceCreated && !slot.Diskless {
+			if err := r.DRBD.WipeMetadata(ctx, vol.Name, r.Backend.DevicePath(vol.Name), slot.DRBDMinor); err != nil {
+				ctrl.LoggerFrom(ctx).V(1).Info("wipe-md failed during teardown; backing delete will destroy metadata",
+					"volume", vol.Name, "error", err)
+			}
 		}
 	}
 	// Backend.Delete succeeds when the device is already absent, so a

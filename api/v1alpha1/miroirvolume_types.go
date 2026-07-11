@@ -210,6 +210,14 @@ type MiroirVolumeStatus struct {
 	// node refuses to mkfs again rather than silently wipe it.
 	// +optional
 	Formatted bool `json:"formatted,omitempty"`
+	// Activated is set the first time any node successfully stages the
+	// volume for a consumer (filesystem or raw block). It latches "this
+	// volume may hold data": split-brain auto-recovery, which discards one
+	// leg's generation, runs only while this is false — on an activated
+	// volume divergence is never auto-resolved. Broader than Formatted,
+	// which a raw-block volume never sets.
+	// +optional
+	Activated bool `json:"activated,omitempty"`
 	// Conditions follow the standard Kubernetes condition conventions.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
