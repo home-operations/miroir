@@ -160,20 +160,18 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, err
 	}
 
-	// devicePath passed (UpToDate, not split) and the volume is about to be
-	// written (fs write probe or block publish). Latch it activated, which
-	// closes split-brain auto-recovery — that only runs on a volume that
-	// never held data.
-	if err := n.markActivated(ctx, vol); err != nil {
-		return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
-	}
-
 	if req.GetVolumeCapability().GetBlock() != nil {
 		// Nothing to mount for raw block, but the device node must exist —
 		// an LV present in metadata yet not activated would otherwise fail
 		// later at publish with a confusing ENOENT.
 		if _, err := os.Stat(dev); err != nil {
 			return nil, status.Errorf(codes.Unavailable, "block device %s not ready: %v", dev, err)
+		}
+		// Stage succeeded: publish will hand the device to a consumer that may
+		// write. Latch activated so split-brain auto-recovery, which discards a
+		// leg, no longer touches this volume.
+		if err := n.markActivated(ctx, vol); err != nil {
+			return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
 		}
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
@@ -257,6 +255,14 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		if _, err := resizer.Resize(dev, req.GetStagingTargetPath()); err != nil {
 			return nil, status.Errorf(codes.Internal, "grow filesystem on %s: %v", dev, err)
 		}
+	}
+	// Stage fully succeeded (mkfs + mount + grow): the volume now carries a
+	// filesystem and a consumer may write. Latch activated only here, never on
+	// a stage that failed the write probe or mkfs — a volume that never
+	// completed staging holds no data and must stay eligible for split-brain
+	// auto-recovery.
+	if err := n.markActivated(ctx, vol); err != nil {
+		return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
 }

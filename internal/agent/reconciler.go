@@ -493,16 +493,18 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 	}
 }
 
-// recoverSplitBrain reacts to a StandAlone split-brain. A volume that was
-// never activated holds no data, so it applies ResolveSplitBrain to self-heal
-// (issue #139: a fresh replicated volume that comes up split-brain otherwise
-// loops forever and blocks its consumer). An activated volume may hold data:
-// it logs the manual remedy on the transition edge and is left for an
-// operator. Failures are retried next poll — the split state is never
-// fast-path cached.
+// recoverSplitBrain reacts to a StandAlone split-brain. A volume that never
+// held data holds nothing to lose, so it applies ResolveSplitBrain to
+// self-heal (issue #139: a fresh replicated volume that comes up split-brain
+// otherwise loops forever and blocks its consumer). "Held data" is either
+// Activated (staged for a consumer) or Formatted (carries a filesystem) —
+// Formatted latches before the grow-to-fill step, so a formatted volume whose
+// stage failed at resize is still covered. Such a volume logs the manual
+// remedy on the transition edge and is left for an operator. Failures are
+// retried next poll — the split state is never fast-path cached.
 func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource) {
 	log := ctrl.LoggerFrom(ctx)
-	if vol.Status.Activated {
+	if vol.Status.Activated || vol.Status.Formatted {
 		if !vol.Status.PerNode[r.NodeName].SplitBrain {
 			log.Error(errSplitBrain,
 				"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
@@ -510,7 +512,7 @@ func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1a
 		}
 		return
 	}
-	log.Info("auto-recovering split-brain on never-activated volume", "volume", vol.Name)
+	log.Info("auto-recovering split-brain on never-written volume", "volume", vol.Name)
 	if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
 		log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)
 	}
