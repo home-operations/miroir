@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.5](https://github.com/home-operations/miroir/compare/0.4.4...0.4.5) (2026-07-11)
+
+
+### Bug Fixes
+
+* auto-recover split-brain on fresh replicated volumes ([e0a8cad](https://github.com/home-operations/miroir/commit/e0a8cad052bb40681b441502a0821fbafe76d116))
+
+
+### Documentation
+
+* **readme:** add loopfile node to quickstart topology example ([#137](https://github.com/home-operations/miroir/issues/137)) ([29fd1b8](https://github.com/home-operations/miroir/commit/29fd1b8c9e7a0d651fcff285ca6187b613cfc87f))
+
 ## [0.4.4](https://github.com/home-operations/miroir/compare/0.4.3...0.4.4) (2026-07-11)
 
 
