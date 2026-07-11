@@ -171,14 +171,6 @@ description = "Run the upstream external-storage conformance suite against the p
 env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
 run = "TESTDRIVER=testdriver-local.yaml ./test/conformance/run.sh"
 
-# The replicated spec needs a real multi-node DRBD cluster: kind nodes share
-# one host kernel module and each sits in its own network namespace, so DRBD9
-# connections fail ("connection assigned to a different network namespace").
-# Point KUBECONFIG at a real cluster (same as test/smoke/smoke.sh).
-[tasks.e2e-run-replicated]
-description = "Run the replicated (DRBD) Go e2e spec against a real DRBD cluster (KUBECONFIG)"
-run = 'go test -tags "e2e,replicated" ./test/e2e/ -v -ginkgo.v -ginkgo.focus="miroir-replicated volume health" -timeout 30m'
-
 [tasks.e2e-diagnostics]
 description = "Dump kind cluster state for debugging a failed e2e"
 env = { KUBECONFIG = "{{config_root}}/bin/e2e/kubeconfig" }
