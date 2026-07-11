@@ -60,6 +60,8 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+const modeController = "controller"
+
 // Populated via -ldflags at build time.
 var (
 	version = "dev"
@@ -124,6 +126,9 @@ func main() {
 		provisionTimeout time.Duration
 		overcommitRatio  float64
 		autoTieBreaker   bool
+		leaderElect      bool
+		leaderElectionID string
+		leaderElectionNS string
 
 		// agent mode
 		nodeName          string
@@ -146,6 +151,12 @@ func main() {
 		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
 	flag.BoolVar(&autoTieBreaker, "auto-tie-breaker", true,
 		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
+	flag.BoolVar(&leaderElect, "leader-elect", false,
+		"elect a leader via a coordination.k8s.io Lease so extra replicas stand by warm (controller)")
+	flag.StringVar(&leaderElectionID, "leader-election-id", "miroir-controller",
+		"leader-election Lease name; keep it stable across upgrades (controller)")
+	flag.StringVar(&leaderElectionNS, "leader-election-namespace", "",
+		"leader-election Lease namespace; empty auto-detects the pod's namespace in-cluster (controller)")
 	flag.IntVar(&volumeWorkers, "volume-workers", 4,
 		"concurrent volume reconciles per agent (agent)")
 	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
@@ -196,8 +207,20 @@ func main() {
 		// exposes a single operational port — the agent runs hostNetwork,
 		// so every listener occupies a real node port.
 		HealthProbeBindAddress: "0",
-		// No leader election: the controller is a 1-replica Deployment and
-		// agents are per-node singletons (notes/DESIGN.md §4.2).
+		// Leader election is the opt-in controller HA mode (#132): extra
+		// replicas stand by warm and only the reconcilers wait on the
+		// Lease — the cache, metrics server, and CSI socket run on every
+		// replica because each pod's CSI sidecars elect independently and
+		// reach the driver over the pod-local socket. Gated on controller
+		// mode: agents are per-node singletons, and a shared Lease would
+		// serialize the whole DaemonSet down to one working node.
+		LeaderElection:          mode == modeController && leaderElect,
+		LeaderElectionID:        leaderElectionID,
+		LeaderElectionNamespace: leaderElectionNS,
+		// Safe because nothing runs after mgr.Start returns in controller
+		// mode (the shutdown sweep is agent-only), so the released Lease
+		// can't be beaten to by a still-writing old leader.
+		LeaderElectionReleaseOnCancel: true,
 		Controller: config.Controller{
 			// The priority queue (default-on since controller-runtime
 			// v0.22) enqueues initial-list events at low priority, and a
@@ -224,7 +247,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	identity := &csi.Identity{Version: version, WithController: mode == "controller"}
+	identity := &csi.Identity{Version: version, WithController: mode == modeController}
 
 	// Agent mode only, run after the manager stops (SIGTERM): release DRBD
 	// backings when the node is going down and lift any leftover write
@@ -232,7 +255,7 @@ func main() {
 	var shutdownSweep func()
 
 	switch mode {
-	case "controller":
+	case modeController:
 		nodes, err := nodemap.Load(nodesConfig)
 		if err != nil {
 			setupLog.Error(err, "unable to load node map")
@@ -528,10 +551,20 @@ func resumeStaleBarriers(driver *drbd.Driver, apiBudget time.Duration) error {
 	return nil
 }
 
+// csiRunnable marks the CSI server as running on every replica rather than
+// only the elected leader: each pod's sidecars hold their own Leases and
+// reach the driver over the pod-local socket, so a standby's gRPC server
+// must be up for its sidecars to probe (and to act the moment one of them
+// wins its lease). Without this, mgr.Add defaults a plain Runnable into the
+// leader-election group.
+type csiRunnable struct{ manager.Runnable }
+
+func (csiRunnable) NeedLeaderElection() bool { return false }
+
 // serveCSI runs the CSI gRPC server alongside the manager; controller and
 // node are mutually exclusive (one per mode).
 func serveCSI(mgr ctrl.Manager, socket string, identity *csi.Identity, controller *csi.Controller, node *csi.Node) {
-	err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+	err := mgr.Add(csiRunnable{manager.RunnableFunc(func(ctx context.Context) error {
 		// CSI RPCs read CRs through the manager's cache; wait for sync so
 		// early kubelet/sidecar calls don't race a cold cache.
 		if !mgr.GetCache().WaitForCacheSync(ctx) {
@@ -541,7 +574,7 @@ func serveCSI(mgr ctrl.Manager, socket string, identity *csi.Identity, controlle
 			return csi.Serve(ctx, socket, identity, controller, nil)
 		}
 		return csi.Serve(ctx, socket, identity, nil, node)
-	}))
+	})})
 	if err != nil {
 		setupLog.Error(err, "unable to add CSI server to manager")
 		os.Exit(1)

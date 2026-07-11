@@ -69,6 +69,8 @@ Kubernetes: `>=1.31.0`
 | global.nodeSelector | object | `{}` | Controller scheduling defaults. |
 | global.tolerations | list | `[]` |  |
 | image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/home-operations/miroir-controller","tag":""}` | Controller image (distroless, no storage userland — the controller never execs a storage CLI). |
+| leaderElection.enabled | bool | `false` | Elect even with a single replica (replicaCount > 1 elects regardless; this can never switch election off above one replica). |
+| leaderElection.id | string | `""` | Lease name; empty derives the release-scoped controller name so two releases in one namespace never share a Lease. Keep it stable across upgrades. |
 | logging.format | string | `"json"` | Encoder: json (structured, default) or console (human-readable). |
 | logging.level | string | `"info"` | Log level: debug | info | error (or any zapcore level). |
 | monitoring.dashboards.annotations | object | `{}` | Annotations added to the dashboard ConfigMap. |
@@ -101,6 +103,7 @@ Kubernetes: `>=1.31.0`
 | podLabels | object | `{}` | Extra labels on the controller pod. |
 | priorityClassName | string | `"system-cluster-critical"` | system-cluster-critical protects the single controller from eviction under node pressure — while it is down, no volume can be provisioned, expanded, or snapshotted. |
 | provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
+| replicaCount | int | `1` | Controller replicas. Anything above 1 automatically enables leader election: the extras are warm standbys (failover is lease expiry, ~15s, instead of a full pod reschedule), the rollout strategy switches to RollingUpdate, and a PodDisruptionBudget keeps one replica through voluntary disruptions. Pointless on a single-node cluster (the node is the failure domain); pair with global.affinity (pod anti-affinity) so replicas land on different nodes. |
 | replicatedStorageClass.create | bool | `true` |  |
 | replicatedStorageClass.fsType | string | `"ext4"` |  |
 | replicatedStorageClass.isDefault | bool | `false` |  |

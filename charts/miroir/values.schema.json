@@ -308,6 +308,26 @@
       "title": "image",
       "type": "object"
     },
+    "leaderElection": {
+      "description": "Leader election turns on by itself when replicaCount \u003e 1 — the\ncontroller and each CSI sidecar then elect through coordination.k8s.io\nLeases — so this key only customises it.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Elect even with a single replica (replicaCount \u003e 1 elects regardless;\nthis can never switch election off above one replica).",
+          "title": "enabled",
+          "type": "boolean"
+        },
+        "id": {
+          "default": "",
+          "description": "Lease name; empty derives the release-scoped controller name so two\nreleases in one namespace never share a Lease. Keep it stable across\nupgrades.",
+          "title": "id",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "title": "leaderElection",
+      "type": "object"
+    },
     "logging": {
       "description": "Both processes bind the controller-runtime zap flags.",
       "properties": {
@@ -549,6 +569,12 @@
       "description": "Wait for agents to realise a new volume. Keep sidecars.*.timeout at or\nabove this, or the sidecar RPC deadline fires before this one and the\nknob has no effect.",
       "title": "provisionTimeout",
       "type": "string"
+    },
+    "replicaCount": {
+      "default": 1,
+      "description": "Controller replicas. Anything above 1 automatically enables leader\nelection: the extras are warm standbys (failover is lease expiry, ~15s,\ninstead of a full pod reschedule), the rollout strategy switches to\nRollingUpdate, and a PodDisruptionBudget keeps one replica through\nvoluntary disruptions. Pointless on a single-node cluster (the node is\nthe failure domain); pair with global.affinity (pod anti-affinity) so\nreplicas land on different nodes.",
+      "title": "replicaCount",
+      "type": "integer"
     },
     "replicatedStorageClass": {
       "properties": {

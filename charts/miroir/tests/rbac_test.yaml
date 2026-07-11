@@ -105,6 +105,30 @@ tests:
             resources: ["nodes"]
             verbs: ["get", "list", "watch"]
 
+  - it: grants Lease access only when leader election is on
+    documentIndex: 2
+    asserts:
+      - notContains:
+          any: true
+          path: rules
+          content:
+            apiGroups: ["coordination.k8s.io"]
+            resources: ["leases"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  - it: replicaCount above 1 grants the controller Lease CRUD for leader election
+    set:
+      replicaCount: 2
+    documentIndex: 2
+    asserts:
+      - contains:
+          any: true
+          path: rules
+          content:
+            apiGroups: ["coordination.k8s.io"]
+            resources: ["leases"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
   - it: controller ClusterRoleBinding binds to miroir-controller ServiceAccount
     documentIndex: 3
     asserts:
