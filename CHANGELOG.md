@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/home-operations/miroir/compare/0.4.5...0.4.6) (2026-07-11)
+
+
+### Bug Fixes
+
+* repair split-brain auto-recovery and activated-latch timing ([#141](https://github.com/home-operations/miroir/issues/141)) ([#142](https://github.com/home-operations/miroir/issues/142)) ([6f8f5e3](https://github.com/home-operations/miroir/commit/6f8f5e38f19c749be2db7adfd8910f399058a2e1))
+
 ## [0.4.5](https://github.com/home-operations/miroir/compare/0.4.4...0.4.5) (2026-07-11)
 
 
