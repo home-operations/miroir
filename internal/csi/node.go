@@ -160,10 +160,10 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, err
 	}
 
-	// Latch that this volume is now handed to a consumer: devicePath passed
-	// (UpToDate, not split), and the filesystem write probe / block publish
-	// that follow may write. This closes split-brain auto-recovery, which
-	// only runs while the volume provably never held data.
+	// devicePath passed (UpToDate, not split) and the volume is about to be
+	// written (fs write probe or block publish). Latch it activated, which
+	// closes split-brain auto-recovery — that only runs on a volume that
+	// never held data.
 	if err := n.markActivated(ctx, vol); err != nil {
 		return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
 	}

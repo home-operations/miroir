@@ -493,15 +493,13 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 	}
 }
 
-// recoverSplitBrain reacts to a StandAlone split-brain. On a volume that has
-// never been activated — provably no data to lose — it applies DRBD's
-// discard-my-data recovery around the seed winner so the volume self-heals
-// without an operator (issue #139: a fresh replicated volume that comes up
-// split-brain otherwise loops forever and blocks its consumer). On an
-// activated volume it logs the manual remedy on the transition edge and
-// leaves the volume alone — miroir never auto-discards data that may matter.
-// Best-effort: a failed recovery is logged and retried on the next poll (the
-// split state is never fast-path cached).
+// recoverSplitBrain reacts to a StandAlone split-brain. A volume that was
+// never activated holds no data, so it applies ResolveSplitBrain to self-heal
+// (issue #139: a fresh replicated volume that comes up split-brain otherwise
+// loops forever and blocks its consumer). An activated volume may hold data:
+// it logs the manual remedy on the transition edge and is left for an
+// operator. Failures are retried next poll — the split state is never
+// fast-path cached.
 func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource) {
 	log := ctrl.LoggerFrom(ctx)
 	if vol.Status.Activated {
@@ -512,10 +510,9 @@ func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1a
 		}
 		return
 	}
-	log.Info("auto-recovering split-brain on never-activated volume (no data to lose)",
-		"volume", vol.Name)
+	log.Info("auto-recovering split-brain on never-activated volume", "volume", vol.Name)
 	if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
-		log.Error(err, "split-brain auto-recovery failed; retrying next poll", "volume", vol.Name)
+		log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)
 	}
 }
 
@@ -610,12 +607,11 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			// minutes-long backoff (NodeUnstage releases it shortly).
 			return backend.Busy(err)
 		}
-		// Defense-in-depth: with the resource down, explicitly wipe the DRBD
-		// metadata before Backend.Delete destroys the device, so the backing
-		// device can never carry a stale generation identifier into a
-		// same-name reuse (issue #139), whatever the backend does with the
-		// freed blocks. Best-effort — Backend.Delete removes the whole device
-		// anyway, so a wipe failure must not block the deletion.
+		// With the resource down, wipe the DRBD metadata before Backend.Delete
+		// removes the device, so freed blocks cannot carry a stale generation
+		// identifier into a reuse (issue #139). Best-effort: Backend.Delete
+		// destroys the whole device anyway, so a wipe failure must not block
+		// the deletion.
 		if slot := vol.Status.PerNode[r.NodeName]; slot.DeviceCreated && !slot.Diskless {
 			if err := r.DRBD.WipeMetadata(ctx, vol.Name, r.Backend.DevicePath(vol.Name), slot.DRBDMinor); err != nil {
 				ctrl.LoggerFrom(ctx).V(1).Info("wipe-md failed during teardown; backing delete will destroy metadata",
