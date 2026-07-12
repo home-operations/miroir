@@ -233,6 +233,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if st, err = r.mintBirthUUID(ctx, vol, resource, st, localDiskless); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
+	// Ordered before handleSplitBrain so the same pass cannot auto-discard
+	// a leg the latch is about to protect.
+	if err := r.latchActivated(ctx, vol, st); err != nil {
+		return ctrl.Result{}, err
+	}
 	// Online growth: once every peer's backing device is at the new size
 	// (the local leg was just resized above), the first diskful replica
 	// grows the DRBD device over them. It withholds the new size from its
@@ -315,6 +320,13 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 	// Connecting that never breaks statusEqual, so only the peers' status
 	// can route it into recoverSplitBrain (issue #144).
 	if !diskfulPeersConnected(st, vol, r.NodeName) && peerReportedSplitBrain(vol, r.NodeName) {
+		return false, ctrl.Result{}
+	}
+	// A Primary leg without the Activated latch takes the full pipeline,
+	// which owns the latch — normally the Primary flip itself breaks
+	// statusEqual, but an informer lagging the latch patch must not park
+	// the unprotected state here.
+	if st.Primary && !vol.Status.Activated {
 		return false, ctrl.Result{}
 	}
 	if !localDiskless {
@@ -780,6 +792,23 @@ func (r *VolumeReconciler) reportError(ctx context.Context, vol *miroirv1alpha1.
 		return err
 	}
 	return cause // requeue with backoff
+}
+
+// latchActivated sets the one-way Activated flag when the kernel reports
+// the local leg Primary — a Primary is (or was) open for writes. Beyond the
+// stage-time twin (csi.markActivated) it covers volumes staged before the
+// field existed: a raw-block consumer running since pre-0.4.5 never
+// restages, and without the latch recoverSplitBrain would treat its
+// data-bearing volume as never-written. MergeFrom, not the agent's SSA
+// apply: Activated is CSI-owned and merge patching the single field avoids
+// co-owning it.
+func (r *VolumeReconciler) latchActivated(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status) error {
+	if !st.Primary || vol.Status.Activated {
+		return nil
+	}
+	base := vol.DeepCopy()
+	vol.Status.Activated = true
+	return r.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
 // patchStatus applies only this node's slot and the derived phase. A
