@@ -535,20 +535,14 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 // leg's own slot never records it, so it would log every poll) and is left
 // for an operator.
 //
-// Attempts are floored to one per poll interval: recovery flaps connections,
-// each flap is a DRBD event that requeues the volume, and without the floor
-// the agent re-enters here several times per second (issue #144). Failures
-// are retried on a later poll — the split state is never fast-path cached.
+// Entry is floored to once per poll interval: connection flaps — recovery's
+// own, and drbdadm adjust auto-reconnecting a parked StandAlone leg every
+// pass — each emit a DRBD event that requeues the volume, re-entering here
+// several times per second (issue #144). The floor caps both the recovery
+// attempts and the manual-remedy log, whose transition edge the flapping
+// status slot keeps re-opening. Failures are retried on a later poll — the
+// split state is never fast-path cached.
 func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, localSplit bool) {
-	log := ctrl.LoggerFrom(ctx)
-	if vol.Status.Activated || vol.Status.Formatted {
-		if localSplit && !vol.Status.PerNode[r.NodeName].SplitBrain {
-			log.Error(errSplitBrain,
-				"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
-				"volume", vol.Name)
-		}
-		return
-	}
 	r.recoveryMu.Lock()
 	if time.Since(r.lastRecovery[vol.Name]) < drbdPollInterval {
 		r.recoveryMu.Unlock()
@@ -560,6 +554,15 @@ func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1a
 	r.lastRecovery[vol.Name] = time.Now()
 	r.recoveryMu.Unlock()
 
+	log := ctrl.LoggerFrom(ctx)
+	if vol.Status.Activated || vol.Status.Formatted {
+		if localSplit && !vol.Status.PerNode[r.NodeName].SplitBrain {
+			log.Error(errSplitBrain,
+				"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
+				"volume", vol.Name)
+		}
+		return
+	}
 	log.Info("auto-recovering split-brain on never-written volume", "volume", vol.Name)
 	if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
 		log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)

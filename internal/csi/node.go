@@ -140,8 +140,45 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroir
 			return "", nil, status.Errorf(codes.Unavailable,
 				"volume %s is %s on node %s (want UpToDate)", volumeID, live.DiskState, n.NodeName)
 		}
+		// Mid-recovery a birth-split volume can pass the live checks: the
+		// survivor and tie-breaker reconnect first (quorum restores, the
+		// device turns writable) while the losing leg is still divergent. A
+		// stage completing in that window latches Activated and closes the
+		// auto-recovery that would have healed the loser (issue #144). Hold
+		// staging while a split is recorded AND a diskful link is down —
+		// only while the volume is still auto-recovery-eligible. The live
+		// connectivity corroboration keeps a stale slot from a dead peer
+		// from blocking a volume whose data legs are all established, and
+		// releases the hold the moment the loser reconnects, ahead of the
+		// slots clearing on the next status patch.
+		if !vol.Status.Activated && !vol.Status.Formatted &&
+			!diskfulPeersLive(vol, n.NodeName, live) {
+			for node, rep := range vol.Status.PerNode {
+				if rep.SplitBrain {
+					return "", nil, status.Errorf(codes.Unavailable,
+						"volume %s is recovering from split-brain (reported by node %s)", volumeID, node)
+				}
+			}
+		}
 	}
 	return st.DevicePath, vol, nil
+}
+
+// diskfulPeersLive reports whether this node's replication links to every
+// diskful peer are established, per the live kernel view. Mirrors the
+// agent's diskfulPeersConnected: a diskless tie-breaker's link is excluded
+// so its state never gates a data leg (the bug #78 class), and entries the
+// membership reconciler has not completed are skipped.
+func diskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == self || rep.Diskless || rep.Address == "" {
+			continue
+		}
+		if !live.PeerConnected[rep.NodeID] {
+			return false
+		}
+	}
+	return true
 }
 
 // NodeStageVolume makes the device usable at the staging path: filesystem
