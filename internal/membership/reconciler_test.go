@@ -250,3 +250,46 @@ func TestIgnoresUnreplicatedVolume(t *testing.T) {
 		t.Fatalf("membership changes need a replication layer: %+v", got)
 	}
 }
+
+// A client leg completes like a replica — node id unique across replicas
+// and clients, address from the Node object — but needs no node-map entry:
+// any node running an agent can consume remotely.
+func TestCompletesClientLeg(t *testing.T) {
+	v := replicatedVol()
+	v.Spec.Replicas = v.Spec.Replicas[:2] // both complete
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: "bergen"}}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node("bergen", "192.168.1.44")).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{}} // bergen is not a storage node
+
+	reconcile(t, r, "pvc-1")
+
+	got := get(t, r, "pvc-1")
+	cl := got.Spec.Clients[0]
+	if cl.NodeID != 2 || cl.Address != "192.168.1.44" {
+		t.Fatalf("client leg not completed: %+v", cl)
+	}
+	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+"bergen") {
+		t.Fatal("teardown finalizer missing for the client node")
+	}
+}
+
+// Client node ids must never collide with replica ids — the id allocator
+// scans both lists.
+func TestClientLegNodeIDSkipsReplicaIDs(t *testing.T) {
+	v := replicatedVol()
+	v.Spec.Replicas = v.Spec.Replicas[:2]
+	v.Spec.Replicas[1].NodeID = 2 // hole at 1, high id in use
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: "bergen"}}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node("bergen", "192.168.1.44")).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{}}
+
+	reconcile(t, r, "pvc-1")
+
+	if got := get(t, r, "pvc-1").Spec.Clients[0]; got.NodeID != 1 {
+		t.Fatalf("client must take the lowest free id (1), got %d", got.NodeID)
+	}
+}

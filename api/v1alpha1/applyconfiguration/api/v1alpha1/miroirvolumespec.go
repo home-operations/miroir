@@ -47,6 +47,16 @@ type MiroirVolumeSpecApplyConfiguration struct {
 	DRBD *DRBDSpecApplyConfiguration `json:"drbd,omitempty"`
 	// Source, if set, provisions content from a snapshot (CoW clone).
 	Source *VolumeSourceApplyConfiguration `json:"source,omitempty"`
+	// AllowRemoteAccess permits pods on nodes without a replica: the PV
+	// carries no node affinity, and staging on a non-replica node attaches
+	// an ephemeral diskless client leg (spec.clients). From the
+	// StorageClass parameter; replicated volumes only.
+	AllowRemoteAccess *bool `json:"allowRemoteAccess,omitempty"`
+	// Clients are ephemeral diskless consumer legs, added at stage time on
+	// non-replica nodes and removed at unstage. Bounded small: RWO means
+	// one consumer, plus headroom for an attach/detach overlap during a
+	// pod move.
+	Clients []VolumeClientApplyConfiguration `json:"clients,omitempty"`
 }
 
 // MiroirVolumeSpecApplyConfiguration constructs a declarative configuration of the MiroirVolumeSpec type for use with
@@ -97,5 +107,26 @@ func (b *MiroirVolumeSpecApplyConfiguration) WithDRBD(value *DRBDSpecApplyConfig
 // If called multiple times, the Source field is set to the value of the last call.
 func (b *MiroirVolumeSpecApplyConfiguration) WithSource(value *VolumeSourceApplyConfiguration) *MiroirVolumeSpecApplyConfiguration {
 	b.Source = value
+	return b
+}
+
+// WithAllowRemoteAccess sets the AllowRemoteAccess field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AllowRemoteAccess field is set to the value of the last call.
+func (b *MiroirVolumeSpecApplyConfiguration) WithAllowRemoteAccess(value bool) *MiroirVolumeSpecApplyConfiguration {
+	b.AllowRemoteAccess = &value
+	return b
+}
+
+// WithClients adds the given value to the Clients field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Clients field.
+func (b *MiroirVolumeSpecApplyConfiguration) WithClients(values ...*VolumeClientApplyConfiguration) *MiroirVolumeSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithClients")
+		}
+		b.Clients = append(b.Clients, *values[i])
+	}
 	return b
 }

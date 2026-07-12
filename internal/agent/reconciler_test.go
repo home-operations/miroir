@@ -2139,3 +2139,81 @@ func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdadm new-current-uuid --clear-bitmap pvc-1/0")
 }
+
+// A client leg (spec.clients) realizes exactly like a diskless
+// tie-breaker: no backing device, DRBD adjust with disk none, and a status
+// slot marked Diskless so CSI can gate staging on the peers' health.
+func TestReconcileClientLegRealizesDiskless(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeOslo, NodeID: 2, Address: addrOslo}}
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeOslo)
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
+		"connections":[{"peer-node-id":0,"connection-state":"Connected"},{"peer-node-id":1,"connection-state":"Connected"}]}]`}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeOslo, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	reconcile(t, r, volPvc1)
+
+	if len(fb.createVol) != 0 {
+		t.Fatalf("client leg must not create a backing device: %v", fb.createVol)
+	}
+	fe.calledWith(t, "drbdadm adjust pvc-1")
+	fe.notCalledWith(t, "drbdmeta")
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status.PerNode[nodeOslo]
+	if st.DeviceCreated || !st.Diskless {
+		t.Fatalf("client slot must be diskless without a device: %+v", st)
+	}
+	if st.DevicePath == "" {
+		t.Fatal("client slot must record the DRBD device path for staging")
+	}
+}
+
+// An incomplete client leg (membership has not assigned node-id/address)
+// must wait, not realize.
+func TestReconcileClientLegWaitsForMembership(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeOslo}}
+
+	fe := &fakeDRBDExec{}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeOslo, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	res, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.RequeueAfter == 0 {
+		t.Fatal("incomplete client leg must requeue for membership completion")
+	}
+	fe.notCalledWith(t, "drbdadm")
+}

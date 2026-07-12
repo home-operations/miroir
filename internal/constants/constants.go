@@ -35,4 +35,10 @@ const (
 
 	// ParamQuorum is the StorageClass parameter for the 2-node policy.
 	ParamQuorum = "miroir.home-operations.com/quorum"
+
+	// ParamAllowRemoteAccess is the StorageClass parameter that lets pods
+	// on nodes without a replica consume the volume through an ephemeral
+	// diskless client leg (name matches the LINSTOR parameter operators
+	// know). "true" drops the PV's node affinity.
+	ParamAllowRemoteAccess = "miroir.home-operations.com/allowRemoteVolumeAccess"
 )

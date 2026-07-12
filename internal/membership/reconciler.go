@@ -86,8 +86,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		changed = true
 	}
+	for i := range vol.Spec.Clients {
+		cl := &vol.Spec.Clients[i]
+		if cl.Address != "" {
+			continue
+		}
+		if err := r.completeClient(ctx, vol, cl); err != nil {
+			if errors.Is(err, errBadPlacement) {
+				log.Error(err, "cannot complete client leg",
+					"volume", vol.Name, "node", cl.Node)
+				return ctrl.Result{}, nil
+			}
+			return ctrl.Result{}, err
+		}
+		changed = true
+	}
 	for _, rep := range vol.Spec.Replicas {
 		if controllerutil.AddFinalizer(vol, constants.FinalizerPrefix+rep.Node) {
+			changed = true
+		}
+	}
+	for _, cl := range vol.Spec.Clients {
+		if controllerutil.AddFinalizer(vol, constants.FinalizerPrefix+cl.Node) {
 			changed = true
 		}
 	}
@@ -128,13 +148,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 	if err != nil {
 		return err
 	}
-
-	id := int32(0)
-	for slices.ContainsFunc(vol.Spec.Replicas, func(other miroirv1alpha1.Replica) bool {
-		return other.Node != rep.Node && other.Address != "" && other.NodeID == id
-	}) {
-		id++
-	}
+	id := nextNodeID(vol, rep.Node)
 
 	if rep.Diskless {
 		// Quorum-only entry: a backend is meaningless, and the node map
@@ -147,6 +161,46 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 	rep.NodeID = id
 	rep.Address = addr
 	return nil
+}
+
+// completeClient fills one client leg in place. Unlike a replica it needs
+// no node-map entry — any node running an agent can consume remotely, and
+// its address resolves like a replica's (map override, else InternalIP).
+func (r *Reconciler) completeClient(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cl *miroirv1alpha1.VolumeClient) error {
+	dup := 0
+	for _, other := range vol.Spec.Clients {
+		if other.Node == cl.Node {
+			dup++
+		}
+	}
+	if dup > 1 {
+		return fmt.Errorf("%w: node %s appears %d times in spec.clients", errBadPlacement, cl.Node, dup)
+	}
+	addr, err := r.Nodes.ReplicationAddress(ctx, r.Client, cl.Node)
+	if err != nil {
+		return err
+	}
+	cl.NodeID = nextNodeID(vol, cl.Node)
+	cl.Address = addr
+	return nil
+}
+
+// nextNodeID returns the lowest DRBD node id unused by any completed
+// replica or client leg other than self. Freed ids may be reused; a
+// joiner's just-created metadata forces a full sync either way.
+func nextNodeID(vol *miroirv1alpha1.MiroirVolume, self string) int32 {
+	used := func(id int32) bool {
+		return slices.ContainsFunc(vol.Spec.Replicas, func(other miroirv1alpha1.Replica) bool {
+			return other.Node != self && other.Address != "" && other.NodeID == id
+		}) || slices.ContainsFunc(vol.Spec.Clients, func(other miroirv1alpha1.VolumeClient) bool {
+			return other.Node != self && other.Address != "" && other.NodeID == id
+		})
+	}
+	id := int32(0)
+	for used(id) {
+		id++
+	}
+	return id
 }
 
 // SetupWithManager registers the reconciler. Generation-filtered: status

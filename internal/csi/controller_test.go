@@ -48,6 +48,7 @@ const (
 	addrParis   = "192.168.1.42"
 	addrOslo    = "192.168.1.43"
 	volPvc1     = "pvc-1"
+	paramTrue   = "true"
 	volSrc      = "pvc-src"
 	volNew      = "pvc-new"
 	snapSnap1   = "snap-1"
@@ -1080,5 +1081,84 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 	_, err := c.CreateVolume(t.Context(), mk("snap-2"))
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("source change must be ALREADY_EXISTS, got %v", err)
+	}
+}
+
+// allowRemoteVolumeAccess=true drops the PV's accessible topology (pods
+// schedule anywhere; non-replica nodes attach a diskless client leg) and
+// records the opt-in on the volume spec.
+func TestCreateVolumeRemoteAccessDropsTopology(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := cl.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
+						vol.Status.Phase = miroirv1alpha1.VolumeReady
+					}
+					return nil
+				},
+			}).Build(),
+		Nodes:            testNodes,
+		ProvisionTimeout: 2 * time.Second,
+	}
+
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               "pvc-remote",
+		VolumeCapabilities: volCaps(),
+		Parameters: map[string]string{
+			constants.ParamReplicas:          "2",
+			constants.ParamAllowRemoteAccess: paramTrue,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Volume.AccessibleTopology) != 0 {
+		t.Fatalf("remote-access volume must carry no topology: %+v", resp.Volume.AccessibleTopology)
+	}
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-remote"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if !vol.Spec.AllowRemoteAccess {
+		t.Fatal("spec.allowRemoteAccess not recorded")
+	}
+}
+
+func TestParseAllowRemoteAccess(t *testing.T) {
+	cases := map[string]struct {
+		raw      string
+		replicas int
+		want     bool
+		wantErr  bool
+	}{
+		"absent defaults off":       {raw: "", replicas: 2, want: false},
+		"explicit false":            {raw: "false", replicas: 2, want: false},
+		"enabled on replicated":     {raw: paramTrue, replicas: 2, want: true},
+		"rejected on unreplicated":  {raw: paramTrue, replicas: 1, wantErr: true},
+		"rejected on invalid value": {raw: "yes", replicas: 2, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			params := map[string]string{}
+			if tc.raw != "" {
+				params[constants.ParamAllowRemoteAccess] = tc.raw
+			}
+			got, err := parseAllowRemoteAccess(params, tc.replicas)
+			if tc.wantErr {
+				if status.Code(err) != codes.InvalidArgument {
+					t.Fatalf("want InvalidArgument, got %v", err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("parseAllowRemoteAccess = %v, %v; want %v", got, err, tc.want)
+			}
+		})
 	}
 }

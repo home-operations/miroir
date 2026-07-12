@@ -56,6 +56,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1alpha1.ReplicaApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ReplicaStatus"):
 		return &apiv1alpha1.ReplicaStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("VolumeClient"):
+		return &apiv1alpha1.VolumeClientApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("VolumeSource"):
 		return &apiv1alpha1.VolumeSourceApplyConfiguration{}
 

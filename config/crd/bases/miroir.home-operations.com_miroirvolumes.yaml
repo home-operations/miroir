@@ -62,6 +62,49 @@ spec:
               replication layer in place (internal DRBD metadata cannot be added
               under a live filesystem), and a replicated one keeps 2–3 replicas.
             properties:
+              allowRemoteAccess:
+                description: |-
+                  AllowRemoteAccess permits pods on nodes without a replica: the PV
+                  carries no node affinity, and staging on a non-replica node attaches
+                  an ephemeral diskless client leg (spec.clients). From the
+                  StorageClass parameter; replicated volumes only.
+                type: boolean
+              clients:
+                description: |-
+                  Clients are ephemeral diskless consumer legs, added at stage time on
+                  non-replica nodes and removed at unstage. Bounded small: RWO means
+                  one consumer, plus headroom for an attach/detach overlap during a
+                  pod move.
+                items:
+                  description: |-
+                    VolumeClient is an ephemeral diskless consumer leg: a DRBD peer with no
+                    backing device on a node that runs a pod but holds no replica. All its
+                    I/O crosses the replication network. Added by the CSI node service at
+                    stage time (spec.allowRemoteAccess volumes only), completed by the
+                    membership reconciler like a replica, removed at unstage. Unlike a
+                    diskless tie-breaker it is not placed for quorum — but DRBD counts every
+                    peer's vote, so an attached client does shift quorum math (see README).
+                  properties:
+                    address:
+                      description: |-
+                        Address is the replication endpoint, resolved like a replica's
+                        (node-map override, else the Node's InternalIP).
+                      type: string
+                    node:
+                      description: Node is the Kubernetes node name consuming the
+                        volume remotely.
+                      type: string
+                    nodeID:
+                      description: |-
+                        NodeID is the DRBD node id, unique across replicas and clients,
+                        assigned by the membership reconciler.
+                      format: int32
+                      type: integer
+                  required:
+                  - node
+                  type: object
+                maxItems: 2
+                type: array
               drbd:
                 description: DRBD is set by the controller when len(Replicas) > 1.
                 properties:
@@ -185,6 +228,11 @@ spec:
                 || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))
             - message: a volume cannot gain or lose its replication layer in place
               rule: has(self.drbd) == has(oldSelf.drbd)
+            - message: client legs are only valid on replicated volumes
+              rule: '!has(self.clients) || has(self.drbd)'
+            - message: a client leg cannot share a node with a replica
+              rule: '!has(self.clients) || self.clients.all(c, !self.replicas.exists(r,
+                r.node == c.node))'
           status:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.

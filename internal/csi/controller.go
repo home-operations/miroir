@@ -147,6 +147,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if err != nil {
 		return nil, err
 	}
+	remoteAccess, err := parseAllowRemoteAccess(req.GetParameters(), replicas)
+	if err != nil {
+		return nil, err
+	}
 
 	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
 	source, srcReplicas, sourceFormatted, err := c.resolveSource(ctx, snapID, sizeBytes, replicas)
@@ -185,9 +189,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
-			SizeBytes: sizeBytes,
-			Replicas:  placed,
-			Source:    source,
+			SizeBytes:         sizeBytes,
+			Replicas:          placed,
+			Source:            source,
+			AllowRemoteAccess: remoteAccess,
 		},
 	}
 	for _, r := range placed {
@@ -223,14 +228,20 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	topology := make([]*csi.Topology, 0, len(vol.Spec.Replicas))
-	for _, r := range vol.Spec.Replicas {
-		if r.Diskless {
-			continue
+	// Remote-access volumes carry no accessible topology: the PV gets no
+	// node affinity, and a stage on a non-replica node attaches a diskless
+	// client leg instead (spec.clients).
+	var topology []*csi.Topology
+	if !vol.Spec.AllowRemoteAccess {
+		topology = make([]*csi.Topology, 0, len(vol.Spec.Replicas))
+		for _, r := range vol.Spec.Replicas {
+			if r.Diskless {
+				continue
+			}
+			topology = append(topology, &csi.Topology{
+				Segments: map[string]string{constants.TopologyKey: r.Node},
+			})
 		}
-		topology = append(topology, &csi.Topology{
-			Segments: map[string]string{constants.TopologyKey: r.Node},
-		})
 	}
 	var contentSource *csi.VolumeContentSource
 	if source != nil && source.SnapshotName != "" {
@@ -1008,6 +1019,27 @@ func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) 
 		return "", status.Errorf(codes.InvalidArgument,
 			"invalid %s=%q (want last-man-standing | freeze)", constants.ParamQuorum, raw)
 	}
+}
+
+// parseAllowRemoteAccess reads the remote-access StorageClass parameter.
+// Only replicated volumes can serve remote consumers (a diskless leg needs
+// DRBD peers to read from), so the flag is rejected on replicas:1 classes
+// rather than silently ignored.
+func parseAllowRemoteAccess(params map[string]string, replicas int) (bool, error) {
+	raw := params[constants.ParamAllowRemoteAccess]
+	if raw == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, status.Errorf(codes.InvalidArgument,
+			"invalid %s=%q (want true | false)", constants.ParamAllowRemoteAccess, raw)
+	}
+	if enabled && replicas <= 1 {
+		return false, status.Errorf(codes.InvalidArgument,
+			"%s requires a replicated class (replicas > 1)", constants.ParamAllowRemoteAccess)
+	}
+	return enabled, nil
 }
 
 func validateCapabilities(caps []*csi.VolumeCapability) error {

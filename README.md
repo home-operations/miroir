@@ -292,6 +292,38 @@ and deliberately stays disconnected (`after-sb-* disconnect`, never
 auto-resolve); an operator inspects both legs and picks the loser.
 Volumes with this policy never get a tie-breaker.
 
+### Remote consumers
+
+By default a pod can only run on a node holding a replica: the PV
+carries node affinity to the diskful legs, and reads are local. Set
+`replicatedStorageClass.allowRemoteVolumeAccess: true` (the
+`miroir.home-operations.com/allowRemoteVolumeAccess` StorageClass
+parameter) to drop that affinity: a pod scheduled on any node consumes
+the volume through an ephemeral **diskless client leg** — a DRBD peer
+with `disk none` that the CSI node service adds to `spec.clients` at
+stage time and removes at unstage. The membership reconciler completes
+it (node id, address) exactly like an operator-added replica, and a pod
+landing on the tie-breaker's node stages through the tie-breaker leg
+directly.
+
+Trade-offs to understand before enabling it:
+
+- **Every read and write crosses the replication network.** A remote
+  consumer runs at network speed; the affinity default exists because
+  local reads are the point of keeping a replica under the pod.
+- **An attached client shifts quorum math.** DRBD counts every peer's
+  vote: a 2+1 volume with a client attached has 4 votes, so majority
+  becomes 3. While the client is connected this is neutral-to-helpful
+  (the client's vote replaces a lost node's); the regression window is
+  two simultaneous failures, which majority-of-4 freezes where
+  majority-of-3 tolerated one loss. Client legs come and go with pods,
+  so the math shifts at stage/unstage, not permanently.
+- **A lost node can strand its client leg.** If a node dies without
+  unstaging, its entry in `spec.clients` (and teardown finalizer)
+  lingers, holding a quorum vote and blocking volume deletion until the
+  node returns or the entry is removed by hand — the same semantics as
+  a dead replica node. Remove it by deleting the `spec.clients` entry.
+
 ### At a glance
 
 | Failure                      | `freeze` + tie-breaker                                     | `freeze`, 2 nodes           | `last-man-standing`                                |

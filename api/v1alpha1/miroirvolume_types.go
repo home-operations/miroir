@@ -90,6 +90,26 @@ type VolumeSource struct {
 	SnapshotName string `json:"snapshotName"`
 }
 
+// VolumeClient is an ephemeral diskless consumer leg: a DRBD peer with no
+// backing device on a node that runs a pod but holds no replica. All its
+// I/O crosses the replication network. Added by the CSI node service at
+// stage time (spec.allowRemoteAccess volumes only), completed by the
+// membership reconciler like a replica, removed at unstage. Unlike a
+// diskless tie-breaker it is not placed for quorum — but DRBD counts every
+// peer's vote, so an attached client does shift quorum math (see README).
+type VolumeClient struct {
+	// Node is the Kubernetes node name consuming the volume remotely.
+	Node string `json:"node"`
+	// NodeID is the DRBD node id, unique across replicas and clients,
+	// assigned by the membership reconciler.
+	// +optional
+	NodeID int32 `json:"nodeID,omitempty"`
+	// Address is the replication endpoint, resolved like a replica's
+	// (node-map override, else the Node's InternalIP).
+	// +optional
+	Address string `json:"address,omitempty"`
+}
+
 // DiskfulReplicas returns the non-diskless replicas — those that hold
 // actual data. Use this instead of the raw slice where diskless
 // tie-breakers must be excluded (capacity, phase, snapshot barrier).
@@ -128,6 +148,8 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="size(self.replicas) > 0 ? !has(self.replicas[0].diskless) || !self.replicas[0].diskless : true",message="the first replica must be diskful (not a diskless tie-breaker)"
 // +kubebuilder:validation:XValidation:rule="self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))",message="a replica's diskless flag is immutable; remove the replica and re-add it instead"
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) == has(oldSelf.drbd)",message="a volume cannot gain or lose its replication layer in place"
+// +kubebuilder:validation:XValidation:rule="!has(self.clients) || has(self.drbd)",message="client legs are only valid on replicated volumes"
+// +kubebuilder:validation:XValidation:rule="!has(self.clients) || self.clients.all(c, !self.replicas.exists(r, r.node == c.node))",message="a client leg cannot share a node with a replica"
 type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
 	// +kubebuilder:validation:Minimum=1
@@ -149,6 +171,29 @@ type MiroirVolumeSpec struct {
 	// Source, if set, provisions content from a snapshot (CoW clone).
 	// +optional
 	Source *VolumeSource `json:"source,omitempty"`
+	// AllowRemoteAccess permits pods on nodes without a replica: the PV
+	// carries no node affinity, and staging on a non-replica node attaches
+	// an ephemeral diskless client leg (spec.clients). From the
+	// StorageClass parameter; replicated volumes only.
+	// +optional
+	AllowRemoteAccess bool `json:"allowRemoteAccess,omitempty"`
+	// Clients are ephemeral diskless consumer legs, added at stage time on
+	// non-replica nodes and removed at unstage. Bounded small: RWO means
+	// one consumer, plus headroom for an attach/detach overlap during a
+	// pod move.
+	// +optional
+	// +kubebuilder:validation:MaxItems=2
+	Clients []VolumeClient `json:"clients,omitempty"`
+}
+
+// ClientForNode returns the client leg on the given node, or nil.
+func (s MiroirVolumeSpec) ClientForNode(node string) *VolumeClient {
+	for i := range s.Clients {
+		if s.Clients[i].Node == node {
+			return &s.Clients[i]
+		}
+	}
+	return nil
 }
 
 // ReplicaStatus is the per-node observed state, written by that node's agent.
