@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7](https://github.com/home-operations/miroir/compare/0.4.6...0.4.7) (2026-07-12)
+
+
+### Bug Fixes
+
+* trigger split-brain recovery on the losing leg via peer-reported state ([#145](https://github.com/home-operations/miroir/issues/145)) ([a81311e](https://github.com/home-operations/miroir/commit/a81311e2084a112412d5c0fb40d5089813ab276c))
+
 ## [0.4.6](https://github.com/home-operations/miroir/compare/0.4.5...0.4.6) (2026-07-11)
 
 
