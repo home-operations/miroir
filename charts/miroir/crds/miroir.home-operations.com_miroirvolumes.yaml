@@ -309,6 +309,21 @@ spec:
                         Zero means unassigned (fresh volume or unreplicated).
                       format: int32
                       type: integer
+                    lastVerifyOutOfSyncBytes:
+                      description: |-
+                        LastVerifyOutOfSyncBytes is the out-of-sync total the last verify
+                        found (0 = clean). Findings need a disconnect/connect cycle to resync;
+                        they persist in the out-of-sync metric until then. A pointer so a
+                        clean verify (0) reads differently from "never verified" (nil).
+                      format: int64
+                      type: integer
+                    lastVerifyTime:
+                      description: |-
+                        LastVerifyTime is when the last scheduled online verify completed for
+                        this volume. Only the coordinator (first diskful replica) initiates a
+                        verify, so only its slot carries this.
+                      format: date-time
+                      type: string
                     message:
                       description: Message carries the last reconcile error, if any.
                       type: string

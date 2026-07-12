@@ -297,3 +297,60 @@ tests:
       - equal:
           path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
           value: "true"
+
+  - it: omits --verify-schedule by default
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --verify-schedule=0 5 * * 0
+
+  - it: passes --verify-schedule when a schedule is set
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      drbd:
+        verify:
+          schedule: "0 5 * * 0"
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --verify-schedule=0 5 * * 0
+
+  - it: omits --verify-schedule while suspended
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      drbd:
+        verify:
+          schedule: "0 5 * * 0"
+          suspend: true
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --verify-schedule=0 5 * * 0
+
+  - it: fails when a verify schedule is set without verifyAlg
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      drbd:
+        verifyAlg: ""
+        verify:
+          schedule: "0 5 * * 0"
+    asserts:
+      - failedTemplate:
+          errorMessage: "drbd.verify.schedule requires drbd.verifyAlg — a scheduled verify is meaningless without an arming verify-alg"

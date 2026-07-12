@@ -277,6 +277,17 @@ drbd:
   # verify pass yourself (cron, quiet hours); out-of-sync blocks surface
   # in the kernel log and `drbdsetup status`. Empty disables verification.
   verifyAlg: crc32c
+  verify:
+    # -- Cron spec (5-field, agent-local/UTC time) for a scheduled online
+    # verify of every replicated volume. The agent initiates it once per
+    # volume from the coordinator (first diskful replica), serialized per
+    # node, skipping volumes that are resyncing or already verifying.
+    # Findings land in the volume's status (`lastVerifyOutOfSyncBytes`), the
+    # `miroir_volume_verify_*` metrics, and a `VerifyOutOfSync` event. Empty
+    # = no scheduled verify (run it by hand). Requires `verifyAlg` set.
+    schedule: ""
+    # -- Pause scheduled verify without dropping the schedule above.
+    suspend: false
 
 # =============================================================================
 # Monitoring

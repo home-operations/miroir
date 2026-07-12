@@ -194,6 +194,17 @@ type ReplicaStatus struct {
 	DiskFailed bool `json:"diskFailed,omitempty"`
 	// Message carries the last reconcile error, if any.
 	Message string `json:"message,omitempty"`
+	// LastVerifyTime is when the last scheduled online verify completed for
+	// this volume. Only the coordinator (first diskful replica) initiates a
+	// verify, so only its slot carries this.
+	// +optional
+	LastVerifyTime *metav1.Time `json:"lastVerifyTime,omitempty"`
+	// LastVerifyOutOfSyncBytes is the out-of-sync total the last verify
+	// found (0 = clean). Findings need a disconnect/connect cycle to resync;
+	// they persist in the out-of-sync metric until then. A pointer so a
+	// clean verify (0) reads differently from "never verified" (nil).
+	// +optional
+	LastVerifyOutOfSyncBytes *int64 `json:"lastVerifyOutOfSyncBytes,omitempty"`
 }
 
 // MiroirVolumeStatus is the observed state aggregated from node agents.

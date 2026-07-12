@@ -9,6 +9,9 @@
 {{-   end }}
 {{- end }}
 {{- $loopDirs = $loopDirs | uniq }}
+{{- if and .Values.drbd.verify.schedule (not .Values.drbd.verifyAlg) }}
+{{- fail "drbd.verify.schedule requires drbd.verifyAlg — a scheduled verify is meaningless without an arming verify-alg" }}
+{{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -66,6 +69,9 @@ spec:
             - --metrics-bind-address=:9810
             - --pool-stats-interval={{ .Values.agent.poolStatsInterval }}
             - --volume-workers={{ .Values.agent.volumeWorkers }}
+            {{- if and .Values.drbd.verify.schedule (not .Values.drbd.verify.suspend) }}
+            - --verify-schedule={{ .Values.drbd.verify.schedule }}
+            {{- end }}
             - --zap-log-level={{ .Values.logging.level }}
             - --zap-encoder={{ .Values.logging.format }}
             {{- with .Values.agent.extraArgs }}
