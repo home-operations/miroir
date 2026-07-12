@@ -29,6 +29,9 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
+// devDrbd1000 is the staged DRBD device path shared by the fixtures.
+const devDrbd1000 = "/dev/drbd1000"
+
 type fakeDRBDStatus struct {
 	st  drbd.Status
 	err error
@@ -50,7 +53,7 @@ func stagedVolume() *miroirv1alpha1.MiroirVolume {
 		},
 	}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DevicePath: "/dev/drbd1000"},
+		nodeKharkiv: {DeviceCreated: true, DevicePath: devDrbd1000},
 	}
 	return v
 }
@@ -103,7 +106,7 @@ func TestDevicePathHealthyReturnsDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/dev/drbd1000" {
+	if dev != devDrbd1000 {
 		t.Fatalf("dev = %q, want /dev/drbd1000", dev)
 	}
 }
@@ -114,7 +117,7 @@ func TestDevicePathRefusesDisklessNode(t *testing.T) {
 	v := stagedVolume()
 	// paris + oslo hold the data; kharkiv (this node) is the tie-breaker.
 	v.Spec.Replicas = []miroirv1alpha1.Replica{
-		{Node: nodeParis, NodeID: 0, Address: "192.168.1.42"},
+		{Node: nodeParis, NodeID: 0, Address: addrParis},
 		{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
 		{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv, Diskless: true},
 	}
@@ -132,9 +135,9 @@ func TestDevicePathRefusesDisklessNode(t *testing.T) {
 func twoLegVolume() *miroirv1alpha1.MiroirVolume {
 	v := stagedVolume()
 	v.Spec.Replicas = append(v.Spec.Replicas,
-		miroirv1alpha1.Replica{Node: nodeParis, NodeID: 1, Address: "192.168.1.42"})
+		miroirv1alpha1.Replica{Node: nodeParis, NodeID: 1, Address: addrParis})
 	v.Status.PerNode[nodeKharkiv] = miroirv1alpha1.ReplicaStatus{
-		DeviceCreated: true, DevicePath: "/dev/drbd1000", SplitBrain: true,
+		DeviceCreated: true, DevicePath: devDrbd1000, SplitBrain: true,
 	}
 	return v
 }
