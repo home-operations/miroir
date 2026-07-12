@@ -107,7 +107,7 @@ func TestRenderFreezeQuorumOptions(t *testing.T) {
 // The seed winner is the lowest diskful node id: a diskless tie-breaker
 // holding the lowest id must never win, or no diskful node would seed
 // UpToDate and the first handshake would deadlock all-Inconsistent.
-func TestSeedWinnerSkipsDiskless(t *testing.T) {
+func TestWinnerSkipsDiskless(t *testing.T) {
 	r := Resource{
 		LocalNode: nodeKharkiv,
 		Peers: []Peer{
@@ -116,12 +116,12 @@ func TestSeedWinnerSkipsDiskless(t *testing.T) {
 			{Node: nodeParis, NodeID: 2},
 		},
 	}
-	if !isWinner(r) {
+	if !IsWinner(r) {
 		t.Fatal("kharkiv (lowest diskful id) must win, not the diskless tie-breaker")
 	}
 	r.LocalNode = nodeOslo
-	if isWinner(r) {
-		t.Fatal("a diskless tie-breaker must never be the seed winner")
+	if IsWinner(r) {
+		t.Fatal("a diskless tie-breaker must never be the winner")
 	}
 }
 

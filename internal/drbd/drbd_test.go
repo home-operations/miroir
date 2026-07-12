@@ -244,24 +244,16 @@ func (f *fakeExec) notCalledWith(t *testing.T, substr string) {
 func TestApplyFreshResource(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv) // node-id 0 → winner
+	r := testResource(nodeKharkiv)
 
 	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
-	// Winner seeds Consistent+UpToDate flags into the local slot and
-	// every peer slot — partial seeding leaves the local current-UUID
-	// random and the first handshake aborts "unrelated data".
-	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI(volPvc1)+":0:0:0:1:1")
-	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1)+":0:0:0:1:1")
-	// Only actual peer slots are seeded, not all 32 metadata slots.
-	fe.notCalledWith(t, "set-gi --node-id 31")
-	// drbdmeta is addressed by minor: the resource/volume form is drbdadm
-	// syntax and makes drbdmeta consult kernel state through a malformed
-	// drbdsetup invocation with undefined output.
-	fe.calledWith(t, "drbdmeta --force 1000 v09 /dev/vg-miroir/pvc-1 internal set-gi")
-	fe.notCalledWith(t, "drbdmeta --force pvc-1/0")
+	// Metadata stays at UUID_JUST_CREATED: the birth generation is minted
+	// once by the winner over live connections (InitialUUID), never
+	// manufactured per node.
+	fe.notCalledWith(t, "set-gi")
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.res")); err != nil {
@@ -272,38 +264,13 @@ func TestApplyFreshResource(t *testing.T) {
 	}
 }
 
-func TestApplyNonWinnerSeedsWasUpToDate(t *testing.T) {
+func TestInitialUUID(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeParis) // node-id 1 → not winner
-
-	if err := d.Apply(t.Context(), r); err != nil {
+	if err := d.InitialUUID(t.Context(), volPvc1); err != nil {
 		t.Fatal(err)
 	}
-	// Non-winner seeds WasUpToDate (without Consistent): attaches
-	// Inconsistent but keeps the bitmap clean so no full resync fires.
-	// Reaches UpToDate at the first handshake.
-	fe.calledWith(t, "set-gi --node-id 0 "+Day0GI(volPvc1)+":0:0:0:0:1")
-	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1)+":0:0:0:0:1")
-	fe.notCalledWith(t, ":1:1")
-	fe.notCalledWith(t, "set-gi --node-id 31")
-}
-
-func TestApplySkipSeedLeavesJustCreatedMetadata(t *testing.T) {
-	fe := &fakeExec{}
-	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv)
-	r.SkipSeed = true // late joiner: must full-sync, not pose as a day0 twin
-
-	if err := d.Apply(t.Context(), r); err != nil {
-		t.Fatal(err)
-	}
-	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
-	fe.notCalledWith(t, "set-gi")
-	fe.calledWith(t, "drbdadm adjust pvc-1")
-	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
-		t.Fatal("marker not written")
-	}
+	fe.calledWith(t, "drbdadm new-current-uuid --clear-bitmap pvc-1/0")
 }
 
 // KernelAvailable keys on the kernel answering, not the binary being on
@@ -378,8 +345,8 @@ func TestApplySkipDiskAttachLeavesDiskDetached(t *testing.T) {
 
 // A backing disk replaced under a surviving .md-created marker makes the
 // first adjust fail "no valid meta-data"; Apply drops the stale marker,
-// recreates metadata (SkipSeed → full SyncTarget), and retries adjust.
-func TestApplyReseedsOnMissingMetadata(t *testing.T) {
+// recreates metadata (just-created → full SyncTarget), and retries adjust.
+func TestApplyRecreatesOnMissingMetadata(t *testing.T) {
 	dir := t.TempDir()
 	// Pre-existing marker from the pre-replacement life of the volume.
 	if err := os.WriteFile(filepath.Join(dir, "pvc-1.md-created"), nil, 0o640); err != nil {
@@ -389,10 +356,8 @@ func TestApplyReseedsOnMissingMetadata(t *testing.T) {
 		"adjust pvc-1": errors.New("drbdadm: no valid meta-data found"),
 	}}
 	d := &Driver{StateDir: dir, Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv)
-	r.SkipSeed = true // the recreated leg must full-sync, never re-seed day0
 
-	if err := d.Apply(t.Context(), r); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
@@ -431,40 +396,38 @@ func TestApplyIdempotent(t *testing.T) {
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 }
 
-func TestApplyReseedsAfterMidSeedCrash(t *testing.T) {
+func TestApplyRetriesAfterCreateMDCrash(t *testing.T) {
 	fe := &fakeExec{errOn: map[string]error{
-		"set-gi --node-id 1": errors.New("exit status 20: Unexpected output from drbdsetup"),
+		"create-md": errors.New("exit status 20: open failed"),
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource(nodeParis)
 
 	if err := d.Apply(t.Context(), r); err == nil {
-		t.Fatal("expected mid-seed failure")
+		t.Fatal("expected create-md failure")
 	}
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); !os.IsNotExist(err) {
-		t.Fatal("marker must not be written after a failed seed")
+		t.Fatal("marker must not be written after a failed create")
+	}
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-seeding")); err != nil {
+		t.Fatal("sentinel must survive the failed attempt")
 	}
 
-	// Retry: metadata now exists on disk (create-md ran), but the seeding
-	// sentinel proves it is our own half-seeded attempt — it must be
-	// re-seeded in full, never adopted (adoption deadlocks the handshake:
-	// both replicas Inconsistent, no sync source). The dump is
-	// deliberately non-virgin so only the sentinel can explain the
-	// re-seed.
+	// Retry: metadata landed on disk before the crash surfaced (still the
+	// just-created UUID), and the sentinel proves it is our own attempt —
+	// the retry completes without another create-md and lands the marker.
 	fe.errOn = nil
-	fe.responses = map[string]string{cmdDumpMD: mockCurrentUUID}
+	fe.responses = map[string]string{cmdDumpMD: "current-uuid 0x" + justCreatedUUID + ";"}
 	fe.calls = nil
 	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "set-gi --node-id 1 "+Day0GI(volPvc1))
-	fe.notCalledWith(t, "set-gi --node-id 31")
 	fe.notCalledWith(t, "create-md")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
-		t.Fatal("marker not written after successful re-seed")
+		t.Fatal("marker not written after successful retry")
 	}
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-seeding")); !os.IsNotExist(err) {
-		t.Fatal("seeding sentinel must be removed after success")
+		t.Fatal("sentinel must be removed after success")
 	}
 }
 
@@ -580,10 +543,10 @@ func TestApplyAdoptsLiveMetadataWithoutMarkers(t *testing.T) {
 	}
 }
 
-func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
-	// Markers lost, device detached, GI still the day0 seed with clean
-	// bitmaps: provably no data — re-seeding is safe and unsticks a
-	// partially seeded volume.
+func TestApplyClaimsVirginMetadataWithoutMarkers(t *testing.T) {
+	// Markers lost, device detached, GI still a day0 seed (older release)
+	// with clean bitmaps: provably no data — claim it as our own (marker
+	// lands) without recreating; a written volume would be adopted instead.
 	fe := &fakeExec{responses: map[string]string{
 		cmdDumpMD: "current-uuid 0x" + Day0GI(volPvc1) + ";\nbitmap-uuid 0x0000000000000000;",
 	}}
@@ -592,9 +555,14 @@ func TestApplyReseedsVirginMetadataWithoutMarkers(t *testing.T) {
 	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "set-gi --node-id 1")
-	fe.notCalledWith(t, "set-gi --node-id 31")
 	fe.notCalledWith(t, "create-md")
+	fe.notCalledWith(t, "set-gi")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
+		t.Fatal("virgin metadata must be claimed with the marker")
+	}
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); !os.IsNotExist(err) {
+		t.Fatal("virgin metadata is ours, not an adoption")
+	}
 }
 
 func TestVirginMetadata(t *testing.T) {
@@ -678,6 +646,29 @@ func TestStatusPerPeerConnected(t *testing.T) {
 	}
 	if !s.PeerConnected[1] || s.PeerConnected[2] {
 		t.Fatalf("per-peer state wrong: %+v", s.PeerConnected)
+	}
+}
+
+// Per-peer disk state keys on the DRBD node id — the birth-generation
+// trigger requires every diskful leg to read Inconsistent.
+func TestStatusPerPeerDiskState(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"Inconsistent"}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connected",
+				 "peer_devices":[{"peer-disk-state":"Inconsistent"}]},
+				{"peer-node-id":2,"connection-state":"Connecting",
+				 "peer_devices":[{"peer-disk-state":"DUnknown"}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.PeerDiskState[1] != DiskInconsistent || s.PeerDiskState[2] != "DUnknown" {
+		t.Fatalf("per-peer disk state wrong: %+v", s.PeerDiskState)
 	}
 }
 

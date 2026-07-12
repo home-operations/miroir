@@ -26,10 +26,11 @@ ENTRYPOINT ["/usr/local/bin/miroir"]
 # zfsutils-linux lives in contrib. Version notes (trixie, no backports):
 #   - drbd-utils 9.22: every CLI/JSON surface miroir uses predates it
 #     (adjust --skip-disk 8.9.7, status --json 8.9.8, quorum 8.9.11;
-#     peer_devices/percent-in-sync/out-of-sync verified in the v9.22.0
-#     source). GI seeding depends on drbdmeta CLI behavior — re-validate
-#     with smoke.sh + conformance on real DRBD (the kind e2e exercises
-#     the local backend only) before shipping a base bump.
+#     peer_devices/percent-in-sync/out-of-sync/peer-disk-state verified
+#     in the v9.22.0 source). The birth generation depends on drbdadm
+#     new-current-uuid --clear-bitmap behavior — re-validate with
+#     smoke.sh + conformance on real DRBD (the kind e2e exercises the
+#     local backend only) before shipping a base bump.
 #   - zfs userland 2.3 against the siderolabs/zfs 2.4 module: userland
 #     older than the module is the supported direction, and miroir only
 #     uses ancient ops (create -V/snapshot/clone/promote/volsize).
