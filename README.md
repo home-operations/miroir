@@ -372,6 +372,11 @@ via CSI.
 - **Other LVM tenants**: bound the thin pool with
   `nodes.<node>.thinPoolSize` (e.g. `400g`) and let the co-tenant
   allocate from the VG's remainder.
+- **Rook/Ceph**: miroir's default DRBD port base (7000) collides with
+  the Ceph mgr dashboard's non-SSL default on host-network clusters.
+  Set `drbd.portBase` in Helm values to move miroir's range, or move
+  the dashboard (`cephClusterSpec.dashboard.port`). See
+  [Troubleshooting](#troubleshooting).
 
 ## Troubleshooting
 
@@ -387,6 +392,22 @@ via CSI.
 - **Replicated volume stuck in `Degraded`**: one leg isn't
   `UpToDate`. `kubectl describe miroirvolume <name>` shows per-node
   status; usually a transient DRBD sync.
+- **Replicated volume stuck `Connecting`, no split-brain, PVC hangs in
+  `ContainerCreating`**: the DRBD replication port (default 7000,
+  allocated per volume ascending) may be occupied by a host-network
+  tenant — most commonly the Ceph mgr dashboard, whose non-SSL default
+  is also 7000. The agent runs `hostNetwork: true`, so DRBD binds on the
+  node's kernel and the collision is silent (no split-brain, so the
+  recovery path never engages). Check `dmesg` on the node for
+  `Failed to initiate connection, err=-98` (EADDRINUSE); peers dialing
+  in reach the dashboard instead and log
+  `Wrong magic value 0x48545450` (`"HTTP"` in ASCII). Identify the
+  squatter with `curl -sI http://<node>:7000/` — a `Ceph-Dashboard`
+  server header confirms it. Fix by setting `drbd.portBase` (e.g.
+  `7100`) in Helm values, or moving the Ceph dashboard
+  (`cephClusterSpec.dashboard.port: 8081`). Existing volumes keep their
+  assigned ports — only new allocations use the new base
+  ([#148](https://github.com/home-operations/miroir/issues/148)).
 
 ## Uninstall
 

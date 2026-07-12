@@ -67,6 +67,11 @@ type Controller struct {
 	// AutoTieBreaker adds a diskless tie-breaker replica to new 2-replica
 	// freeze volumes when a spare storage node exists (#70).
 	AutoTieBreaker bool
+	// DRBDPortBase is the lowest TCP port the allocator hands to replicated
+	// volumes (one per resource, ascending). Zero → defaultDRBDPortBase.
+	// Configurable so operators can move the range off host-network tenants
+	// like the Ceph mgr dashboard (default 7000). See issue #148.
+	DRBDPortBase int32
 
 	// allocMu serialises CreateVolume RPCs that run concurrently within
 	// the single controller pod: two interleaved List→Create spans would
@@ -80,6 +85,11 @@ const (
 	// defaultOvercommitRatio caps provisioned-over-capacity per pool
 	// (notes/DESIGN.md §4.6); 2× is the documented default.
 	defaultOvercommitRatio = 2.0
+	// defaultDRBDPortBase is the lowest DRBD replication port when
+	// DRBDPortBase is unset (zero). Ceph mgr dashboard's non-SSL default
+	// is also 7000; operators co-locating with Rook host-network Ceph can
+	// move this via the --drbd-port-base flag / drbd.portBase Helm value.
+	defaultDRBDPortBase = 7000
 	// statsStaleAfter ignores MiroirNode figures older than this as
 	// unknown — the agent republishes every ~60s, so a few missed polls
 	// mean the node is down and its stats can't be trusted for placement.
@@ -561,7 +571,10 @@ func provisionedPerNode(vols []miroirv1alpha1.MiroirVolume, exclude string) map[
 // within the pod. The minor is per-node and allocated locally by each
 // agent.
 func (c *Controller) allocateDRBD(vols []miroirv1alpha1.MiroirVolume) (*miroirv1alpha1.DRBDSpec, error) {
-	const portBase = 7000
+	portBase := c.DRBDPortBase
+	if portBase == 0 {
+		portBase = defaultDRBDPortBase
+	}
 	usedPort := map[int32]bool{}
 	for _, v := range vols {
 		if v.Spec.DRBD != nil {

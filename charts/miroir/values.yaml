@@ -227,6 +227,12 @@ volumeSnapshotClass:
 # DRBD's built-in default. Tune to your replication network — see the LINBIT
 # "Tuning the DRBD Resync Controller" guide.
 drbd:
+  # -- Lowest TCP port for DRBD replication links, one per replicated volume
+  # ascending (7000, 7001, …). The agent runs hostNetwork so these bind on
+  # the node's kernel. Ceph mgr dashboard's non-SSL default is also 7000;
+  # co-locating with Rook host-network Ceph requires moving one of them
+  # (see issue #148). Existing volumes keep their assigned ports.
+  portBase: 7000
   # How a diskful replica reacts to a backing-device I/O error. detach
   # (the LINSTOR/DRBD-recommended default) drops the failing leg to
   # Diskless and serves reads/writes via the peer instead of surfacing
