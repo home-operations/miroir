@@ -26,6 +26,8 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -111,6 +113,19 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		return nil, err
 	}
 
+	// RWX volumes are served over NFS by a gateway pod; the device lives on
+	// the gateway's node, not here, so this path never touches it.
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+		}
+		return nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", req.GetVolumeId(), err)
+	}
+	if vol.Spec.Export != nil {
+		return n.stageNFS(req, vol)
+	}
+
 	dev, vol, err := n.devicePath(ctx, req.GetVolumeId())
 	if err != nil {
 		return nil, err
@@ -134,11 +149,48 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 
 	fsType := req.GetVolumeCapability().GetMount().GetFsType()
 	if fsType == "" {
-		fsType = "ext4"
+		fsType = defaultFSType
 	}
 	flags := req.GetVolumeCapability().GetMount().GetMountFlags()
 	if err := stage.EnsureFilesystem(ctx, n.deps(), vol, dev, req.GetStagingTargetPath(), fsType, flags); err != nil {
 		return nil, err
+	}
+	return &csi.NodeStageVolumeResponse{}, nil
+}
+
+// stageNFS mounts an RWX volume's NFS export at the staging path. The
+// gateway pod owns the device, the filesystem, and the Formatted/Activated
+// latches, so a consumer node only mounts.
+func (n *Node) stageNFS(req *csi.NodeStageVolumeRequest, vol *miroirv1alpha1.MiroirVolume) (*csi.NodeStageVolumeResponse, error) {
+	if req.GetVolumeCapability().GetBlock() != nil {
+		return nil, status.Error(codes.InvalidArgument, "RWX volumes are filesystem-only")
+	}
+	if vol.Status.Export == nil || vol.Status.Export.Address == "" {
+		return nil, status.Errorf(codes.Unavailable, "volume %s NFS gateway not ready", vol.Name)
+	}
+
+	target := req.GetStagingTargetPath()
+	notMnt, err := n.Mounter.IsLikelyNotMountPoint(target)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(target, 0o750); err != nil {
+			return nil, status.Errorf(codes.Internal, "mkdir staging path: %v", err)
+		}
+		notMnt = true
+	} else if err != nil {
+		return nil, status.Errorf(codes.Internal, "inspect staging path: %v", err)
+	}
+	if !notMnt {
+		return &csi.NodeStageVolumeResponse{}, nil
+	}
+
+	// hard: a gateway failover must stall I/O, never surface EIO into the
+	// app. noresvport: reconnect from a fresh source port so the mount
+	// survives the Service endpoint moving to the replacement gateway pod.
+	opts := append([]string{"vers=4.1", "hard", "noresvport", "timeo=600", "retrans=5"},
+		req.GetVolumeCapability().GetMount().GetMountFlags()...)
+	source := fmt.Sprintf("%s:/%s", vol.Status.Export.Address, vol.Name)
+	if err := n.Mounter.Mount(source, target, "nfs4", opts); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "mount %s at %s: %v", source, target, err)
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
 }
