@@ -32,7 +32,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -429,7 +428,7 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 	for i, name := range ordered {
 		r := miroirv1alpha1.Replica{Node: name, Backend: c.Nodes[name].Backend}
 		if count > 1 {
-			addr, err := c.nodeInternalIP(ctx, name)
+			addr, err := c.replicationAddress(ctx, name)
 			if err != nil {
 				return nil, err
 			}
@@ -453,7 +452,7 @@ func (c *Controller) withTieBreaker(ctx context.Context, placed []miroirv1alpha1
 	if tb == "" {
 		return placed, nil
 	}
-	addr, err := c.nodeInternalIP(ctx, tb)
+	addr, err := c.replicationAddress(ctx, tb)
 	if err != nil {
 		return nil, err
 	}
@@ -497,19 +496,14 @@ func spreadByZone(ordered []string, pinned, count int, zoneOf func(string) strin
 	return picked
 }
 
-// nodeInternalIP resolves a node's replication endpoint from its Node
-// object — no addresses to maintain in Helm values.
-func (c *Controller) nodeInternalIP(ctx context.Context, name string) (string, error) {
-	node := &corev1.Node{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, node); err != nil {
-		return "", status.Errorf(codes.Internal, "get node %s: %v", name, err)
+// replicationAddress resolves a node's replication endpoint — the node
+// map's address override, or the node's InternalIP when unset.
+func (c *Controller) replicationAddress(ctx context.Context, name string) (string, error) {
+	addr, err := c.Nodes.ReplicationAddress(ctx, c.Client, name)
+	if err != nil {
+		return "", status.Errorf(codes.Internal, "%v", err)
 	}
-	for _, a := range node.Status.Addresses {
-		if a.Type == corev1.NodeInternalIP {
-			return a.Address, nil
-		}
-	}
-	return "", status.Errorf(codes.Internal, "node %s has no InternalIP", name)
+	return addr, nil
 }
 
 // reader returns the API-server reader for read-your-writes, falling back
@@ -886,8 +880,9 @@ func csiSnapshot(snap *miroirv1alpha1.MiroirSnapshot, sizeBytes int64) *csi.Snap
 // restoreReplicas copies the source volume's replica layout for a clone,
 // cleaned: FullSync is stripped — every leg clones its byte-identical
 // local snapshot, so a carried flag would full-resync one for nothing —
-// and replication addresses are re-resolved from the live Node objects
-// (the source's were captured at its creation and can be stale).
+// and replication addresses are re-resolved (node-map override, else the
+// live Node's InternalIP; the source's were captured at its creation and
+// can be stale).
 func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1.MiroirVolume, snap *miroirv1alpha1.MiroirSnapshot) ([]miroirv1alpha1.Replica, error) {
 	reps := slices.Clone(srcVol.Spec.Replicas)
 	for i := range reps {
@@ -901,7 +896,7 @@ func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1
 		if reps[i].Address == "" {
 			continue
 		}
-		addr, err := c.nodeInternalIP(ctx, reps[i].Node)
+		addr, err := c.replicationAddress(ctx, reps[i].Node)
 		if err != nil {
 			return nil, err
 		}

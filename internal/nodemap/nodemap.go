@@ -21,18 +21,24 @@ limitations under the License.
 package nodemap
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"slices"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
-// Node describes one storage node's backend. Replication addresses are
-// not configured here: the controller resolves each node's InternalIP
-// from its Node object at volume creation and persists it in the CRD.
+// Node describes one storage node's backend. Replication endpoints default
+// to the node's InternalIP, resolved from its Node object at volume
+// creation and persisted in the CRD; `address` overrides that for a
+// dedicated replication NIC.
 type Node struct {
 	// Backend selects the storage implementation: "lvmthin" | "zfs".
 	Backend miroirv1alpha1.BackendType `json:"backend"`
@@ -40,6 +46,10 @@ type Node struct {
 	// the controller spreads a volume's replicas across distinct zones;
 	// empty means unconstrained.
 	Zone string `json:"zone,omitempty"`
+	// Address optionally pins the node's DRBD replication endpoint to a
+	// dedicated storage NIC/VLAN IP (IPv4 or IPv6); empty falls back to
+	// the node's InternalIP.
+	Address string `json:"address,omitempty"`
 	// Device is the block device backing the LVM VG (lvmthin).
 	Device string `json:"device,omitempty"`
 	// ZFSDataset is the parent dataset for zvols (zfs).
@@ -108,6 +118,29 @@ func Load(path string) (Map, error) {
 		if n.Backend == miroirv1alpha1.BackendLoopfile && n.BaseDir == "" {
 			return nil, fmt.Errorf("node %s: loopfile backend requires baseDir", name)
 		}
+		if n.Address != "" && net.ParseIP(n.Address) == nil {
+			return nil, fmt.Errorf("node %s: invalid address %q", name, n.Address)
+		}
 	}
 	return m, nil
+}
+
+// ReplicationAddress resolves a node's DRBD replication endpoint: the node
+// map's address override when set (dedicated storage NIC/VLAN), otherwise
+// the Node object's InternalIP. An override needs no Node lookup, so it
+// resolves even before the kubelet posts the node's addresses.
+func (m Map) ReplicationAddress(ctx context.Context, r client.Reader, name string) (string, error) {
+	if a := m[name].Address; a != "" {
+		return a, nil
+	}
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, node); err != nil {
+		return "", fmt.Errorf("get node %s: %w", name, err)
+	}
+	for _, a := range node.Status.Addresses {
+		if a.Type == corev1.NodeInternalIP {
+			return a.Address, nil
+		}
+	}
+	return "", fmt.Errorf("node %s has no InternalIP", name)
 }

@@ -18,6 +18,7 @@ package csi
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 
@@ -314,6 +315,57 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	}
 }
 
+// A node map address override pins that replica's endpoint; a node without
+// one still falls back to its InternalIP — both can appear in one volume.
+func TestCreateVolumeReplicatedAddressOverride(t *testing.T) {
+	s := newScheme(t)
+	nodes := maps.Clone(testNodes)
+	paris := nodes[nodeParis]
+	paris.Address = "10.0.100.42"
+	nodes[nodeParis] = paris
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if err := cl.Get(ctx, key, obj, opts...); err != nil {
+						return err
+					}
+					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
+						vol.Status.Phase = miroirv1alpha1.VolumeReady
+					}
+					return nil
+				},
+			}).Build(),
+		Nodes:            nodes,
+		ProvisionTimeout: 2 * time.Second,
+	}
+
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               "pvc-ovr",
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		AccessibilityRequirements: &csi.TopologyRequirement{
+			Preferred: []*csi.Topology{
+				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-ovr"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	// paris preferred → replicas[0]; its override wins, kharkiv falls back.
+	if vol.Spec.Replicas[0].Address != "10.0.100.42" ||
+		vol.Spec.Replicas[1].Address != addrKharkiv {
+		t.Fatalf("override/fallback not applied: %+v", vol.Spec.Replicas)
+	}
+}
+
 // tieBreakerController is a 3-node controller whose fake client flips
 // created volumes to Ready, for exercising the auto-tie-breaker path.
 func tieBreakerController(t *testing.T, autoTieBreaker bool) *Controller {
@@ -384,6 +436,35 @@ func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 	}
 	if len(vol.Finalizers) != 3 {
 		t.Fatalf("tie-breaker node needs a teardown finalizer: %v", vol.Finalizers)
+	}
+}
+
+// The diskless tie-breaker resolves its endpoint through the same path, so
+// a node map override pins its replication address too.
+func TestCreateVolumeAutoTieBreakerAddressOverride(t *testing.T) {
+	c := tieBreakerController(t, true)
+	c.Nodes[nodeOslo] = nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Address: "10.0.100.44"}
+
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               "pvc-tbo",
+		VolumeCapabilities: volCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		AccessibilityRequirements: &csi.TopologyRequirement{
+			Preferred: []*csi.Topology{
+				{Segments: map[string]string{constants.TopologyKey: nodeKharkiv}},
+				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-tbo"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if tb := vol.Spec.Replicas[2]; tb.Node != nodeOslo || tb.Address != "10.0.100.44" {
+		t.Fatalf("tie-breaker did not take the override address: %+v", tb)
 	}
 }
 
@@ -595,6 +676,71 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 	}
 	if got.Spec.Replicas[0].Address != addrKharkiv || got.Spec.Replicas[1].Address != addrParis {
 		t.Fatalf("addresses must be re-resolved: %+v", got.Spec.Replicas)
+	}
+}
+
+// A clone re-resolves addresses through the node map, so an override that
+// was configured after the source volume was created supersedes the stale
+// address the source persisted.
+func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "192.0.2.1"},
+				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "192.0.2.2"},
+			},
+		},
+	}
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{
+				nodeKharkiv: miroirv1alpha1.SnapshotDone,
+				nodeParis:   miroirv1alpha1.SnapshotDone,
+			}},
+	}
+	cl := readyOnGet(s)
+	for _, obj := range []client.Object{srcVol, srcSnap,
+		nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
+		if err := cl.Create(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cl.Status().Update(t.Context(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	nodes := maps.Clone(testNodes)
+	kharkiv := nodes[nodeKharkiv]
+	kharkiv.Address = "10.0.100.1"
+	nodes[nodeKharkiv] = kharkiv
+	c := &Controller{Client: cl, ProvisionTimeout: 2 * time.Second, Nodes: nodes}
+
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapSnap1},
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Replicas[0].Address != "10.0.100.1" || got.Spec.Replicas[1].Address != addrParis {
+		t.Fatalf("clone did not re-resolve through the override: %+v", got.Spec.Replicas)
 	}
 }
 

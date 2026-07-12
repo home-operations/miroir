@@ -29,8 +29,6 @@ import (
 	"fmt"
 	"slices"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -126,19 +124,9 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 	if dup > 1 {
 		return fmt.Errorf("%w: node %s appears %d times in spec.replicas", errBadPlacement, rep.Node, dup)
 	}
-	node := &corev1.Node{}
-	if err := r.Get(ctx, types.NamespacedName{Name: rep.Node}, node); err != nil {
-		return fmt.Errorf("get node %s: %w", rep.Node, err)
-	}
-	addr := ""
-	for _, a := range node.Status.Addresses {
-		if a.Type == corev1.NodeInternalIP {
-			addr = a.Address
-			break
-		}
-	}
-	if addr == "" {
-		return fmt.Errorf("node %s has no InternalIP", rep.Node)
+	addr, err := r.Nodes.ReplicationAddress(ctx, r.Client, rep.Node)
+	if err != nil {
+		return err
 	}
 
 	id := int32(0)

@@ -127,6 +127,24 @@ func TestCompletesAddedReplica(t *testing.T) {
 	}
 }
 
+// An address override in the node map completes the entry without a Node
+// object: the override needs no InternalIP lookup, so a node whose kubelet
+// has not posted addresses yet still joins.
+func TestCompletesAddedReplicaWithAddressOverride(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(replicatedVol()). // no oslo Node object
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin, Address: "10.0.100.43"},
+	}}
+
+	reconcile(t, r, "pvc-1")
+
+	if got := get(t, r, "pvc-1").Spec.Replicas[2]; got.Address != "10.0.100.43" {
+		t.Fatalf("entry not completed with the override address: %+v", got)
+	}
+}
+
 func TestReusesLowestFreeNodeID(t *testing.T) {
 	v := replicatedVol()
 	v.Spec.Replicas[1].NodeID = 2 // id 1 was freed by an earlier removal

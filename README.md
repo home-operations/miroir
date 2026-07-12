@@ -100,6 +100,7 @@ nodes:
         backend: lvmthin
         device: /dev/disk/by-partlabel/r-miroir
         zone: rack-a # optional failure domain
+        address: 10.0.100.11 # optional: replicate over a dedicated NIC
     paris:
         backend: zfs
         zfsDataset: data-pool/miroir
@@ -113,6 +114,11 @@ nodes:
 `zone` is optional: when set, replicas — and the quorum tie-breaker —
 prefer distinct zones (rack, room, AZ). Nodes without a zone are
 unconstrained.
+
+`address` is optional: it pins DRBD replication to a dedicated storage
+NIC/VLAN (IPv4 or IPv6); without it, the node's `InternalIP` is used. It
+applies to volumes created afterwards — existing volumes keep the address
+resolved at creation.
 
 | Backend    | You provide                            | Notes                                  |
 | ---------- | -------------------------------------- | -------------------------------------- |

@@ -21,6 +21,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
@@ -47,9 +54,11 @@ kharkiv:
   device: /dev/disk/by-partlabel/r-miroir
   thinPoolSize: 400g
   zone: rack-1
+  address: 10.0.100.1
 paris:
   backend: zfs
   zfsDataset: tank/miroir
+  address: "fd00:1::2"
 oslo:
   backend: loopfile
   baseDir: /var/lib/miroir
@@ -72,6 +81,9 @@ oslo:
 	if m["oslo"].BaseDir != "/var/lib/miroir" {
 		t.Fatalf("oslo baseDir wrong: %+v", m["oslo"])
 	}
+	if m["kharkiv"].Address != "10.0.100.1" || m["paris"].Address != "fd00:1::2" {
+		t.Fatalf("addresses parsed wrong: %q %q", m["kharkiv"].Address, m["paris"].Address)
+	}
 }
 
 func TestLoadErrors(t *testing.T) {
@@ -81,6 +93,8 @@ func TestLoadErrors(t *testing.T) {
 		"loopfile without baseDir": "oslo:\n  backend: loopfile\n",
 		"unknown field":            "kharkiv:\n  backend: lvmthin\n  bogus: x\n",
 		"malformed yaml":           "kharkiv: : :\n",
+		"invalid address":          "kharkiv:\n  backend: lvmthin\n  address: not-an-ip\n",
+		"address is a CIDR":        "kharkiv:\n  backend: lvmthin\n  address: 10.0.0.0/24\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -131,6 +145,68 @@ func TestTieBreakerNode(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := tc.m.TieBreakerNode(replicas); got != tc.want {
 				t.Fatalf("TieBreakerNode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReplicationAddress(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	withNode := func(objs ...client.Object) client.Client {
+		return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	}
+	internalIP := func(name, ip string) *corev1.Node {
+		return &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: ip},
+			}},
+		}
+	}
+	cases := map[string]struct {
+		m       Map
+		client  client.Client
+		want    string
+		wantErr bool
+	}{
+		"override skips the node lookup": {
+			m:      Map{nodeKharkiv: {Address: "10.0.100.5"}},
+			client: withNode(), // no Node object registered
+			want:   "10.0.100.5",
+		},
+		"falls back to InternalIP": {
+			m:      Map{nodeKharkiv: {}},
+			client: withNode(internalIP(nodeKharkiv, "192.168.1.41")),
+			want:   "192.168.1.41",
+		},
+		"node without InternalIP errors": {
+			m:       Map{nodeKharkiv: {}},
+			client:  withNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeKharkiv}}),
+			wantErr: true,
+		},
+		"absent node errors": {
+			m:       Map{nodeKharkiv: {}},
+			client:  withNode(),
+			wantErr: true,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := tc.m.ReplicationAddress(t.Context(), tc.client, nodeKharkiv)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("ReplicationAddress = %q, want %q", got, tc.want)
 			}
 		})
 	}
