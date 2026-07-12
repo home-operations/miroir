@@ -1706,10 +1706,10 @@ func TestReconcileFastPathDeepCheckExpiry(t *testing.T) {
 }
 
 // splitBrainSetup builds a 2-replica DRBD volume (kharkiv node id 0 = seed
-// winner, paris node id 1) whose kernel status reports a StandAlone
+// winner, paris node id 1) whose kernel status reports a connState
 // connection to peerNodeID, plus a reconciler running on nodeName. activated
 // latches Status.Activated (the auto-recovery gate).
-func splitBrainSetup(t *testing.T, nodeName, peerNodeID string, activated bool) (*VolumeReconciler, *fakeDRBDExec) {
+func splitBrainSetup(t *testing.T, nodeName, peerNodeID, connState string, activated bool) (*VolumeReconciler, *fakeDRBDExec) {
 	t.Helper()
 	s := newScheme(t)
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
@@ -1729,7 +1729,7 @@ func splitBrainSetup(t *testing.T, nodeName, peerNodeID string, activated bool) 
 	}
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"peer-node-id":` + peerNodeID + `,"connection-state":"StandAlone"}]}]`}
+		"connections":[{"peer-node-id":` + peerNodeID + `,"connection-state":"` + connState + `"}]}]`}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -1745,7 +1745,7 @@ func splitBrainSetup(t *testing.T, nodeName, peerNodeID string, activated bool) 
 // winner (kharkiv, node id 0) reconnects as the sync source and never
 // discards data (issue #139).
 func TestReconcileSplitBrainWinnerReconnectsWhenNeverActivated(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeKharkiv, "1", false)
+	r, fe := splitBrainSetup(t, nodeKharkiv, "1", "StandAlone", false)
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect pvc-1")
@@ -1755,7 +1755,7 @@ func TestReconcileSplitBrainWinnerReconnectsWhenNeverActivated(t *testing.T) {
 // The losing leg (paris, node id 1) discards its own generation so it
 // full-syncs from the winner.
 func TestReconcileSplitBrainLoserDiscardsWhenNeverActivated(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", false)
+	r, fe := splitBrainSetup(t, nodeParis, "0", "StandAlone", false)
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
@@ -1764,7 +1764,7 @@ func TestReconcileSplitBrainLoserDiscardsWhenNeverActivated(t *testing.T) {
 // An activated volume may hold data: split-brain is never auto-resolved, it
 // is left for an operator.
 func TestReconcileSplitBrainNoAutoRecoveryWhenActivated(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", true)
+	r, fe := splitBrainSetup(t, nodeParis, "0", "StandAlone", true)
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "discard-my-data")
 	fe.notCalledWith(t, "drbdadm disconnect")
@@ -1774,7 +1774,7 @@ func TestReconcileSplitBrainNoAutoRecoveryWhenActivated(t *testing.T) {
 // grow-to-fill after mkfs/mount) carries data and must not be auto-discarded,
 // even though Activated is still false.
 func TestReconcileSplitBrainNoAutoRecoveryWhenFormatted(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", false)
+	r, fe := splitBrainSetup(t, nodeParis, "0", "StandAlone", false)
 	var v miroirv1alpha1.MiroirVolume
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
 		t.Fatal(err)
@@ -1786,4 +1786,88 @@ func TestReconcileSplitBrainNoAutoRecoveryWhenFormatted(t *testing.T) {
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "discard-my-data")
 	fe.notCalledWith(t, "drbdadm disconnect")
+}
+
+// reportPeerSplitBrain marks the given node's status slot split-brain, the
+// signal a survivor leaves for the losing leg.
+func reportPeerSplitBrain(t *testing.T, r *VolumeReconciler, node string) {
+	t.Helper()
+	var v miroirv1alpha1.MiroirVolume
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.Status.PerNode == nil {
+		v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
+	}
+	v.Status.PerNode[node] = miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: true, SplitBrain: true,
+	}
+	if err := r.Status().Update(t.Context(), &v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The losing leg of a birth split never parks StandAlone — its connection
+// sits Connecting while the survivor refuses the handshake — so it must take
+// the winner's reported split-brain as its trigger and discard (issue #144).
+func TestReconcileSplitBrainLoserDiscardsOnPeerReport(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeParis, "0", "Connecting", false)
+	reportPeerSplitBrain(t, r, nodeKharkiv)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdadm disconnect pvc-1")
+	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
+}
+
+// A stale peer split-brain report on a healthy, fully connected leg (the
+// survivor's status patch lags its recovery) must not churn the volume.
+func TestReconcileSplitBrainPeerReportIgnoredWhenConnected(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeParis, "0", "Connected", false)
+	reportPeerSplitBrain(t, r, nodeKharkiv)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "discard-my-data")
+	fe.notCalledWith(t, "drbdadm disconnect")
+}
+
+// Recovery flaps connections, and each flap is a DRBD event that requeues
+// the volume — attempts must be floored to one per poll interval or the
+// agent thrashes several times per second (issue #144).
+func TestReconcileSplitBrainRecoveryDebounced(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeKharkiv, "1", "StandAlone", false)
+	reconcile(t, r, volPvc1)
+	attempts := countCalls(fe, "drbdadm connect pvc-1")
+	if attempts != 1 {
+		t.Fatalf("first reconcile must attempt recovery once, got %d", attempts)
+	}
+	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "drbdadm connect pvc-1"); n != attempts {
+		t.Fatalf("immediate re-reconcile must not re-attempt recovery: %d -> %d", attempts, n)
+	}
+}
+
+// A peer-reported split-brain must break the fast path: the losing leg's own
+// kernel state is a steady Connecting that never invalidates the fingerprint,
+// so only the peers' status can route it into recovery (issue #144).
+func TestFastPathMissesOnPeerReportedSplitBrain(t *testing.T) {
+	r, fe := splitBrainSetup(t, nodeParis, "0", "Connecting", false)
+	var v miroirv1alpha1.MiroirVolume
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
+		t.Fatal(err)
+	}
+	// Prime the fast path: settled size in this node's slot, the winner's
+	// split-brain report, and a fingerprint matching the live kernel state.
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeParis:   {DeviceCreated: true, SizeBytes: 1 << 30},
+		nodeKharkiv: {DeviceCreated: true, SplitBrain: true},
+	}
+	if err := r.Status().Update(t.Context(), &v); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.DRBD.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.storeRealized(v.Generation, volPvc1, st, true)
+
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
 }

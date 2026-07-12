@@ -70,6 +70,13 @@ type VolumeReconciler struct {
 	// whole realize/adjust/probe pipeline. See fastPath.
 	realizedMu sync.Mutex
 	realized   map[string]realizedState
+
+	// lastRecovery stamps the last split-brain recovery attempt per volume.
+	// Recovery itself flaps connections, and every flap is a DRBD event that
+	// requeues the volume — without a floor the agent re-enters recovery
+	// several times per second. See recoverSplitBrain.
+	recoveryMu   sync.Mutex
+	lastRecovery map[string]time.Time
 }
 
 // realizedState is the fingerprint of a completed full pass: repeating
@@ -228,10 +235,16 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	if st.SplitBrain {
-		r.recoverSplitBrain(ctx, vol, resource)
-	}
 	connected := diskfulPeersConnected(st, vol, r.NodeName)
+	// The losing leg of a split never parks StandAlone locally — it sits
+	// Connecting while the survivor refuses the handshake — so its only
+	// signal that it must discard is a peer's reported split-brain (issue
+	// #144). Gated on !connected so a stale peer report cannot churn a
+	// healthy volume.
+	splitActive := st.SplitBrain || (!connected && peerReportedSplitBrain(vol, r.NodeName))
+	if splitActive {
+		r.recoverSplitBrain(ctx, vol, resource, st.SplitBrain)
+	}
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
 		recordVolumeMetrics(vol.Name, miroirReplicaView{
@@ -263,9 +276,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	// Cache only the settled state: a mid-grow pass (short requeue, size
 	// withheld) must keep taking the full pipeline until the grow lands, and
-	// a split-brain volume must re-enter it every poll so recoverSplitBrain
-	// keeps retrying until the connections re-form.
-	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !st.SplitBrain {
+	// a split-brain volume — locally seen or peer-reported — must re-enter it
+	// every poll so recoverSplitBrain keeps retrying until the connections
+	// re-form.
+	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !splitActive {
 		r.storeRealized(vol.Generation, vol.Name, st, true)
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
@@ -294,6 +308,13 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 	}
 	st, err := r.DRBD.Status(ctx, vol.Name)
 	if err != nil || !statusEqual(st, entry.status) {
+		return false, ctrl.Result{}
+	}
+	// A peer reporting split-brain while this leg is not fully connected
+	// needs the full pipeline: the losing leg's own kernel state is a steady
+	// Connecting that never breaks statusEqual, so only the peers' status
+	// can route it into recoverSplitBrain (issue #144).
+	if !diskfulPeersConnected(st, vol, r.NodeName) && peerReportedSplitBrain(vol, r.NodeName) {
 		return false, ctrl.Result{}
 	}
 	if !localDiskless {
@@ -341,6 +362,14 @@ func (r *VolumeReconciler) dropRealized(name string) {
 	delete(r.realized, name)
 }
 
+// dropRecovery forgets a torn-down volume's split-brain debounce stamp so a
+// later volume under the same name starts with a clean slate.
+func (r *VolumeReconciler) dropRecovery(name string) {
+	r.recoveryMu.Lock()
+	defer r.recoveryMu.Unlock()
+	delete(r.lastRecovery, name)
+}
+
 // reconcileDeletion tears down the local leg of a deleted volume. Only
 // the agent owning a replica may release the finalizer, and only after
 // its local teardown succeeded — a foreign agent touching it would race
@@ -364,6 +393,7 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 	// must not blank a volume that still exists.
 	dropVolumeMetrics(vol.Name)
 	r.dropRealized(vol.Name)
+	r.dropRecovery(vol.Name)
 	return ctrl.Result{}, r.removeFinalizer(ctx, vol)
 }
 
@@ -493,29 +523,63 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 	}
 }
 
-// recoverSplitBrain reacts to a StandAlone split-brain. A volume that never
-// held data holds nothing to lose, so it applies ResolveSplitBrain to
-// self-heal (issue #139: a fresh replicated volume that comes up split-brain
-// otherwise loops forever and blocks its consumer). "Held data" is either
-// Activated (staged for a consumer) or Formatted (carries a filesystem) —
-// Formatted latches before the grow-to-fill step, so a formatted volume whose
-// stage failed at resize is still covered. Such a volume logs the manual
-// remedy on the transition edge and is left for an operator. Failures are
-// retried next poll — the split state is never fast-path cached.
-func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource) {
+// recoverSplitBrain reacts to a split-brain, seen locally (a StandAlone
+// connection) or reported by a peer's status slot. A volume that never held
+// data holds nothing to lose, so it applies ResolveSplitBrain to self-heal
+// (issue #139: a fresh replicated volume that comes up split-brain otherwise
+// loops forever and blocks its consumer). "Held data" is either Activated
+// (staged for a consumer) or Formatted (carries a filesystem) — Formatted
+// latches before the grow-to-fill step, so a formatted volume whose stage
+// failed at resize is still covered. Such a volume logs the manual remedy on
+// the transition edge (only where the split is locally visible — the losing
+// leg's own slot never records it, so it would log every poll) and is left
+// for an operator.
+//
+// Attempts are floored to one per poll interval: recovery flaps connections,
+// each flap is a DRBD event that requeues the volume, and without the floor
+// the agent re-enters here several times per second (issue #144). Failures
+// are retried on a later poll — the split state is never fast-path cached.
+func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, localSplit bool) {
 	log := ctrl.LoggerFrom(ctx)
 	if vol.Status.Activated || vol.Status.Formatted {
-		if !vol.Status.PerNode[r.NodeName].SplitBrain {
+		if localSplit && !vol.Status.PerNode[r.NodeName].SplitBrain {
 			log.Error(errSplitBrain,
 				"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
 				"volume", vol.Name)
 		}
 		return
 	}
+	r.recoveryMu.Lock()
+	if time.Since(r.lastRecovery[vol.Name]) < drbdPollInterval {
+		r.recoveryMu.Unlock()
+		return
+	}
+	if r.lastRecovery == nil {
+		r.lastRecovery = map[string]time.Time{}
+	}
+	r.lastRecovery[vol.Name] = time.Now()
+	r.recoveryMu.Unlock()
+
 	log.Info("auto-recovering split-brain on never-written volume", "volume", vol.Name)
 	if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
 		log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)
 	}
+}
+
+// peerReportedSplitBrain reports whether any other node's status slot
+// records a split-brain. The losing leg of a birth split never parks
+// StandAlone locally — the survivor refuses the handshake and the loser
+// returns to Connecting — so the peers' reported state is its only trigger.
+// Each slot holds only its own node's kernel state (patchStatus writes
+// st.SplitBrain), so the signal clears as soon as the survivor reconnects;
+// a leg never echoes a peer's report back into its own slot.
+func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool {
+	for node, st := range vol.Status.PerNode {
+		if node != self && st.SplitBrain {
+			return true
+		}
+	}
+	return false
 }
 
 // reconcileRemoval tears down a replica that was removed from
@@ -550,6 +614,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 	}
 	dropVolumeMetrics(vol.Name)
 	r.dropRealized(vol.Name)
+	r.dropRecovery(vol.Name)
 	// Drop this node's status slot — merge-patch null deletes the key.
 	// Best-effort ordering: a crash here leaves a stale slot, which
 	// nothing reads (phase and growth iterate spec.replicas only).
