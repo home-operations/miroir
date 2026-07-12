@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.10](https://github.com/home-operations/miroir/compare/0.4.9...0.4.10) (2026-07-12)
+
+
+### Features
+
+* allow a per-node replication address override ([#155](https://github.com/home-operations/miroir/issues/155)) ([5dde99e](https://github.com/home-operations/miroir/commit/5dde99e210f7906dd225fc7a513cd145fcc5cfae))
+* scheduled drbdadm verify with results in status and metrics ([#158](https://github.com/home-operations/miroir/issues/158)) ([16cc651](https://github.com/home-operations/miroir/commit/16cc6515a30f549cb26efe33fa9f9f609a1d5a72))
+
+
+### Bug Fixes
+
+* **agent:** discard verify results when a peer drops mid-pass ([#159](https://github.com/home-operations/miroir/issues/159)) ([d2f2e6f](https://github.com/home-operations/miroir/commit/d2f2e6f2862752bc44d0312fd8ab9a0a79e10bb4))
+* **nodemap:** reject duplicate replication addresses at load ([#157](https://github.com/home-operations/miroir/issues/157)) ([4bc24b8](https://github.com/home-operations/miroir/commit/4bc24b80b3dc13340315caa3dbbff14e0cedeed1))
+
 ## [0.4.9](https://github.com/home-operations/miroir/compare/0.4.8...0.4.9) (2026-07-12)
 
 
