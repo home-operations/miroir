@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -614,8 +615,12 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 type fakeDRBDExec struct {
 	calls      []string
 	statusJSON string
-	responses  map[string]string
-	errOn      map[string]error
+	// statusSeq is consumed first, one entry per `drbdsetup status --json`
+	// call — the birth-generation pass reads status twice (pre/post fire)
+	// and needs different answers. Falls back to statusJSON when drained.
+	statusSeq []string
+	responses map[string]string
+	errOn     map[string]error
 }
 
 func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (string, error) {
@@ -625,6 +630,11 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 		if strings.Contains(line, key) {
 			return "", err
 		}
+	}
+	if strings.HasPrefix(line, "drbdsetup status --json") && len(f.statusSeq) > 0 {
+		out := f.statusSeq[0]
+		f.statusSeq = f.statusSeq[1:]
+		return out, nil
 	}
 	if strings.HasPrefix(line, "drbdsetup status") {
 		return f.statusJSON, nil
@@ -1046,7 +1056,7 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 	fb := newFakeBackend()
 	r := &VolumeReconciler{Client: c, NodeName: nodeParis, Backend: fb}
 
-	if _, _, err := r.realizeBacking(t.Context(), v, true); err != nil {
+	if _, err := r.realizeBacking(t.Context(), v, true); err != nil {
 		t.Fatal(err)
 	}
 	if len(fb.fromSnapVol) != 0 {
@@ -1059,8 +1069,8 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 
 // A backing device that vanished after this node had realized it (the
 // status slot still says DeviceCreated) is the node-wipe signature: the
-// recreated device must full-sync, never re-seed the day0 GI and pose as
-// the peers' identical twin.
+// recreated device gets fresh just-created metadata and full-syncs at the
+// first handshake instead of posing as the peers' identical twin.
 func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
@@ -1870,4 +1880,196 @@ func TestFastPathMissesOnPeerReportedSplitBrain(t *testing.T) {
 
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
+}
+
+// --- birth generation ---------------------------------------------------
+
+const (
+	birthReadyJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"Inconsistent"}],
+		"connections":[{"peer-node-id":%d,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"Inconsistent"}]}]}]`
+	birthDoneJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate"}],
+		"connections":[{"peer-node-id":%d,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"UpToDate"}]}]}]`
+)
+
+// birthSetup builds a fresh 2-diskful volume (kharkiv node id 0 = winner,
+// paris node id 1) and a reconciler on nodeName whose kernel answers the
+// queued --json statuses (peerNodeID fills the connection entries).
+func birthSetup(t *testing.T, nodeName string, peerNodeID int, statusSeq ...string) (*VolumeReconciler, *fakeDRBDExec, *miroirv1alpha1.MiroirVolume) {
+	t.Helper()
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrParis
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \""+nodeName+"\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	seq := make([]string, len(statusSeq))
+	for i, tmpl := range statusSeq {
+		seq[i] = fmt.Sprintf(tmpl, peerNodeID)
+	}
+	fe := &fakeDRBDExec{statusSeq: seq}
+	if len(seq) > 0 {
+		fe.statusJSON = seq[len(seq)-1] // stable fallback once drained
+	}
+	// The kernel probe (plain, non-json status) must fail or probeMetadata
+	// reads the fallback JSON as "resource attached" and adopts — bypassing
+	// the create-md path a fresh volume must take.
+	fe.errOn = map[string]error{"drbdsetup status " + volPvc1: errors.New("no such resource")}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeName, Backend: newFakeBackend(),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	return r, fe, v
+}
+
+// The winner mints the birth generation once every diskful leg sits
+// Inconsistent over established connections, and the same pass proceeds
+// against the resulting UpToDate state.
+func TestReconcileBirthWinnerMintsInitialUUID(t *testing.T) {
+	r, fe, _ := birthSetup(t, nodeKharkiv, 1, birthReadyJSON, birthDoneJSON)
+	reconcile(t, r, volPvc1)
+	// The full fresh path: metadata created and left just-created, then the
+	// one replicated generation minted over the live connections.
+	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
+	fe.notCalledWith(t, "set-gi")
+	fe.calledWith(t, "drbdadm new-current-uuid --clear-bitmap pvc-1/0")
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if st := got.Status.PerNode[nodeKharkiv]; st.DiskState != diskStateUpToDate {
+		t.Fatalf("winner must report the post-birth state, got %+v", st)
+	}
+}
+
+// The loser waits: only the winner may mint, or two generations could race.
+func TestReconcileBirthLoserWaits(t *testing.T) {
+	r, fe, _ := birthSetup(t, nodeParis, 0, birthReadyJSON)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
+// No mint while a diskful peer is still disconnected or its disk state is
+// unknown — the generation must land on every leg over live connections.
+func TestReconcileBirthWaitsForPeers(t *testing.T) {
+	for name, status := range map[string]string{
+		"peer connecting": `[{"name":"pvc-1","role":"Secondary",
+			"devices":[{"disk-state":"Inconsistent"}],
+			"connections":[{"peer-node-id":%d,"connection-state":"Connecting",
+				"peer_devices":[{"peer-disk-state":"DUnknown"}]}]}]`,
+		"peer disk unknown": `[{"name":"pvc-1","role":"Secondary",
+			"devices":[{"disk-state":"Inconsistent"}],
+			"connections":[{"peer-node-id":%d,"connection-state":"Connected",
+				"peer_devices":[{"peer-disk-state":"DUnknown"}]}]}]`,
+	} {
+		r, fe, _ := birthSetup(t, nodeKharkiv, 1, status)
+		reconcile(t, r, volPvc1)
+		if n := countCalls(fe, "new-current-uuid"); n != 0 {
+			t.Fatalf("%s: must not mint, got %d calls", name, n)
+		}
+	}
+}
+
+// A FullSync joiner means the volume already has a generation elsewhere:
+// never mint over it.
+func TestReconcileBirthSkipsFullSyncJoiner(t *testing.T) {
+	r, fe, v := birthSetup(t, nodeKharkiv, 1, birthReadyJSON)
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: v.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	got.Spec.Replicas[1].FullSync = true
+	if err := r.Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
+// An Activated volume held data: an all-Inconsistent state is then a real
+// incident, never something to paper over with a fresh generation.
+func TestReconcileBirthSkipsActivatedVolume(t *testing.T) {
+	r, fe, _ := birthSetup(t, nodeKharkiv, 1, birthReadyJSON)
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	got.Status.Activated = true
+	if err := r.Status().Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
+// A failed mint surfaces as a reconcile error (retried with backoff) and
+// keeps DeviceCreated so the phase never reads as a hard provisioning
+// failure.
+func TestReconcileBirthMintErrorRetries(t *testing.T) {
+	r, fe, _ := birthSetup(t, nodeKharkiv, 1, birthReadyJSON)
+	fe.errOn = map[string]error{"new-current-uuid": errors.New("exit status 1")}
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err == nil {
+		t.Fatal("a failed mint must surface as a reconcile error")
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.PerNode[nodeKharkiv].DeviceCreated {
+		t.Fatal("DeviceCreated must survive a failed mint")
+	}
+}
+
+// Regression for the fast-path wedge: a peer disk flipping DUnknown →
+// Inconsistent can be the only change in a pass. The fingerprint must
+// miss on it, or the winner never re-enters the pipeline and the volume
+// parks Creating forever.
+func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
+	r, fe, v := birthSetup(t, nodeKharkiv, 1)
+	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"Inconsistent"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"DUnknown"}]}]}]`
+	st, err := r.DRBD.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.storeRealized(v.Generation, volPvc1, st, true)
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DeviceCreated: true, SizeBytes: 1 << 30},
+	}
+	if err := r.Status().Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+
+	// The peer's disk turns Inconsistent; everything else is unchanged.
+	fe.statusSeq = []string{
+		fmt.Sprintf(birthReadyJSON, 1), // fastPath live check → fingerprint miss
+		fmt.Sprintf(birthReadyJSON, 1), // pipeline status → trigger fires
+		fmt.Sprintf(birthDoneJSON, 1),  // post-mint re-read
+	}
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdadm new-current-uuid --clear-bitmap pvc-1/0")
 }
