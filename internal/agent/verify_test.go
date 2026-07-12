@@ -55,6 +55,14 @@ const statusClean = `[{"name":"pvc-1",
 	"connections":[{"peer-node-id":1,"connection-state":"Connected",
 		"peer_devices":[{"replication-state":"Established","out-of-sync":0}]}]}]`
 
+// statusAborted is a verify cut short by a peer disconnect: no longer
+// verifying, but the pair is down and the out-of-sync count mixes any
+// findings with bits accrued while the peer is away.
+const statusAborted = `[{"name":"pvc-1",
+	"devices":[{"disk-state":"UpToDate"}],
+	"connections":[{"peer-node-id":1,"connection-state":"Connecting",
+		"peer_devices":[{"replication-state":"Off","out-of-sync":512}]}]}]`
+
 func replicatedVol() *miroirv1alpha1.MiroirVolume {
 	v := vol(volPvc1, nodeKharkiv, nodeParis)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
@@ -210,6 +218,31 @@ func TestVerifyOutOfSyncRecordsAndEvents(t *testing.T) {
 	case <-rec.Events:
 	default:
 		t.Fatal("a dirty verify must emit a VerifyOutOfSync event")
+	}
+}
+
+// A peer disconnect mid-pass aborts the verify and leaves an out-of-sync
+// count that mixes findings with disconnect-accrued bits — the result is
+// unattributable and must be discarded, not recorded or alerted on.
+func TestVerifyDiscardsResultWhenPeerDropsMidPass(t *testing.T) {
+	v := replicatedVol()
+	c := newClient(t, v)
+	fe := &fakeDRBDExec{statusSeq: []string{statusUpToDate, statusVerifying, statusAborted}}
+	rec := events.NewFakeRecorder(4)
+	vs := newVerifyScheduler(t, nodeKharkiv, c, fe, rec)
+
+	if err := vs.runOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm verify pvc-1")
+
+	if got := getVol(t, c).Status.PerNode[nodeKharkiv].LastVerifyTime; got != nil {
+		t.Fatalf("an aborted verify must not record a result, got %v", got)
+	}
+	select {
+	case e := <-rec.Events:
+		t.Fatalf("an aborted verify must not emit an event, got %q", e)
+	default:
 	}
 }
 
