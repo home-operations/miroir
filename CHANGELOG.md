@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.8](https://github.com/home-operations/miroir/compare/0.4.7...0.4.8) (2026-07-12)
+
+
+### Features
+
+* make DRBD replication port base configurable ([#149](https://github.com/home-operations/miroir/issues/149)) ([74ff82e](https://github.com/home-operations/miroir/commit/74ff82eb66d725d30e343ab7296ad25dc4201dcb))
+
 ## [0.4.7](https://github.com/home-operations/miroir/compare/0.4.6...0.4.7) (2026-07-12)
 
 
