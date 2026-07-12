@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.9](https://github.com/home-operations/miroir/compare/0.4.8...0.4.9) (2026-07-12)
+
+
+### Bug Fixes
+
+* **agent:** latch Activated from the live Primary role ([#151](https://github.com/home-operations/miroir/issues/151)) ([69707bb](https://github.com/home-operations/miroir/commit/69707bb47a2c7657b063d6f2fc7812e6ced64799))
+* bound drbd-port-base at install and startup ([#152](https://github.com/home-operations/miroir/issues/152)) ([f96ab1a](https://github.com/home-operations/miroir/commit/f96ab1a88fdbcc4dd9f669be2d6acc4c6d0d020b))
+
 ## [0.4.8](https://github.com/home-operations/miroir/compare/0.4.7...0.4.8) (2026-07-12)
 
 
