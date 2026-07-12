@@ -21,27 +21,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
-	"github.com/home-operations/miroir/internal/drbd"
+	"github.com/home-operations/miroir/internal/stage"
 )
-
-// DRBDStatus reports this node's live view of a DRBD resource.
-type DRBDStatus interface {
-	Status(ctx context.Context, name string) (drbd.Status, error)
-}
 
 // Node implements csi.NodeServer (notes/DESIGN.md §4.5.2). It looks the volume up
 // in the CRD (the source of truth) and stages its node-local device.
@@ -54,17 +46,22 @@ type Node struct {
 	// DRBD answers from the kernel, not the CRD: status written by the
 	// reconciler lags, and staging on a stale UpToDate mounts (or worse,
 	// formats) a diverged replica.
-	DRBD DRBDStatus
+	DRBD stage.DRBDStatus
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
-func NewNode(c client.Client, nodeName string, d DRBDStatus) *Node {
+func NewNode(c client.Client, nodeName string, d stage.DRBDStatus) *Node {
 	return &Node{
 		Client:   c,
 		NodeName: nodeName,
 		Mounter:  mount.NewSafeFormatAndMount(mount.New(""), utilexec.New()),
 		DRBD:     d,
 	}
+}
+
+// deps bundles the node's tooling for the shared staging pipeline.
+func (n *Node) deps() stage.Deps {
+	return stage.Deps{Client: n.Client, NodeName: n.NodeName, Mounter: n.Mounter, DRBD: n.DRBD}
 }
 
 // NodeGetInfo reports this node's name and topology segment (§6.5).
@@ -96,89 +93,11 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 	return resp, nil
 }
 
-// devicePath resolves the volume's local device from the CRD and verifies
-// this node holds a replica with current data.
+// devicePath resolves the volume's local device and gates it against
+// divergent replicas (see stage.Device). Kept as a method so the node
+// service's call sites and tests read unchanged.
 func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroirv1alpha1.MiroirVolume, error) {
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
-		}
-		return "", nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
-	}
-	i := slices.IndexFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
-		return r.Node == n.NodeName
-	})
-	if i < 0 {
-		return "", nil, status.Errorf(codes.FailedPrecondition,
-			"volume %s has no replica on node %s", volumeID, n.NodeName)
-	}
-	if vol.Spec.Replicas[i].Diskless {
-		return "", nil, status.Errorf(codes.FailedPrecondition,
-			"node %s is a diskless tie-breaker; cannot stage volume %s", n.NodeName, volumeID)
-	}
-	st, ok := vol.Status.PerNode[n.NodeName]
-	if !ok || !st.DeviceCreated || st.DevicePath == "" {
-		return "", nil, status.Errorf(codes.Unavailable,
-			"volume %s device not ready on node %s", volumeID, n.NodeName)
-	}
-	// Replicated volumes must not be formatted or mounted before this
-	// replica holds current data — mkfs on an Inconsistent secondary
-	// would race the initial handshake. Ask the kernel, not the CRD:
-	// status lags behind a link flap by a reconcile interval.
-	if vol.Spec.DRBD != nil {
-		live, err := n.DRBD.Status(ctx, volumeID)
-		if err != nil {
-			return "", nil, status.Errorf(codes.Unavailable,
-				"volume %s DRBD state unreadable on node %s: %v", volumeID, n.NodeName, err)
-		}
-		if live.SplitBrain {
-			return "", nil, status.Errorf(codes.FailedPrecondition,
-				"volume %s is split-brain on node %s — manual resolution required", volumeID, n.NodeName)
-		}
-		if live.DiskState != drbd.DiskUpToDate {
-			return "", nil, status.Errorf(codes.Unavailable,
-				"volume %s is %s on node %s (want UpToDate)", volumeID, live.DiskState, n.NodeName)
-		}
-		// Mid-recovery a birth-split volume can pass the live checks: the
-		// survivor and tie-breaker reconnect first (quorum restores, the
-		// device turns writable) while the losing leg is still divergent. A
-		// stage completing in that window latches Activated and closes the
-		// auto-recovery that would have healed the loser (issue #144). Hold
-		// staging while a split is recorded AND a diskful link is down —
-		// only while the volume is still auto-recovery-eligible. The live
-		// connectivity corroboration keeps a stale slot from a dead peer
-		// from blocking a volume whose data legs are all established, and
-		// releases the hold the moment the loser reconnects, ahead of the
-		// slots clearing on the next status patch.
-		if !vol.Status.Activated && !vol.Status.Formatted &&
-			!diskfulPeersLive(vol, n.NodeName, live) {
-			for node, rep := range vol.Status.PerNode {
-				if rep.SplitBrain {
-					return "", nil, status.Errorf(codes.Unavailable,
-						"volume %s is recovering from split-brain (reported by node %s)", volumeID, node)
-				}
-			}
-		}
-	}
-	return st.DevicePath, vol, nil
-}
-
-// diskfulPeersLive reports whether this node's replication links to every
-// diskful peer are established, per the live kernel view. Mirrors the
-// agent's diskfulPeersConnected: a diskless tie-breaker's link is excluded
-// so its state never gates a data leg (the bug #78 class), and entries the
-// membership reconciler has not completed are skipped.
-func diskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Node == self || rep.Diskless || rep.Address == "" {
-			continue
-		}
-		if !live.PeerConnected[rep.NodeID] {
-			return false
-		}
-	}
-	return true
+	return stage.Device(ctx, n.deps(), volumeID)
 }
 
 // NodeStageVolume makes the device usable at the staging path: filesystem
@@ -207,113 +126,21 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		// Stage succeeded: publish will hand the device to a consumer that may
 		// write. Latch activated so split-brain auto-recovery, which discards a
 		// leg, no longer touches this volume.
-		if err := n.markActivated(ctx, vol); err != nil {
+		if err := stage.MarkActivated(ctx, n.Client, vol); err != nil {
 			return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
 		}
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
 
-	notMnt, err := n.Mounter.IsLikelyNotMountPoint(req.GetStagingTargetPath())
-	if os.IsNotExist(err) {
-		if err := os.MkdirAll(req.GetStagingTargetPath(), 0o750); err != nil {
-			return nil, status.Errorf(codes.Internal, "mkdir staging path: %v", err)
-		}
-		notMnt = true
-	} else if err != nil {
-		return nil, status.Errorf(codes.Internal, "inspect staging path: %v", err)
+	fsType := req.GetVolumeCapability().GetMount().GetFsType()
+	if fsType == "" {
+		fsType = "ext4"
 	}
-	if notMnt {
-		fsType := req.GetVolumeCapability().GetMount().GetFsType()
-		if fsType == "" {
-			fsType = "ext4"
-		}
-		mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
-
-		// Open-for-write probe: the first open(2) auto-promotes DRBD, and a
-		// refused promotion (peer already Primary) otherwise surfaces as
-		// mkfs "Wrong medium type".
-		f, err := os.OpenFile(dev, os.O_RDWR, 0)
-		if err != nil {
-			return nil, status.Errorf(codes.Unavailable,
-				"device %s not writable (is the volume in use on another node?): %v", dev, err)
-		}
-		_ = f.Close()
-
-		// mkfs-if-blank is allowed exactly once per volume: a blank device on
-		// a volume that ever carried a filesystem is data loss (diverged
-		// replica, torn clone), and reformatting would silently finish it.
-		format, err := n.Mounter.GetDiskFormat(dev)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "probe filesystem on %s: %v", dev, err)
-		}
-		if format == "" && vol.Status.Formatted {
-			return nil, status.Errorf(codes.DataLoss,
-				"volume %s was formatted before but %s reads blank — refusing to reformat", req.GetVolumeId(), dev)
-		}
-		if format != "" {
-			// Record before mounting so a clone that arrived with a
-			// filesystem is protected from then on.
-			if err := n.markFormatted(ctx, vol); err != nil {
-				return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-			}
-		}
-
-		// FormatAndMount formats only when the device has no filesystem —
-		// the mkfs-if-blank step of notes/DESIGN.md §4.5.2.
-		if err := n.Mounter.FormatAndMount(dev, req.GetStagingTargetPath(), fsType, mountFlags); err != nil {
-			return nil, status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
-		}
-		if format == "" {
-			// First mkfs. A failed patch fails the stage; the retry lands in
-			// the format != "" path above and records it then.
-			if err := n.markFormatted(ctx, vol); err != nil {
-				return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-			}
-		}
-	} else {
-		// Already staged: a mounted device carries a filesystem, so a
-		// missed Formatted patch from an earlier stage heals here.
-		if err := n.markFormatted(ctx, vol); err != nil {
-			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-		}
-	}
-
-	// Grow-to-fill runs on every stage, not only a fresh mount: a restored
-	// clone carries the snapshot's smaller filesystem, and a resize that
-	// failed after the mount already succeeded must be retried on the next
-	// stage, not skipped by the already-staged fast path. NeedResize is a
-	// no-op once the filesystem fills the device.
-	resizer := mount.NewResizeFs(n.Mounter.Exec)
-	need, err := resizer.NeedResize(dev, req.GetStagingTargetPath())
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "check filesystem size on %s: %v", dev, err)
-	}
-	if need {
-		if _, err := resizer.Resize(dev, req.GetStagingTargetPath()); err != nil {
-			return nil, status.Errorf(codes.Internal, "grow filesystem on %s: %v", dev, err)
-		}
-	}
-	// Stage fully succeeded (mkfs + mount + grow): the volume now carries a
-	// filesystem and a consumer may write. Latch activated only here, never on
-	// a stage that failed the write probe or mkfs — a volume that never
-	// completed staging holds no data and must stay eligible for split-brain
-	// auto-recovery.
-	if err := n.markActivated(ctx, vol); err != nil {
-		return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
+	flags := req.GetVolumeCapability().GetMount().GetMountFlags()
+	if err := stage.EnsureFilesystem(ctx, n.deps(), vol, dev, req.GetStagingTargetPath(), fsType, flags); err != nil {
+		return nil, err
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
-}
-
-// markFormatted records that the volume carries a filesystem. No-op when
-// already recorded.
-func (n *Node) markFormatted(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
-	return markFormatted(ctx, n.Client, vol)
-}
-
-// markActivated latches that the volume has been staged for a consumer at
-// least once. No-op when already recorded.
-func (n *Node) markActivated(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
-	return markActivated(ctx, n.Client, vol)
 }
 
 // NodeExpandVolume grows the filesystem to the (already grown) device,
