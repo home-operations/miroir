@@ -95,6 +95,8 @@ func TestLoadErrors(t *testing.T) {
 		"malformed yaml":           "kharkiv: : :\n",
 		"invalid address":          "kharkiv:\n  backend: lvmthin\n  address: not-an-ip\n",
 		"address is a CIDR":        "kharkiv:\n  backend: lvmthin\n  address: 10.0.0.0/24\n",
+		"duplicate address":        "kharkiv:\n  backend: lvmthin\n  address: 10.0.100.1\nparis:\n  backend: lvmthin\n  address: 10.0.100.1\n",
+		"duplicate address ipv6":   "kharkiv:\n  backend: lvmthin\n  address: fd00:1::2\nparis:\n  backend: lvmthin\n  address: fd00:0001:0:0::2\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

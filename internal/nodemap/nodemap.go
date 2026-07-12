@@ -106,6 +106,9 @@ func Load(path string) (Map, error) {
 	if err := yaml.UnmarshalStrict(raw, &m); err != nil {
 		return nil, fmt.Errorf("parse node map %s: %w", path, err)
 	}
+	// Keyed by the parsed form so differently written but equal IPs
+	// (IPv6 zero-compression) still collide.
+	addrOwner := map[string]string{}
 	for name, n := range m {
 		switch n.Backend {
 		case miroirv1alpha1.BackendLVMThin, miroirv1alpha1.BackendZFS, miroirv1alpha1.BackendLoopfile:
@@ -118,8 +121,18 @@ func Load(path string) (Map, error) {
 		if n.Backend == miroirv1alpha1.BackendLoopfile && n.BaseDir == "" {
 			return nil, fmt.Errorf("node %s: loopfile backend requires baseDir", name)
 		}
-		if n.Address != "" && net.ParseIP(n.Address) == nil {
-			return nil, fmt.Errorf("node %s: invalid address %q", name, n.Address)
+		if n.Address != "" {
+			ip := net.ParseIP(n.Address)
+			if ip == nil {
+				return nil, fmt.Errorf("node %s: invalid address %q", name, n.Address)
+			}
+			// Two nodes dialing one endpoint makes every shared volume's
+			// DRBD connections ambiguous at connect time — fail at load.
+			if other, dup := addrOwner[ip.String()]; dup {
+				return nil, fmt.Errorf("nodes %s and %s share replication address %s",
+					min(name, other), max(name, other), n.Address)
+			}
+			addrOwner[ip.String()] = name
 		}
 	}
 	return m, nil
