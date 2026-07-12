@@ -311,6 +311,13 @@ Trade-offs to understand before enabling it:
 - **Every read and write crosses the replication network.** A remote
   consumer runs at network speed; the affinity default exists because
   local reads are the point of keeping a replica under the pod.
+- **Replica nodes are only preferred at first use.** The first
+  consumer's node is pinned as a replica when it is a storage node
+  (falling back to capacity-ranked placement when it is not). After
+  that there is no soft preference: PV node affinity is all-or-nothing
+  in Kubernetes, so the scheduler is blind to replica locations. Keep
+  locality-sensitive workloads on the default class, or pin them with
+  their own node/pod affinity.
 - **An attached client shifts quorum math.** DRBD counts every peer's
   vote: a 2+1 volume with a client attached has 4 votes, so majority
   becomes 3. While the client is connected this is neutral-to-helpful

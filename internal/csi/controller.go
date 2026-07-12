@@ -175,7 +175,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 	placed := srcReplicas
 	if snapID == "" {
-		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols)
+		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
@@ -354,7 +354,7 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 // provisions. For replicated volumes it resolves each node's InternalIP
 // and assigns DRBD node ids by slice position — replicas[0] is the GI-seed
 // winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume) ([]miroirv1alpha1.Replica, error) {
+func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool) ([]miroirv1alpha1.Replica, error) {
 	if len(c.Nodes) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"need %d storage nodes, have %d (Helm values: nodes)", count, len(c.Nodes))
@@ -402,7 +402,12 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 			}
 		}
 	}
-	if reqs != nil && len(reqs.GetRequisite()) > 0 && len(ordered) == 0 {
+	if reqs != nil && len(reqs.GetRequisite()) > 0 && len(ordered) == 0 && !remoteAccess {
+		// On a remote-access volume the scheduler may pick a non-storage
+		// node for the first consumer (the PV will carry no affinity);
+		// fall through to capacity-ranked placement — the pod attaches
+		// through a diskless client leg. Everything else refuses: the pod
+		// could never reach a volume placed off its node.
 		return nil, status.Error(codes.ResourceExhausted,
 			"no storage node satisfies the requested topology")
 	}
