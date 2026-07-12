@@ -107,13 +107,13 @@ Kubernetes: `>=1.31.0`
 | priorityClassName | string | `"system-cluster-critical"` | system-cluster-critical protects the single controller from eviction under node pressure — while it is down, no volume can be provisioned, expanded, or snapshotted. |
 | provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
 | replicaCount | int | `1` | Controller replicas. Anything above 1 automatically enables leader election: the extras are warm standbys (failover is lease expiry, ~15s, instead of a full pod reschedule), the rollout strategy switches to RollingUpdate, and a PodDisruptionBudget keeps one replica through voluntary disruptions. Pointless on a single-node cluster (the node is the failure domain); pair with global.affinity (pod anti-affinity) so replicas land on different nodes. |
-| replicatedStorageClass.allowRemoteVolumeAccess | bool | `false` | Let pods on nodes without a replica consume volumes through an ephemeral diskless DRBD leg (all I/O crosses the replication network). Drops the PV's node affinity, so pods schedule anywhere. See the root README, "Remote consumers", for the quorum-vote implications. |
 | replicatedStorageClass.create | bool | `true` |  |
 | replicatedStorageClass.fsType | string | `"ext4"` |  |
 | replicatedStorageClass.isDefault | bool | `false` |  |
 | replicatedStorageClass.name | string | `"miroir-replicated"` |  |
 | replicatedStorageClass.quorum | string | `"freeze"` |  |
 | replicatedStorageClass.reclaimPolicy | string | `"Delete"` |  |
+| replicatedStorageClass.remoteAccessClass | bool | `false` | Also render a `<name>-remote` StorageClass, identical except its volumes drop PV node affinity: pods on nodes without a replica consume them through an ephemeral diskless DRBD leg (all I/O crosses the replication network). A separate class rather than a flag flip on this one — StorageClass parameters are immutable, and locality-sensitive workloads should stay on the strict class. See the root README, "Remote consumers". |
 | resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Controller resources. |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |

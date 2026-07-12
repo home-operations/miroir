@@ -296,15 +296,18 @@ Volumes with this policy never get a tie-breaker.
 
 By default a pod can only run on a node holding a replica: the PV
 carries node affinity to the diskful legs, and reads are local. Set
-`replicatedStorageClass.allowRemoteVolumeAccess: true` (the
-`miroir.home-operations.com/allowRemoteVolumeAccess` StorageClass
-parameter) to drop that affinity: a pod scheduled on any node consumes
-the volume through an ephemeral **diskless client leg** — a DRBD peer
-with `disk none` that the CSI node service adds to `spec.clients` at
-stage time and removes at unstage. The membership reconciler completes
-it (node id, address) exactly like an operator-added replica, and a pod
+`replicatedStorageClass.remoteAccessClass: true` to render an
+additional `<name>-remote` StorageClass (the
+`miroir.home-operations.com/allowRemoteVolumeAccess` parameter) whose
+volumes drop that affinity: a pod scheduled on any node consumes the
+volume through an ephemeral **diskless client leg** — a DRBD peer with
+`disk none` that the CSI node service adds to `spec.clients` at stage
+time and removes at unstage. The membership reconciler completes it
+(node id, address) exactly like an operator-added replica, and a pod
 landing on the tie-breaker's node stages through the tie-breaker leg
-directly.
+directly. It is a separate class — not a flag flip on the existing one —
+because StorageClass parameters are immutable, and because
+locality-sensitive workloads should keep using the strict class.
 
 Trade-offs to understand before enabling it:
 

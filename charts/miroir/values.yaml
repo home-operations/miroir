@@ -209,11 +209,14 @@ replicatedStorageClass:
   name: miroir-replicated
   isDefault: false
   fsType: ext4
-  # -- Let pods on nodes without a replica consume volumes through an
-  # ephemeral diskless DRBD leg (all I/O crosses the replication network).
-  # Drops the PV's node affinity, so pods schedule anywhere. See the root
-  # README, "Remote consumers", for the quorum-vote implications.
-  allowRemoteVolumeAccess: false
+  # -- Also render a `<name>-remote` StorageClass, identical except its
+  # volumes drop PV node affinity: pods on nodes without a replica consume
+  # them through an ephemeral diskless DRBD leg (all I/O crosses the
+  # replication network). A separate class rather than a flag flip on this
+  # one — StorageClass parameters are immutable, and locality-sensitive
+  # workloads should stay on the strict class. See the root README,
+  # "Remote consumers".
+  remoteAccessClass: false
   # freeze: refuse writes (I/O errors) without a peer majority — never
   # diverges; with autoTieBreaker a third node keeps 2-replica volumes
   # writable through a single node loss. last-man-standing: the survivor

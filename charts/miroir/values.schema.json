@@ -605,12 +605,6 @@
     },
     "replicatedStorageClass": {
       "properties": {
-        "allowRemoteVolumeAccess": {
-          "default": false,
-          "description": "Let pods on nodes without a replica consume volumes through an\nephemeral diskless DRBD leg (all I/O crosses the replication network).\nDrops the PV's node affinity, so pods schedule anywhere. See the root\nREADME, \"Remote consumers\", for the quorum-vote implications.",
-          "title": "allowRemoteVolumeAccess",
-          "type": "boolean"
-        },
         "create": {
           "default": true,
           "title": "create",
@@ -641,6 +635,12 @@
           "default": "Delete",
           "title": "reclaimPolicy",
           "type": "string"
+        },
+        "remoteAccessClass": {
+          "default": false,
+          "description": "Also render a `\u003cname\u003e-remote` StorageClass, identical except its\nvolumes drop PV node affinity: pods on nodes without a replica consume\nthem through an ephemeral diskless DRBD leg (all I/O crosses the\nreplication network). A separate class rather than a flag flip on this\none — StorageClass parameters are immutable, and locality-sensitive\nworkloads should stay on the strict class. See the root README,\n\"Remote consumers\".",
+          "title": "remoteAccessClass",
+          "type": "boolean"
         }
       },
       "required": [],
