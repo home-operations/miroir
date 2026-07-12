@@ -64,12 +64,22 @@ type VolumeReconciler struct {
 	// serialization is controller-runtime's guarantee; the storage CLIs
 	// are cross-resource-safe and minor allocation holds its own lock.
 	Workers int
+	// KmsgPath overrides /dev/kmsg for the split-brain kernel-log capture
+	// (tests point it at a plain file).
+	KmsgPath string
 
 	// realized caches the last fully realized state per volume so the
 	// steady-state poll only re-execs `drbdsetup status` instead of the
 	// whole realize/adjust/probe pipeline. See fastPath.
 	realizedMu sync.Mutex
 	realized   map[string]realizedState
+
+	// lastRecovery stamps the last split-brain recovery attempt per volume.
+	// Recovery itself flaps connections, and every flap is a DRBD event that
+	// requeues the volume — without a floor the agent re-enters recovery
+	// several times per second. See recoverSplitBrain.
+	recoveryMu   sync.Mutex
+	lastRecovery map[string]time.Time
 }
 
 // realizedState is the fingerprint of a completed full pass: repeating
@@ -141,12 +151,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	r.dropRealized(vol.Name)
 
 	var dev string
-	var forceFullSync bool
 	var err error
 	if !localDiskless {
 		// Realize: create (or grow) the backing device — a CoW clone when the
 		// volume restores from a snapshot.
-		dev, forceFullSync, err = r.realizeBacking(ctx, vol, vol.Spec.Replicas[idx].FullSync)
+		dev, err = r.realizeBacking(ctx, vol, vol.Spec.Replicas[idx].FullSync)
 		if err != nil {
 			return ctrl.Result{}, r.reportError(ctx, vol, err)
 		}
@@ -210,8 +219,18 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				"volume", vol.Name, "error", err)
 		}
 	}
-	resource := drbdResource(vol, r.NodeName, dev, minor, localDiskless, forceFullSync, discardGranularity)
+	resource := drbdResource(vol, r.NodeName, dev, minor, localDiskless, discardGranularity)
 	if err := r.DRBD.Apply(ctx, resource); err != nil {
+		return ctrl.Result{}, r.reportError(ctx, vol, err)
+	}
+	st, err := r.DRBD.Status(ctx, vol.Name)
+	if err != nil {
+		return ctrl.Result{}, r.reportError(ctx, vol, err)
+	}
+	// Birth generation, ordered before growIfCoordinator so resize never
+	// runs against a both-Inconsistent device; status is re-read so this
+	// same pass proceeds against UpToDate legs.
+	if st, err = r.mintBirthUUID(ctx, vol, resource, st, localDiskless); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	// Online growth: once every peer's backing device is at the new size
@@ -220,18 +239,12 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// status until then — the CSI expansion wait keys on status, and the
 	// filesystem must not grow against a still-small DRBD device. A
 	// diskless tie-breaker must never be the resize coordinator.
-	st, err := r.DRBD.Status(ctx, vol.Name)
-	if err != nil {
-		return ctrl.Result{}, r.reportError(ctx, vol, err)
-	}
 	reportSize, requeue, err := r.growIfCoordinator(ctx, vol, st)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	if st.SplitBrain {
-		r.recoverSplitBrain(ctx, vol, resource)
-	}
 	connected := diskfulPeersConnected(st, vol, r.NodeName)
+	splitActive := r.handleSplitBrain(ctx, vol, resource, st, connected)
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
 		recordVolumeMetrics(vol.Name, miroirReplicaView{
@@ -263,9 +276,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	// Cache only the settled state: a mid-grow pass (short requeue, size
 	// withheld) must keep taking the full pipeline until the grow lands, and
-	// a split-brain volume must re-enter it every poll so recoverSplitBrain
-	// keeps retrying until the connections re-form.
-	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !st.SplitBrain {
+	// a split-brain volume — locally seen or peer-reported — must re-enter it
+	// every poll so recoverSplitBrain keeps retrying until the connections
+	// re-form.
+	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !splitActive {
 		r.storeRealized(vol.Generation, vol.Name, st, true)
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
@@ -296,6 +310,13 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 	if err != nil || !statusEqual(st, entry.status) {
 		return false, ctrl.Result{}
 	}
+	// A peer reporting split-brain while this leg is not fully connected
+	// needs the full pipeline: the losing leg's own kernel state is a steady
+	// Connecting that never breaks statusEqual, so only the peers' status
+	// can route it into recoverSplitBrain (issue #144).
+	if !diskfulPeersConnected(st, vol, r.NodeName) && peerReportedSplitBrain(vol, r.NodeName) {
+		return false, ctrl.Result{}
+	}
 	if !localDiskless {
 		recordVolumeMetrics(vol.Name, miroirReplicaView{
 			upToDate:       st.DiskState == drbd.DiskUpToDate,
@@ -321,7 +342,11 @@ func statusEqual(a, b drbd.Status) bool {
 		a.ResyncPercent == b.ResyncPercent &&
 		a.Quorum == b.Quorum &&
 		a.OutOfSyncKiB == b.OutOfSyncKiB &&
-		maps.Equal(a.PeerConnected, b.PeerConnected)
+		maps.Equal(a.PeerConnected, b.PeerConnected) &&
+		// A peer disk-state flip (DUnknown → Inconsistent at birth) can be
+		// the only change in a pass — without it the winner's fingerprint
+		// stays valid and the birth-generation trigger never re-runs.
+		maps.Equal(a.PeerDiskState, b.PeerDiskState)
 }
 
 func (r *VolumeReconciler) storeRealized(gen int64, name string, st drbd.Status, replicated bool) {
@@ -339,6 +364,14 @@ func (r *VolumeReconciler) dropRealized(name string) {
 	r.realizedMu.Lock()
 	defer r.realizedMu.Unlock()
 	delete(r.realized, name)
+}
+
+// dropRecovery forgets a torn-down volume's split-brain debounce stamp so a
+// later volume under the same name starts with a clean slate.
+func (r *VolumeReconciler) dropRecovery(name string) {
+	r.recoveryMu.Lock()
+	defer r.recoveryMu.Unlock()
+	delete(r.lastRecovery, name)
 }
 
 // reconcileDeletion tears down the local leg of a deleted volume. Only
@@ -364,6 +397,7 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 	// must not blank a volume that still exists.
 	dropVolumeMetrics(vol.Name)
 	r.dropRealized(vol.Name)
+	r.dropRecovery(vol.Name)
 	return ctrl.Result{}, r.removeFinalizer(ctx, vol)
 }
 
@@ -401,71 +435,42 @@ func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
 	return true
 }
 
-// wipedBacking reports the node-wipe signature: this node's status slot
-// says the backing was realized, but the device is gone and so is the
-// local seed marker (a reinstall takes both). Re-seeding the day0 GI
-// would pose the empty recreated device as the peers' identical twin and
-// the partial resync would miss every write since creation — the caller
-// forces the just-created-metadata path so the first handshake
-// full-syncs this leg instead. Cheap steady-state: the marker check
-// short-circuits once Apply has seeded.
-func (r *VolumeReconciler) wipedBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (bool, error) {
-	if vol.Spec.DRBD == nil || r.DRBD.Seeded(vol.Name) ||
-		!vol.Status.PerNode[r.NodeName].DeviceCreated {
-		return false, nil
-	}
-	exists, err := r.Backend.Exists(ctx, vol.Name)
-	if err != nil {
-		return false, err
-	}
-	return !exists, nil
-}
-
 // realizeBacking creates the backing device: fresh, or cloned from a
-// snapshot for restores. Clones are byte-identical on every replica, so
-// the day0 GI seed keeps restored volumes from resyncing. forceFullSync
-// reports the node-wipe signature (wipedBacking): the recreated device
-// must join as a full SyncTarget, never re-seed the day0 GI.
-func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, fullSync bool) (dev string, forceFullSync bool, err error) {
-	if forceFullSync, err = r.wipedBacking(ctx, vol); err != nil {
-		return "", false, err
-	}
+// snapshot for restores. Clones are byte-identical on every replica and
+// carry the source's live DRBD metadata, so restored legs connect with
+// identical inherited generations and skip the resync. A wiped node's
+// recreated device gets fresh just-created metadata and full-syncs at the
+// first handshake — no special-casing needed.
+func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, fullSync bool) (dev string, err error) {
 	if vol.Spec.Source == nil || fullSync {
 		// A FullSync joiner never clones, even on a restored volume: its
 		// node holds no source snapshot, and its content arrives over the
 		// wire as a full SyncTarget regardless of what the backing holds.
-		dev, err = r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
-		return dev, forceFullSync, err
+		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 	}
 	// The backing is cloned once and survives reboots; the source snapshot
 	// may be gone by then, so recover an existing device without it.
 	if exists, err := r.Backend.Exists(ctx, vol.Name); err != nil {
-		return "", false, err
+		return "", err
 	} else if exists {
-		dev, err = r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
-		return dev, forceFullSync, err
+		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 	}
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
-		return "", false, err
+		return "", err
 	}
-	dev, err = r.Backend.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
-	return dev, forceFullSync, err
+	return r.Backend.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
 }
 
 // drbdResource maps the CRD desired state to a render input. Entries the
 // membership reconciler has not completed yet (no address) are left out:
 // rendering them would produce a config DRBD cannot parse, and the peer
 // cannot connect before completion anyway.
-func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless, forceFullSync bool, discardGranularity int64) drbd.Resource {
+func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless bool, discardGranularity int64) drbd.Resource {
 	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
-	skipSeed := forceFullSync
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Address == "" {
 			continue
-		}
-		if rep.Node == localNode && rep.FullSync {
-			skipSeed = true
 		}
 		peers = append(peers, drbd.Peer{
 			Node:     rep.Node,
@@ -483,7 +488,6 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 		LocalDisk:     localDisk,
 		LocalDiskless: localDiskless,
 		Secret:        vol.Spec.DRBD.SharedSecret,
-		SkipSeed:      skipSeed,
 		// Latched failed: render adjust --skip-disk so the failing disk is
 		// not re-attached. Read from prior status, so it lags the detach by
 		// one reconcile. Cleared by a replica re-add (removal drops the slot).
@@ -493,19 +497,54 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 	}
 }
 
-// recoverSplitBrain reacts to a StandAlone split-brain. A volume that never
-// held data holds nothing to lose, so it applies ResolveSplitBrain to
-// self-heal (issue #139: a fresh replicated volume that comes up split-brain
-// otherwise loops forever and blocks its consumer). "Held data" is either
-// Activated (staged for a consumer) or Formatted (carries a filesystem) —
-// Formatted latches before the grow-to-fill step, so a formatted volume whose
-// stage failed at resize is still covered. Such a volume logs the manual
-// remedy on the transition edge and is left for an operator. Failures are
-// retried next poll — the split state is never fast-path cached.
-func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource) {
+// recoverSplitBrain reacts to a split-brain, seen locally (a StandAlone
+// connection) or reported by a peer's status slot. A volume that never held
+// data holds nothing to lose, so it applies ResolveSplitBrain to self-heal —
+// the safety net for volumes born under releases whose per-node day0
+// seeding could birth-diverge (issue #139; the birth generation now makes
+// that impossible for new volumes). "Held data" is either Activated
+// (staged for a consumer) or Formatted (carries a filesystem) — Formatted
+// latches before the grow-to-fill step, so a formatted volume whose stage
+// failed at resize is still covered. Such a volume logs the manual remedy on
+// the transition edge (only where the split is locally visible — the losing
+// leg's own slot never records it, so it would log every poll) and is left
+// for an operator.
+//
+// Entry is floored to once per poll interval: connection flaps — recovery's
+// own, and drbdadm adjust auto-reconnecting a parked StandAlone leg every
+// pass — each emit a DRBD event that requeues the volume, re-entering here
+// several times per second (issue #144). The floor caps both the recovery
+// attempts and the manual-remedy log, whose transition edge the flapping
+// status slot keeps re-opening. Failures are retried on a later poll — the
+// split state is never fast-path cached.
+func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, localSplit bool) {
+	r.recoveryMu.Lock()
+	if time.Since(r.lastRecovery[vol.Name]) < drbdPollInterval {
+		r.recoveryMu.Unlock()
+		return
+	}
+	if r.lastRecovery == nil {
+		r.lastRecovery = map[string]time.Time{}
+	}
+	r.lastRecovery[vol.Name] = time.Now()
+	r.recoveryMu.Unlock()
+
 	log := ctrl.LoggerFrom(ctx)
+	// The kernel log carries the handshake's actual verdict ("Split-Brain
+	// detected", "Unrelated data, aborting") — the status API only shows
+	// the resulting StandAlone. Captured before recovery mutates state,
+	// floored with it to once per poll interval.
+	kmsgPath := r.KmsgPath
+	if kmsgPath == "" {
+		kmsgPath = "/dev/kmsg"
+	}
+	if lines := captureKmsg(kmsgPath, vol.Name, 30); len(lines) > 0 {
+		log.Info("kernel log at split-brain detection", "volume", vol.Name, "kmsg", lines)
+	} else {
+		log.V(1).Info("kernel log unreadable at split-brain detection", "volume", vol.Name, "path", kmsgPath)
+	}
 	if vol.Status.Activated || vol.Status.Formatted {
-		if !vol.Status.PerNode[r.NodeName].SplitBrain {
+		if localSplit && !vol.Status.PerNode[r.NodeName].SplitBrain {
 			log.Error(errSplitBrain,
 				"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
 				"volume", vol.Name)
@@ -516,6 +555,85 @@ func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1a
 	if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
 		log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)
 	}
+}
+
+// peerReportedSplitBrain reports whether any other node's status slot
+// records a split-brain. The losing leg of a birth split never parks
+// StandAlone locally — the survivor refuses the handshake and the loser
+// returns to Connecting — so the peers' reported state is its only trigger.
+// Each slot holds only its own node's kernel state (patchStatus writes
+// st.SplitBrain), so the signal clears as soon as the survivor reconnects;
+// a leg never echoes a peer's report back into its own slot.
+func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool {
+	for node, st := range vol.Status.PerNode {
+		if node != self && st.SplitBrain {
+			return true
+		}
+	}
+	return false
+}
+
+// mintBirthUUID creates a fresh volume's birth generation and returns the
+// refreshed status. A fresh volume's legs all attach Inconsistent at
+// just-created metadata and wait, connected; the winner then mints the one
+// UUID every leg adopts over the live connections — a single replicated
+// generation cannot birth-diverge (issue #139). A no-op (status returned
+// unchanged) on every leg but the winner's, and on any volume not waiting
+// on birth.
+func (r *VolumeReconciler) mintBirthUUID(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, st drbd.Status, localDiskless bool) (drbd.Status, error) {
+	if !birthInitPending(vol, st, r.NodeName, localDiskless) || !drbd.IsWinner(res) {
+		return st, nil
+	}
+	ctrl.LoggerFrom(ctx).Info("creating birth generation (skip initial sync)", "volume", vol.Name)
+	if err := r.DRBD.InitialUUID(ctx, vol.Name); err != nil {
+		return st, err
+	}
+	return r.DRBD.Status(ctx, vol.Name)
+}
+
+// handleSplitBrain detects an active split and routes it into recovery.
+// The losing leg of a split never parks StandAlone locally — it sits
+// Connecting while the survivor refuses the handshake — so its only signal
+// that it must discard is a peer's reported split-brain (issue #144).
+// Gated on !connected so a stale peer report cannot churn a healthy
+// volume.
+func (r *VolumeReconciler) handleSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, st drbd.Status, connected bool) bool {
+	splitActive := st.SplitBrain || (!connected && peerReportedSplitBrain(vol, r.NodeName))
+	if splitActive {
+		r.recoverSplitBrain(ctx, vol, res, st.SplitBrain)
+	}
+	return splitActive
+}
+
+// birthInitPending reports whether this leg is waiting on the one-time
+// birth generation: a never-written replicated volume whose local disk and
+// every diskful peer's disk sit Inconsistent over established connections.
+// The Activated/Formatted gate means divergent real data can never be
+// declared clean; a FullSync joiner means the volume already has a
+// generation, so this is birth only. Clone restores never qualify — their
+// adopted metadata attaches past Inconsistent.
+func birthInitPending(vol *miroirv1alpha1.MiroirVolume, st drbd.Status, self string, localDiskless bool) bool {
+	if vol.Spec.DRBD == nil || localDiskless {
+		return false
+	}
+	if vol.Status.Activated || vol.Status.Formatted {
+		return false
+	}
+	if st.DiskState != drbd.DiskInconsistent {
+		return false
+	}
+	for _, rep := range vol.Spec.Replicas {
+		if rep.FullSync {
+			return false
+		}
+		if rep.Node == self || rep.Diskless || rep.Address == "" {
+			continue
+		}
+		if !st.PeerConnected[rep.NodeID] || st.PeerDiskState[rep.NodeID] != drbd.DiskInconsistent {
+			return false
+		}
+	}
+	return true
 }
 
 // reconcileRemoval tears down a replica that was removed from
@@ -550,6 +668,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 	}
 	dropVolumeMetrics(vol.Name)
 	r.dropRealized(vol.Name)
+	r.dropRecovery(vol.Name)
 	// Drop this node's status slot — merge-patch null deletes the key.
 	// Best-effort ordering: a crash here leaves a stale slot, which
 	// nothing reads (phase and growth iterate spec.replicas only).

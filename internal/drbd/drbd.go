@@ -47,15 +47,6 @@ type Driver struct {
 	Mknod func(path string, mode uint32, dev int) error
 }
 
-// Seeded reports whether Apply has completed the create-md + GI phase for
-// the resource on this node (the .md-created marker). Absent marker with
-// a previously realized volume is the node-wipe signature the agent keys
-// its re-seed guard on.
-func (d *Driver) Seeded(name string) bool {
-	_, err := os.Stat(d.path(name + ".md-created"))
-	return err == nil
-}
-
 // Apply converges the kernel state for one resource: write config when it
 // isMissingMetadata matches drbdadm's complaint when a backing device
 // carries no DRBD metadata (attach against a blank/replaced disk).
@@ -64,10 +55,11 @@ func isMissingMetadata(err error) bool {
 	return strings.Contains(s, "no valid meta") || strings.Contains(s, "No valid meta")
 }
 
-// ensureMarkedMetadata creates + GI-seeds metadata once per backing device,
-// gated on the .md-created marker: the marker lands only after a fully
-// successful seed, so a retry never adopts half-seeded metadata (which
-// deadlocks the first handshake — both sides Inconsistent, no sync source).
+// ensureMarkedMetadata creates metadata once per backing device, gated on
+// the .md-created marker: the marker lands only after a fully successful
+// create, so a retry never adopts a half-written attempt. The all-legs
+// Inconsistent state this leaves behind is deliberate — the winner resolves
+// it with the birth generation once every leg is connected (InitialUUID).
 func (d *Driver) ensureMarkedMetadata(ctx context.Context, r Resource) error {
 	marker := d.path(r.Name + ".md-created")
 	if _, err := os.Stat(marker); err != nil {
@@ -88,8 +80,9 @@ func (d *Driver) ensureMarkedMetadata(ctx context.Context, r Resource) error {
 	return os.WriteFile(marker, nil, 0o640)
 }
 
-// changed, create and GI-seed metadata once (see seedGI for how fresh
-// volumes skip the initial sync), bring the resource up / adjust.
+// changed, create metadata once (left at UUID_JUST_CREATED — see
+// ensureMetadata for how the birth generation lands), bring the resource
+// up / adjust.
 func (d *Driver) Apply(ctx context.Context, r Resource) error {
 	if err := d.writeConfig(r); err != nil {
 		return err
@@ -123,7 +116,7 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 		// (data disk swapped, /etc/drbd.d intact) makes ensureMarkedMetadata
 		// skip create-md, so adjust attaches a blank device and fails "no
 		// valid meta-data". Drop the marker and re-run: probeMetadata sees
-		// no metadata and create-md + SkipSeed makes this a full SyncTarget.
+		// no metadata and just-created metadata makes this a full SyncTarget.
 		// Unreachable with --skip-disk (no attach → no metadata read).
 		if !r.LocalDiskless && !r.SkipDiskAttach && isMissingMetadata(err) {
 			if rmErr := os.Remove(d.path(r.Name + ".md-created")); rmErr != nil && !os.IsNotExist(rmErr) {
@@ -150,19 +143,28 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 	return d.ensureDeviceNode(r.Minor)
 }
 
-// ensureMetadata creates and GI-seeds the backing metadata, surviving a
-// crash at any point: the .md-seeding sentinel written before create-md
-// proves on-disk metadata is our own unfinished attempt and safe to
-// re-seed. The on-disk probe stays the authority for "metadata exists" —
-// markers are hostPath state that can vanish while the LV still holds a
-// live GI, and a blind create-md --force would wipe it.
+// ensureMetadata creates the backing metadata, surviving a crash at any
+// point: the .md-seeding sentinel written before create-md proves on-disk
+// metadata is our own unfinished attempt and safe to recreate. The on-disk
+// probe stays the authority for "metadata exists" — markers are hostPath
+// state that can vanish while the LV still holds a live GI, and a blind
+// create-md --force would wipe it.
+//
+// Metadata is deliberately left at create-md's UUID_JUST_CREATED. A fresh
+// volume's legs connect Inconsistent (unpromotable) and the winner then
+// creates the birth generation over the live connections (InitialUUID) —
+// one UUID replicated to every peer, so birth divergence is impossible. A
+// leg joining an existing volume takes the same just-created metadata into
+// its first handshake and elects full SyncTarget — the only correct
+// outcome, since the peers' bitmaps never tracked writes against a replica
+// that did not exist yet.
 func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 	hasMD, attached, dump, err := d.probeMetadata(ctx, r.Name)
 	if err != nil {
 		return err
 	}
 	if attached {
-		// A previous life completed seeding and adjust; the metadata is
+		// A previous life completed bring-up and adjust; the metadata is
 		// live — never touch it.
 		return d.markAdopted(r.Name)
 	}
@@ -172,7 +174,7 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 		return serr
 	}
 	if hasMD && os.IsNotExist(serr) {
-		// Metadata without any marker: lost hostPath state. Re-seed only
+		// Metadata without any marker: lost hostPath state. Recreate only
 		// when the GI proves no Primary ever wrote; anything else is a
 		// live volume — adopt it untouched.
 		if !virginMetadata(dump, r.Name) {
@@ -190,14 +192,7 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 			return fmt.Errorf("create-md %s: %w", r.Name, err)
 		}
 	}
-	if r.SkipSeed {
-		// Late joiner: just-created metadata (UUID_JUST_CREATED) makes
-		// the first handshake elect this node full SyncTarget — the only
-		// correct outcome, since the peers' bitmaps never tracked writes
-		// against a replica that did not exist yet.
-		return nil
-	}
-	return d.seedGI(ctx, r)
+	return nil
 }
 
 // probeMetadata reports the backing device's DRBD metadata state.
@@ -585,72 +580,12 @@ func Day0GI(name string) string {
 	return strings.ToUpper(hex.EncodeToString(h[:8]))
 }
 
-// seedGI lets fresh volumes skip the initial sync: every replica stamps
-// the same deterministic day0 generation identifier into the metadata
-// slots of the local node and every peer — the winner node (lowest node
-// id) with Consistent+UpToDate flags, every other node with
-// WasUpToDate — so the first handshake sees identical generations and
-// clean bitmaps. Valid because thin backings read zeros.
-//
-// The non-winner stamps WasUpToDate (MDF_WAS_UP_TO_DATE) without
-// Consistent: the kernel's attach-time "new region assumed zeroed" path
-// requires either WasUpToDate or a non-zero rs-discard-granularity to
-// keep the bitmap clean on a freshly-grown thin device. A flagless seed
-// attaches with the full device marked out-of-sync, triggering a full
-// initial sync. WasUpToDate without Consistent still attaches
-// Inconsistent (cannot be promoted); it reaches UpToDate at the first
-// handshake with zero resync.
-//
-// Only the local node's slot and actual peer slots are seeded (not all
-// 32 metadata slots): unoccupied slots are never read during the
-// handshake, and 32 subprocess calls add unnecessary cold-start
-// latency. The local slot MUST be included: seeding only peer slots
-// leaves the local current-UUID at create-md's random value and the
-// handshake aborts "unrelated data" → permanent StandAlone. Peers
-// includes the local node, so iterating r.Peers covers both.
-//
-// GI string is positional: current:bitmap:hist0:hist1[:consistent:uptodate].
-// Bitmap base stays 0 ("no out-of-sync bits") — a non-zero base reads as
-// a live resync anchor and triggers a full SyncTarget.
-func (d *Driver) seedGI(ctx context.Context, r Resource) error {
-	if r.LocalDiskless {
-		return nil
-	}
-	gi := Day0GI(r.Name) + ":0:0:0"
-	if isWinner(r) {
-		// The winner is UpToDate from metadata alone; everyone else
-		// reaches it at the first handshake.
-		gi += ":1:1"
-	} else {
-		// WasUpToDate without Consistent: attaches Inconsistent
-		// (safe — cannot be promoted), but the kernel's "new region
-		// assumed zeroed" attach path keeps the bitmap clean so no
-		// full resync is triggered.
-		gi += ":0:1"
-	}
-	// drbdmeta's DEVICE argument is the minor — resource/volume syntax
-	// is drbdadm-only. Fed a name, the shipped utils derive minor -1 and
-	// probe it with a malformed drbdsetup call whose output is
-	// version-dependent (observed flaking per-invocation on real
-	// hardware). The real minor keeps the in-use probe well-defined:
-	// unconfigured proceeds, configured refuses.
-	minor := strconv.Itoa(int(r.Minor))
-	for _, p := range r.Peers {
-		_, err := d.Exec(ctx, "drbdmeta", "--force", minor, "v09",
-			r.LocalDisk, "internal",
-			"set-gi", "--node-id", strconv.Itoa(int(p.NodeID)), gi)
-		if err != nil {
-			return fmt.Errorf("set-gi %s node-id %d: %w", r.Name, p.NodeID, err)
-		}
-	}
-	return nil
-}
-
-// isWinner picks the seed winner deterministically: the lowest node id
-// among diskful peers. A diskless tie-breaker never holds data, so it
-// must never win — with it elected, no diskful node would seed
-// UpToDate and the first handshake would deadlock all-Inconsistent.
-func isWinner(r Resource) bool {
+// IsWinner picks the birth-generation winner deterministically: the lowest
+// node id among diskful peers. A diskless tie-breaker never holds data, so
+// it must never win. Node ids are controller-assigned and stable, and every
+// agent reads the same spec, so all nodes elect the same single winner
+// without coordinating.
+func IsWinner(r Resource) bool {
 	lowest := int32(-1)
 	var lowestNode string
 	for _, p := range r.Peers {
@@ -665,12 +600,28 @@ func isWinner(r Resource) bool {
 	return lowestNode == r.LocalNode
 }
 
+// InitialUUID creates a fresh volume's first data generation — DRBD's
+// documented skip-initial-sync: with every leg attached Inconsistent at
+// UUID_JUST_CREATED and all connections established, new-current-uuid
+// --clear-bitmap mints one UUID and replicates it to every peer, flipping
+// all legs UpToDate with zero resync. Valid because thin backings read
+// zeros. Run on the winner (IsWinner) only, and only while the volume has
+// never held data — the caller gates on both (see agent birthInitPending).
+// One replicated UUID cannot birth-diverge, unlike per-node manufactured
+// generations (issue #139).
+func (d *Driver) InitialUUID(ctx context.Context, name string) error {
+	if _, err := d.adm(ctx, "new-current-uuid", "--clear-bitmap", name+"/0"); err != nil {
+		return fmt.Errorf("new-current-uuid %s: %w", name, err)
+	}
+	return nil
+}
+
 // ResolveSplitBrain runs DRBD's documented split-brain recovery around the
-// seed winner: every leg disconnects, then the winner (lowest diskful node
-// id, matching seedGI) and the diskless tie-breaker reconnect as survivors
-// while every other diskful leg reconnects with --discard-my-data, becoming
-// SyncTarget. Because the winner is derived the same way on every node, the
-// agents converge without coordinating.
+// winner: every leg disconnects, then the winner (lowest diskful node id)
+// and the diskless tie-breaker reconnect as survivors while every other
+// diskful leg reconnects with --discard-my-data, becoming SyncTarget.
+// Because the winner is derived the same way on every node, the agents
+// converge without coordinating.
 //
 // --discard-my-data drops the loser leg's generation, so this is only valid
 // on a volume that never held data; the caller gates on that (see
@@ -685,7 +636,7 @@ func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
 	// here harmlessly, so the result is ignored.
 	_, _ = d.adm(ctx, "disconnect", r.Name)
 
-	if r.LocalDiskless || isWinner(r) {
+	if r.LocalDiskless || IsWinner(r) {
 		if _, err := d.adm(ctx, "connect", r.Name); err != nil {
 			return fmt.Errorf("connect %s: %w", r.Name, err)
 		}
@@ -703,8 +654,10 @@ func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
 // best-effort: teardown's Backend.Delete destroys the whole device anyway.
 func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int32) error {
 	// drbdmeta wants the minor as its DEVICE handle — fed a name the shipped
-	// utils derive minor -1 and flake (see seedGI). The resource is down, so
-	// the minor probes as unconfigured and wipe-md proceeds.
+	// utils derive minor -1 and probe it with a malformed drbdsetup call
+	// whose output is version-dependent (observed flaking per-invocation on
+	// real hardware). The resource is down, so the minor probes as
+	// unconfigured and wipe-md proceeds.
 	if _, err := d.Exec(ctx, "drbdmeta", "--force", strconv.Itoa(int(minor)),
 		"v09", disk, "internal", "wipe-md"); err != nil {
 		return fmt.Errorf("wipe-md %s: %w", name, err)
@@ -736,6 +689,11 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 // DiskUpToDate is the disk state of a replica holding current data.
 const DiskUpToDate = "UpToDate"
 
+// DiskInconsistent is the disk state of a replica with no usable data
+// generation yet: freshly created metadata before the birth generation, or
+// a sync target mid-resync. Never promotable.
+const DiskInconsistent = "Inconsistent"
+
 // DiskDiskless is the disk state of a replica with no attached backing
 // device — a quorum-only tie-breaker, or a diskful leg DRBD detached
 // after an I/O error (on-io-error detach). Do NOT use it to infer
@@ -764,6 +722,11 @@ type Status struct {
 	// tie-breaker's link state (the exact bug #78 removed) — filter by
 	// the spec's diskful node ids instead (see agent.diskfulPeersConnected).
 	PeerConnected map[int32]bool
+	// PeerDiskState maps each peer's DRBD node id to that peer's disk
+	// state as this node sees it (UpToDate, Inconsistent, Diskless,
+	// DUnknown before the handshake reports it…). The birth-generation
+	// trigger keys on every diskful leg reading Inconsistent.
+	PeerDiskState map[int32]string
 	// SplitBrain is true when a connection is StandAlone — DRBD refused
 	// to reconnect after detecting divergent data.
 	SplitBrain bool
@@ -801,6 +764,7 @@ type jsonStatus struct {
 		// (verified against drbd-utils user/v9/drbdsetup.c).
 		PeerDevices []struct {
 			ReplicationState string  `json:"replication-state"`
+			PeerDiskState    string  `json:"peer-disk-state"`
 			PercentInSync    float64 `json:"percent-in-sync"`
 			OutOfSyncKiB     int64   `json:"out-of-sync"`
 		} `json:"peer_devices"`
@@ -826,6 +790,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		Primary:       res.Role == "Primary",
 		Suspended:     res.SuspendedUser,
 		PeerConnected: make(map[int32]bool, len(res.Connections)),
+		PeerDiskState: make(map[int32]string, len(res.Connections)),
 		ResyncPercent: 100,
 	}
 	if len(res.Devices) > 0 {
@@ -847,6 +812,11 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 				}
 			}
 			s.OutOfSyncKiB = max(s.OutOfSyncKiB, pd.OutOfSyncKiB)
+		}
+		// Single-volume resources: the first peer-device carries the peer's
+		// disk state.
+		if len(c.PeerDevices) > 0 {
+			s.PeerDiskState[c.PeerNodeID] = c.PeerDevices[0].PeerDiskState
 		}
 		s.PeerConnected[c.PeerNodeID] = c.ConnectionState == "Connected"
 		if c.ConnectionState == "StandAlone" {

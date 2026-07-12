@@ -29,6 +29,9 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
+// devDrbd1000 is the staged DRBD device path shared by the fixtures.
+const devDrbd1000 = "/dev/drbd1000"
+
 type fakeDRBDStatus struct {
 	st  drbd.Status
 	err error
@@ -50,7 +53,7 @@ func stagedVolume() *miroirv1alpha1.MiroirVolume {
 		},
 	}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DevicePath: "/dev/drbd1000"},
+		nodeKharkiv: {DeviceCreated: true, DevicePath: devDrbd1000},
 	}
 	return v
 }
@@ -103,7 +106,7 @@ func TestDevicePathHealthyReturnsDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dev != "/dev/drbd1000" {
+	if dev != devDrbd1000 {
 		t.Fatalf("dev = %q, want /dev/drbd1000", dev)
 	}
 }
@@ -114,7 +117,7 @@ func TestDevicePathRefusesDisklessNode(t *testing.T) {
 	v := stagedVolume()
 	// paris + oslo hold the data; kharkiv (this node) is the tie-breaker.
 	v.Spec.Replicas = []miroirv1alpha1.Replica{
-		{Node: nodeParis, NodeID: 0, Address: "192.168.1.42"},
+		{Node: nodeParis, NodeID: 0, Address: addrParis},
 		{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
 		{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv, Diskless: true},
 	}
@@ -123,6 +126,58 @@ func TestDevicePathRefusesDisklessNode(t *testing.T) {
 	})
 	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("a diskless tie-breaker node must be FailedPrecondition, got %v", err)
+	}
+}
+
+// twoLegVolume extends stagedVolume with a second diskful replica on paris
+// (node id 1) whose slot records a split-brain — the recovery-in-progress
+// signal the staging hold keys on.
+func twoLegVolume() *miroirv1alpha1.MiroirVolume {
+	v := stagedVolume()
+	v.Spec.Replicas = append(v.Spec.Replicas,
+		miroirv1alpha1.Replica{Node: nodeParis, NodeID: 1, Address: addrParis})
+	v.Status.PerNode[nodeKharkiv] = miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: true, DevicePath: devDrbd1000, SplitBrain: true,
+	}
+	return v
+}
+
+// Mid-recovery a never-activated volume can read healthy locally (survivor
+// and tie-breaker reconnected, quorum back) while the losing leg is still
+// divergent and disconnected. Staging then would latch Activated and close
+// the auto-recovery that heals the loser — hold it.
+func TestDevicePathHoldsNeverActivatedRecoveringSplitBrain(t *testing.T) {
+	n := newNode(t, twoLegVolume(), fakeDRBDStatus{
+		st: drbd.Status{DiskState: drbd.DiskUpToDate}, // paris link down: no PeerConnected entry
+	})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
+		t.Fatalf("recovering split-brain must hold staging as Unavailable, got %v", err)
+	}
+}
+
+// A stale split-brain slot (e.g. left by a dead tie-breaker) must not hold
+// staging when every diskful link is live — the kernel corroboration is
+// what keeps the hold from wedging a healthy volume.
+func TestDevicePathStaleSplitSlotIgnoredWhenPeersLive(t *testing.T) {
+	n := newNode(t, twoLegVolume(), fakeDRBDStatus{
+		st: drbd.Status{
+			DiskState:     drbd.DiskUpToDate,
+			PeerConnected: map[int32]bool{1: true},
+		},
+	})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); err != nil {
+		t.Fatalf("connected volume must stage despite a stale slot: %v", err)
+	}
+}
+
+// An activated volume is past auto-recovery: the hold must not apply at all,
+// even with a split recorded and a link down.
+func TestDevicePathActivatedIgnoresSplitSlot(t *testing.T) {
+	v := twoLegVolume()
+	v.Status.Activated = true
+	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); err != nil {
+		t.Fatalf("activated volume must stage despite a split slot: %v", err)
 	}
 }
 

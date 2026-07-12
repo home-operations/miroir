@@ -53,7 +53,7 @@ type Resource struct {
 	// LocalDiskless is true.
 	LocalDisk string
 	// LocalDiskless is true when the local node is a diskless tie-breaker:
-	// Apply skips create-md/seedGI and the local peer renders "disk none".
+	// Apply skips create-md and the local peer renders "disk none".
 	LocalDiskless bool
 	// Secret authenticates peers (cram-hmac challenge-response). Empty
 	// renders no auth — volumes created before secrets existed.
@@ -69,10 +69,6 @@ type Resource struct {
 	// Probed from the backing device; never set for loopfile (loop devices
 	// mishandle it). Overrides the cluster-wide common{} knob.
 	DiscardGranularityBytes int64
-	// SkipSeed leaves fresh metadata at create-md's just-created state
-	// instead of day0 GI seeding: a replica joining an existing volume
-	// must full-sync from its peers, not pose as a pristine twin.
-	SkipSeed bool
 	// Peers are all members of the resource, including the local node.
 	// A Peer with Diskless=true renders "disk none" and omits meta-disk.
 	Peers []Peer
