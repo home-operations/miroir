@@ -28,6 +28,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -127,6 +128,30 @@ func validateDRBDPortBase(base int) {
 	}
 }
 
+// addVerifyScheduler registers the online-verify scheduler when a schedule is
+// set and the DRBD kernel side is present. An invalid cron spec is a
+// misconfiguration — fail at startup rather than silently never verifying.
+func addVerifyScheduler(mgr manager.Manager, nodeName string, drbdReady bool, schedule string, d *drbd.Driver) {
+	if !drbdReady || schedule == "" {
+		return
+	}
+	parsed, err := cron.ParseStandard(schedule)
+	if err != nil {
+		setupLog.Error(err, "invalid --verify-schedule", "value", schedule)
+		os.Exit(1)
+	}
+	if err := mgr.Add(&agent.VerifyScheduler{
+		Client:   mgr.GetClient(),
+		NodeName: nodeName,
+		DRBD:     d,
+		Schedule: parsed,
+		Recorder: mgr.GetEventRecorder("miroir-agent"),
+	}); err != nil {
+		setupLog.Error(err, "unable to add verify scheduler")
+		os.Exit(1)
+	}
+}
+
 func main() {
 	var (
 		mode             string
@@ -148,6 +173,7 @@ func main() {
 		drbdStateDir      string
 		poolStatsInterval time.Duration
 		volumeWorkers     int
+		verifySchedule    string
 	)
 	flag.StringVar(&mode, "mode", "", "controller | agent | setup")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
@@ -175,6 +201,9 @@ func main() {
 		"concurrent volume reconciles per agent (agent)")
 	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
 		"how often the agent republishes pool capacity (agent; 0 → default 60s)")
+	flag.StringVar(&verifySchedule, "verify-schedule", "",
+		"cron spec (5-field, agent-local time) for scheduled online verify of the volumes this "+
+			"node coordinates (agent; empty disables; requires verify-alg in the DRBD common config)")
 	flag.StringVar(&vg, "lvm-vg", "vg-miroir", "LVM volume group (agent, lvmthin)")
 	flag.StringVar(&thinPool, "lvm-thinpool", "thinpool", "LVM thin pool LV (agent, lvmthin)")
 	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
@@ -399,6 +428,9 @@ func main() {
 			setupLog.Error(err, "unable to add pool stats publisher")
 			os.Exit(1)
 		}
+		// Scheduled online verify — the only cross-leg integrity check. Needs
+		// the DRBD kernel side, so it is gated on drbdReady like the sweeps.
+		addVerifyScheduler(mgr, nodeName, drbdReady, verifySchedule, drbdDriver)
 		node := csi.NewNode(mgr.GetClient(), nodeName, drbdDriver)
 		serveCSI(mgr, csiSocket, identity, nil, node)
 

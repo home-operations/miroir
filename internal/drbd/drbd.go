@@ -704,6 +704,16 @@ const DiskDiskless = "Diskless"
 // rolePrimary is the DRBD role of a node that holds the device open.
 const rolePrimary = "Primary"
 
+// Peer-device replication states the status parser distinguishes. Anything
+// other than Established/Off means an active resync or verify; VerifyS/VerifyT
+// narrow that to an online verify.
+const (
+	replEstablished = "Established"
+	replOff         = "Off"
+	replVerifyS     = "VerifyS"
+	replVerifyT     = "VerifyT"
+)
+
 // Status reports this node's view of one resource.
 type Status struct {
 	// DiskState: UpToDate, Inconsistent, Outdated, Consistent, Diskless…
@@ -731,8 +741,14 @@ type Status struct {
 	// to reconnect after detecting divergent data.
 	SplitBrain bool
 	// Resyncing is true while a peer connection is mid-resync; drbdadm
-	// resize is refused in this window.
+	// resize is refused in this window. An online verify also sets it (the
+	// replication-state leaves Established), so it doubles as "a verify is
+	// already running" — see Verifying for the narrower signal.
 	Resyncing bool
+	// Verifying is true while a peer connection is mid online-verify
+	// (replication-state VerifyS/VerifyT). Distinguishes a verify pass from
+	// a data resync, both of which set Resyncing.
+	Verifying bool
 	// ResyncPercent is the least-synced diskful peer's percent-in-sync
 	// while resyncing; 100 when fully in sync (nothing to catch up).
 	ResyncPercent float64
@@ -805,8 +821,11 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		// Anything other than Established/Off is active resync/verify;
 		// track the least-synced leg for progress reporting.
 		for _, pd := range c.PeerDevices {
-			if rs := pd.ReplicationState; rs != "" && rs != "Established" && rs != "Off" {
+			if rs := pd.ReplicationState; rs != "" && rs != replEstablished && rs != replOff {
 				s.Resyncing = true
+				if rs == replVerifyS || rs == replVerifyT {
+					s.Verifying = true
+				}
 				if pd.PercentInSync < s.ResyncPercent {
 					s.ResyncPercent = pd.PercentInSync
 				}
@@ -904,6 +923,17 @@ func (d *Driver) Resize(ctx context.Context, name string, assumeClean bool) erro
 		return err
 	}
 	_, err := d.adm(ctx, "resize", name)
+	return err
+}
+
+// Verify kicks off an online verify against every connected peer — the only
+// cross-leg integrity check DRBD offers. It returns as soon as the pass is
+// armed; the kernel runs the scan in the background and reports out-of-sync
+// blocks in the replication status (Status.OutOfSyncKiB) and the kernel log.
+// Requires verify-alg in the DRBD config; callers gate it on a connected,
+// non-resyncing volume (drbdadm refuses verify otherwise).
+func (d *Driver) Verify(ctx context.Context, name string) error {
+	_, err := d.adm(ctx, "verify", name)
 	return err
 }
 

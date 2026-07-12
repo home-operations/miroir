@@ -17,6 +17,8 @@ limitations under the License.
 package agent
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
@@ -58,6 +60,14 @@ var (
 		Name: "miroir_volume_out_of_sync_bytes",
 		Help: "Largest per-peer out-of-sync amount in bytes: the exposure if the healthiest peer is lost. Grows while a peer is down with no resync running; also counts online-verify findings.",
 	}, []string{volumeLabel})
+	metricVerifyTimestamp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_verify_last_timestamp_seconds",
+		Help: "Unix time of the last completed scheduled online verify for this volume; absent until the first verify runs. Alert on staleness to catch a verify schedule that stopped firing.",
+	}, []string{volumeLabel})
+	metricVerifyOutOfSyncBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_verify_out_of_sync_bytes",
+		Help: "Out-of-sync bytes the last scheduled verify found (0 = clean). Findings also surface in miroir_volume_out_of_sync_bytes until a disconnect/connect resync clears them.",
+	}, []string{volumeLabel})
 
 	// Pool gauges are unlabelled: each node runs exactly one backend pool,
 	// and the PodMonitor stamps a node label on every series.
@@ -79,6 +89,7 @@ func init() {
 	metrics.Registry.MustRegister(
 		metricUpToDate, metricConnected, metricSplitBrain, metricSuspended,
 		metricResyncRatio, metricQuorum, metricDiskFailed, metricOutOfSyncBytes,
+		metricVerifyTimestamp, metricVerifyOutOfSyncBytes,
 		metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
 	)
 }
@@ -111,6 +122,16 @@ func dropVolumeMetrics(volume string) {
 	metricQuorum.DeleteLabelValues(volume)
 	metricDiskFailed.DeleteLabelValues(volume)
 	metricOutOfSyncBytes.DeleteLabelValues(volume)
+	metricVerifyTimestamp.DeleteLabelValues(volume)
+	metricVerifyOutOfSyncBytes.DeleteLabelValues(volume)
+}
+
+// recordVerifyMetrics publishes the outcome of a completed verify pass. The
+// coordinator sets these directly (they are event-driven, not part of the
+// per-poll recordVolumeMetrics view).
+func recordVerifyMetrics(volume string, at time.Time, outOfSyncBytes int64) {
+	metricVerifyTimestamp.WithLabelValues(volume).Set(float64(at.Unix()))
+	metricVerifyOutOfSyncBytes.WithLabelValues(volume).Set(float64(outOfSyncBytes))
 }
 
 type miroirReplicaView struct {

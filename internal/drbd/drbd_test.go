@@ -865,3 +865,51 @@ func TestStatusResyncing(t *testing.T) {
 		})
 	}
 }
+
+func TestStatusVerifying(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		repl       string
+		wantVerify bool
+		wantResync bool
+	}{
+		{"verify-source", "VerifyS", true, true},
+		{"verify-target", "VerifyT", true, true},
+		{"data-resync", "SyncTarget", false, true},
+		{"established", "Established", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := &fakeExec{responses: map[string]string{
+				cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+					"devices":[{"disk-state":"UpToDate"}],
+					"connections":[{"connection-state":"Connected",
+						"peer_devices":[{"replication-state":"` + tc.repl + `","out-of-sync":128}]}]}]`,
+			}}
+			d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+			s, err := d.Status(t.Context(), volPvc1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Verifying != tc.wantVerify {
+				t.Fatalf("replication-state %q: Verifying = %v, want %v", tc.repl, s.Verifying, tc.wantVerify)
+			}
+			if s.Resyncing != tc.wantResync {
+				t.Fatalf("replication-state %q: Resyncing = %v, want %v", tc.repl, s.Resyncing, tc.wantResync)
+			}
+			if s.OutOfSyncKiB != 128 {
+				t.Fatalf("out-of-sync must surface, got %d", s.OutOfSyncKiB)
+			}
+		})
+	}
+}
+
+func TestVerify(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Verify(t.Context(), volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm verify pvc-1")
+}
