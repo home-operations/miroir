@@ -47,6 +47,10 @@ type MiroirVolumeSpecApplyConfiguration struct {
 	DRBD *DRBDSpecApplyConfiguration `json:"drbd,omitempty"`
 	// Source, if set, provisions content from a snapshot (CoW clone).
 	Source *VolumeSourceApplyConfiguration `json:"source,omitempty"`
+	// Export, if set, serves the volume as a shared filesystem over NFS
+	// (RWX). Set by the controller when the volume is created from a
+	// MULTI_NODE access mode; immutable.
+	Export *ExportSpecApplyConfiguration `json:"export,omitempty"`
 }
 
 // MiroirVolumeSpecApplyConfiguration constructs a declarative configuration of the MiroirVolumeSpec type for use with
@@ -97,5 +101,13 @@ func (b *MiroirVolumeSpecApplyConfiguration) WithDRBD(value *DRBDSpecApplyConfig
 // If called multiple times, the Source field is set to the value of the last call.
 func (b *MiroirVolumeSpecApplyConfiguration) WithSource(value *VolumeSourceApplyConfiguration) *MiroirVolumeSpecApplyConfiguration {
 	b.Source = value
+	return b
+}
+
+// WithExport sets the Export field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Export field is set to the value of the last call.
+func (b *MiroirVolumeSpecApplyConfiguration) WithExport(value *ExportSpecApplyConfiguration) *MiroirVolumeSpecApplyConfiguration {
+	b.Export = value
 	return b
 }

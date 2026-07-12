@@ -32,6 +32,9 @@ type MiroirVolumeStatusApplyConfiguration struct {
 	Phase *apiv1alpha1.VolumePhase `json:"phase,omitempty"`
 	// PerNode maps node name to that agent's observed state.
 	PerNode map[string]ReplicaStatusApplyConfiguration `json:"perNode,omitempty"`
+	// Export is the observed state of the NFS gateway, set only on RWX
+	// volumes (spec.export). Written by the export reconciler.
+	Export *ExportStatusApplyConfiguration `json:"export,omitempty"`
 	// Formatted is set once the volume has ever carried a filesystem —
 	// first mkfs at stage time, or inherited from the snapshot source on
 	// restore. A blank device on a formatted volume is data loss: the
@@ -73,6 +76,14 @@ func (b *MiroirVolumeStatusApplyConfiguration) WithPerNode(entries map[string]Re
 	for k, v := range entries {
 		b.PerNode[k] = v
 	}
+	return b
+}
+
+// WithExport sets the Export field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Export field is set to the value of the last call.
+func (b *MiroirVolumeStatusApplyConfiguration) WithExport(value *ExportStatusApplyConfiguration) *MiroirVolumeStatusApplyConfiguration {
+	b.Export = value
 	return b
 }
 
