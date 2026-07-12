@@ -53,6 +53,7 @@ import (
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/csi"
 	"github.com/home-operations/miroir/internal/drbd"
+	"github.com/home-operations/miroir/internal/export"
 	"github.com/home-operations/miroir/internal/gateway"
 	"github.com/home-operations/miroir/internal/membership"
 	"github.com/home-operations/miroir/internal/nodemap"
@@ -90,6 +91,26 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool) e
 	tb := &membership.TieBreakerReconciler{Client: mgr.GetClient(), Nodes: nodes}
 	if err := tb.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("tie-breaker reconciler: %w", err)
+	}
+	return nil
+}
+
+// setupExport registers the RWX gateway reconciler, which maintains the
+// per-volume NFS-Ganesha Deployment and Service. It is skipped when no
+// gateway image is configured — RWX is off until the chart wires one.
+func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string) error {
+	if image == "" {
+		setupLog.Info("no --gateway-image set; RWX (ReadWriteMany) volumes are disabled")
+		return nil
+	}
+	r := &export.Reconciler{
+		Client:         mgr.GetClient(),
+		Namespace:      namespace,
+		Image:          image,
+		ServiceAccount: serviceAccount,
+	}
+	if err := r.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("export reconciler: %w", err)
 	}
 	return nil
 }
@@ -216,6 +237,9 @@ func main() {
 		leaderElect      bool
 		leaderElectionID string
 		leaderElectionNS string
+		podNamespace     string
+		gatewayImage     string
+		gatewaySA        string
 
 		// agent mode
 		nodeName          string
@@ -253,6 +277,12 @@ func main() {
 		"leader-election Lease name; keep it stable across upgrades (controller)")
 	flag.StringVar(&leaderElectionNS, "leader-election-namespace", "",
 		"leader-election Lease namespace; empty auto-detects the pod's namespace in-cluster (controller)")
+	flag.StringVar(&podNamespace, "namespace", os.Getenv("POD_NAMESPACE"),
+		"the controller's own namespace, where per-RWX-volume gateway workloads are created (controller)")
+	flag.StringVar(&gatewayImage, "gateway-image", "",
+		"container image for per-RWX-volume NFS gateway pods; empty disables RWX (controller)")
+	flag.StringVar(&gatewaySA, "gateway-service-account", "",
+		"ServiceAccount for gateway pods, with the RBAC the gateway needs (controller)")
 	flag.IntVar(&volumeWorkers, "volume-workers", 4,
 		"concurrent volume reconciles per agent (agent)")
 	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
@@ -369,6 +399,10 @@ func main() {
 		}
 		if err := setupMembership(mgr, nodes, autoTieBreaker); err != nil {
 			setupLog.Error(err, "unable to set up membership reconcilers")
+			os.Exit(1)
+		}
+		if err := setupExport(mgr, podNamespace, gatewayImage, gatewaySA); err != nil {
+			setupLog.Error(err, "unable to set up export reconciler")
 			os.Exit(1)
 		}
 		serveCSI(mgr, csiSocket, identity, controller, nil)
