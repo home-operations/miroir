@@ -126,6 +126,7 @@ func main() {
 		provisionTimeout time.Duration
 		overcommitRatio  float64
 		autoTieBreaker   bool
+		drbdPortBase     int
 		leaderElect      bool
 		leaderElectionID string
 		leaderElectionNS string
@@ -151,6 +152,9 @@ func main() {
 		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
 	flag.BoolVar(&autoTieBreaker, "auto-tie-breaker", true,
 		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
+	flag.IntVar(&drbdPortBase, "drbd-port-base", 7000,
+		"lowest TCP port for DRBD replication links, one per replicated volume ascending "+
+			"(controller; raise to avoid host-network tenants like Ceph mgr dashboard on 7000)")
 	flag.BoolVar(&leaderElect, "leader-elect", false,
 		"elect a leader via a coordination.k8s.io Lease so extra replicas stand by warm (controller)")
 	flag.StringVar(&leaderElectionID, "leader-election-id", "miroir-controller",
@@ -268,6 +272,7 @@ func main() {
 			ProvisionTimeout: provisionTimeout,
 			OvercommitRatio:  overcommitRatio,
 			AutoTieBreaker:   autoTieBreaker,
+			DRBDPortBase:     int32(drbdPortBase),
 		}
 		if err := setupMembership(mgr, nodes, autoTieBreaker); err != nil {
 			setupLog.Error(err, "unable to set up membership reconcilers")

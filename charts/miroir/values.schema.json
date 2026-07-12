@@ -162,6 +162,12 @@
           "title": "onIoError",
           "type": "string"
         },
+        "portBase": {
+          "default": 7000,
+          "description": "Lowest TCP port for DRBD replication links, one per replicated volume\nascending (7000, 7001, …). The agent runs hostNetwork so these bind on\nthe node's kernel. Ceph mgr dashboard's non-SSL default is also 7000;\nco-locating with Rook host-network Ceph requires moving one of them\n(see issue #148). Existing volumes keep their assigned ports.",
+          "title": "portBase",
+          "type": "integer"
+        },
         "resync": {
           "properties": {
             "discardGranularity": {

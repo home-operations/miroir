@@ -53,6 +53,7 @@ Kubernetes: `>=1.31.0`
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
 | drbd.net.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises resync throughput on fast links. |
 | drbd.onIoError | string | `"detach"` |  |
+| drbd.portBase | int | `7000` | Lowest TCP port for DRBD replication links, one per replicated volume ascending (7000, 7001, …). The agent runs hostNetwork so these bind on the node's kernel. Ceph mgr dashboard's non-SSL default is also 7000; co-locating with Rook host-network Ceph requires moving one of them (see issue #148). Existing volumes keep their assigned ports. |
 | drbd.resync.discardGranularity | string | `""` | rs-discard-granularity cluster-wide fallback: during a full resync, runs of zeroes are sent as discards of this size instead of written out (e.g. "65536"), keeping a re-added thin leg thin. Normally leave empty — the agent probes each lvmthin/zfs backing device and renders an exact per-leg value that overrides this (loopfile is never probed: loop devices mishandle it, so also leave this empty on clusters with loopfile-backed replicated volumes). |
 | drbd.resync.fillTarget | string | `""` | c-fill-target, the resync controller's target fill level (e.g. "1M"). |
 | drbd.resync.maxRate | string | `""` | c-max-rate, the resync bandwidth ceiling used when the link is idle (e.g. "720M"). |
