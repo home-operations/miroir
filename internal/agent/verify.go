@@ -160,6 +160,16 @@ func (v *VerifyScheduler) verifyVolume(ctx context.Context, vol *miroirv1alpha1.
 			return fmt.Errorf("poll verify status: %w", err)
 		}
 		if !st.Verifying {
+			// A pair that broke mid-pass aborts the verify, and the
+			// out-of-sync count then mixes findings with bits accrued while
+			// the peer was away — the latter heal on an ordinary reconnect
+			// resync, unlike findings. Unattributable: discard and let a
+			// later sweep re-verify.
+			if !diskfulPeersConnected(st, vol, v.NodeName) {
+				ctrl.LoggerFrom(ctx).WithName("verify").Info(
+					"verify interrupted by a peer disconnect; result discarded", "volume", vol.Name)
+				return nil
+			}
 			return v.recordResult(ctx, vol, st.OutOfSyncKiB*1024)
 		}
 	}
