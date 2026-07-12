@@ -68,6 +68,18 @@ the agent DaemonSet and the setup Job.
 {{- end -}}
 
 {{/*
+Gateway image ref — the agent userland plus NFS-Ganesha; the controller
+passes it to the per-RWX-volume gateway Deployments it spawns.
+*/}}
+{{- define "miroir.gatewayImage" -}}
+{{- if .Values.gateway.image.digest -}}
+{{- printf "%s@%s" .Values.gateway.image.repository .Values.gateway.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.gateway.image.repository (.Values.gateway.image.tag | default .Chart.AppVersion) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Standard labels applied to every resource this chart produces. Component is added at the
 call site so each workload remains self-describing ("controller", "agent", "setup",
 "uninstall").
@@ -110,6 +122,9 @@ Resource names. All derive from fullname so nameOverride / fullnameOverride flow
 {{- end -}}
 {{- define "miroir.agentName" -}}
 {{- printf "%s-agent" (include "miroir.fullname" .) -}}
+{{- end -}}
+{{- define "miroir.gatewayName" -}}
+{{- printf "%s-gateway" (include "miroir.fullname" .) -}}
 {{- end -}}
 {{- define "miroir.nodesConfigName" -}}
 {{- printf "%s-nodes" (include "miroir.fullname" .) -}}

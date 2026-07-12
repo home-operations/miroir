@@ -38,6 +38,14 @@ tests:
       - lengthEqual:
           path: spec.template.spec.containers
           count: 4
+      # RWX: the controller is told which gateway image and ServiceAccount
+      # to spawn per-volume NFS gateways with.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-image=ghcr.io/home-operations/miroir-gateway:0.0.1
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-service-account=miroir-gateway
       - contains:
           any: true
           path: spec.template.spec.containers
@@ -407,8 +415,13 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --leak-check=true
+      # POD_NAMESPACE is always env[0] (the controller creates gateway
+      # workloads in its own namespace); extra env follows it.
       - equal:
           path: spec.template.spec.containers[0].env[0].name
+          value: POD_NAMESPACE
+      - equal:
+          path: spec.template.spec.containers[0].env[1].name
           value: GOMEMLIMIT
       - equal:
           path: spec.template.metadata.labels["sidecar.istio.io/inject"]
