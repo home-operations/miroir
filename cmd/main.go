@@ -117,6 +117,16 @@ func backendFor(nodeName, nodesConfig, vg, thinPool string) (backend.Backend, mi
 	return be, entry.Backend, nil
 }
 
+// validateDRBDPortBase exits on an out-of-range base: the allocator hands
+// out ports ascending from it, so a base near 65535 overflows the port
+// space only once volumes accumulate — fail at startup instead.
+func validateDRBDPortBase(base int) {
+	if base < 1024 || base > 64000 {
+		setupLog.Error(nil, "--drbd-port-base must be within 1024-64000", "value", base)
+		os.Exit(1)
+	}
+}
+
 func main() {
 	var (
 		mode             string
@@ -175,6 +185,8 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog.Info("starting miroir", "mode", mode, "version", version, "commit", commit)
+
+	validateDRBDPortBase(drbdPortBase)
 
 	// Setup mode provisions the node-local pool and exits. It reads the node
 	// map from a file and drives lvm/zfs directly, so it needs neither the

@@ -227,6 +227,11 @@ volumeSnapshotClass:
 # DRBD's built-in default. Tune to your replication network — see the LINBIT
 # "Tuning the DRBD Resync Controller" guide.
 drbd:
+  # @schema
+  # type: integer
+  # minimum: 1024
+  # maximum: 64000
+  # @schema
   # -- Lowest TCP port for DRBD replication links, one per replicated volume
   # ascending (7000, 7001, …). The agent runs hostNetwork so these bind on
   # the node's kernel. Ceph mgr dashboard's non-SSL default is also 7000;
