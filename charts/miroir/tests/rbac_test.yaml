@@ -5,10 +5,10 @@ release:
   name: miroir
   namespace: miroir-system
 tests:
-  - it: emits two ServiceAccounts, two ClusterRoles, two ClusterRoleBindings
+  - it: emits controller + agent + gateway RBAC (SAs, cluster roles, and the namespaced gateway Role)
     asserts:
       - hasDocuments:
-          count: 6
+          count: 11
       - documentIndex: 0
         equal:
           path: kind
@@ -30,6 +30,28 @@ tests:
           path: kind
           value: ClusterRole
       - documentIndex: 5
+        equal:
+          path: kind
+          value: ClusterRoleBinding
+      # Gateway RBAC: the controller's namespaced Role to manage gateway
+      # workloads, then the gateway SA + cluster role for volume access.
+      - documentIndex: 6
+        equal:
+          path: kind
+          value: Role
+      - documentIndex: 7
+        equal:
+          path: kind
+          value: RoleBinding
+      - documentIndex: 8
+        equal:
+          path: kind
+          value: ServiceAccount
+      - documentIndex: 9
+        equal:
+          path: kind
+          value: ClusterRole
+      - documentIndex: 10
         equal:
           path: kind
           value: ClusterRoleBinding

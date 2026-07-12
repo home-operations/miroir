@@ -144,3 +144,75 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "miroir.agentName" . }}
     namespace: {{ .Release.Namespace }}
+---
+# The controller manages per-RWX-volume gateway workloads in its own
+# namespace only — a namespaced Role, not cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "miroir.controllerName" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "miroir.controllerName" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "miroir.controllerName" . }}-gateway
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "miroir.controllerName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# Gateway pods read their volume and latch its Formatted/Activated status
+# while staging. MiroirVolumes are cluster-scoped, so this is a ClusterRole.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "miroir.gatewayName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "miroir.gatewayName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["miroir.home-operations.com"]
+    resources: ["miroirvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["miroir.home-operations.com"]
+    resources: ["miroirvolumes/status"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "miroir.gatewayName" . }}
+  labels:
+    {{- include "miroir.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "miroir.gatewayName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "miroir.gatewayName" . }}
+    namespace: {{ .Release.Namespace }}
