@@ -160,6 +160,23 @@ agent:
   extraEnv: []
 
 # =============================================================================
+# Gateway (per-RWX-volume NFS share manager)
+# =============================================================================
+# The controller spawns one gateway Deployment per RWX (ReadWriteMany)
+# volume: it mounts the volume's device on a replica node and exports it
+# over NFSv4 (userspace NFS-Ganesha), which consumers on any node mount.
+# The image is the agent userland plus NFS-Ganesha.
+gateway:
+  image:
+    repository: ghcr.io/home-operations/miroir-gateway
+    # Overrides the image tag; defaults to the chart appVersion.
+    tag: ""
+    # Pins the image by digest (sha256:…); takes precedence over the tag.
+    # The release pipeline fills this with the published image's digest.
+    digest: ""
+    pullPolicy: IfNotPresent
+
+# =============================================================================
 # Storage topology
 # =============================================================================
 # Per-node storage topology — the single source of truth for which nodes
