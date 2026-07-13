@@ -364,6 +364,11 @@ monitoring:
     additionalRuleLabels: {}
     # -- Extra annotations added to every alert rule.
     additionalRuleAnnotations: {}
+    # -- Days since the last completed scheduled verify before
+    # MiroirVolumeVerifyStale fires. Size it to just over the schedule
+    # period (a weekly `drbd.verify.schedule` → 8). The rule is only
+    # rendered when `drbd.verify.schedule` is set.
+    verifyStaleDays: 8
 
   dashboards:
     # -- Render the Grafana dashboard ConfigMap (for grafana-operator or the kube-prometheus-stack sidecar).

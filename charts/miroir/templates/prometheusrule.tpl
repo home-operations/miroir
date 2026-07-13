@@ -182,6 +182,34 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- if .Values.drbd.verify.schedule }}
+
+        # Only rendered when a verify schedule is configured. A schedule
+        # that silently stops firing (agent down over the cron slot, verify
+        # suspended and forgotten) erodes the only cross-leg integrity
+        # check; the last-completed timestamp going stale is the signal.
+        # Volumes that never completed a verify have no series and are not
+        # caught here.
+        - alert: MiroirVolumeVerifyStale
+          expr: >-
+            time() - miroir_volume_verify_last_timestamp_seconds
+            > {{ .Values.monitoring.prometheusRule.verifyStaleDays }} * 86400
+          labels:
+            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+          annotations:
+            summary: >-
+              Volume {{ "{{" }} $labels.volume {{ "}}" }} has not completed
+              an online verify in {{ "{{" }} $value | humanizeDuration {{ "}}" }}
+            description: >-
+              The scheduled drbdadm verify has not completed within the
+              expected window — the coordinating agent may have been down
+              over the cron slot, verify may be suspended, or a pass is
+              wedged. Check the agent logs on the volume's first diskful
+              replica node.
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- end }}
 
     - name: miroir.pools
       rules:
@@ -219,6 +247,31 @@ spec:
               dm-thin metadata usage crossed 80%; exhausting it corrupts the
               pool even while data space remains. Extend the metadata LV
               (lvextend --poolmetadatasize).
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+    - name: miroir.exports
+      rules:
+        # The gateway is a per-volume singleton: while it is down every NFS
+        # client of the RWX volume hangs, even though the miroir_volume_*
+        # gauges stay green (the DRBD replicas are healthy). 5m rides out a
+        # normal failover — 30s node eviction, reschedule, and DRBD
+        # releasing the dead pod's Primary claim.
+        - alert: MiroirExportUnavailable
+          expr: miroir_export_ready == 0
+          for: 5m
+          labels:
+            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+          annotations:
+            summary: >-
+              RWX export for volume {{ "{{" }} $labels.volume {{ "}}" }}
+              is unavailable — NFS clients are hanging
+            description: >-
+              The NFS gateway has no available pod (or no published export
+              address). Check the miroir-share-{{ "{{" }} $labels.volume {{ "}}" }}
+              Deployment: a failover stuck this long usually means no
+              schedulable replica node or DRBD refusing promotion.
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

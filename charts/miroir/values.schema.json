@@ -581,6 +581,12 @@
               "required": [],
               "title": "labels",
               "type": "object"
+            },
+            "verifyStaleDays": {
+              "default": 8,
+              "description": "Days since the last completed scheduled verify before\nMiroirVolumeVerifyStale fires. Size it to just over the schedule\nperiod (a weekly `drbd.verify.schedule` → 8). The rule is only\nrendered when `drbd.verify.schedule` is set.",
+              "title": "verifyStaleDays",
+              "type": "integer"
             }
           },
           "required": [],

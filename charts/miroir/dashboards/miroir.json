@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "miroir \u2014 DRBD-replicated local storage: volume health, replication, pools, and operator activity.",
+  "description": "miroir — DRBD-replicated local storage: volume health, replication, pools, and operator activity.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -83,7 +83,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Volumes DRBD refuses to reconnect after divergence \u2014 manual resolution required.",
+      "description": "Volumes DRBD refuses to reconnect after divergence — manual resolution required.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -144,7 +144,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Freeze-policy legs with IO suspended awaiting quorum \u2014 workloads are hanging.",
+      "description": "Freeze-policy legs with IO suspended awaiting quorum — workloads are hanging.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -205,7 +205,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Legs latched failed after a backing-disk I/O error \u2014 replace the disk, then remove and re-add.",
+      "description": "Legs latched failed after a backing-disk I/O error — replace the disk, then remove and re-add.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -266,7 +266,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Diskful legs below UpToDate \u2014 resyncing, detached, or disconnected.",
+      "description": "Diskful legs below UpToDate — resyncing, detached, or disconnected.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -525,7 +525,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Worst per-peer out-of-sync amount \u2014 exposure if the healthiest peer is lost; also counts online-verify findings.",
+      "description": "Worst per-peer out-of-sync amount — exposure if the healthiest peer is lost; also counts online-verify findings.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -681,7 +681,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 22
       },
@@ -713,12 +713,402 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Auto-diskful conversions per interval, by leg kind: a settled remote consumer gained a local replica (client) or a tie-breaker flipped diskful in place (tiebreaker).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (kind) (increase(miroir_autodiskful_conversions_total[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "title": "Auto-diskful conversions",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 30
+      },
+      "id": 22,
+      "panels": [],
+      "title": "Online verify",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Time since the last completed scheduled verify per volume; a line climbing past the schedule period means the verify stopped firing. Volumes that never completed a verify have no series.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 31
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max by (volume) (miroir_volume_verify_last_timestamp_seconds{volume=~\"$volume\"})",
+          "refId": "A",
+          "legendFormat": "{{volume}}"
+        }
+      ],
+      "title": "Last verify age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Out-of-sync bytes the last scheduled verify found; anything above 0 is silent divergence that needs a disconnect/connect resync to heal.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 31
+      },
+      "id": 24,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (volume) (miroir_volume_verify_out_of_sync_bytes{volume=~\"$volume\"})",
+          "refId": "A",
+          "legendFormat": "{{volume}}"
+        }
+      ],
+      "title": "Verify findings",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 39
+      },
+      "id": 25,
+      "panels": [],
+      "title": "RWX exports",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "RWX volumes with an NFS gateway.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 40
+      },
+      "id": 26,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(miroir_export_ready) OR on() vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "RWX exports",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Exports without a serving gateway — their NFS clients are hanging right now.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 44
+      },
+      "id": 27,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(miroir_export_ready == 0) OR on() vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Exports not ready",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "1 while the volume's NFS gateway is serving (pod available, address published); dips are failovers — clients hang until the line returns to 1.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "unit": "short",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 20,
+        "x": 4,
+        "y": 40
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min by (volume) (miroir_export_ready{volume=~\"$volume\"})",
+          "refId": "A",
+          "legendFormat": "{{volume}}"
+        }
+      ],
+      "title": "Export availability",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 48
       },
       "id": 13,
       "panels": [],
@@ -757,7 +1147,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 31
+        "y": 49
       },
       "id": 14,
       "options": {
@@ -829,7 +1219,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 31
+        "y": 49
       },
       "id": 15,
       "options": {
@@ -892,7 +1282,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 31
+        "y": 49
       },
       "id": 16,
       "options": {
@@ -927,7 +1317,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 57
       },
       "id": 17,
       "panels": [],
@@ -966,7 +1356,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 40
+        "y": 58
       },
       "id": 18,
       "options": {
@@ -1000,7 +1390,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "A sustained error rate means a wedged reconcile \u2014 check the owning pod's logs.",
+      "description": "A sustained error rate means a wedged reconcile — check the owning pod's logs.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1027,7 +1417,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 40
+        "y": 58
       },
       "id": 19,
       "options": {
@@ -1106,7 +1496,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "miroir \u2014 replicated storage",
+  "title": "miroir — replicated storage",
   "uid": "miroir-overview",
   "version": 1,
   "weekStart": ""

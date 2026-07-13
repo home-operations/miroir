@@ -103,6 +103,7 @@ Kubernetes: `>=1.31.0`
 | monitoring.prometheusRule.annotations | object | `{}` | PrometheusRule annotations. |
 | monitoring.prometheusRule.enabled | bool | `false` | Create a PrometheusRule with alerting rules (requires the Prometheus Operator CRDs). |
 | monitoring.prometheusRule.labels | object | `{}` | PrometheusRule labels. |
+| monitoring.prometheusRule.verifyStaleDays | int | `8` | Days since the last completed scheduled verify before MiroirVolumeVerifyStale fires. Size it to just over the schedule period (a weekly `drbd.verify.schedule` → 8). The rule is only rendered when `drbd.verify.schedule` is set. |
 | nameOverride | string | `""` | Override the chart name used in labels and default object names. |
 | nodes | object | `{}` |  |
 | overcommitRatio | int | `2` | Thin-provisioning overcommit guardrail: CreateVolume is refused when a node's provisioned total would exceed capacity × this ratio. 2× is the classic CoW headroom; raise it only if you trust your usage to stay sparse, lower it toward 1 to provision conservatively. |

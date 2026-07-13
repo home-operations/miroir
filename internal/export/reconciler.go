@@ -30,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -63,15 +64,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(ctx, req.NamespacedName, vol); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			dropExportMetrics(req.Name)
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
 	}
 	// Only RWX volumes have a gateway; a volume being deleted keeps its
 	// workloads until GC removes them with the owner.
 	if vol.Spec.Export == nil || !vol.DeletionTimestamp.IsZero() {
+		dropExportMetrics(vol.Name)
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.ensureDeployment(ctx, vol); err != nil {
+	available, err := r.ensureDeployment(ctx, vol)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	addr, err := r.ensureService(ctx, vol)
@@ -81,13 +88,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.publishAddress(ctx, vol, addr); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.Info("reconciled RWX gateway", "volume", vol.Name, "address", addr)
+	// Serving means a gateway pod is up and the address consumers mount is
+	// published; the owned-Deployment watch re-runs this on availability
+	// flips, so the gauge tracks failovers without polling.
+	recordExportReady(vol.Name, available && addr != "")
+	log.Info("reconciled RWX gateway", "volume", vol.Name, "address", addr, "available", available)
 	return ctrl.Result{}, nil
 }
 
 // ensureDeployment creates or updates the gateway Deployment, refreshing
-// its node affinity when the volume's replica set changes.
-func (r *Reconciler) ensureDeployment(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+// its node affinity when the volume's replica set changes. It reports
+// whether a gateway pod is currently available (the export-ready signal).
+func (r *Reconciler) ensureDeployment(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (bool, error) {
 	want := buildDeployment(vol, r.Namespace, r.Image, r.ServiceAccount)
 	dep := &appsv1.Deployment{}
 	dep.Name = want.Name
@@ -97,7 +109,10 @@ func (r *Reconciler) ensureDeployment(ctx context.Context, vol *miroirv1alpha1.M
 		dep.Spec = want.Spec
 		return controllerutil.SetControllerReference(vol, dep, r.Scheme())
 	})
-	return err
+	if err != nil {
+		return false, err
+	}
+	return dep.Status.AvailableReplicas > 0, nil
 }
 
 // ensureService creates or adopts the gateway Service and returns its
