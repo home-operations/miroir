@@ -39,7 +39,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -395,7 +394,7 @@ func main() {
 			// initial list, so its realization starves indefinitely —
 			// silently, and again after every restart. FIFO restores the
 			// guarantee that startup work eventually runs.
-			UsePriorityQueue: ptr.To(false),
+			UsePriorityQueue: new(false),
 		},
 	})
 	if err != nil {
