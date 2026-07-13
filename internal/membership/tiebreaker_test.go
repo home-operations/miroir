@@ -33,6 +33,7 @@ import (
 const (
 	nodeKharkiv = "kharkiv"
 	nodeParis   = "paris"
+	nodeBergen  = "bergen"
 	addrOslo    = "192.168.1.43"
 	volTB       = "pvc-tb"
 )

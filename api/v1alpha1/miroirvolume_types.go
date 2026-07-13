@@ -108,6 +108,10 @@ type VolumeClient struct {
 	// (node-map override, else the Node's InternalIP).
 	// +optional
 	Address string `json:"address,omitempty"`
+	// AddedAt is when the CSI node service attached this leg. The
+	// auto-diskful reconciler keys its conversion threshold on it.
+	// +optional
+	AddedAt *metav1.Time `json:"addedAt,omitempty"`
 }
 
 // DiskfulReplicas returns the non-diskless replicas — those that hold

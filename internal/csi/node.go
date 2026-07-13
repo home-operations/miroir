@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
@@ -250,7 +251,8 @@ func (n *Node) addClientLeg(ctx context.Context, vol *miroirv1alpha1.MiroirVolum
 			"volume %s already has %d client legs (%v) — remove a stale one to attach on %s",
 			vol.Name, len(vol.Spec.Clients), clientNodes(vol), n.NodeName)
 	}
-	vol.Spec.Clients = append(vol.Spec.Clients, miroirv1alpha1.VolumeClient{Node: n.NodeName})
+	now := metav1.Now()
+	vol.Spec.Clients = append(vol.Spec.Clients, miroirv1alpha1.VolumeClient{Node: n.NodeName, AddedAt: &now})
 	if err := n.Client.Update(ctx, vol); err != nil {
 		return status.Errorf(codes.Unavailable, "add client leg for %s on %s: %v", vol.Name, n.NodeName, err)
 	}

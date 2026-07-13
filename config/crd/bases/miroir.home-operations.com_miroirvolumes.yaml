@@ -85,6 +85,12 @@ spec:
                     diskless tie-breaker it is not placed for quorum — but DRBD counts every
                     peer's vote, so an attached client does shift quorum math (see README).
                   properties:
+                    addedAt:
+                      description: |-
+                        AddedAt is when the CSI node service attached this leg. The
+                        auto-diskful reconciler keys its conversion threshold on it.
+                      format: date-time
+                      type: string
                     address:
                       description: |-
                         Address is the replication endpoint, resolved like a replica's

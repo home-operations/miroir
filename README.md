@@ -334,6 +334,21 @@ Trade-offs to understand:
   node returns or the entry is removed by hand — the same semantics as
   a dead replica node. Remove it by deleting the `spec.clients` entry.
 
+#### Auto-diskful
+
+Set `autoDiskfulAfter` (e.g. `"10m"`) to convert a client leg that has
+stayed attached past the threshold into a diskful replica on its node —
+LINSTOR's auto-diskful. The consumer evidently lives there, so it gets
+a local replica and stops paying network I/O: the entry moves from
+`spec.clients` to `spec.replicas`, membership completes it as a
+FullSync joiner, and the agent attaches a backing device to the live
+resource while the pod keeps running. Conversion requires the client's
+node in the `nodes` map with fresh pool stats and room for the volume's
+full size, and a Ready volume; a 2+1 volume's tie-breaker is replaced
+by the third data copy (three diskful votes need no tie-breaker).
+Volumes already at 3 diskful replicas are left alone — evicting a
+replica is an operator decision. Empty (the default) disables it.
+
 ### At a glance
 
 | Failure                      | `freeze` + tie-breaker                                     | `freeze`, 2 nodes           | `last-man-standing`                                |

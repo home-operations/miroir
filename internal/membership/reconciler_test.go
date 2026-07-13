@@ -102,7 +102,7 @@ func get(t *testing.T, r *Reconciler, name string) *miroirv1alpha1.MiroirVolume 
 
 func TestCompletesAddedReplica(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(replicatedVol(), node(nodeOslo, "192.168.1.43")).
+		WithObjects(replicatedVol(), node(nodeOslo, addrOslo)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
 		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
@@ -112,7 +112,7 @@ func TestCompletesAddedReplica(t *testing.T) {
 
 	got := get(t, r, "pvc-1")
 	rep := got.Spec.Replicas[2]
-	if rep.NodeID != 2 || rep.Address != "192.168.1.43" {
+	if rep.NodeID != 2 || rep.Address != addrOslo {
 		t.Fatalf("entry not completed: %+v", rep)
 	}
 	if !rep.FullSync {
@@ -149,7 +149,7 @@ func TestReusesLowestFreeNodeID(t *testing.T) {
 	v := replicatedVol()
 	v.Spec.Replicas[1].NodeID = 2 // id 1 was freed by an earlier removal
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(v, node(nodeOslo, "192.168.1.43")).
+		WithObjects(v, node(nodeOslo, addrOslo)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
 		nodeOslo: {Backend: miroirv1alpha1.BackendZFS},
@@ -168,7 +168,7 @@ func TestCompletesDisklessReplica(t *testing.T) {
 	v := replicatedVol()
 	v.Spec.Replicas[2].Diskless = true
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(v, node(nodeOslo, "192.168.1.43")).
+		WithObjects(v, node(nodeOslo, addrOslo)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
 		nodeOslo: {Backend: miroirv1alpha1.BackendZFS},
@@ -177,7 +177,7 @@ func TestCompletesDisklessReplica(t *testing.T) {
 	reconcile(t, r, "pvc-1")
 
 	rep := get(t, r, "pvc-1").Spec.Replicas[2]
-	if rep.NodeID != 2 || rep.Address != "192.168.1.43" {
+	if rep.NodeID != 2 || rep.Address != addrOslo {
 		t.Fatalf("diskless entry not completed: %+v", rep)
 	}
 	if rep.Backend != "" {
@@ -238,7 +238,7 @@ func TestIgnoresUnreplicatedVolume(t *testing.T) {
 	v := replicatedVol()
 	v.Spec.DRBD = nil
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(v, node(nodeOslo, "192.168.1.43")).
+		WithObjects(v, node(nodeOslo, addrOslo)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
 		nodeOslo: {Backend: miroirv1alpha1.BackendZFS},
@@ -257,9 +257,9 @@ func TestIgnoresUnreplicatedVolume(t *testing.T) {
 func TestCompletesClientLeg(t *testing.T) {
 	v := replicatedVol()
 	v.Spec.Replicas = v.Spec.Replicas[:2] // both complete
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: "bergen"}}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeBergen}}
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(v, node("bergen", "192.168.1.44")).
+		WithObjects(v, node(nodeBergen, "192.168.1.44")).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{}} // bergen is not a storage node
 
@@ -270,7 +270,7 @@ func TestCompletesClientLeg(t *testing.T) {
 	if cl.NodeID != 2 || cl.Address != "192.168.1.44" {
 		t.Fatalf("client leg not completed: %+v", cl)
 	}
-	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+"bergen") {
+	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeBergen) {
 		t.Fatal("teardown finalizer missing for the client node")
 	}
 }
@@ -281,9 +281,9 @@ func TestClientLegNodeIDSkipsReplicaIDs(t *testing.T) {
 	v := replicatedVol()
 	v.Spec.Replicas = v.Spec.Replicas[:2]
 	v.Spec.Replicas[1].NodeID = 2 // hole at 1, high id in use
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: "bergen"}}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeBergen}}
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(v, node("bergen", "192.168.1.44")).
+		WithObjects(v, node(nodeBergen, "192.168.1.44")).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{}}
 

@@ -134,6 +134,12 @@
       "title": "agent",
       "type": "object"
     },
+    "autoDiskfulAfter": {
+      "default": "",
+      "description": "Convert a diskless client leg into a diskful replica once it has been\nattached this long (e.g. \"10m\"): a consumer that stays put gets a local\nreplica and stops paying network I/O — LINSTOR's auto-diskful. Needs the\nclient's node in `nodes` with room for the volume; a 2+1 volume's\ntie-breaker is replaced by the third data copy. Empty disables.",
+      "title": "autoDiskfulAfter",
+      "type": "string"
+    },
     "autoTieBreaker": {
       "default": true,
       "description": "Add a diskless tie-breaker replica to 2-replica freeze volumes when a\nspare storage node exists, so majority quorum survives a single node\nloss. Also retrofits existing freeze volumes at controller startup.",

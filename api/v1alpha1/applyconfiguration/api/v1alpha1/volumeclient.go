@@ -18,6 +18,10 @@ limitations under the License.
 
 package v1alpha1
 
+import (
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
 // VolumeClientApplyConfiguration represents a declarative configuration of the VolumeClient type for use
 // with apply.
 //
@@ -37,6 +41,9 @@ type VolumeClientApplyConfiguration struct {
 	// Address is the replication endpoint, resolved like a replica's
 	// (node-map override, else the Node's InternalIP).
 	Address *string `json:"address,omitempty"`
+	// AddedAt is when the CSI node service attached this leg. The
+	// auto-diskful reconciler keys its conversion threshold on it.
+	AddedAt *v1.Time `json:"addedAt,omitempty"`
 }
 
 // VolumeClientApplyConfiguration constructs a declarative configuration of the VolumeClient type for use with
@@ -66,5 +73,13 @@ func (b *VolumeClientApplyConfiguration) WithNodeID(value int32) *VolumeClientAp
 // If called multiple times, the Address field is set to the value of the last call.
 func (b *VolumeClientApplyConfiguration) WithAddress(value string) *VolumeClientApplyConfiguration {
 	b.Address = &value
+	return b
+}
+
+// WithAddedAt sets the AddedAt field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AddedAt field is set to the value of the last call.
+func (b *VolumeClientApplyConfiguration) WithAddedAt(value v1.Time) *VolumeClientApplyConfiguration {
+	b.AddedAt = &value
 	return b
 }

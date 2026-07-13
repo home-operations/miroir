@@ -286,6 +286,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.VolumeClient
   map:
     fields:
+    - name: addedAt
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: address
       type:
         scalar: string

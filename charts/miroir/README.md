@@ -50,6 +50,7 @@ Kubernetes: `>=1.31.0`
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | agent.volumeWorkers | int | `4` | Concurrent volume reconciles per agent. Per-volume work is serialized by controller-runtime regardless; this bounds how many distinct volumes one agent works at once. |
+| autoDiskfulAfter | string | `""` | Convert a diskless client leg into a diskful replica once it has been attached this long (e.g. "10m"): a consumer that stays put gets a local replica and stops paying network I/O — LINSTOR's auto-diskful. Needs the client's node in `nodes` with room for the volume; a 2+1 volume's tie-breaker is replaced by the third data copy. Empty disables. |
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
 | drbd.net.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises resync throughput on fast links. |
 | drbd.onIoError | string | `"detach"` |  |

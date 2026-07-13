@@ -236,8 +236,12 @@ func TestDevicePathRemoteAttachAddsClientLeg(t *testing.T) {
 	if err := n.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Spec.ClientForNode(nodeKharkiv) == nil {
+	cl := got.Spec.ClientForNode(nodeKharkiv)
+	if cl == nil {
 		t.Fatalf("client leg not added: %+v", got.Spec.Clients)
+	}
+	if cl.AddedAt == nil {
+		t.Fatal("client leg must be stamped with AddedAt (auto-diskful keys on it)")
 	}
 }
 

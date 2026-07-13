@@ -61,6 +61,9 @@ spec:
             - --provision-timeout={{ .Values.provisionTimeout }}
             - --overcommit-ratio={{ .Values.overcommitRatio }}
             - --auto-tie-breaker={{ .Values.autoTieBreaker }}
+            {{- with .Values.autoDiskfulAfter }}
+            - --auto-diskful-after={{ . }}
+            {{- end }}
             - --drbd-port-base={{ .Values.drbd.portBase }}
             {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
             - --leader-elect=true

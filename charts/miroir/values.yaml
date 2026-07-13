@@ -57,6 +57,12 @@ overcommitRatio: 2
 # spare storage node exists, so majority quorum survives a single node
 # loss. Also retrofits existing freeze volumes at controller startup.
 autoTieBreaker: true
+# -- Convert a diskless client leg into a diskful replica once it has been
+# attached this long (e.g. "10m"): a consumer that stays put gets a local
+# replica and stops paying network I/O — LINSTOR's auto-diskful. Needs the
+# client's node in `nodes` with room for the volume; a 2+1 volume's
+# tie-breaker is replaced by the third data copy. Empty disables.
+autoDiskfulAfter: ""
 # -- Controller replicas. Anything above 1 automatically enables leader
 # election: the extras are warm standbys (failover is lease expiry, ~15s,
 # instead of a full pod reschedule), the rollout strategy switches to
