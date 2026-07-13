@@ -20,7 +20,9 @@ import (
 	"context"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,6 +46,8 @@ type AutoDiskfulReconciler struct {
 	Nodes nodemap.Map
 	// After is the conversion threshold; the setup path guards > 0.
 	After time.Duration
+	// Recorder emits the AutoDiskful event on conversion; optional.
+	Recorder events.EventRecorder
 }
 
 // Reconcile converts at most one leg per pass — a client leg (replaced by
@@ -82,8 +86,13 @@ func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if err := r.Update(ctx, vol); err != nil {
 			return ctrl.Result{}, err
 		}
+		metricConversions.WithLabelValues(c.kind).Inc()
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vol, nil, corev1.EventTypeNormal, "AutoDiskful", "Convert",
+				"converting %s leg on node %s to a diskful replica (full sync follows)", c.kind, c.node)
+		}
 		ctrl.LoggerFrom(ctx).Info("auto-diskful: converting leg to a diskful replica",
-			"volume", vol.Name, "node", c.node)
+			"volume", vol.Name, "node", c.node, "kind", c.kind)
 		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: wait}, nil
@@ -92,6 +101,7 @@ func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 // candidate is one leg eligible for diskful conversion once aged.
 type candidate struct {
 	node  string
+	kind  string
 	since time.Time
 	// apply mutates vol to perform this conversion.
 	apply func(*miroirv1alpha1.MiroirVolume)
@@ -111,7 +121,7 @@ func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate
 			continue
 		}
 		idx := i
-		out = append(out, candidate{node: cl.Node, since: cl.AddedAt.Time,
+		out = append(out, candidate{node: cl.Node, kind: "client", since: cl.AddedAt.Time,
 			apply: func(v *miroirv1alpha1.MiroirVolume) { convertClient(v, idx, entry.Backend) }})
 	}
 	for i := range vol.Spec.Replicas {
@@ -125,7 +135,7 @@ func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate
 			continue
 		}
 		idx := i
-		out = append(out, candidate{node: rep.Node, since: since.Time,
+		out = append(out, candidate{node: rep.Node, kind: "tiebreaker", since: since.Time,
 			apply: func(v *miroirv1alpha1.MiroirVolume) { convertTieBreaker(v, idx, entry.Backend) }})
 	}
 	return out

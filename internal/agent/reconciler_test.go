@@ -2184,6 +2184,20 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	if st.DevicePath == "" {
 		t.Fatal("client slot must record the DRBD device path for staging")
 	}
+	if v := testutil.ToFloat64(metricDisklessPrimary.WithLabelValues(volPvc1)); v != 0 {
+		t.Fatalf("diskless_primary = %v, want 0 while Secondary", v)
+	}
+
+	// A consumer opens the device: the leg promotes and the remote-consumer
+	// gauge flips — the signal the RemoteConsumer alert and auto-diskful
+	// dashboards key on.
+	fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
+		"connections":[{"peer-node-id":0,"connection-state":"Connected"},{"peer-node-id":1,"connection-state":"Connected"}]}]`
+	reconcile(t, r, volPvc1)
+	if v := testutil.ToFloat64(metricDisklessPrimary.WithLabelValues(volPvc1)); v != 1 {
+		t.Fatalf("diskless_primary = %v, want 1 while Primary", v)
+	}
 }
 
 // An incomplete client leg (membership has not assigned node-id/address)

@@ -85,7 +85,12 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool, a
 		return fmt.Errorf("membership reconciler: %w", err)
 	}
 	if autoDiskfulAfter > 0 {
-		ad := &membership.AutoDiskfulReconciler{Client: mgr.GetClient(), Nodes: nodes, After: autoDiskfulAfter}
+		ad := &membership.AutoDiskfulReconciler{
+			Client:   mgr.GetClient(),
+			Nodes:    nodes,
+			After:    autoDiskfulAfter,
+			Recorder: mgr.GetEventRecorder("miroir-controller"),
+		}
 		if err := ad.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("auto-diskful reconciler: %w", err)
 		}

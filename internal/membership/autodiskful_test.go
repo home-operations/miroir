@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -100,6 +102,9 @@ func TestAutoDiskfulConvertsAgedClient(t *testing.T) {
 	}
 	if !rep.FullSync {
 		t.Fatal("converted leg must join as a FullSync joiner")
+	}
+	if v := testutil.ToFloat64(metricConversions.WithLabelValues("client")); v < 1 {
+		t.Fatalf("conversion counter must increment, got %v", v)
 	}
 }
 

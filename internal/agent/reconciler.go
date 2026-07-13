@@ -280,6 +280,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			resyncRatio:    st.ResyncPercent / 100,
 			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
 		})
+	} else {
+		recordDisklessMetrics(vol.Name, st.Primary)
 	}
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: !localDiskless,
@@ -357,6 +359,8 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 			resyncRatio:    st.ResyncPercent / 100,
 			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
 		})
+	} else {
+		recordDisklessMetrics(vol.Name, st.Primary)
 	}
 	return true, ctrl.Result{RequeueAfter: drbdPollInterval}
 }

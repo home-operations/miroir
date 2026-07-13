@@ -35,7 +35,7 @@ tests:
           value: miroir.volumes
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 7
+          count: 8
       - equal:
           path: spec.groups[1].name
           value: miroir.pools
