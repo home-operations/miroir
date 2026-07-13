@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/home-operations/miroir/compare/0.5.0...0.6.0) (2026-07-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* consume replicated volumes from nodes without a replica (diskless client legs) ([#165](https://github.com/home-operations/miroir/issues/165))
+
+### Features
+
+* consume replicated volumes from nodes without a replica (diskless client legs) ([#165](https://github.com/home-operations/miroir/issues/165)) ([cc9df89](https://github.com/home-operations/miroir/commit/cc9df89d61b141810c12ec6ee0288453bbfe0d51))
+
 ## [0.5.0](https://github.com/home-operations/miroir/compare/0.4.14...0.5.0) (2026-07-13)
 
 
