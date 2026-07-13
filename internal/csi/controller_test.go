@@ -207,7 +207,15 @@ func rwxCaps() []*csi.VolumeCapability {
 
 func TestCreateVolumeRWXSetsExport(t *testing.T) {
 	s := newScheme(t)
-	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second, DRBDPortBase: 7000}
+	// RWX is replicated (>=2), so placement resolves each replica's address
+	// from its Node's InternalIP — the fake client needs the Node objects.
+	cl := readyOnGet(s)
+	for _, n := range []*corev1.Node{nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
+		if err := cl.Create(t.Context(), n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second, DRBDPortBase: 7000}
 
 	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
