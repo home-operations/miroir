@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.1](https://github.com/home-operations/miroir/compare/0.6.0...0.6.1) (2026-07-13)
+
+
+### Features
+
+* RWX export readiness metric, verify-staleness alert, and dashboard coverage ([#180](https://github.com/home-operations/miroir/issues/180)) ([9db1799](https://github.com/home-operations/miroir/commit/9db17998d7acfed239fa6df24e88745ea8e3424c))
+
+
+### Code Refactoring
+
+* repair split doc comments, drop dead code, modernize idioms ([#182](https://github.com/home-operations/miroir/issues/182)) ([712572c](https://github.com/home-operations/miroir/commit/712572c855215136ff8c68f5a95a0ce7d5fd048e))
+
 ## [0.6.0](https://github.com/home-operations/miroir/compare/0.5.0...0.6.0) (2026-07-13)
 
 
