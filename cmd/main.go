@@ -31,6 +31,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -120,6 +122,25 @@ func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string) erro
 // client-only agent (CSI node service for RWX/NFS consumers) rather than
 // failing to start.
 var errNodeUnmapped = errors.New("node absent from the storage node map")
+
+// cacheOptions builds the manager cache config. SSA-heavy objects grow a
+// managedFields entry per field manager (every agent + the CSI controller
+// write each volume), so strip them from cached copies — nothing reads
+// them locally (conflict detection is server-side; SSA patches build fresh
+// objects). In controller mode the export reconciler manages gateway
+// Deployments and Services only in its own namespace, so scope those
+// informers there: Owns() otherwise lists them cluster-wide, which the
+// namespaced Role neither grants nor should. Other types stay cluster-scoped.
+func cacheOptions(mode, namespace string) cache.Options {
+	opts := cache.Options{DefaultTransform: cache.TransformStripManagedFields()}
+	if mode == modeController && namespace != "" {
+		opts.ByObject = map[client.Object]cache.ByObject{
+			&appsv1.Deployment{}: {Namespaces: map[string]cache.Config{namespace: {}}},
+			&corev1.Service{}:    {Namespaces: map[string]cache.Config{namespace: {}}},
+		}
+	}
+	return opts
+}
 
 // backendFor resolves this node's storage entry from the node map and
 // builds its backend — shared by setup and agent mode so the two can
@@ -329,12 +350,7 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: metricsAddr},
-		// SSA-heavy objects grow a managedFields entry per field manager
-		// (every agent + the CSI controller write each volume), and every
-		// agent caches all volumes cluster-wide — strip them from cached
-		// copies. Nothing reads them locally: conflict detection is
-		// server-side, and the SSA patches build fresh objects.
-		Cache: cache.Options{DefaultTransform: cache.TransformStripManagedFields()},
+		Cache:   cacheOptions(mode, podNamespace),
 		// The dedicated health-probe server is disabled; the probes are
 		// co-hosted on the (plain HTTP) metrics listener so each workload
 		// exposes a single operational port — the agent runs hostNetwork,
