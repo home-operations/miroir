@@ -34,8 +34,6 @@ type Identity struct {
 	// WithController is true only in controller mode: the agent's Identity
 	// must not advertise CONTROLLER_SERVICE (it serves no controller RPCs).
 	WithController bool
-	// Ready reports whether the serving component can handle RPCs.
-	Ready func(ctx context.Context) bool
 }
 
 // GetPluginInfo returns the driver name and version.
@@ -79,10 +77,8 @@ func (s *Identity) GetPluginCapabilities(_ context.Context, _ *csi.GetPluginCapa
 }
 
 // Probe reports liveness/readiness to the livenessprobe sidecar and kubelet.
-func (s *Identity) Probe(ctx context.Context, _ *csi.ProbeRequest) (*csi.ProbeResponse, error) {
-	ready := true
-	if s.Ready != nil {
-		ready = s.Ready(ctx)
-	}
-	return &csi.ProbeResponse{Ready: wrapperspb.Bool(ready)}, nil
+// Serving the RPC is the signal: the gRPC server only comes up after the
+// manager's cache has synced (see serveCSI).
+func (s *Identity) Probe(_ context.Context, _ *csi.ProbeRequest) (*csi.ProbeResponse, error) {
+	return &csi.ProbeResponse{Ready: wrapperspb.Bool(true)}, nil
 }

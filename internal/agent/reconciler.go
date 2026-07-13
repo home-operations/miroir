@@ -212,16 +212,17 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, nil
 		}
 	} else {
-		// Diskless tie-breaker: join DRBD for quorum only, no backing.
-		// No replica metrics either — the up-to-date/connected series
-		// describe data legs, and a tie-breaker is never UpToDate, so a
-		// series here would permanently trip up_to_date==0 alerts.
-		log.V(1).Info("diskless tie-breaker realized", "volume", vol.Name)
+		// Diskless leg (tie-breaker or client): join DRBD without a
+		// backing device. No replica metrics either — the
+		// up-to-date/connected series describe data legs, and a diskless
+		// leg is never UpToDate, so a series here would permanently trip
+		// up_to_date==0 alerts.
+		log.V(1).Info("diskless leg realized", "volume", vol.Name)
 	}
 
 	// Replicated: layer DRBD on the backing device. Pods attach the DRBD
 	// device, never the backing LV/zvol directly.
-	minor, err := r.assignMinor(ctx, vol)
+	minor, err := r.assignMinor(vol)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
@@ -864,10 +865,6 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.
 		client.ForceOwnership)
 }
 
-// replicaStatusAC mirrors ReplicaStatus's wire shape: fields without
-// omitempty are always set (SSA must own them even at zero — Connected
-// false is a statement, not an absence), omitempty fields only when
-// non-zero (absent → SSA clears the previous value this manager owned).
 // primarySince keeps a stable timestamp for how long this leg has been
 // Primary: stamped on the first pass that observes the role, carried
 // through subsequent passes, dropped on demotion (the device closed). The
@@ -883,6 +880,10 @@ func primarySince(vol *miroirv1alpha1.MiroirVolume, node string, primary bool) *
 	return &now
 }
 
+// replicaStatusAC mirrors ReplicaStatus's wire shape: fields without
+// omitempty are always set (SSA must own them even at zero — Connected
+// false is a statement, not an absence), omitempty fields only when
+// non-zero (absent → SSA clears the previous value this manager owned).
 func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusApplyConfiguration {
 	ac := acv1alpha1.ReplicaStatus().
 		WithDeviceCreated(st.DeviceCreated).
@@ -916,19 +917,13 @@ func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusA
 }
 
 // assignMinor returns the DRBD minor for this volume, allocating a free one if unset.
-func (r *VolumeReconciler) assignMinor(_ context.Context, vol *miroirv1alpha1.MiroirVolume) (int32, error) {
+func (r *VolumeReconciler) assignMinor(vol *miroirv1alpha1.MiroirVolume) (int32, error) {
 	if m := vol.Status.PerNode[r.NodeName].DRBDMinor; m > 0 {
 		return m, nil
 	}
-	minor, err := r.DRBD.AllocateMinor(vol.Name)
-	if err != nil {
-		return 0, err
-	}
-	return minor, nil
+	return r.DRBD.AllocateMinor(vol.Name)
 }
 
-// computePhase aggregates per-node states into the volume phase the CSI
-// controller waits on (notes/DESIGN.md §4.5.1).
 // growIfCoordinator runs drbdadm resize when this node is the resize
 // coordinator (first diskful replica) and its realized size still trails
 // the spec — first bring-up and expansion. Once its status reaches spec
@@ -995,6 +990,8 @@ func detachedDiskMessage(diskFailed bool) string {
 		"replace the disk, then remove and re-add this replica"
 }
 
+// computePhase aggregates per-node states into the volume phase the CSI
+// controller waits on (notes/DESIGN.md §4.5.1).
 func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0

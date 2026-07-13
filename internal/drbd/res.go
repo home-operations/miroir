@@ -52,8 +52,9 @@ type Resource struct {
 	// LocalDisk is the local backing device path. Empty/unused when
 	// LocalDiskless is true.
 	LocalDisk string
-	// LocalDiskless is true when the local node is a diskless tie-breaker:
-	// Apply skips create-md and the local peer renders "disk none".
+	// LocalDiskless is true when the local node holds a diskless leg — a
+	// tie-breaker replica or a client leg (spec.clients): Apply skips
+	// create-md and the local peer renders "disk none".
 	LocalDiskless bool
 	// Secret authenticates peers (cram-hmac challenge-response). Empty
 	// renders no auth — volumes created before secrets existed.
@@ -79,8 +80,9 @@ type Peer struct {
 	Node    string
 	NodeID  int32
 	Address string
-	// Diskless marks a quorum-only tie-breaker peer: renders "disk none",
-	// no meta-disk, no backend.
+	// Diskless marks a peer with no backing device — a quorum-only
+	// tie-breaker or a client leg: renders "disk none", no meta-disk,
+	// no backend.
 	Diskless bool
 }
 

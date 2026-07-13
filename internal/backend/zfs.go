@@ -194,11 +194,11 @@ func (z *zfsBackend) promoteClones(ctx context.Context, vol string) error {
 	if err != nil {
 		return err
 	}
-	for _, clones := range strings.Fields(out) {
+	for clones := range strings.FieldsSeq(out) {
 		if clones == "-" {
 			continue
 		}
-		for _, clone := range strings.Split(clones, ",") {
+		for clone := range strings.SplitSeq(clones, ",") {
 			if _, err := z.exec(ctx, "zfs", "promote", clone); err != nil {
 				return err
 			}

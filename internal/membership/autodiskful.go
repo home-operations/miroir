@@ -18,6 +18,7 @@ package membership
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -114,18 +115,15 @@ type candidate struct {
 // so no client leg ever exists). Only legs on storage nodes qualify.
 func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate {
 	var out []candidate
-	for i := range vol.Spec.Clients {
-		cl := vol.Spec.Clients[i]
+	for i, cl := range vol.Spec.Clients {
 		entry, storage := nodes[cl.Node]
 		if !storage || cl.Address == "" || cl.AddedAt == nil {
 			continue
 		}
-		idx := i
 		out = append(out, candidate{node: cl.Node, kind: "client", since: cl.AddedAt.Time,
-			apply: func(v *miroirv1alpha1.MiroirVolume) { convertClient(v, idx, entry.Backend) }})
+			apply: func(v *miroirv1alpha1.MiroirVolume) { convertClient(v, i, entry.Backend) }})
 	}
-	for i := range vol.Spec.Replicas {
-		rep := vol.Spec.Replicas[i]
+	for i, rep := range vol.Spec.Replicas {
 		if !rep.Diskless {
 			continue
 		}
@@ -134,9 +132,8 @@ func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate
 		if !storage || since == nil {
 			continue
 		}
-		idx := i
 		out = append(out, candidate{node: rep.Node, kind: "tiebreaker", since: since.Time,
-			apply: func(v *miroirv1alpha1.MiroirVolume) { convertTieBreaker(v, idx, entry.Backend) }})
+			apply: func(v *miroirv1alpha1.MiroirVolume) { convertTieBreaker(v, i, entry.Backend) }})
 	}
 	return out
 }
@@ -165,7 +162,7 @@ func convertClient(vol *miroirv1alpha1.MiroirVolume, clientIdx int, backend miro
 		FullSync: true,
 	})
 	vol.Spec.Replicas = replicas
-	vol.Spec.Clients = append(vol.Spec.Clients[:clientIdx], vol.Spec.Clients[clientIdx+1:]...)
+	vol.Spec.Clients = slices.Delete(vol.Spec.Clients, clientIdx, clientIdx+1)
 }
 
 // convertTieBreaker flips a tie-breaker leg diskful in place (the CEL

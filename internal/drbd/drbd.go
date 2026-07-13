@@ -47,7 +47,6 @@ type Driver struct {
 	Mknod func(path string, mode uint32, dev int) error
 }
 
-// Apply converges the kernel state for one resource: write config when it
 // isMissingMetadata matches drbdadm's complaint when a backing device
 // carries no DRBD metadata (attach against a blank/replaced disk).
 func isMissingMetadata(err error) bool {
@@ -80,6 +79,7 @@ func (d *Driver) ensureMarkedMetadata(ctx context.Context, r Resource) error {
 	return os.WriteFile(marker, nil, 0o640)
 }
 
+// Apply converges the kernel state for one resource: write config when it
 // changed, create metadata once (left at UUID_JUST_CREATED — see
 // ensureMetadata for how the birth generation lands), bring the resource
 // up / adjust.
@@ -257,7 +257,7 @@ const justCreatedUUID = "0000000000000004"
 // operator-recoverable, wiping a live one is not.
 func virginMetadata(dump, name string) bool {
 	current := ""
-	for _, line := range strings.Split(dump, "\n") {
+	for line := range strings.SplitSeq(dump, "\n") {
 		fields := strings.Fields(strings.TrimSuffix(strings.TrimSpace(line), ";"))
 		if len(fields) != 2 {
 			continue
@@ -356,9 +356,6 @@ const drbdMajor = 147
 // volumes. Lower numbers may be reserved for system DRBD resources.
 const minorBase int32 = 1000
 
-// AllocateMinor assigns a DRBD minor to a volume, returning the same
-// minor on future calls. Serialised by an advisory flock the kernel
-// releases on close or process death, then persisted via atomic rename.
 // lockMinors serialises minor.assign access. flock, not an O_EXCL
 // sentinel: a sentinel orphaned by a crash between create and remove would
 // deadlock every future allocation (nothing sweeps minor.lock). LOCK_EX
@@ -398,6 +395,9 @@ func (d *Driver) releaseMinor(volume string) error {
 	return d.writeAssignments(assigned)
 }
 
+// AllocateMinor assigns a DRBD minor to a volume, returning the same
+// minor on future calls. Serialised by an advisory flock the kernel
+// releases on close or process death, then persisted via atomic rename.
 func (d *Driver) AllocateMinor(volume string) (int32, error) {
 	unlock, err := d.lockMinors()
 	if err != nil {
@@ -473,7 +473,7 @@ func (d *Driver) readAssignments() (map[string]int32, error) {
 		return nil, err
 	}
 	m := map[string]int32{}
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -491,22 +491,11 @@ func (d *Driver) readAssignments() (map[string]int32, error) {
 }
 
 func (d *Driver) writeAssignments(m map[string]int32) error {
-	path := d.path("minor.assign")
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
+	var buf bytes.Buffer
 	for name, minor := range m {
-		if _, err := fmt.Fprintf(f, "%s %d\n", name, minor); err != nil {
-			return err
-		}
+		fmt.Fprintf(&buf, "%s %d\n", name, minor)
 	}
-	if err := f.Sync(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return writeFileAtomic(d.path("minor.assign"), buf.Bytes(), 0o640)
 }
 
 func (d *Driver) scanUsedMinors(assigned map[string]int32) map[int32]bool {
@@ -803,7 +792,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 	res := parsed[0]
 
 	s := Status{
-		Primary:       res.Role == "Primary",
+		Primary:       res.Role == rolePrimary,
 		Suspended:     res.SuspendedUser,
 		PeerConnected: make(map[int32]bool, len(res.Connections)),
 		PeerDiskState: make(map[int32]string, len(res.Connections)),
@@ -814,7 +803,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		s.Quorum = res.Devices[0].Quorum
 	}
 	for _, c := range res.Connections {
-		if c.PeerRole == "Primary" {
+		if c.PeerRole == rolePrimary {
 			s.PeerPrimary = true
 		}
 		// replication-state / percent-in-sync live per peer-device.
@@ -959,8 +948,7 @@ func (d *Driver) writeConfig(r Resource) error {
 	}
 	// Atomic write: StateDir is drbdadm's include directory, and a crash
 	// mid-write would leave a truncated .res that makes drbdadm adjust fail
-	// for EVERY resource on the node, not just this one. Same tmp+sync+rename
-	// as writeAssignments.
+	// for EVERY resource on the node, not just this one.
 	return writeFileAtomic(path, rendered, 0o640)
 }
 

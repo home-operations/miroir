@@ -332,7 +332,7 @@ func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes
 	return &miroirv1alpha1.VolumeSource{SnapshotName: snapID}, srcReplicas, snap.Status.SourceFormatted, nil
 }
 
-// allocVolumes lists every volume once// allocVolumes lists every volume once for the allocMu critical section
+// allocVolumes lists every volume once for the allocMu critical section
 // (the overcommit guard and the DRBD port scan share it). Skipped when
 // unneeded — a 1-replica restore does zero volume Lists.
 func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1alpha1.MiroirVolume, error) {
@@ -346,7 +346,7 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 	return list.Items, nil
 }
 
-// place selects count replica nodes:// place selects count replica nodes: the scheduler's preference first
+// place selects count replica nodes: the scheduler's preference first
 // (WaitForFirstConsumer), then the remaining eligible storage nodes by
 // free space — capacity-aware spread (notes/DESIGN.md §4.6). Nodes whose
 // projected provisioned total would breach the overcommit ratio are
@@ -554,13 +554,10 @@ func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.M
 	return out, nil
 }
 
-// provisionedPerNode sums the provisioned (virtual) size of every volume
-// with a replica on each node, excluding exclude (the volume being
-// (re)created, so an idempotent retry does not count itself). Clones share
-// backing on disk but are counted in full — a conservative overcommit guard.
 // provisionedPerNode sums the provisioned (virtual) bytes per node from a
 // pre-fetched volume list, excluding the named volume (the one being
-// (re)created, so an idempotent retry does not count itself).
+// (re)created, so an idempotent retry does not count itself). Clones share
+// backing on disk but are counted in full — a conservative overcommit guard.
 func provisionedPerNode(vols []miroirv1alpha1.MiroirVolume, exclude string) map[string]int64 {
 	out := map[string]int64{}
 	for _, v := range vols {
