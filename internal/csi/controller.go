@@ -149,9 +149,15 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 	shared := isShared(req.GetVolumeCapabilities())
-	if shared && replicas > 1 && quorum == miroirv1alpha1.QuorumLastManStanding {
-		return nil, status.Error(codes.InvalidArgument,
-			"RWX volumes require freeze quorum: last-man-standing risks dual-primary split-brain when the gateway reschedules")
+	if shared {
+		if replicas < 2 {
+			return nil, status.Error(codes.InvalidArgument,
+				"RWX volumes need at least 2 replicas so the NFS gateway can fail over to a surviving node")
+		}
+		if quorum == miroirv1alpha1.QuorumLastManStanding {
+			return nil, status.Error(codes.InvalidArgument,
+				"RWX volumes require freeze quorum: last-man-standing risks two gateways writing during a partition")
+		}
 	}
 
 	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
