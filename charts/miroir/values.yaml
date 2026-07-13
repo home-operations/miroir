@@ -236,10 +236,17 @@ storageClasses: []
 
 # Requires the cluster-wide snapshot-controller + CRDs (deployed
 # separately; kube-system/snapshot-controller in the homelab).
-volumeSnapshotClass:
-  create: true
-  name: miroir-snap
-  deletionPolicy: Delete
+# -- VolumeSnapshotClasses to create (requires the snapshot-controller +
+# CRDs, deployed separately). Empty by default. Per entry:
+#   name           (required) the VolumeSnapshotClass name
+#   deletionPolicy Delete | Retain, default Delete
+#   isDefault      set the cluster default-snapshot-class annotation,
+#                  default false
+# Example:
+#   volumeSnapshotClasses:
+#     - name: miroir-snap
+#       deletionPolicy: Delete
+volumeSnapshotClasses: []
 
 # =============================================================================
 # DRBD replication tuning

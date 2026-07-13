@@ -1,5 +1,6 @@
-{{- range $i, $sc := .Values.storageClasses }}
-{{- if $i }}
+{{- $first := true }}
+{{- range $sc := .Values.storageClasses }}
+{{- if $first }}{{ $first = false }}{{ else }}
 ---
 {{- end }}
 {{- $replicas := $sc.replicas | default 1 }}
@@ -22,14 +23,18 @@ parameters:
   {{- end }}
   csi.storage.k8s.io/fstype: {{ $sc.fsType | default "ext4" }}
 {{- end }}
-{{- if .Values.volumeSnapshotClass.create }}
-{{- if .Values.storageClasses }}
+{{- range $vsc := .Values.volumeSnapshotClasses }}
+{{- if $first }}{{ $first = false }}{{ else }}
 ---
 {{- end }}
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
-  name: {{ .Values.volumeSnapshotClass.name }}
-driver: {{ include "miroir.csiDriverName" . }}
-deletionPolicy: {{ .Values.volumeSnapshotClass.deletionPolicy }}
+  name: {{ $vsc.name }}
+  {{- if $vsc.isDefault }}
+  annotations:
+    snapshot.storage.kubernetes.io/is-default-class: "true"
+  {{- end }}
+driver: {{ include "miroir.csiDriverName" $ }}
+deletionPolicy: {{ $vsc.deletionPolicy | default "Delete" }}
 {{- end }}

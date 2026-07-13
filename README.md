@@ -138,13 +138,14 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
 The chart deploys a single `miroir-controller` Deployment, a
 `miroir-agent` DaemonSet on every schedulable node (pods can mount
 miroir volumes from any node; only nodes in the `nodes` map hold
-storage). No StorageClasses are created by default — declare the ones
-you want under `storageClasses` (see the chart values for the canonical
-`miroir-local` / `miroir-replicated` pair the examples below use; an
-entry is local at `replicas: 1` and DRBD-replicated at `replicas: 2`).
-Per-node setup jobs provision each pool on install and upgrade, and the
-agent re-runs the same idempotent setup at startup; existing pools are
-reused.
+storage). No StorageClasses or VolumeSnapshotClasses are created by
+default — declare the ones you want under `storageClasses` and
+`volumeSnapshotClasses` (see the chart values for the canonical
+`miroir-local` / `miroir-replicated` / `miroir-snap` set the examples
+below use; a storage entry is local at `replicas: 1` and
+DRBD-replicated at `replicas: 2`). Per-node setup jobs provision each
+pool on install and upgrade, and the agent re-runs the same idempotent
+setup at startup; existing pools are reused.
 
 ### 3. Claim a volume
 
@@ -188,7 +189,9 @@ policies do and how the automatic diskless tie-breaker fits in.
 ### 4. Snapshot and restore
 
 Requires the cluster-wide `snapshot-controller` and `volumesnapshot`
-CRDs (see the [CSI snapshot docs](https://kubernetes-csi.github.io/docs/snapshots.html)).
+CRDs (see the [CSI snapshot docs](https://kubernetes-csi.github.io/docs/snapshots.html)),
+and a VolumeSnapshotClass declared under `volumeSnapshotClasses` (the
+`miroir-snap` below is the example name).
 
 ```yaml
 apiVersion: snapshot.storage.k8s.io/v1

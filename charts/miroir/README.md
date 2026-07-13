@@ -120,9 +120,7 @@ Kubernetes: `>=1.31.0`
 | sidecars.snapshotter.timeout | string | `"120s"` |  |
 | storageClasses | list | `[]` | StorageClasses to create. Empty by default: declare the classes you want. One local + one replicated is the common pair (see the example below). Per entry:   name          (required) the StorageClass name   replicas      replica count, default 1; >1 makes it DRBD-replicated   quorum        freeze | last-man-standing (replicated only, default                 freeze). freeze never diverges but halts writes without a                 peer majority; last-man-standing keeps the survivor                 writable at the risk of split-brain. See the root README,                 "Replication and quorum".   fsType        ext4 | xfs, default ext4   reclaimPolicy Delete | Retain, default Delete   isDefault     set the cluster default-class annotation, default false Example (coexisting with OpenEBS, which stays the cluster default):   storageClasses:     - name: miroir-local       replicas: 1     - name: miroir-replicated       replicas: 2       quorum: freeze |
 | uninstall.image | string | `"registry.k8s.io/kubectl:v1.36.2"` |  |
-| volumeSnapshotClass.create | bool | `true` |  |
-| volumeSnapshotClass.deletionPolicy | string | `"Delete"` |  |
-| volumeSnapshotClass.name | string | `"miroir-snap"` |  |
+| volumeSnapshotClasses | list | `[]` | VolumeSnapshotClasses to create (requires the snapshot-controller + CRDs, deployed separately). Empty by default. Per entry:   name           (required) the VolumeSnapshotClass name   deletionPolicy Delete | Retain, default Delete   isDefault      set the cluster default-snapshot-class annotation,                  default false Example:   volumeSnapshotClasses:     - name: miroir-snap       deletionPolicy: Delete |
 
 ---
 

@@ -760,28 +760,13 @@
       "title": "uninstall",
       "type": "object"
     },
-    "volumeSnapshotClass": {
-      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).",
-      "properties": {
-        "create": {
-          "default": true,
-          "title": "create",
-          "type": "boolean"
-        },
-        "deletionPolicy": {
-          "default": "Delete",
-          "title": "deletionPolicy",
-          "type": "string"
-        },
-        "name": {
-          "default": "miroir-snap",
-          "title": "name",
-          "type": "string"
-        }
+    "volumeSnapshotClasses": {
+      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).\nVolumeSnapshotClasses to create (requires the snapshot-controller +\nCRDs, deployed separately). Empty by default. Per entry:\n  name           (required) the VolumeSnapshotClass name\n  deletionPolicy Delete | Retain, default Delete\n  isDefault      set the cluster default-snapshot-class annotation,\n                 default false\nExample:\n  volumeSnapshotClasses:\n    - name: miroir-snap\n      deletionPolicy: Delete",
+      "items": {
+        "required": []
       },
-      "required": [],
-      "title": "volumeSnapshotClass",
-      "type": "object"
+      "title": "volumeSnapshotClasses",
+      "type": "array"
     }
   },
   "required": [],

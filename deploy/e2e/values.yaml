@@ -22,7 +22,6 @@ storageClasses:
     fsType: ext4
     reclaimPolicy: Delete
 
-volumeSnapshotClass:
-  create: true
-  name: miroir-snap
-  deletionPolicy: Delete
+volumeSnapshotClasses:
+  - name: miroir-snap
+    deletionPolicy: Delete
