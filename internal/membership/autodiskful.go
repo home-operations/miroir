@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -49,18 +50,25 @@ type AutoDiskfulReconciler struct {
 	After time.Duration
 }
 
-// Reconcile converts at most one client leg per pass; the spec update
-// re-triggers this generation-filtered controller for any remaining legs.
+// Reconcile converts at most one leg per pass — a client leg (attach a
+// replica, drop the leg) or a tie-breaker leg a consumer stages through
+// (flip diskless→diskful in place); the spec update re-triggers this
+// controller for anything remaining.
 func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(ctx, req.NamespacedName, vol); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !vol.DeletionTimestamp.IsZero() || vol.Spec.DRBD == nil || len(vol.Spec.Clients) == 0 {
+	if !vol.DeletionTimestamp.IsZero() || vol.Spec.DRBD == nil {
 		return ctrl.Result{}, nil
 	}
 
 	var wait time.Duration
+	track := func(remaining time.Duration) {
+		if wait == 0 || remaining < wait {
+			wait = remaining
+		}
+	}
 	for i := range vol.Spec.Clients {
 		cl := vol.Spec.Clients[i]
 		entry, storage := r.Nodes[cl.Node]
@@ -70,9 +78,7 @@ func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			continue
 		}
 		if remaining := r.After - time.Since(cl.AddedAt.Time); remaining > 0 {
-			if wait == 0 || remaining < wait {
-				wait = remaining
-			}
+			track(remaining)
 			continue
 		}
 		if reason := r.conversionBlocked(ctx, vol, cl.Node); reason != "" {
@@ -81,6 +87,31 @@ func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
 		return ctrl.Result{}, r.convert(ctx, vol, i, entry.Backend)
+	}
+	// Tie-breaker arm: on a fully-mapped cluster the volume's non-replica
+	// node IS its tie-breaker, so a settled consumer stages through that
+	// leg and no client leg ever exists. Its PrimarySince stamp (agent-
+	// maintained from the kernel role) is the "in use" signal.
+	for i := range vol.Spec.Replicas {
+		rep := vol.Spec.Replicas[i]
+		if !rep.Diskless {
+			continue
+		}
+		entry, storage := r.Nodes[rep.Node]
+		since := vol.Status.PerNode[rep.Node].PrimarySince
+		if !storage || since == nil {
+			continue
+		}
+		if remaining := r.After - time.Since(since.Time); remaining > 0 {
+			track(remaining)
+			continue
+		}
+		if reason := r.conversionBlocked(ctx, vol, rep.Node); reason != "" {
+			ctrl.LoggerFrom(ctx).V(1).Info("auto-diskful conversion blocked",
+				"volume", vol.Name, "node", rep.Node, "reason", reason)
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
+		}
+		return ctrl.Result{}, r.convertTieBreaker(ctx, vol, i, entry.Backend)
 	}
 	return ctrl.Result{RequeueAfter: wait}, nil
 }
@@ -144,13 +175,59 @@ func (r *AutoDiskfulReconciler) convert(ctx context.Context, vol *miroirv1alpha1
 	return nil
 }
 
-// SetupWithManager registers the reconciler. Generation-filtered like its
-// membership siblings; the initial list plus RequeueAfter cover the
-// time-based threshold.
+// convertTieBreaker flips a tie-breaker leg diskful in place (the CEL
+// rules allow exactly this direction): node-id and address are kept, so
+// the agent attaches a fresh backing device to the live resource and DRBD
+// full-syncs it under the running consumer — LINSTOR's toggle-disk.
+func (r *AutoDiskfulReconciler) convertTieBreaker(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, idx int, backend miroirv1alpha1.BackendType) error {
+	rep := &vol.Spec.Replicas[idx]
+	rep.Diskless = false
+	rep.Backend = backend
+	// FullSync: the fresh backing must join as a full SyncTarget, never
+	// pose as a data-bearing twin.
+	rep.FullSync = true
+	if err := r.Update(ctx, vol); err != nil {
+		return err
+	}
+	ctrl.LoggerFrom(ctx).Info("auto-diskful: converting tie-breaker leg to a diskful replica",
+		"volume", vol.Name, "node", rep.Node)
+	return nil
+}
+
+// primarySinceChanged fires the watch on PrimarySince transitions: the
+// tie-breaker arm's signal lives in status, which the generation filter
+// alone would never see.
+func primarySinceChanged(oldVol, newVol *miroirv1alpha1.MiroirVolume) bool {
+	for node, st := range newVol.Status.PerNode {
+		if (st.PrimarySince == nil) != (oldVol.Status.PerNode[node].PrimarySince == nil) {
+			return true
+		}
+	}
+	for node, st := range oldVol.Status.PerNode {
+		if _, ok := newVol.Status.PerNode[node]; !ok && st.PrimarySince != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// SetupWithManager registers the reconciler. Spec changes pass the
+// generation filter; PrimarySince edges pass the status predicate; the
+// initial list plus RequeueAfter cover the time-based threshold.
 func (r *AutoDiskfulReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	primaryEdge := predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldVol, ok1 := e.ObjectOld.(*miroirv1alpha1.MiroirVolume)
+			newVol, ok2 := e.ObjectNew.(*miroirv1alpha1.MiroirVolume)
+			return ok1 && ok2 && primarySinceChanged(oldVol, newVol)
+		},
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{},
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, primaryEdge))).
 		Named("autodiskful").
 		Complete(r)
 }

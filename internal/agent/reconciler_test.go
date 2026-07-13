@@ -2217,3 +2217,56 @@ func TestReconcileClientLegWaitsForMembership(t *testing.T) {
 	}
 	fe.notCalledWith(t, "drbdadm")
 }
+
+// PrimarySince stamps when the leg becomes Primary, stays stable across
+// passes, and clears on demotion — the auto-diskful tie-breaker signal.
+func TestReconcilePrimarySinceLifecycle(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	primary := `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`
+	fe := &fakeDRBDExec{statusJSON: primary}
+	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	reconcile(t, r, volPvc1)
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	stamped := got.Status.PerNode[nodeKharkiv].PrimarySince
+	if stamped == nil {
+		t.Fatal("Primary leg must stamp PrimarySince")
+	}
+
+	// Still Primary: the stamp must not move.
+	reconcile(t, r, volPvc1)
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if since := got.Status.PerNode[nodeKharkiv].PrimarySince; since == nil || !since.Equal(stamped) {
+		t.Fatalf("PrimarySince must be stable while Primary: %v vs %v", since, stamped)
+	}
+
+	// Demoted: the stamp clears.
+	fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`
+	reconcile(t, r, volPvc1)
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.PerNode[nodeKharkiv].PrimarySince != nil {
+		t.Fatal("PrimarySince must clear on demotion")
+	}
+}

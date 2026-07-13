@@ -279,9 +279,12 @@ Behavior and knobs:
   `{node: <name>, diskless: true}` to a volume's `spec.replicas`.
 - **Remove or move one** by deleting its entry from
   `spec.replicas`; the node's agent detaches and cleans up (removal
-  waits until both data legs are connected and `UpToDate`). The
-  `diskless` flag itself is immutable — remove and re-add the entry
-  instead of editing it.
+  waits until both data legs are connected and `UpToDate`). A
+  diskful replica can never become diskless in place — remove and
+  re-add the entry instead. The other direction is allowed: flipping
+  `diskless: false` on a tie-breaker makes its agent attach a fresh
+  backing device to the live leg and full-sync it (this is how
+  auto-diskful converts a tie-breaker).
 
 ### `last-man-standing`
 
@@ -348,6 +351,15 @@ full size, and a Ready volume; a 2+1 volume's tie-breaker is replaced
 by the third data copy (three diskful votes need no tie-breaker).
 Volumes already at 3 diskful replicas are left alone — evicting a
 replica is an operator decision. Empty (the default) disables it.
+
+On a fully-mapped cluster (every node in `nodes`) the volume's
+non-replica node is its tie-breaker, so a settled consumer stages
+through that leg and no client leg ever exists. Auto-diskful covers
+this too: a tie-breaker leg whose device has been held Primary past
+the threshold (the agent stamps `primarySince` from the kernel role)
+is flipped diskful **in place** — node id and address kept, a fresh
+backing device attached to the live resource, full-synced under the
+running pod.
 
 ### At a glance
 

@@ -228,10 +228,11 @@ spec:
             - message: the first replica must be diskful (not a diskless tie-breaker)
               rule: 'size(self.replicas) > 0 ? !has(self.replicas[0].diskless) ||
                 !self.replicas[0].diskless : true'
-            - message: a replica's diskless flag is immutable; remove the replica
-                and re-add it instead
+            - message: 'a diskful replica cannot become diskless in place; remove
+                the replica and re-add it instead (diskless→diskful is allowed: the
+                agent attaches a disk to the live leg)'
               rule: self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
-                || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))
+                || (has(o.diskless) && o.diskless) || !(has(r.diskless) && r.diskless)))
             - message: a volume cannot gain or lose its replication layer in place
               rule: has(self.drbd) == has(oldSelf.drbd)
             - message: client legs are only valid on replicated volumes
@@ -380,6 +381,15 @@ spec:
                       type: string
                     message:
                       description: Message carries the last reconcile error, if any.
+                      type: string
+                    primarySince:
+                      description: |-
+                        PrimarySince is when this node's leg last became DRBD Primary (a
+                        consumer holds the device open); cleared on demotion. Maintained by
+                        the agent from the kernel role, so it survives unstage bookkeeping
+                        being skipped (force-killed pods). The auto-diskful reconciler keys
+                        tie-breaker conversion on its age.
+                      format: date-time
                       type: string
                     sizeBytes:
                       description: |-

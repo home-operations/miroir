@@ -30,6 +30,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -291,6 +292,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Diskless:      localDiskless,
 		DiskFailed:    diskFailed,
 		Message:       detachedDiskMessage(diskFailed),
+		PrimarySince:  primarySince(vol, r.NodeName, st.Primary),
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -862,6 +864,21 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.
 // omitempty are always set (SSA must own them even at zero — Connected
 // false is a statement, not an absence), omitempty fields only when
 // non-zero (absent → SSA clears the previous value this manager owned).
+// primarySince keeps a stable timestamp for how long this leg has been
+// Primary: stamped on the first pass that observes the role, carried
+// through subsequent passes, dropped on demotion (the device closed). The
+// auto-diskful reconciler reads its age for tie-breaker conversion.
+func primarySince(vol *miroirv1alpha1.MiroirVolume, node string, primary bool) *metav1.Time {
+	if !primary {
+		return nil
+	}
+	if prev := vol.Status.PerNode[node].PrimarySince; prev != nil {
+		return prev
+	}
+	now := metav1.Now()
+	return &now
+}
+
 func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusApplyConfiguration {
 	ac := acv1alpha1.ReplicaStatus().
 		WithDeviceCreated(st.DeviceCreated).
@@ -881,6 +898,9 @@ func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusA
 	}
 	if st.Diskless {
 		ac = ac.WithDiskless(true)
+	}
+	if st.PrimarySince != nil {
+		ac = ac.WithPrimarySince(*st.PrimarySince)
 	}
 	if st.DiskFailed {
 		ac = ac.WithDiskFailed(true)

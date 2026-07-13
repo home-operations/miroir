@@ -184,3 +184,85 @@ func TestAutoDiskfulBlocks(t *testing.T) {
 		})
 	}
 }
+
+// tieBreakerVol is a Ready 2+1 volume whose tie-breaker (oslo) has been
+// Primary — a consumer staged through it — for the given duration.
+func tieBreakerVol(primaryFor time.Duration) *miroirv1alpha1.MiroirVolume {
+	v := replicatedVol()
+	v.Spec.Replicas = v.Spec.Replicas[:2]
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
+	})
+	since := metav1.NewTime(time.Now().Add(-primaryFor))
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeOslo: {Diskless: true, PrimarySince: &since},
+	}
+	v.Status.Phase = miroirv1alpha1.VolumeReady
+	return v
+}
+
+// A tie-breaker leg a consumer has staged through past the threshold flips
+// diskful in place: node-id and address kept (the agent attaches a disk to
+// the live leg), FullSync set, backend from the node map.
+func TestAutoDiskfulConvertsTieBreaker(t *testing.T) {
+	v := tieBreakerVol(15 * time.Minute)
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		WithObjects(v, freshStats(10<<30)).Build()
+	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
+		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+	}}
+
+	reconcileAD(t, r, "pvc-1")
+
+	got := get(t, &Reconciler{Client: c}, "pvc-1")
+	rep := got.Spec.Replicas[2]
+	if rep.Diskless {
+		t.Fatalf("tie-breaker must flip diskful: %+v", rep)
+	}
+	if rep.NodeID != 2 || rep.Address != addrOslo {
+		t.Fatalf("node-id/address must be kept for the in-place attach: %+v", rep)
+	}
+	if !rep.FullSync || rep.Backend != miroirv1alpha1.BackendLVMThin {
+		t.Fatalf("converted leg must be a FullSync joiner with the map's backend: %+v", rep)
+	}
+}
+
+// A tie-breaker that is not Primary (no consumer staged through it), or
+// not Primary long enough, stays diskless.
+func TestAutoDiskfulTieBreakerWaits(t *testing.T) {
+	young := tieBreakerVol(2 * time.Minute)
+	idle := tieBreakerVol(15 * time.Minute)
+	idle.Status.PerNode[nodeOslo] = miroirv1alpha1.ReplicaStatus{Diskless: true} // no PrimarySince
+	for name, v := range map[string]*miroirv1alpha1.MiroirVolume{"young": young, "idle": idle} {
+		t.Run(name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+				WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+				WithObjects(v, freshStats(10<<30)).Build()
+			r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
+				nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+			}}
+			reconcileAD(t, r, "pvc-1")
+			if got := get(t, &Reconciler{Client: c}, "pvc-1"); !got.Spec.Replicas[2].Diskless {
+				t.Fatalf("tie-breaker must stay diskless: %+v", got.Spec.Replicas[2])
+			}
+		})
+	}
+}
+
+// The watch predicate fires on PrimarySince transitions — the tie-breaker
+// signal lives in status, invisible to the generation filter.
+func TestPrimarySinceChanged(t *testing.T) {
+	now := metav1.Now()
+	with := tieBreakerVol(time.Minute)
+	without := tieBreakerVol(time.Minute)
+	without.Status.PerNode[nodeOslo] = miroirv1alpha1.ReplicaStatus{Diskless: true}
+	if !primarySinceChanged(without, with) || !primarySinceChanged(with, without) {
+		t.Fatal("a PrimarySince edge must fire the predicate")
+	}
+	same := with.DeepCopy()
+	same.Status.PerNode[nodeOslo] = miroirv1alpha1.ReplicaStatus{Diskless: true, PrimarySince: &now}
+	if primarySinceChanged(with, same) {
+		t.Fatal("presence-stable PrimarySince must not fire the predicate")
+	}
+}

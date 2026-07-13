@@ -150,7 +150,7 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) ? size(self.replicas.filter(r, !has(r.diskless) || !r.diskless)) >= 2 : true",message="replicated volumes need at least 2 diskful (non-diskless) replicas"
 // +kubebuilder:validation:XValidation:rule="!has(self.drbd) ? !self.replicas.exists(r, has(r.diskless) && r.diskless) : true",message="diskless replicas are only valid on replicated volumes"
 // +kubebuilder:validation:XValidation:rule="size(self.replicas) > 0 ? !has(self.replicas[0].diskless) || !self.replicas[0].diskless : true",message="the first replica must be diskful (not a diskless tie-breaker)"
-// +kubebuilder:validation:XValidation:rule="self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))",message="a replica's diskless flag is immutable; remove the replica and re-add it instead"
+// +kubebuilder:validation:XValidation:rule="self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node || (has(o.diskless) && o.diskless) || !(has(r.diskless) && r.diskless)))",message="a diskful replica cannot become diskless in place; remove the replica and re-add it instead (diskless→diskful is allowed: the agent attaches a disk to the live leg)"
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) == has(oldSelf.drbd)",message="a volume cannot gain or lose its replication layer in place"
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || has(self.drbd)",message="client legs are only valid on replicated volumes"
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || self.clients.all(c, !self.replicas.exists(r, r.node == c.node))",message="a client leg cannot share a node with a replica"
@@ -243,6 +243,13 @@ type ReplicaStatus struct {
 	DiskFailed bool `json:"diskFailed,omitempty"`
 	// Message carries the last reconcile error, if any.
 	Message string `json:"message,omitempty"`
+	// PrimarySince is when this node's leg last became DRBD Primary (a
+	// consumer holds the device open); cleared on demotion. Maintained by
+	// the agent from the kernel role, so it survives unstage bookkeeping
+	// being skipped (force-killed pods). The auto-diskful reconciler keys
+	// tie-breaker conversion on its age.
+	// +optional
+	PrimarySince *metav1.Time `json:"primarySince,omitempty"`
 	// LastVerifyTime is when the last scheduled online verify completed for
 	// this volume. Only the coordinator (first diskful replica) initiates a
 	// verify, so only its slot carries this.

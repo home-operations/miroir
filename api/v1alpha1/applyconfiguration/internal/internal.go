@@ -275,6 +275,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: message
       type:
         scalar: string
+    - name: primarySince
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: sizeBytes
       type:
         scalar: numeric
