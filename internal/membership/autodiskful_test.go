@@ -108,7 +108,7 @@ func TestAutoDiskfulConvertsAgedClient(t *testing.T) {
 func TestAutoDiskfulReplacesTieBreaker(t *testing.T) {
 	v := clientVol(15 * time.Minute)
 	v.Spec.Replicas = append(v.Spec.Replicas,
-		miroirv1alpha1.Replica{Node: nodeBergen, NodeID: 3, Address: "192.168.1.44", Diskless: true})
+		miroirv1alpha1.Replica{Node: nodeBergen, NodeID: 3, Address: addrBergen, Diskless: true})
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
@@ -280,7 +280,7 @@ func TestPrimarySinceChanged(t *testing.T) {
 func TestAutoDiskfulPermanentBlockSkipsRequeue(t *testing.T) {
 	v := clientVol(15 * time.Minute)
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: nodeBergen, NodeID: 3, Address: "192.168.1.44",
+		Node: nodeBergen, NodeID: 3, Address: addrBergen,
 	})
 	v.Spec.Clients[0].NodeID = 4
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).

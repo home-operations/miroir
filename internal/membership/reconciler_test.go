@@ -259,7 +259,7 @@ func TestCompletesClientLeg(t *testing.T) {
 	v.Spec.Replicas = v.Spec.Replicas[:2] // both complete
 	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeBergen}}
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(v, node(nodeBergen, "192.168.1.44")).
+		WithObjects(v, node(nodeBergen, addrBergen)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{}} // bergen is not a storage node
 
@@ -267,7 +267,7 @@ func TestCompletesClientLeg(t *testing.T) {
 
 	got := get(t, r, "pvc-1")
 	cl := got.Spec.Clients[0]
-	if cl.NodeID != 2 || cl.Address != "192.168.1.44" {
+	if cl.NodeID != 2 || cl.Address != addrBergen {
 		t.Fatalf("client leg not completed: %+v", cl)
 	}
 	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeBergen) {
@@ -283,7 +283,7 @@ func TestClientLegNodeIDSkipsReplicaIDs(t *testing.T) {
 	v.Spec.Replicas[1].NodeID = 2 // hole at 1, high id in use
 	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeBergen}}
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(v, node(nodeBergen, "192.168.1.44")).
+		WithObjects(v, node(nodeBergen, addrBergen)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{}}
 
