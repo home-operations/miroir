@@ -24,6 +24,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -115,6 +116,11 @@ func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string) erro
 	return nil
 }
 
+// errNodeUnmapped marks a node that is not in the storage map: it runs a
+// client-only agent (CSI node service for RWX/NFS consumers) rather than
+// failing to start.
+var errNodeUnmapped = errors.New("node absent from the storage node map")
+
 // backendFor resolves this node's storage entry from the node map and
 // builds its backend — shared by setup and agent mode so the two can
 // never wire Config differently.
@@ -125,7 +131,7 @@ func backendFor(nodeName, nodesConfig, vg, thinPool string) (backend.Backend, mi
 	}
 	entry, ok := nodes[nodeName]
 	if !ok {
-		return nil, "", fmt.Errorf("node %s absent from the node map (Helm values: nodes)", nodeName)
+		return nil, "", errNodeUnmapped
 	}
 	be, err := backend.New(entry.Backend, backend.Config{
 		VolumeGroup: vg,
@@ -412,10 +418,17 @@ func main() {
 			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in agent mode")
 			os.Exit(1)
 		}
-		// Agents refuse to start on nodes absent from the node map: the
-		// DaemonSet's chart-side scope is every schedulable node, but only
-		// storage nodes run an agent-backed backend.
+		// The DaemonSet's chart-side scope is every schedulable node, but
+		// only storage nodes run an agent-backed backend. A node absent from
+		// the map holds no volumes and runs a client-only node service so
+		// pods there can still mount RWX (NFS) volumes.
 		be, backendType, err := backendFor(nodeName, nodesConfig, vg, thinPool)
+		if errors.Is(err, errNodeUnmapped) {
+			setupLog.Info("node not in the storage map; running client-only node service", "node", nodeName)
+			node := csi.NewNode(mgr.GetClient(), nodeName, &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec})
+			serveCSI(mgr, csiSocket, identity, nil, node)
+			break
+		}
 		if err != nil {
 			setupLog.Error(err, "unable to build the node's backend")
 			os.Exit(1)
