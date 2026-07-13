@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/home-operations/miroir/compare/0.4.14...0.5.0) (2026-07-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **chart:** unify storage & snapshot classes into arrays ([#177](https://github.com/home-operations/miroir/issues/177))
+
+### Features
+
+* **chart:** unify storage & snapshot classes into arrays ([#177](https://github.com/home-operations/miroir/issues/177)) ([2988ead](https://github.com/home-operations/miroir/commit/2988ead1e233112ce16373d0be7f431e648405a0))
+
 ## [0.4.14](https://github.com/home-operations/miroir/compare/0.4.13...0.4.14) (2026-07-13)
 
 
