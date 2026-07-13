@@ -13,19 +13,15 @@ agent:
     tag: e2e
     pullPolicy: IfNotPresent
 
-storageClass:
-  create: true
-  name: miroir-local
-  # Default class so a PVC with no storageClassName still resolves to miroir.
-  isDefault: true
-  fsType: ext4
-  replicas: 1
-  reclaimPolicy: Delete
+# Local backend only — kind has no DRBD, so no replicated class. Default
+# class so a PVC with no storageClassName still resolves to miroir.
+storageClasses:
+  - name: miroir-local
+    replicas: 1
+    isDefault: true
+    fsType: ext4
+    reclaimPolicy: Delete
 
-replicatedStorageClass:
-  create: false
-
-volumeSnapshotClass:
-  create: true
-  name: miroir-snap
-  deletionPolicy: Delete
+volumeSnapshotClasses:
+  - name: miroir-snap
+    deletionPolicy: Delete

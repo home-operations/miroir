@@ -57,12 +57,6 @@ overcommitRatio: 2
 # spare storage node exists, so majority quorum survives a single node
 # loss. Also retrofits existing freeze volumes at controller startup.
 autoTieBreaker: true
-# -- Convert a diskless client leg into a diskful replica once it has been
-# attached this long (e.g. "10m"): a consumer that stays put gets a local
-# replica and stops paying network I/O — LINSTOR's auto-diskful. Needs the
-# client's node in `nodes` with room for the volume; a 2+1 volume's
-# tie-breaker is replaced by the third data copy. Empty disables.
-autoDiskfulAfter: ""
 # -- Controller replicas. Anything above 1 automatically enables leader
 # election: the extras are warm standbys (failover is lease expiry, ~15s,
 # instead of a full pod reschedule), the rollout strategy switches to
@@ -218,41 +212,48 @@ nodes: {}
 # =============================================================================
 # Storage classes
 # =============================================================================
-storageClass:
-  create: true
-  name: miroir-local
-  # Coexists with OpenEBS: openebs-zfs stays the cluster default.
-  isDefault: false
-  fsType: ext4
-  replicas: 1
-  reclaimPolicy: Delete
-
-replicatedStorageClass:
-  create: true
-  name: miroir-replicated
-  isDefault: false
-  fsType: ext4
-  # -- Let pods on nodes without a replica consume volumes through an
-  # ephemeral diskless DRBD leg (all I/O crosses the replication network).
-  # Drops the PV's node affinity, so pods schedule anywhere. On by default,
-  # matching LINSTOR; set false to pin pods to replica nodes for local
-  # reads. See the root README, "Remote consumers", for the quorum-vote
-  # implications.
-  allowRemoteVolumeAccess: true
-  # freeze: refuse writes (I/O errors) without a peer majority — never
-  # diverges; with autoTieBreaker a third node keeps 2-replica volumes
-  # writable through a single node loss. last-man-standing: the survivor
-  # keeps writing even alone, at the risk of split-brain. See the root
-  # README, "Replication and quorum".
-  quorum: freeze # | last-man-standing
-  reclaimPolicy: Delete
+# -- StorageClasses to create. Empty by default: declare the classes you
+# want. One local + one replicated is the common pair (see the example
+# below). Per entry:
+#   name          (required) the StorageClass name
+#   replicas      replica count, default 1; >1 makes it DRBD-replicated
+#   quorum        freeze | last-man-standing (replicated only, default
+#                 freeze). freeze never diverges but halts writes without a
+#                 peer majority; last-man-standing keeps the survivor
+#                 writable at the risk of split-brain. See the root README,
+#                 "Replication and quorum".
+#   fsType        ext4 | xfs, default ext4
+#   allowRemoteVolumeAccess
+#                 true | false (replicated only; the controller defaults
+#                 absent to true, matching LINSTOR): pods on nodes without
+#                 a replica consume the volume through an ephemeral
+#                 diskless DRBD leg at replication-network speed. Set
+#                 false to pin pods to replica nodes for local reads. See
+#                 the root README, "Remote consumers".
+#   reclaimPolicy Delete | Retain, default Delete
+#   isDefault     set the cluster default-class annotation, default false
+# Example (coexisting with OpenEBS, which stays the cluster default):
+#   storageClasses:
+#     - name: miroir-local
+#       replicas: 1
+#     - name: miroir-replicated
+#       replicas: 2
+#       quorum: freeze
+storageClasses: []
 
 # Requires the cluster-wide snapshot-controller + CRDs (deployed
 # separately; kube-system/snapshot-controller in the homelab).
-volumeSnapshotClass:
-  create: true
-  name: miroir-snap
-  deletionPolicy: Delete
+# -- VolumeSnapshotClasses to create (requires the snapshot-controller +
+# CRDs, deployed separately). Empty by default. Per entry:
+#   name           (required) the VolumeSnapshotClass name
+#   deletionPolicy Delete | Retain, default Delete
+#   isDefault      set the cluster default-snapshot-class annotation,
+#                  default false
+# Example:
+#   volumeSnapshotClasses:
+#     - name: miroir-snap
+#       deletionPolicy: Delete
+volumeSnapshotClasses: []
 
 # =============================================================================
 # DRBD replication tuning

@@ -134,12 +134,6 @@
       "title": "agent",
       "type": "object"
     },
-    "autoDiskfulAfter": {
-      "default": "",
-      "description": "Convert a diskless client leg into a diskful replica once it has been\nattached this long (e.g. \"10m\"): a consumer that stays put gets a local\nreplica and stops paying network I/O — LINSTOR's auto-diskful. Needs the\nclient's node in `nodes` with room for the volume; a 2+1 volume's\ntie-breaker is replaced by the third data copy. Empty disables.",
-      "title": "autoDiskfulAfter",
-      "type": "string"
-    },
     "autoTieBreaker": {
       "default": true,
       "description": "Add a diskless tie-breaker replica to 2-replica freeze volumes when a\nspare storage node exists, so majority quorum survives a single node\nloss. Also retrofits existing freeze volumes at controller startup.",
@@ -646,50 +640,6 @@
       "title": "replicaCount",
       "type": "integer"
     },
-    "replicatedStorageClass": {
-      "properties": {
-        "allowRemoteVolumeAccess": {
-          "default": true,
-          "description": "Let pods on nodes without a replica consume volumes through an\nephemeral diskless DRBD leg (all I/O crosses the replication network).\nDrops the PV's node affinity, so pods schedule anywhere. On by default,\nmatching LINSTOR; set false to pin pods to replica nodes for local\nreads. See the root README, \"Remote consumers\", for the quorum-vote\nimplications.",
-          "title": "allowRemoteVolumeAccess",
-          "type": "boolean"
-        },
-        "create": {
-          "default": true,
-          "title": "create",
-          "type": "boolean"
-        },
-        "fsType": {
-          "default": "ext4",
-          "title": "fsType",
-          "type": "string"
-        },
-        "isDefault": {
-          "default": false,
-          "title": "isDefault",
-          "type": "boolean"
-        },
-        "name": {
-          "default": "miroir-replicated",
-          "title": "name",
-          "type": "string"
-        },
-        "quorum": {
-          "default": "freeze",
-          "description": "freeze: refuse writes (I/O errors) without a peer majority — never\ndiverges; with autoTieBreaker a third node keeps 2-replica volumes\nwritable through a single node loss. last-man-standing: the survivor\nkeeps writing even alone, at the risk of split-brain. See the root\nREADME, \"Replication and quorum\".",
-          "title": "quorum",
-          "type": "string"
-        },
-        "reclaimPolicy": {
-          "default": "Delete",
-          "title": "reclaimPolicy",
-          "type": "string"
-        }
-      },
-      "required": [],
-      "title": "replicatedStorageClass",
-      "type": "object"
-    },
     "resources": {
       "description": "Controller resources.",
       "properties": {
@@ -789,44 +739,13 @@
       "title": "sidecars",
       "type": "object"
     },
-    "storageClass": {
-      "description": "=============================================================================\nStorage classes\n=============================================================================",
-      "properties": {
-        "create": {
-          "default": true,
-          "title": "create",
-          "type": "boolean"
-        },
-        "fsType": {
-          "default": "ext4",
-          "title": "fsType",
-          "type": "string"
-        },
-        "isDefault": {
-          "default": false,
-          "description": "Coexists with OpenEBS: openebs-zfs stays the cluster default.",
-          "title": "isDefault",
-          "type": "boolean"
-        },
-        "name": {
-          "default": "miroir-local",
-          "title": "name",
-          "type": "string"
-        },
-        "reclaimPolicy": {
-          "default": "Delete",
-          "title": "reclaimPolicy",
-          "type": "string"
-        },
-        "replicas": {
-          "default": 1,
-          "title": "replicas",
-          "type": "integer"
-        }
+    "storageClasses": {
+      "description": "=============================================================================\nStorage classes\n=============================================================================\nStorageClasses to create. Empty by default: declare the classes you\nwant. One local + one replicated is the common pair (see the example\nbelow). Per entry:\n  name          (required) the StorageClass name\n  replicas      replica count, default 1; \u003e1 makes it DRBD-replicated\n  quorum        freeze | last-man-standing (replicated only, default\n                freeze). freeze never diverges but halts writes without a\n                peer majority; last-man-standing keeps the survivor\n                writable at the risk of split-brain. See the root README,\n                \"Replication and quorum\".\n  fsType        ext4 | xfs, default ext4\n  allowRemoteVolumeAccess\n                true | false (replicated only; the controller defaults\n                absent to true, matching LINSTOR): pods on nodes without\n                a replica consume the volume through an ephemeral\n                diskless DRBD leg at replication-network speed. Set\n                false to pin pods to replica nodes for local reads. See\n                the root README, \"Remote consumers\".\n  reclaimPolicy Delete | Retain, default Delete\n  isDefault     set the cluster default-class annotation, default false\nExample (coexisting with OpenEBS, which stays the cluster default):\n  storageClasses:\n    - name: miroir-local\n      replicas: 1\n    - name: miroir-replicated\n      replicas: 2\n      quorum: freeze",
+      "items": {
+        "required": []
       },
-      "required": [],
-      "title": "storageClass",
-      "type": "object"
+      "title": "storageClasses",
+      "type": "array"
     },
     "uninstall": {
       "description": "=============================================================================\nUninstall hook\n=============================================================================\nPre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent\ntears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.",
@@ -841,28 +760,13 @@
       "title": "uninstall",
       "type": "object"
     },
-    "volumeSnapshotClass": {
-      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).",
-      "properties": {
-        "create": {
-          "default": true,
-          "title": "create",
-          "type": "boolean"
-        },
-        "deletionPolicy": {
-          "default": "Delete",
-          "title": "deletionPolicy",
-          "type": "string"
-        },
-        "name": {
-          "default": "miroir-snap",
-          "title": "name",
-          "type": "string"
-        }
+    "volumeSnapshotClasses": {
+      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).\nVolumeSnapshotClasses to create (requires the snapshot-controller +\nCRDs, deployed separately). Empty by default. Per entry:\n  name           (required) the VolumeSnapshotClass name\n  deletionPolicy Delete | Retain, default Delete\n  isDefault      set the cluster default-snapshot-class annotation,\n                 default false\nExample:\n  volumeSnapshotClasses:\n    - name: miroir-snap\n      deletionPolicy: Delete",
+      "items": {
+        "required": []
       },
-      "required": [],
-      "title": "volumeSnapshotClass",
-      "type": "object"
+      "title": "volumeSnapshotClasses",
+      "type": "array"
     }
   },
   "required": [],

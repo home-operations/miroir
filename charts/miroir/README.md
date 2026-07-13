@@ -50,7 +50,6 @@ Kubernetes: `>=1.31.0`
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | agent.volumeWorkers | int | `4` | Concurrent volume reconciles per agent. Per-volume work is serialized by controller-runtime regardless; this bounds how many distinct volumes one agent works at once. |
-| autoDiskfulAfter | string | `""` | Convert a diskless client leg into a diskful replica once it has been attached this long (e.g. "10m"): a consumer that stays put gets a local replica and stops paying network I/O — LINSTOR's auto-diskful. Needs the client's node in `nodes` with room for the volume; a 2+1 volume's tie-breaker is replaced by the third data copy. Empty disables. |
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
 | drbd.net.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises resync throughput on fast links. |
 | drbd.onIoError | string | `"detach"` |  |
@@ -112,13 +111,6 @@ Kubernetes: `>=1.31.0`
 | priorityClassName | string | `"system-cluster-critical"` | system-cluster-critical protects the single controller from eviction under node pressure — while it is down, no volume can be provisioned, expanded, or snapshotted. |
 | provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
 | replicaCount | int | `1` | Controller replicas. Anything above 1 automatically enables leader election: the extras are warm standbys (failover is lease expiry, ~15s, instead of a full pod reschedule), the rollout strategy switches to RollingUpdate, and a PodDisruptionBudget keeps one replica through voluntary disruptions. Pointless on a single-node cluster (the node is the failure domain); pair with global.affinity (pod anti-affinity) so replicas land on different nodes. |
-| replicatedStorageClass.allowRemoteVolumeAccess | bool | `true` | Let pods on nodes without a replica consume volumes through an ephemeral diskless DRBD leg (all I/O crosses the replication network). Drops the PV's node affinity, so pods schedule anywhere. On by default, matching LINSTOR; set false to pin pods to replica nodes for local reads. See the root README, "Remote consumers", for the quorum-vote implications. |
-| replicatedStorageClass.create | bool | `true` |  |
-| replicatedStorageClass.fsType | string | `"ext4"` |  |
-| replicatedStorageClass.isDefault | bool | `false` |  |
-| replicatedStorageClass.name | string | `"miroir-replicated"` |  |
-| replicatedStorageClass.quorum | string | `"freeze"` |  |
-| replicatedStorageClass.reclaimPolicy | string | `"Delete"` |  |
 | resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Controller resources. |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
@@ -126,16 +118,9 @@ Kubernetes: `>=1.31.0`
 | sidecars.resizer.timeout | string | `"120s"` |  |
 | sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0"` |  |
 | sidecars.snapshotter.timeout | string | `"120s"` |  |
-| storageClass.create | bool | `true` |  |
-| storageClass.fsType | string | `"ext4"` |  |
-| storageClass.isDefault | bool | `false` |  |
-| storageClass.name | string | `"miroir-local"` |  |
-| storageClass.reclaimPolicy | string | `"Delete"` |  |
-| storageClass.replicas | int | `1` |  |
+| storageClasses | list | `[]` | StorageClasses to create. Empty by default: declare the classes you want. One local + one replicated is the common pair (see the example below). Per entry:   name          (required) the StorageClass name   replicas      replica count, default 1; >1 makes it DRBD-replicated   quorum        freeze | last-man-standing (replicated only, default                 freeze). freeze never diverges but halts writes without a                 peer majority; last-man-standing keeps the survivor                 writable at the risk of split-brain. See the root README,                 "Replication and quorum".   fsType        ext4 | xfs, default ext4   allowRemoteVolumeAccess                 true | false (replicated only; the controller defaults                 absent to true, matching LINSTOR): pods on nodes without                 a replica consume the volume through an ephemeral                 diskless DRBD leg at replication-network speed. Set                 false to pin pods to replica nodes for local reads. See                 the root README, "Remote consumers".   reclaimPolicy Delete | Retain, default Delete   isDefault     set the cluster default-class annotation, default false Example (coexisting with OpenEBS, which stays the cluster default):   storageClasses:     - name: miroir-local       replicas: 1     - name: miroir-replicated       replicas: 2       quorum: freeze |
 | uninstall.image | string | `"registry.k8s.io/kubectl:v1.36.2"` |  |
-| volumeSnapshotClass.create | bool | `true` |  |
-| volumeSnapshotClass.deletionPolicy | string | `"Delete"` |  |
-| volumeSnapshotClass.name | string | `"miroir-snap"` |  |
+| volumeSnapshotClasses | list | `[]` | VolumeSnapshotClasses to create (requires the snapshot-controller + CRDs, deployed separately). Empty by default. Per entry:   name           (required) the VolumeSnapshotClass name   deletionPolicy Delete | Retain, default Delete   isDefault      set the cluster default-snapshot-class annotation,                  default false Example:   volumeSnapshotClasses:     - name: miroir-snap       deletionPolicy: Delete |
 
 ---
 

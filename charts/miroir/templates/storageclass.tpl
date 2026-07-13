@@ -1,44 +1,45 @@
-{{- if .Values.storageClass.create }}
+{{- $first := true }}
+{{- range $sc := .Values.storageClasses }}
+{{- if $first }}{{ $first = false }}{{ else }}
+---
+{{- end }}
+{{- $replicas := $sc.replicas | default 1 }}
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: {{ .Values.storageClass.name }}
+  name: {{ $sc.name }}
   annotations:
-    storageclass.kubernetes.io/is-default-class: {{ .Values.storageClass.isDefault | quote }}
-provisioner: {{ include "miroir.csiDriverName" . }}
+    storageclass.kubernetes.io/is-default-class: {{ $sc.isDefault | default false | quote }}
+provisioner: {{ include "miroir.csiDriverName" $ }}
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
-reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
+reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
 parameters:
-  miroir.home-operations.com/replicas: {{ .Values.storageClass.replicas | quote }}
-  csi.storage.k8s.io/fstype: {{ .Values.storageClass.fsType }}
+  miroir.home-operations.com/replicas: {{ $replicas | quote }}
+  {{- if gt (int $replicas) 1 }}
+  # freeze: never diverges, halts on any disconnect; last-man-standing:
+  # survivor keeps writing on node loss, split-brain alerts on reconnect.
+  miroir.home-operations.com/quorum: {{ $sc.quorum | default "freeze" }}
+  {{- if hasKey $sc "allowRemoteVolumeAccess" }}
+  # Absent defaults to allowed (controller-side); rendered only when the
+  # entry pins it either way.
+  miroir.home-operations.com/allowRemoteVolumeAccess: {{ $sc.allowRemoteVolumeAccess | quote }}
+  {{- end }}
+  {{- end }}
+  csi.storage.k8s.io/fstype: {{ $sc.fsType | default "ext4" }}
 {{- end }}
-{{- if .Values.replicatedStorageClass.create }}
+{{- range $vsc := .Values.volumeSnapshotClasses }}
+{{- if $first }}{{ $first = false }}{{ else }}
 ---
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: {{ .Values.replicatedStorageClass.name }}
-  annotations:
-    storageclass.kubernetes.io/is-default-class: {{ .Values.replicatedStorageClass.isDefault | quote }}
-provisioner: {{ include "miroir.csiDriverName" . }}
-volumeBindingMode: WaitForFirstConsumer
-allowVolumeExpansion: true
-reclaimPolicy: {{ .Values.replicatedStorageClass.reclaimPolicy }}
-parameters:
-  miroir.home-operations.com/replicas: "2"
-  # last-man-standing: survivor keeps writing on node loss, split-brain
-  # alerts on reconnect; freeze: never diverges, halts on any disconnect.
-  miroir.home-operations.com/quorum: {{ .Values.replicatedStorageClass.quorum }}
-  miroir.home-operations.com/allowRemoteVolumeAccess: {{ .Values.replicatedStorageClass.allowRemoteVolumeAccess | quote }}
-  csi.storage.k8s.io/fstype: {{ .Values.replicatedStorageClass.fsType }}
 {{- end }}
-{{- if .Values.volumeSnapshotClass.create }}
----
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
-  name: {{ .Values.volumeSnapshotClass.name }}
-driver: {{ include "miroir.csiDriverName" . }}
-deletionPolicy: {{ .Values.volumeSnapshotClass.deletionPolicy }}
+  name: {{ $vsc.name }}
+  {{- if $vsc.isDefault }}
+  annotations:
+    snapshot.storage.kubernetes.io/is-default-class: "true"
+  {{- end }}
+driver: {{ include "miroir.csiDriverName" $ }}
+deletionPolicy: {{ $vsc.deletionPolicy | default "Delete" }}
 {{- end }}
