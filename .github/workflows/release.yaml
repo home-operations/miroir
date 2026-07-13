@@ -113,9 +113,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+  # Gateway: the agent userland plus NFS-Ganesha, spawned per RWX volume to
+  # export it over NFS. Same builder layout as the agent so its digest is
+  # addressable for the pin step.
+  release-gateway:
+    name: Release (gateway)
+    needs: versions
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: docker/github-builder/.github/workflows/build.yml@c4a1b216d96a8c85b45a9974b37857828274c808 # v1.13.0
+    with:
+      build-args: |
+        VERSION=${{ github.ref_name }}
+        REVISION=${{ github.sha }}
+        GO_VERSION=${{ needs.versions.outputs.go-version }}
+      cache: true
+      cache-scope: gateway
+      target: gateway
+      meta-images: ghcr.io/${{ github.repository }}-gateway
+      meta-tags: |
+        type=semver,pattern={{version}}
+        type=raw,value=rolling,enable=${{ github.event_name == 'release' }}
+        type=ref,event=branch
+      output: image
+      platforms: linux/amd64,linux/arm64
+      push: true
+      sbom: true
+      set-meta-annotations: true
+      set-meta-labels: true
+      sign: true
+    secrets:
+      registry-auths: |
+        - registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
   helm:
     name: Helm
-    needs: [release-controller, release-agent]
+    needs: [release-controller, release-agent, release-gateway]
     if: ${{ github.event_name == 'release' }}
     runs-on: ubuntu-24.04
     permissions:
@@ -140,15 +177,16 @@ jobs:
       - name: Generate manifests and CRDs
         run: mise run helm-crds
 
-      # Pin both component images to the exact digests the builders produced
+      # Pin every component image to the exact digest its builder produced
       # (the signed multi-arch indexes) so installs are immutable. Fail
-      # closed if either digest is missing.
+      # closed if any digest is missing.
       - name: Pin the released image digests into the chart
         env:
           CONTROLLER_DIGEST: ${{ needs.release-controller.outputs.digest }}
           AGENT_DIGEST: ${{ needs.release-agent.outputs.digest }}
+          GATEWAY_DIGEST: ${{ needs.release-gateway.outputs.digest }}
         run: |
-          for pair in "controller:${CONTROLLER_DIGEST}" "agent:${AGENT_DIGEST}"; do
+          for pair in "controller:${CONTROLLER_DIGEST}" "agent:${AGENT_DIGEST}" "gateway:${GATEWAY_DIGEST}"; do
             comp="${pair%%:*}"
             digest="${pair#*:}"
             case "${digest}" in
@@ -158,6 +196,7 @@ jobs:
             case "${comp}" in
               controller) path=".image.digest" ;;
               agent)      path=".agent.image.digest" ;;
+              gateway)    path=".gateway.image.digest" ;;
             esac
             yq -i "${path} = \"${digest}\"" charts/miroir/values.yaml
             echo "pinned ${comp} -> ${digest}"
