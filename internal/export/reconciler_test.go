@@ -117,6 +117,13 @@ func TestReconcileCreatesWorkloads(t *testing.T) {
 	if want := []string{nodeKharkiv, nodeParis}; !slices.Equal(got, want) {
 		t.Fatalf("affinity nodes = %v, want %v", got, want)
 	}
+	// Fast eviction on node loss (30s, not the 5m default) so a singleton
+	// gateway's failover can start promptly.
+	for _, tol := range dep.Spec.Template.Spec.Tolerations {
+		if tol.Effect == corev1.TaintEffectNoExecute && (tol.TolerationSeconds == nil || *tol.TolerationSeconds != 30) {
+			t.Fatalf("NoExecute toleration %q must be 30s, got %v", tol.Key, tol.TolerationSeconds)
+		}
+	}
 
 	svc := &corev1.Service{}
 	if err := cl.Get(t.Context(), types.NamespacedName{Name: shareName("pvc-abc"), Namespace: testNS}, svc); err != nil {
