@@ -172,7 +172,32 @@ func (n *Node) disklessDevicePath(ctx context.Context, vol *miroirv1alpha1.Miroi
 		return "", nil, status.Errorf(codes.Unavailable,
 			"volume %s has no reachable UpToDate replica from node %s", vol.Name, n.NodeName)
 	}
+	// Same hold as stage.Device (#144): mid-recovery a never-activated
+	// birth-split volume can look healthy from a diskless leg — quorum
+	// back, an UpToDate survivor serving — while the losing leg is still
+	// divergent and disconnected. Staging here would latch Activated and
+	// close the auto-recovery that heals the loser.
+	if !vol.Status.Activated && !vol.Status.Formatted && !allDiskfulPeersLive(vol, n.NodeName, live) {
+		for node, rep := range vol.Status.PerNode {
+			if rep.SplitBrain {
+				return "", nil, status.Errorf(codes.Unavailable,
+					"volume %s is recovering from split-brain (reported by node %s)", vol.Name, node)
+			}
+		}
+	}
 	return st.DevicePath, vol, nil
+}
+
+// allDiskfulPeersLive reports whether every diskful peer's replication link
+// is established from this leg's view — the corroboration that keeps a
+// stale split-brain slot from holding a healthy volume.
+func allDiskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
+	for _, rep := range diskfulPeerReplicas(vol, self) {
+		if !live.PeerConnected[rep.NodeID] {
+			return false
+		}
+	}
+	return true
 }
 
 // diskfulPeerReplicas yields the completed diskful replicas excluding

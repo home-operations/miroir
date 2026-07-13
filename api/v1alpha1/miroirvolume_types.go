@@ -168,6 +168,7 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) == has(oldSelf.drbd)",message="a volume cannot gain or lose its replication layer in place"
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || has(self.drbd)",message="client legs are only valid on replicated volumes"
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || self.clients.all(c, !self.replicas.exists(r, r.node == c.node))",message="a client leg cannot share a node with a replica"
+// +kubebuilder:validation:XValidation:rule="!has(self.clients) || !has(self.export)",message="an NFS-exported (RWX) volume is consumed over NFS and cannot have DRBD client legs"
 // +kubebuilder:validation:XValidation:rule="has(self.export) == has(oldSelf.export)",message="a volume cannot gain or lose its NFS export (RWX) in place"
 // +kubebuilder:validation:XValidation:rule="!(has(self.export) && has(self.drbd)) || self.quorumPolicy == 'freeze'",message="replicated RWX volumes must use freeze quorum (a rescheduled gateway under last-man-standing risks dual-primary split-brain)"
 type MiroirVolumeSpec struct {

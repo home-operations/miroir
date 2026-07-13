@@ -394,3 +394,37 @@ func TestNodeUnstageRemovesClientLeg(t *testing.T) {
 		t.Fatalf("client leg must be removed at unstage: %+v", got.Spec.Clients)
 	}
 }
+
+// The #144 staging hold applies to diskless legs too: a never-activated
+// birth-split volume mid-recovery (quorum back, survivor UpToDate, loser
+// divergent with its link down) must not be staged through a client or
+// tie-breaker leg — that would latch Activated and close auto-recovery.
+func TestDevicePathDisklessHoldsRecoveringSplitBrain(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+		nodeOslo:    {DeviceCreated: true, SplitBrain: true},
+	}
+	st := healthyRemoteStatus()
+	delete(st.PeerConnected, 1) // the losing leg's link is down
+	n := newNode(t, v, fakeDRBDStatus{st: st})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
+		t.Fatalf("recovering split-brain must hold diskless staging, got %v", err)
+	}
+}
+
+// A stale split slot must not hold a diskless leg whose data links are all
+// live — mirroring the diskful hold's corroboration.
+func TestDevicePathDisklessStaleSplitSlotIgnored(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+		nodeOslo:    {DeviceCreated: true, SplitBrain: true}, // stale
+	}
+	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); err != nil {
+		t.Fatalf("live diskless leg must stage despite a stale slot: %v", err)
+	}
+}

@@ -190,10 +190,15 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
-			SizeBytes:         sizeBytes,
-			Replicas:          placed,
-			Source:            source,
-			AllowRemoteAccess: remoteAccess,
+			SizeBytes: sizeBytes,
+			Replicas:  placed,
+			Source:    source,
+			// Export volumes are consumed over NFS, never through DRBD
+			// legs: leaving AllowRemoteAccess unset keeps every client-leg
+			// path closed for them (their PV is unpinned via Export
+			// already), so a stray device resolution on a consumer node
+			// fails loudly instead of attaching a leg.
+			AllowRemoteAccess: remoteAccess && !shared,
 		},
 	}
 	for _, r := range placed {

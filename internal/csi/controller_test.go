@@ -239,6 +239,12 @@ func TestCreateVolumeRWXSetsExport(t *testing.T) {
 	if vol.Spec.Export == nil || vol.Spec.Export.FSType != "xfs" {
 		t.Fatalf("expected export spec fsType=xfs, got %+v", vol.Spec.Export)
 	}
+	// NFS consumers must never grow DRBD client legs: the remote-access
+	// flag stays unset on export volumes even though the class default is
+	// on, closing every client-leg path.
+	if vol.Spec.AllowRemoteAccess {
+		t.Fatal("export volumes must not capture allowRemoteAccess")
+	}
 }
 
 func TestCreateVolumeRejectsRWXSingleReplica(t *testing.T) {

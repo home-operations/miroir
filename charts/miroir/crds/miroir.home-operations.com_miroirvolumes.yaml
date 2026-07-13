@@ -258,6 +258,9 @@ spec:
             - message: a client leg cannot share a node with a replica
               rule: '!has(self.clients) || self.clients.all(c, !self.replicas.exists(r,
                 r.node == c.node))'
+            - message: an NFS-exported (RWX) volume is consumed over NFS and cannot
+                have DRBD client legs
+              rule: '!has(self.clients) || !has(self.export)'
             - message: a volume cannot gain or lose its NFS export (RWX) in place
               rule: has(self.export) == has(oldSelf.export)
             - message: replicated RWX volumes must use freeze quorum (a rescheduled
