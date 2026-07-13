@@ -17,6 +17,13 @@ limitations under the License.
 // Package constants holds cross-component identifiers for the miroir driver.
 package constants
 
+import "time"
+
+// StatsStaleAfter ignores MiroirNode figures older than this as unknown —
+// the agent republishes every ~60s, so a few missed polls mean the node is
+// down and its stats can't be trusted for placement or auto-diskful.
+const StatsStaleAfter = 5 * time.Minute
+
 const (
 	// DriverName is the CSI driver name, also the CRD API group.
 	DriverName = "miroir.home-operations.com"

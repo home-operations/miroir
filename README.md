@@ -331,6 +331,13 @@ Trade-offs to understand:
   two simultaneous failures, which majority-of-4 freezes where
   majority-of-3 tolerated one loss. Client legs come and go with pods,
   so the math shifts at stage/unstage, not permanently.
+- **Consumers must run on nodes listed in `nodes`.** Agents only start
+  on mapped nodes, so a pod scheduled onto an unmapped node has no CSI
+  driver to mount with and wedges in `ContainerCreating` — and with no
+  PV affinity, nothing steers the scheduler away. Until a
+  client-capable agent for unmapped nodes lands, keep every
+  schedulable node in the map (a `loopfile` entry with a few spare GB
+  is enough) or set `allowRemoteVolumeAccess: "false"`.
 - **A lost node can strand its client leg.** If a node dies without
   unstaging, its entry in `spec.clients` (and teardown finalizer)
   lingers, holding a quorum vote and blocking volume deletion until the

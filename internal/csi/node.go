@@ -214,21 +214,33 @@ func (n *Node) disklessDevicePath(ctx context.Context, vol *miroirv1alpha1.Miroi
 		return "", nil, status.Errorf(codes.Unavailable,
 			"volume %s has no quorum on node %s", vol.Name, n.NodeName)
 	}
-	if !anyUpToDatePeerLive(vol, live) {
+	if !anyUpToDatePeerLive(vol, n.NodeName, live) {
 		return "", nil, status.Errorf(codes.Unavailable,
 			"volume %s has no reachable UpToDate replica from node %s", vol.Name, n.NodeName)
 	}
 	return st.DevicePath, vol, nil
 }
 
+// diskfulPeerReplicas yields the completed diskful replicas excluding
+// self — the one peers-walk both live gates below share, so their skip
+// rules (diskless excluded per the bug #78 class, incomplete membership
+// entries skipped) cannot drift apart.
+func diskfulPeerReplicas(vol *miroirv1alpha1.MiroirVolume, self string) []miroirv1alpha1.Replica {
+	out := make([]miroirv1alpha1.Replica, 0, len(vol.Spec.Replicas))
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == self || rep.Diskless || rep.Address == "" {
+			continue
+		}
+		out = append(out, rep)
+	}
+	return out
+}
+
 // anyUpToDatePeerLive reports whether at least one diskful replica is
 // connected and UpToDate per the live kernel view — the minimum for a
 // diskless leg to serve I/O.
-func anyUpToDatePeerLive(vol *miroirv1alpha1.MiroirVolume, live drbd.Status) bool {
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Diskless || rep.Address == "" {
-			continue
-		}
+func anyUpToDatePeerLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
+	for _, rep := range diskfulPeerReplicas(vol, self) {
 		if live.PeerConnected[rep.NodeID] && live.PeerDiskState[rep.NodeID] == drbd.DiskUpToDate {
 			return true
 		}
@@ -299,10 +311,7 @@ func (n *Node) removeClientLeg(ctx context.Context, volumeID string) error {
 // so its state never gates a data leg (the bug #78 class), and entries the
 // membership reconciler has not completed are skipped.
 func diskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Node == self || rep.Diskless || rep.Address == "" {
-			continue
-		}
+	for _, rep := range diskfulPeerReplicas(vol, self) {
 		if !live.PeerConnected[rep.NodeID] {
 			return false
 		}

@@ -28,19 +28,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/nodemap"
 )
 
-// statsStaleAfter mirrors the CSI placement guard: MiroirNode figures
-// older than this are treated as unknown.
-const statsStaleAfter = 5 * time.Minute
-
-// AutoDiskfulReconciler converts a long-lived diskless client leg into a
-// diskful replica on its node (LINSTOR's auto-diskful): a consumer that has
-// stayed put past the threshold evidently lives there, so give it a local
-// replica and stop paying network I/O for every read and write. The
-// membership Reconciler completes the added entry (FullSync), the node's
-// agent attaches a backing device to the live resource, and DRBD resyncs it
+// AutoDiskfulReconciler converts a long-lived diskless leg into a diskful
+// replica on its node (LINSTOR's auto-diskful): a consumer that has stayed
+// put past the threshold evidently lives there, so give it a local replica
+// and stop paying network I/O for every read and write. The node's agent
+// attaches a backing device to the live resource and DRBD resyncs it
 // online — the pod keeps running throughout.
 type AutoDiskfulReconciler struct {
 	client.Client
@@ -50,10 +46,10 @@ type AutoDiskfulReconciler struct {
 	After time.Duration
 }
 
-// Reconcile converts at most one leg per pass — a client leg (attach a
-// replica, drop the leg) or a tie-breaker leg a consumer stages through
-// (flip diskless→diskful in place); the spec update re-triggers this
-// controller for anything remaining.
+// Reconcile converts at most one leg per pass — a client leg (replaced by
+// a replica entry) or a tie-breaker leg a consumer stages through (flipped
+// diskless→diskful in place); the spec update re-triggers this controller
+// for anything remaining.
 func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(ctx, req.NamespacedName, vol); err != nil {
@@ -64,99 +60,86 @@ func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	var wait time.Duration
-	track := func(remaining time.Duration) {
-		if wait == 0 || remaining < wait {
-			wait = remaining
+	for _, c := range candidates(vol, r.Nodes) {
+		if remaining := r.After - time.Since(c.since); remaining > 0 {
+			if wait == 0 || remaining < wait {
+				wait = remaining
+			}
+			continue
 		}
+		reason, transient := r.conversionBlocked(ctx, vol, c.node)
+		if reason != "" {
+			ctrl.LoggerFrom(ctx).V(1).Info("auto-diskful conversion blocked",
+				"volume", vol.Name, "node", c.node, "reason", reason)
+			if transient {
+				return ctrl.Result{RequeueAfter: time.Minute}, nil
+			}
+			// Only a spec edit can change a permanent reason, and spec
+			// edits re-trigger the watch — polling would be pure churn.
+			return ctrl.Result{}, nil
+		}
+		c.apply(vol)
+		if err := r.Update(ctx, vol); err != nil {
+			return ctrl.Result{}, err
+		}
+		ctrl.LoggerFrom(ctx).Info("auto-diskful: converting leg to a diskful replica",
+			"volume", vol.Name, "node", c.node)
+		return ctrl.Result{}, nil
 	}
+	return ctrl.Result{RequeueAfter: wait}, nil
+}
+
+// candidate is one leg eligible for diskful conversion once aged.
+type candidate struct {
+	node  string
+	since time.Time
+	// apply mutates vol to perform this conversion.
+	apply func(*miroirv1alpha1.MiroirVolume)
+}
+
+// candidates lists the volume's convertible legs: completed client legs
+// (their attach time is the age signal) and diskless tie-breaker legs a
+// consumer stages through (the agent's PrimarySince stamp — on a
+// fully-mapped cluster the volume's non-replica node IS its tie-breaker,
+// so no client leg ever exists). Only legs on storage nodes qualify.
+func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate {
+	var out []candidate
 	for i := range vol.Spec.Clients {
 		cl := vol.Spec.Clients[i]
-		entry, storage := r.Nodes[cl.Node]
+		entry, storage := nodes[cl.Node]
 		if !storage || cl.Address == "" || cl.AddedAt == nil {
-			// Non-storage nodes can never hold a disk; incomplete legs
-			// re-trigger via the membership completion edit.
 			continue
 		}
-		if remaining := r.After - time.Since(cl.AddedAt.Time); remaining > 0 {
-			track(remaining)
-			continue
-		}
-		if reason := r.conversionBlocked(ctx, vol, cl.Node); reason != "" {
-			ctrl.LoggerFrom(ctx).V(1).Info("auto-diskful conversion blocked",
-				"volume", vol.Name, "node", cl.Node, "reason", reason)
-			return ctrl.Result{RequeueAfter: time.Minute}, nil
-		}
-		return ctrl.Result{}, r.convert(ctx, vol, i, entry.Backend)
+		idx := i
+		out = append(out, candidate{node: cl.Node, since: cl.AddedAt.Time,
+			apply: func(v *miroirv1alpha1.MiroirVolume) { convertClient(v, idx, entry.Backend) }})
 	}
-	// Tie-breaker arm: on a fully-mapped cluster the volume's non-replica
-	// node IS its tie-breaker, so a settled consumer stages through that
-	// leg and no client leg ever exists. Its PrimarySince stamp (agent-
-	// maintained from the kernel role) is the "in use" signal.
 	for i := range vol.Spec.Replicas {
 		rep := vol.Spec.Replicas[i]
 		if !rep.Diskless {
 			continue
 		}
-		entry, storage := r.Nodes[rep.Node]
+		entry, storage := nodes[rep.Node]
 		since := vol.Status.PerNode[rep.Node].PrimarySince
 		if !storage || since == nil {
 			continue
 		}
-		if remaining := r.After - time.Since(since.Time); remaining > 0 {
-			track(remaining)
-			continue
-		}
-		if reason := r.conversionBlocked(ctx, vol, rep.Node); reason != "" {
-			ctrl.LoggerFrom(ctx).V(1).Info("auto-diskful conversion blocked",
-				"volume", vol.Name, "node", rep.Node, "reason", reason)
-			return ctrl.Result{RequeueAfter: time.Minute}, nil
-		}
-		return ctrl.Result{}, r.convertTieBreaker(ctx, vol, i, entry.Backend)
+		idx := i
+		out = append(out, candidate{node: rep.Node, since: since.Time,
+			apply: func(v *miroirv1alpha1.MiroirVolume) { convertTieBreaker(v, idx, entry.Backend) }})
 	}
-	return ctrl.Result{RequeueAfter: wait}, nil
+	return out
 }
 
-// conversionBlocked reports why the client leg on node may not convert
-// right now, or "" when it is safe. Conservative: conversion is an
-// optimization, so any doubt defers it.
-func (r *AutoDiskfulReconciler) conversionBlocked(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, node string) string {
-	if vol.Status.Phase != miroirv1alpha1.VolumeReady {
-		// A FullSync joiner during degradation adds resync load at the
-		// worst time; wait for every diskful leg to be UpToDate.
-		return "volume is not Ready"
-	}
-	if len(vol.Spec.DiskfulReplicas()) >= 3 {
-		// Already at full redundancy; converting would mean evicting a
-		// replica — a policy decision left to the operator.
-		return "volume already has 3 diskful replicas"
-	}
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Address == "" {
-			// Membership completion is in flight; one spec edit at a time.
-			return "a replica change is already in flight"
-		}
-	}
-	// Capacity: the node must fit the full virtual size per its own fresh
-	// stats. Missing or stale stats block — the sync would land blind.
-	mn := &miroirv1alpha1.MiroirNode{}
-	if err := r.Get(ctx, types.NamespacedName{Name: node}, mn); err != nil {
-		return "no pool stats for " + node
-	}
-	if mn.Status.ObservedAt == nil || time.Since(mn.Status.ObservedAt.Time) > statsStaleAfter {
-		return "pool stats for " + node + " are stale"
-	}
-	if mn.Status.CapacityBytes-mn.Status.AllocatedBytes < vol.Spec.SizeBytes {
-		return "insufficient free space on " + node
-	}
-	return ""
-}
-
-// convert replaces the client leg with a diskful replica entry in one
-// update: the CEL rules forbid a client sharing a node with a replica, and
-// a diskless tie-breaker is dropped when present — three diskful replicas
-// carry three quorum votes, so it has nothing left to break.
-func (r *AutoDiskfulReconciler) convert(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, clientIdx int, backend miroirv1alpha1.BackendType) error {
-	node := vol.Spec.Clients[clientIdx].Node
+// convertClient replaces the client leg with a diskful replica carrying
+// the same node-id and address — a DRBD node id is immutable on an up
+// resource, and the consumer holds the leg's device open, so its live
+// identity must not change. A diskless tie-breaker is dropped in the same
+// update: three diskful replicas carry three votes, and MaxItems=3 leaves
+// no room for both. FullSync is set here because the entry stays complete
+// (address kept), so the membership reconciler never touches it.
+func convertClient(vol *miroirv1alpha1.MiroirVolume, clientIdx int, backend miroirv1alpha1.BackendType) {
+	cl := vol.Spec.Clients[clientIdx]
 	replicas := make([]miroirv1alpha1.Replica, 0, len(vol.Spec.Replicas)+1)
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Diskless {
@@ -164,34 +147,64 @@ func (r *AutoDiskfulReconciler) convert(ctx context.Context, vol *miroirv1alpha1
 		}
 		replicas = append(replicas, rep)
 	}
-	replicas = append(replicas, miroirv1alpha1.Replica{Node: node, Backend: backend})
+	replicas = append(replicas, miroirv1alpha1.Replica{
+		Node:     cl.Node,
+		Backend:  backend,
+		NodeID:   cl.NodeID,
+		Address:  cl.Address,
+		FullSync: true,
+	})
 	vol.Spec.Replicas = replicas
 	vol.Spec.Clients = append(vol.Spec.Clients[:clientIdx], vol.Spec.Clients[clientIdx+1:]...)
-	if err := r.Update(ctx, vol); err != nil {
-		return err
-	}
-	ctrl.LoggerFrom(ctx).Info("auto-diskful: converting client leg to a replica",
-		"volume", vol.Name, "node", node)
-	return nil
 }
 
 // convertTieBreaker flips a tie-breaker leg diskful in place (the CEL
 // rules allow exactly this direction): node-id and address are kept, so
 // the agent attaches a fresh backing device to the live resource and DRBD
 // full-syncs it under the running consumer — LINSTOR's toggle-disk.
-func (r *AutoDiskfulReconciler) convertTieBreaker(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, idx int, backend miroirv1alpha1.BackendType) error {
+func convertTieBreaker(vol *miroirv1alpha1.MiroirVolume, idx int, backend miroirv1alpha1.BackendType) {
 	rep := &vol.Spec.Replicas[idx]
 	rep.Diskless = false
 	rep.Backend = backend
 	// FullSync: the fresh backing must join as a full SyncTarget, never
 	// pose as a data-bearing twin.
 	rep.FullSync = true
-	if err := r.Update(ctx, vol); err != nil {
-		return err
+}
+
+// conversionBlocked reports why the leg on node may not convert right now
+// ("" when it is safe) and whether the reason is transient (worth a
+// requeue) or changes only with a spec edit (the watch covers those).
+// Conservative: conversion is an optimization, so any doubt defers it.
+func (r *AutoDiskfulReconciler) conversionBlocked(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, node string) (string, bool) {
+	if vol.Status.Phase != miroirv1alpha1.VolumeReady {
+		// A FullSync joiner during degradation adds resync load at the
+		// worst time; wait for every diskful leg to be UpToDate.
+		return "volume is not Ready", true
 	}
-	ctrl.LoggerFrom(ctx).Info("auto-diskful: converting tie-breaker leg to a diskful replica",
-		"volume", vol.Name, "node", rep.Node)
-	return nil
+	if len(vol.Spec.DiskfulReplicas()) >= 3 {
+		// Already at full redundancy; converting would mean evicting a
+		// replica — a policy decision left to the operator.
+		return "volume already has 3 diskful replicas", false
+	}
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Address == "" {
+			// Membership completion is in flight; one spec edit at a time.
+			return "a replica change is already in flight", true
+		}
+	}
+	// Capacity: the node must fit the full virtual size per its own fresh
+	// stats. Missing or stale stats block — the sync would land blind.
+	mn := &miroirv1alpha1.MiroirNode{}
+	if err := r.Get(ctx, types.NamespacedName{Name: node}, mn); err != nil {
+		return "no pool stats for " + node, true
+	}
+	if mn.Status.ObservedAt == nil || time.Since(mn.Status.ObservedAt.Time) > constants.StatsStaleAfter {
+		return "pool stats for " + node + " are stale", true
+	}
+	if mn.Status.CapacityBytes-mn.Status.AllocatedBytes < vol.Spec.SizeBytes {
+		return "insufficient free space on " + node, true
+	}
+	return "", false
 }
 
 // primarySinceChanged fires the watch on PrimarySince transitions: the

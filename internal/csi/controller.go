@@ -89,10 +89,6 @@ const (
 	// is also 7000; operators co-locating with Rook host-network Ceph can
 	// move this via the --drbd-port-base flag / drbd.portBase Helm value.
 	defaultDRBDPortBase = 7000
-	// statsStaleAfter ignores MiroirNode figures older than this as
-	// unknown — the agent republishes every ~60s, so a few missed polls
-	// mean the node is down and its stats can't be trusted for placement.
-	statsStaleAfter = 5 * time.Minute
 )
 
 // ControllerGetCapabilities advertises exactly what is implemented.
@@ -228,21 +224,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	// Remote-access volumes carry no accessible topology: the PV gets no
-	// node affinity, and a stage on a non-replica node attaches a diskless
-	// client leg instead (spec.clients).
-	var topology []*csi.Topology
-	if !vol.Spec.AllowRemoteAccess {
-		topology = make([]*csi.Topology, 0, len(vol.Spec.Replicas))
-		for _, r := range vol.Spec.Replicas {
-			if r.Diskless {
-				continue
-			}
-			topology = append(topology, &csi.Topology{
-				Segments: map[string]string{constants.TopologyKey: r.Node},
-			})
-		}
-	}
+	topology := accessibleTopology(vol)
 	var contentSource *csi.VolumeContentSource
 	if source != nil && source.SnapshotName != "" {
 		contentSource = &csi.VolumeContentSource{
@@ -544,7 +526,7 @@ func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.M
 	}
 	out := make(map[string]miroirv1alpha1.MiroirNodeStatus, len(list.Items))
 	for _, n := range list.Items {
-		if n.Status.ObservedAt == nil || time.Since(n.Status.ObservedAt.Time) > statsStaleAfter {
+		if n.Status.ObservedAt == nil || time.Since(n.Status.ObservedAt.Time) > constants.StatsStaleAfter {
 			continue
 		}
 		out[n.Name] = n.Status
@@ -859,20 +841,11 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 
 	for i := start; i < end; i++ {
 		v := &vols.Items[i]
-		topology := make([]*csi.Topology, 0, len(v.Spec.Replicas))
-		for _, r := range v.Spec.Replicas {
-			if r.Diskless {
-				continue
-			}
-			topology = append(topology, &csi.Topology{
-				Segments: map[string]string{constants.TopologyKey: r.Node},
-			})
-		}
 		resp.Entries = append(resp.Entries, &csi.ListVolumesResponse_Entry{
 			Volume: &csi.Volume{
 				VolumeId:           v.Name,
 				CapacityBytes:      v.Spec.SizeBytes,
-				AccessibleTopology: topology,
+				AccessibleTopology: accessibleTopology(v),
 			},
 		})
 	}
@@ -1024,6 +997,26 @@ func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) 
 		return "", status.Errorf(codes.InvalidArgument,
 			"invalid %s=%q (want last-man-standing | freeze)", constants.ParamQuorum, raw)
 	}
+}
+
+// accessibleTopology lists the nodes a volume's PV may pin consumers to:
+// its diskful replica nodes, or nothing for a remote-access volume (its
+// consumers run anywhere; a stage on a non-replica node attaches a
+// diskless client leg instead).
+func accessibleTopology(vol *miroirv1alpha1.MiroirVolume) []*csi.Topology {
+	if vol.Spec.AllowRemoteAccess {
+		return nil
+	}
+	topology := make([]*csi.Topology, 0, len(vol.Spec.Replicas))
+	for _, r := range vol.Spec.Replicas {
+		if r.Diskless {
+			continue
+		}
+		topology = append(topology, &csi.Topology{
+			Segments: map[string]string{constants.TopologyKey: r.Node},
+		})
+	}
+	return topology
 }
 
 // parseAllowRemoteAccess reads the remote-access StorageClass parameter.

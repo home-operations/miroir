@@ -90,8 +90,16 @@ func TestAutoDiskfulConvertsAgedClient(t *testing.T) {
 		t.Fatalf("oslo must become a replica: %+v", got.Spec.Replicas)
 	}
 	rep := got.Spec.Replicas[idx]
-	if rep.Diskless || rep.Backend != miroirv1alpha1.BackendLVMThin || rep.Address != "" {
-		t.Fatalf("converted entry must be a bare diskful replica for membership to complete: %+v", rep)
+	if rep.Diskless || rep.Backend != miroirv1alpha1.BackendLVMThin {
+		t.Fatalf("converted entry must be a diskful replica: %+v", rep)
+	}
+	// The leg's live DRBD identity must not change: a node id is immutable
+	// on an up resource and the consumer holds the device open.
+	if rep.NodeID != 2 || rep.Address != addrOslo {
+		t.Fatalf("conversion must keep the client leg's node-id/address: %+v", rep)
+	}
+	if !rep.FullSync {
+		t.Fatal("converted leg must join as a FullSync joiner")
 	}
 }
 
@@ -264,5 +272,29 @@ func TestPrimarySinceChanged(t *testing.T) {
 	same.Status.PerNode[nodeOslo] = miroirv1alpha1.ReplicaStatus{Diskless: true, PrimarySince: &now}
 	if primarySinceChanged(with, same) {
 		t.Fatal("presence-stable PrimarySince must not fire the predicate")
+	}
+}
+
+// A permanently-blocked conversion (3 diskful replicas) must not poll:
+// only a spec edit changes it, and spec edits re-trigger the watch.
+func TestAutoDiskfulPermanentBlockSkipsRequeue(t *testing.T) {
+	v := clientVol(15 * time.Minute)
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: nodeBergen, NodeID: 3, Address: "192.168.1.44",
+	})
+	v.Spec.Clients[0].NodeID = 4
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		WithObjects(v, freshStats(10<<30)).Build()
+	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
+		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+	}}
+
+	res := reconcileAD(t, r, "pvc-1")
+	if res.RequeueAfter != 0 {
+		t.Fatalf("permanent block must not requeue, got %v", res.RequeueAfter)
+	}
+	if got := get(t, &Reconciler{Client: c}, "pvc-1"); len(got.Spec.Clients) != 1 {
+		t.Fatalf("blocked conversion must leave the spec alone: %+v", got.Spec)
 	}
 }
