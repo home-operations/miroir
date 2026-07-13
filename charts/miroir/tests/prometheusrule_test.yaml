@@ -23,13 +23,13 @@ tests:
           path: metadata.namespace
           value: miroir-system
 
-  - it: should have the volume and pool rule groups
+  - it: should have the volume, pool and export rule groups
     set:
       monitoring.prometheusRule.enabled: true
     asserts:
       - lengthEqual:
           path: spec.groups
-          count: 2
+          count: 3
       - equal:
           path: spec.groups[0].name
           value: miroir.volumes
@@ -42,6 +42,34 @@ tests:
       - lengthEqual:
           path: spec.groups[1].rules
           count: 2
+      - equal:
+          path: spec.groups[2].name
+          value: miroir.exports
+      - equal:
+          path: spec.groups[2].rules[0].alert
+          value: MiroirExportUnavailable
+      - equal:
+          path: spec.groups[2].rules[0].labels.severity
+          value: critical
+
+  - it: should render the verify staleness rule only with a verify schedule
+    set:
+      monitoring.prometheusRule.enabled: true
+      drbd.verify.schedule: "0 3 * * 0"
+      monitoring.prometheusRule.verifyStaleDays: 9
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 9
+      - equal:
+          path: spec.groups[0].rules[8].alert
+          value: MiroirVolumeVerifyStale
+      - equal:
+          path: spec.groups[0].rules[8].labels.severity
+          value: warning
+      - equal:
+          path: spec.groups[0].rules[8].expr
+          value: time() - miroir_volume_verify_last_timestamp_seconds > 9 * 86400
 
   - it: should mark IO-freezing conditions critical
     set:

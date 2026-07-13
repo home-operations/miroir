@@ -495,9 +495,16 @@ Each agent additionally exports its pool capacity
 capacity-aware placement and the `PoolUsageHigh` condition, so pool
 exhaustion is alertable, not just an Event.
 
+For RWX volumes the **controller** exports `miroir_export_ready` — 1
+while the volume's NFS gateway is serving (gateway pod available,
+export address published). This is the signal the per-volume gauges
+cannot give you: DRBD replicas stay healthy while a dead gateway
+leaves every NFS client hanging.
+
 `monitoring.prometheusRule.enabled: true` ships starter alerts for all
 of the above (split-brain, quorum lost, stranded barrier, disk failed,
-degraded replication, sustained out-of-sync, pool and thin-metadata
+degraded replication, sustained out-of-sync, an unavailable RWX
+export, a stale verify schedule, pool and thin-metadata
 usage), and `monitoring.dashboards.enabled: true` installs a Grafana
 dashboard — as a sidecar-labelled ConfigMap, or a grafana-operator
 `GrafanaDashboard` CR via `monitoring.dashboards.grafanaOperator`.

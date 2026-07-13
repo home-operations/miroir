@@ -30,6 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
@@ -203,6 +204,64 @@ func TestReconcileUpdatesAffinityOnReplicaChange(t *testing.T) {
 	slices.Sort(nodes)
 	if want := []string{nodeKharkiv, nodeOslo}; !slices.Equal(nodes, want) {
 		t.Fatalf("affinity nodes after move = %v, want %v", nodes, want)
+	}
+}
+
+// exportReadyGauge reads miroir_export_ready for a volume from the global
+// registry; ok=false means the series does not exist.
+func exportReadyGauge(t *testing.T, volume string) (float64, bool) {
+	t.Helper()
+	mfs, err := ctrlmetrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "miroir_export_ready" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "volume" && l.GetValue() == volume {
+					return m.GetGauge().GetValue(), true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func TestReconcileExportReadyMetric(t *testing.T) {
+	vol := exportVolume("pvc-metric", nodeKharkiv, nodeParis)
+	// The Service pre-exists with an apiserver-assigned ClusterIP (the fake
+	// client assigns none), so readiness hinges on gateway availability.
+	svc := buildService(vol, testNS)
+	svc.Spec.ClusterIP = testClusterIP
+	r, cl := newReconciler(vol, svc)
+
+	// First reconcile creates the Deployment; no pod is available yet.
+	reconcile(t, r, "pvc-metric")
+	if v, ok := exportReadyGauge(t, "pvc-metric"); !ok || v != 0 {
+		t.Fatalf("gauge = %v (exists=%v), want 0 while no gateway pod is available", v, ok)
+	}
+
+	// The gateway pod comes up.
+	dep := getDeployment(t, cl, "pvc-metric")
+	dep.Status.AvailableReplicas = 1
+	if err := cl.Status().Update(t.Context(), dep); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "pvc-metric")
+	if v, ok := exportReadyGauge(t, "pvc-metric"); !ok || v != 1 {
+		t.Fatalf("gauge = %v (exists=%v), want 1 with an available gateway and a published address", v, ok)
+	}
+
+	// Volume gone: the series must be dropped, not left at a stale value.
+	if err := cl.Delete(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "pvc-metric")
+	if _, ok := exportReadyGauge(t, "pvc-metric"); ok {
+		t.Fatal("gauge series must be dropped when the volume is deleted")
 	}
 }
 
