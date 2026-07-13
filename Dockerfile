@@ -43,6 +43,10 @@ RUN sed -i 's|^Components: main$|Components: main contrib|' /etc/apt/sources.lis
     zfsutils-linux \
     e2fsprogs \
     xfsprogs \
+    # nfs-common: mount.nfs for the CSI node service to mount an RWX
+    # volume's NFS export on any consumer node (the server side is the
+    # userspace gateway image below, so no nfs-kernel-server here).
+    nfs-common \
     # modprobe: lvm2 and drbdsetup load missing dm/drbd kernel targets on
     # demand through the pod's read-only /lib/modules hostPath (Alpine got
     # this implicitly from busybox; trixie-slim ships no kmod).
@@ -61,3 +65,16 @@ RUN printf 'activation { udev_sync = 0\nudev_rules = 0 }\ndevices { obtain_devic
     > /etc/lvm/lvmlocal.conf
 COPY --from=build /miroir /usr/local/bin/miroir
 ENTRYPOINT ["/usr/local/bin/miroir"]
+
+# Gateway: the agent userland (it stages the DRBD device with the same
+# lvm/drbd/mkfs tooling) plus NFS-Ganesha, which exports the mounted
+# filesystem over NFSv4 for RWX volumes. Userspace NFS server (no
+# nfs-kernel-server / nfsd module) so it works on Talos, where the export
+# node needs no in-kernel NFS server. The VFS FSAL serves a plain mounted
+# directory. Binary entrypoint unchanged; the pod runs --mode=gateway.
+FROM agent AS gateway
+RUN apt-get update -qq && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    nfs-ganesha \
+    nfs-ganesha-vfs && \
+    rm -rf /var/lib/apt/lists/*

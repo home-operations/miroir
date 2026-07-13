@@ -32,6 +32,7 @@ import (
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/drbd"
+	"github.com/home-operations/miroir/internal/stage"
 )
 
 // devDrbd1000 is the staged DRBD device path shared by the fixtures.
@@ -63,7 +64,7 @@ func stagedVolume() *miroirv1alpha1.MiroirVolume {
 	return v
 }
 
-func newNode(t *testing.T, vol *miroirv1alpha1.MiroirVolume, d DRBDStatus) *Node {
+func newNode(t *testing.T, vol *miroirv1alpha1.MiroirVolume, d stage.DRBDStatus) *Node {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -183,6 +184,56 @@ func TestDevicePathActivatedIgnoresSplitSlot(t *testing.T) {
 	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
 	if _, _, err := n.devicePath(t.Context(), volPvc1); err != nil {
 		t.Fatalf("activated volume must stage despite a split slot: %v", err)
+	}
+}
+
+// exportVolume is an RWX volume; address is set only once the gateway
+// Service has a ClusterIP.
+func exportVolume(address string) *miroirv1alpha1.MiroirVolume {
+	v := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec:       miroirv1alpha1.MiroirVolumeSpec{Export: &miroirv1alpha1.ExportSpec{FSType: "ext4"}},
+	}
+	if address != "" {
+		v.Status.Export = &miroirv1alpha1.ExportStatus{Address: address}
+	}
+	return v
+}
+
+func nfsStageReq(vc *csi.VolumeCapability) *csi.NodeStageVolumeRequest {
+	return &csi.NodeStageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: "/var/lib/kubelet/stage",
+		VolumeCapability:  vc,
+	}
+}
+
+func mountCap() *csi.VolumeCapability {
+	return &csi.VolumeCapability{
+		AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER},
+	}
+}
+
+// Until the gateway Service has an address, staging must fail retryably so
+// the CSI sidecar keeps retrying rather than failing the pod.
+func TestStageNFSGatewayNotReady(t *testing.T) {
+	n := &Node{NodeName: nodeKharkiv}
+	if _, err := n.stageNFS(nfsStageReq(mountCap()), exportVolume("")); status.Code(err) != codes.Unavailable {
+		t.Fatalf("unready gateway must be Unavailable, got %v", err)
+	}
+}
+
+// RWX is filesystem-only; a block capability on an export volume is a
+// misconfiguration, not something to mount.
+func TestStageNFSRejectsBlock(t *testing.T) {
+	n := &Node{NodeName: nodeKharkiv}
+	block := &csi.VolumeCapability{
+		AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
+		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER},
+	}
+	if _, err := n.stageNFS(nfsStageReq(block), exportVolume("10.96.0.7")); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("block on an RWX volume must be InvalidArgument, got %v", err)
 	}
 }
 

@@ -74,9 +74,10 @@ var testNodes = nodemap.Map{
 
 // readyOnGet flips a created volume to Ready, simulating the agent.
 // NB: depends on the fake client returning the same object pointer.
-func readyOnGet(s *runtime.Scheme) client.WithWatch {
+func readyOnGet(s *runtime.Scheme, objs ...client.Object) client.WithWatch {
 	return fake.NewClientBuilder().
 		WithScheme(s).
+		WithObjects(objs...).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -198,21 +199,123 @@ func TestCreateVolumeSucceedsWhenDegraded(t *testing.T) {
 	}
 }
 
-func TestCreateVolumeRejectsRWX(t *testing.T) {
+func rwxCaps() []*csi.VolumeCapability {
+	return []*csi.VolumeCapability{{
+		AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"}},
+		AccessMode: &csi.VolumeCapability_AccessMode{
+			Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+		},
+	}}
+}
+
+func TestCreateVolumeRWXSetsExport(t *testing.T) {
+	s := newScheme(t)
+	// Node objects back the replication-address resolution place() runs
+	// for the 2-replica placement.
+	c := &Controller{
+		Client:           readyOnGet(s, nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)),
+		Nodes:            testNodes,
+		ProvisionTimeout: 2 * time.Second,
+		DRBDPortBase:     7000,
+	}
+
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: rwxCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An RWX PV carries no node affinity — consumers mount NFS from any node.
+	if len(resp.Volume.AccessibleTopology) != 0 {
+		t.Fatalf("RWX volume must have no accessible topology, got %v", resp.Volume.AccessibleTopology)
+	}
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if vol.Spec.Export == nil || vol.Spec.Export.FSType != "xfs" {
+		t.Fatalf("expected export spec fsType=xfs, got %+v", vol.Spec.Export)
+	}
+}
+
+func TestCreateVolumeRejectsRWXSingleReplica(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes}
+
+	// RWX needs a second replica node for the gateway to fail over to.
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: rwxCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "1"},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("single-replica RWX must be rejected, got %v", err)
+	}
+}
+
+func TestCreateVolumeRejectsRWXBlock(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: readyOnGet(s), Nodes: testNodes}
 
 	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name: volPvc1,
 		VolumeCapabilities: []*csi.VolumeCapability{{
-			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
 			AccessMode: &csi.VolumeCapability_AccessMode{
 				Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
 			},
 		}},
 	})
 	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("RWX must be rejected, got %v", err)
+		t.Fatalf("RWX block must be rejected, got %v", err)
+	}
+}
+
+func TestCreateVolumeRejectsRWXLastManStanding(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, DRBDPortBase: 7000}
+
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: rwxCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2", constants.ParamQuorum: "last-man-standing"},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("RWX with last-man-standing quorum must be rejected, got %v", err)
+	}
+}
+
+// Confirming RWX access against a volume provisioned without an export
+// gateway would promise access the mount path cannot deliver.
+func TestValidateVolumeCapabilitiesRWXMismatch(t *testing.T) {
+	s := newScheme(t)
+	vol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 1 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv}},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vol).Build()
+	c := &Controller{Client: cl, Nodes: testNodes}
+
+	resp, err := c.ValidateVolumeCapabilities(t.Context(), &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId:           volPvc1,
+		VolumeCapabilities: rwxCaps(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Confirmed != nil {
+		t.Fatalf("RWX must not be confirmed for a non-export volume, got %+v", resp.Confirmed)
+	}
+	if resp.Message == "" {
+		t.Fatal("expected a rejection message")
 	}
 }
 

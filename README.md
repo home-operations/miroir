@@ -19,8 +19,10 @@ synchronous replication (2–3 replicas) via DRBD9.
   (`--max-peers 7`). Going higher means lifting the cap, raising
   `--max-peers`, and revisiting the quorum policies, which are built
   around 2 data replicas plus a tie-breaker — not done.
-- You need `RWX`. Volumes are `ReadWriteOnce`.
-- You need iSCSI/NFS exports. Block devices only.
+- You need iSCSI targets or a standalone NFS/file server. miroir serves
+  block devices and — for `ReadWriteMany` — a per-volume NFS export it
+  manages itself (see [ReadWriteMany (RWX)](#readwritemany-rwx)); it is not
+  a general-purpose exporter.
 
 ## How it compares to LINSTOR and blockstor
 
@@ -408,6 +410,60 @@ validates one leg against itself). Set `drbd.verifyAlg` (e.g.
 during quiet hours — cron is the DRBD-documented pattern.
 Out-of-sync blocks are reported in the kernel log and
 `drbdsetup status`.
+
+## ReadWriteMany (RWX)
+
+A PVC with `accessModes: [ReadWriteMany]` (or `ReadOnlyMany`) on a
+replicated class is served as a **shared filesystem over NFS** — many pods
+on many nodes read and write it at once, like CephFS.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: shared-data
+spec:
+    storageClassName: miroir-replicated
+    accessModes: [ReadWriteMany]
+    resources:
+        requests:
+            storage: 10Gi
+```
+
+Under the hood the volume is a normal miroir DRBD volume. The controller
+runs one **gateway** pod for it on a replica node: the pod mounts the
+device (DRBD `auto-promote` makes it the single writer), formats it
+`ext4`/`xfs`, and exports it over NFSv4 with NFS-Ganesha. A per-volume
+`ClusterIP` Service fronts the gateway, and the CSI node plugin on any node
+NFS-mounts that Service for pods. Because the gateway is the only writer,
+single-primary DRBD fencing is unchanged — miroir never enables
+dual-primary, and there is no cluster filesystem.
+
+Things worth knowing:
+
+- **RWX requires a replicated class** (`replicas ≥ 2`). The gateway fails
+  over by rescheduling onto another replica node, so it needs a second one
+  to move to; the controller rejects RWX on a single-replica volume.
+- **Consistency is NFS close-to-open**, not shared-memory: a writer's
+  changes are visible on other nodes once it closes the file (or `fsync`s).
+- **Failover.** If the gateway's node dies, the Deployment reschedules the
+  gateway onto a surviving replica node and NFS clients (hard mounts)
+  reconnect through the same Service IP. Expect **tens of seconds** —
+  eviction from the dead node, DRBD promotion once quorum releases the old
+  Primary, and the NFSv4 grace period. Client I/O stalls (never errors)
+  across the window. Fine for the homelab RWX cases (media libraries,
+  shared config); not a low-latency-failover HA-NAS.
+- **`freeze` quorum is required** (the default). Under `last-man-standing`
+  a partition could leave the old and rescheduled gateways both writable —
+  the controller rejects that combination.
+- **Snapshots** work exactly as for RWO volumes (crash-consistent,
+  device-level; the gateway is the sole writer during the barrier), and the
+  volume gets the same split-brain protections — the gateway stages through
+  the same pipeline that latches "this volume holds data", so auto-recovery
+  never discards a diverged leg out from under it.
+- The gateway keeps NFSv4 lock-recovery state in a `.ganesha-recovery`
+  directory at the root of the exported filesystem so locks survive
+  failover; it is visible to consumers — leave it alone.
 
 ## Monitoring
 

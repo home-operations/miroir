@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/sys/unix"
@@ -37,12 +38,8 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/drbd"
+	"github.com/home-operations/miroir/internal/stage"
 )
-
-// DRBDStatus reports this node's live view of a DRBD resource.
-type DRBDStatus interface {
-	Status(ctx context.Context, name string) (drbd.Status, error)
-}
 
 // Node implements csi.NodeServer (notes/DESIGN.md §4.5.2). It looks the volume up
 // in the CRD (the source of truth) and stages its node-local device.
@@ -55,17 +52,22 @@ type Node struct {
 	// DRBD answers from the kernel, not the CRD: status written by the
 	// reconciler lags, and staging on a stale UpToDate mounts (or worse,
 	// formats) a diverged replica.
-	DRBD DRBDStatus
+	DRBD stage.DRBDStatus
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
-func NewNode(c client.Client, nodeName string, d DRBDStatus) *Node {
+func NewNode(c client.Client, nodeName string, d stage.DRBDStatus) *Node {
 	return &Node{
 		Client:   c,
 		NodeName: nodeName,
 		Mounter:  mount.NewSafeFormatAndMount(mount.New(""), utilexec.New()),
 		DRBD:     d,
 	}
+}
+
+// deps bundles the node's tooling for the shared staging pipeline.
+func (n *Node) deps() stage.Deps {
+	return stage.Deps{Client: n.Client, NodeName: n.NodeName, Mounter: n.Mounter, DRBD: n.DRBD}
 }
 
 // NodeGetInfo reports this node's name and topology segment (§6.5).
@@ -97,9 +99,13 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 	return resp, nil
 }
 
-// devicePath resolves the volume's local device from the CRD and verifies
-// this node holds a replica with current data.
+// devicePath resolves the volume's local device and gates it against
+// divergent replicas (see stage.Device). Kept as a method so the node
+// service's call sites and tests read unchanged.
 func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroirv1alpha1.MiroirVolume, error) {
+	// The client-leg decision is deliberately node-service-only: the RWX
+	// gateway stages through stage.Device on a replica node and must never
+	// attach a client leg when misplaced.
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -110,70 +116,18 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroir
 	i := slices.IndexFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
 		return r.Node == n.NodeName
 	})
-	if i < 0 {
-		if vol.Spec.AllowRemoteAccess {
-			// No replica here, but the volume serves remote consumers:
-			// attach (or use) an ephemeral diskless client leg.
-			return n.clientDevicePath(ctx, vol)
-		}
-		return "", nil, status.Errorf(codes.FailedPrecondition,
-			"volume %s has no replica on node %s", volumeID, n.NodeName)
+	if i < 0 && vol.Spec.AllowRemoteAccess {
+		// No replica here, but the volume serves remote consumers: attach
+		// (or use) an ephemeral diskless client leg.
+		return n.clientDevicePath(ctx, vol)
 	}
-	if vol.Spec.Replicas[i].Diskless {
-		if vol.Spec.AllowRemoteAccess {
-			// The tie-breaker's diskless leg serves I/O the same way a
-			// client leg does; without PV node affinity the scheduler may
-			// legitimately land a pod here.
-			return n.disklessDevicePath(ctx, vol)
-		}
-		return "", nil, status.Errorf(codes.FailedPrecondition,
-			"node %s is a diskless tie-breaker; cannot stage volume %s", n.NodeName, volumeID)
+	if i >= 0 && vol.Spec.Replicas[i].Diskless && vol.Spec.AllowRemoteAccess {
+		// The tie-breaker's diskless leg serves I/O the same way a client
+		// leg does; without PV node affinity the scheduler may
+		// legitimately land a pod here.
+		return n.disklessDevicePath(ctx, vol)
 	}
-	st, ok := vol.Status.PerNode[n.NodeName]
-	if !ok || !st.DeviceCreated || st.DevicePath == "" {
-		return "", nil, status.Errorf(codes.Unavailable,
-			"volume %s device not ready on node %s", volumeID, n.NodeName)
-	}
-	// Replicated volumes must not be formatted or mounted before this
-	// replica holds current data — mkfs on an Inconsistent secondary
-	// would race the initial handshake. Ask the kernel, not the CRD:
-	// status lags behind a link flap by a reconcile interval.
-	if vol.Spec.DRBD != nil {
-		live, err := n.DRBD.Status(ctx, volumeID)
-		if err != nil {
-			return "", nil, status.Errorf(codes.Unavailable,
-				"volume %s DRBD state unreadable on node %s: %v", volumeID, n.NodeName, err)
-		}
-		if live.SplitBrain {
-			return "", nil, status.Errorf(codes.FailedPrecondition,
-				"volume %s is split-brain on node %s — manual resolution required", volumeID, n.NodeName)
-		}
-		if live.DiskState != drbd.DiskUpToDate {
-			return "", nil, status.Errorf(codes.Unavailable,
-				"volume %s is %s on node %s (want UpToDate)", volumeID, live.DiskState, n.NodeName)
-		}
-		// Mid-recovery a birth-split volume can pass the live checks: the
-		// survivor and tie-breaker reconnect first (quorum restores, the
-		// device turns writable) while the losing leg is still divergent. A
-		// stage completing in that window latches Activated and closes the
-		// auto-recovery that would have healed the loser (issue #144). Hold
-		// staging while a split is recorded AND a diskful link is down —
-		// only while the volume is still auto-recovery-eligible. The live
-		// connectivity corroboration keeps a stale slot from a dead peer
-		// from blocking a volume whose data legs are all established, and
-		// releases the hold the moment the loser reconnects, ahead of the
-		// slots clearing on the next status patch.
-		if !vol.Status.Activated && !vol.Status.Formatted &&
-			!diskfulPeersLive(vol, n.NodeName, live) {
-			for node, rep := range vol.Status.PerNode {
-				if rep.SplitBrain {
-					return "", nil, status.Errorf(codes.Unavailable,
-						"volume %s is recovering from split-brain (reported by node %s)", volumeID, node)
-				}
-			}
-		}
-	}
-	return st.DevicePath, vol, nil
+	return stage.Device(ctx, n.deps(), volumeID)
 }
 
 // clientDevicePath resolves the device for an ephemeral diskless client
@@ -305,20 +259,6 @@ func (n *Node) removeClientLeg(ctx context.Context, volumeID string) error {
 	return nil
 }
 
-// diskfulPeersLive reports whether this node's replication links to every
-// diskful peer are established, per the live kernel view. Mirrors the
-// agent's diskfulPeersConnected: a diskless tie-breaker's link is excluded
-// so its state never gates a data leg (the bug #78 class), and entries the
-// membership reconciler has not completed are skipped.
-func diskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
-	for _, rep := range diskfulPeerReplicas(vol, self) {
-		if !live.PeerConnected[rep.NodeID] {
-			return false
-		}
-	}
-	return true
-}
-
 // NodeStageVolume makes the device usable at the staging path: filesystem
 // volumes get mkfs-if-blank + mount; block volumes only need the device to
 // exist (publish bind-mounts it directly).
@@ -328,6 +268,19 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 	}
 	if err := validateCapabilities([]*csi.VolumeCapability{req.GetVolumeCapability()}); err != nil {
 		return nil, err
+	}
+
+	// RWX volumes are served over NFS by a gateway pod; the device lives on
+	// the gateway's node, not here, so this path never touches it.
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+		}
+		return nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", req.GetVolumeId(), err)
+	}
+	if vol.Spec.Export != nil {
+		return n.stageNFS(req, vol)
 	}
 
 	dev, vol, err := n.devicePath(ctx, req.GetVolumeId())
@@ -345,113 +298,58 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 		// Stage succeeded: publish will hand the device to a consumer that may
 		// write. Latch activated so split-brain auto-recovery, which discards a
 		// leg, no longer touches this volume.
-		if err := n.markActivated(ctx, vol); err != nil {
+		if err := stage.MarkActivated(ctx, n.Client, vol); err != nil {
 			return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
 		}
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
 
-	notMnt, err := n.Mounter.IsLikelyNotMountPoint(req.GetStagingTargetPath())
+	fsType := req.GetVolumeCapability().GetMount().GetFsType()
+	if fsType == "" {
+		fsType = defaultFSType
+	}
+	flags := req.GetVolumeCapability().GetMount().GetMountFlags()
+	if err := stage.EnsureFilesystem(ctx, n.deps(), vol, dev, req.GetStagingTargetPath(), fsType, flags); err != nil {
+		return nil, err
+	}
+	return &csi.NodeStageVolumeResponse{}, nil
+}
+
+// stageNFS mounts an RWX volume's NFS export at the staging path. The
+// gateway pod owns the device, the filesystem, and the Formatted/Activated
+// latches, so a consumer node only mounts.
+func (n *Node) stageNFS(req *csi.NodeStageVolumeRequest, vol *miroirv1alpha1.MiroirVolume) (*csi.NodeStageVolumeResponse, error) {
+	if req.GetVolumeCapability().GetBlock() != nil {
+		return nil, status.Error(codes.InvalidArgument, "RWX volumes are filesystem-only")
+	}
+	if vol.Status.Export == nil || vol.Status.Export.Address == "" {
+		return nil, status.Errorf(codes.Unavailable, "volume %s NFS gateway not ready", vol.Name)
+	}
+
+	target := req.GetStagingTargetPath()
+	notMnt, err := n.Mounter.IsLikelyNotMountPoint(target)
 	if os.IsNotExist(err) {
-		if err := os.MkdirAll(req.GetStagingTargetPath(), 0o750); err != nil {
+		if err := os.MkdirAll(target, 0o750); err != nil {
 			return nil, status.Errorf(codes.Internal, "mkdir staging path: %v", err)
 		}
 		notMnt = true
 	} else if err != nil {
 		return nil, status.Errorf(codes.Internal, "inspect staging path: %v", err)
 	}
-	if notMnt {
-		fsType := req.GetVolumeCapability().GetMount().GetFsType()
-		if fsType == "" {
-			fsType = "ext4"
-		}
-		mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
-
-		// Open-for-write probe: the first open(2) auto-promotes DRBD, and a
-		// refused promotion (peer already Primary) otherwise surfaces as
-		// mkfs "Wrong medium type".
-		f, err := os.OpenFile(dev, os.O_RDWR, 0)
-		if err != nil {
-			return nil, status.Errorf(codes.Unavailable,
-				"device %s not writable (is the volume in use on another node?): %v", dev, err)
-		}
-		_ = f.Close()
-
-		// mkfs-if-blank is allowed exactly once per volume: a blank device on
-		// a volume that ever carried a filesystem is data loss (diverged
-		// replica, torn clone), and reformatting would silently finish it.
-		format, err := n.Mounter.GetDiskFormat(dev)
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "probe filesystem on %s: %v", dev, err)
-		}
-		if format == "" && vol.Status.Formatted {
-			return nil, status.Errorf(codes.DataLoss,
-				"volume %s was formatted before but %s reads blank — refusing to reformat", req.GetVolumeId(), dev)
-		}
-		if format != "" {
-			// Record before mounting so a clone that arrived with a
-			// filesystem is protected from then on.
-			if err := n.markFormatted(ctx, vol); err != nil {
-				return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-			}
-		}
-
-		// FormatAndMount formats only when the device has no filesystem —
-		// the mkfs-if-blank step of notes/DESIGN.md §4.5.2.
-		if err := n.Mounter.FormatAndMount(dev, req.GetStagingTargetPath(), fsType, mountFlags); err != nil {
-			return nil, status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
-		}
-		if format == "" {
-			// First mkfs. A failed patch fails the stage; the retry lands in
-			// the format != "" path above and records it then.
-			if err := n.markFormatted(ctx, vol); err != nil {
-				return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-			}
-		}
-	} else {
-		// Already staged: a mounted device carries a filesystem, so a
-		// missed Formatted patch from an earlier stage heals here.
-		if err := n.markFormatted(ctx, vol); err != nil {
-			return nil, status.Errorf(codes.Internal, "record formatted flag: %v", err)
-		}
+	if !notMnt {
+		return &csi.NodeStageVolumeResponse{}, nil
 	}
 
-	// Grow-to-fill runs on every stage, not only a fresh mount: a restored
-	// clone carries the snapshot's smaller filesystem, and a resize that
-	// failed after the mount already succeeded must be retried on the next
-	// stage, not skipped by the already-staged fast path. NeedResize is a
-	// no-op once the filesystem fills the device.
-	resizer := mount.NewResizeFs(n.Mounter.Exec)
-	need, err := resizer.NeedResize(dev, req.GetStagingTargetPath())
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "check filesystem size on %s: %v", dev, err)
-	}
-	if need {
-		if _, err := resizer.Resize(dev, req.GetStagingTargetPath()); err != nil {
-			return nil, status.Errorf(codes.Internal, "grow filesystem on %s: %v", dev, err)
-		}
-	}
-	// Stage fully succeeded (mkfs + mount + grow): the volume now carries a
-	// filesystem and a consumer may write. Latch activated only here, never on
-	// a stage that failed the write probe or mkfs — a volume that never
-	// completed staging holds no data and must stay eligible for split-brain
-	// auto-recovery.
-	if err := n.markActivated(ctx, vol); err != nil {
-		return nil, status.Errorf(codes.Internal, "record activated flag: %v", err)
+	// hard: a gateway failover must stall I/O, never surface EIO into the
+	// app. noresvport: reconnect from a fresh source port so the mount
+	// survives the Service endpoint moving to the replacement gateway pod.
+	opts := append([]string{"vers=4.1", "hard", "noresvport", "timeo=600", "retrans=5"},
+		req.GetVolumeCapability().GetMount().GetMountFlags()...)
+	source := fmt.Sprintf("%s:/%s", vol.Status.Export.Address, vol.Name)
+	if err := n.Mounter.Mount(source, target, "nfs4", opts); err != nil {
+		return nil, status.Errorf(codes.Unavailable, "mount %s at %s: %v", source, target, err)
 	}
 	return &csi.NodeStageVolumeResponse{}, nil
-}
-
-// markFormatted records that the volume carries a filesystem. No-op when
-// already recorded.
-func (n *Node) markFormatted(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
-	return markFormatted(ctx, n.Client, vol)
-}
-
-// markActivated latches that the volume has been staged for a consumer at
-// least once. No-op when already recorded.
-func (n *Node) markActivated(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
-	return markActivated(ctx, n.Client, vol)
 }
 
 // NodeExpandVolume grows the filesystem to the (already grown) device,
@@ -474,12 +372,30 @@ func (n *Node) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRe
 	return &csi.NodeExpandVolumeResponse{CapacityBytes: req.GetCapacityRange().GetRequiredBytes()}, nil
 }
 
-// NodeUnstageVolume unmounts the staging path. Idempotent.
+// nfsUnmountTimeout bounds a forced NFS unmount so a dead gateway cannot
+// wedge NodeUnstageVolume indefinitely.
+const nfsUnmountTimeout = 30 * time.Second
+
+// NodeUnstageVolume unmounts the staging path. Idempotent. An export
+// volume's staging mount is NFS: if its gateway has died a plain unmount
+// blocks, so force it with a deadline. The volume lookup is best-effort —
+// a volume already deleted falls back to the normal cleanup.
 func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	if req.GetVolumeId() == "" || req.GetStagingTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and staging path are required")
 	}
-	if err := mount.CleanupMountPoint(req.GetStagingTargetPath(), n.Mounter, true); err != nil {
+	target := req.GetStagingTargetPath()
+
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err == nil && vol.Spec.Export != nil {
+		if forcer, ok := n.Mounter.Interface.(mount.MounterForceUnmounter); ok {
+			if err := mount.CleanupMountWithForce(target, forcer, true, nfsUnmountTimeout); err != nil {
+				return nil, status.Errorf(codes.Internal, "unstage: %v", err)
+			}
+			return &csi.NodeUnstageVolumeResponse{}, nil
+		}
+	}
+	if err := mount.CleanupMountPoint(target, n.Mounter, true); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage: %v", err)
 	}
 	// A client leg follows its consumer: with the device released, drop the

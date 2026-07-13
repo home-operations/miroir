@@ -25,6 +25,7 @@ DriverInfo:
     pvcDataSource: false
     topology: true
     singleNodeVolume: true
+    # RWX needs the replicated (DRBD) path; the local driver can't exercise it.
     RWX: false
     readWriteOncePod: true
     capacity: false

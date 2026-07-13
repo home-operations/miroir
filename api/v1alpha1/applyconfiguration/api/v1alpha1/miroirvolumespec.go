@@ -57,6 +57,10 @@ type MiroirVolumeSpecApplyConfiguration struct {
 	// one consumer, plus headroom for an attach/detach overlap during a
 	// pod move.
 	Clients []VolumeClientApplyConfiguration `json:"clients,omitempty"`
+	// Export, if set, serves the volume as a shared filesystem over NFS
+	// (RWX). Set by the controller when the volume is created from a
+	// MULTI_NODE access mode; immutable.
+	Export *ExportSpecApplyConfiguration `json:"export,omitempty"`
 }
 
 // MiroirVolumeSpecApplyConfiguration constructs a declarative configuration of the MiroirVolumeSpec type for use with
@@ -128,5 +132,13 @@ func (b *MiroirVolumeSpecApplyConfiguration) WithClients(values ...*VolumeClient
 		}
 		b.Clients = append(b.Clients, *values[i])
 	}
+	return b
+}
+
+// WithExport sets the Export field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Export field is set to the value of the last call.
+func (b *MiroirVolumeSpecApplyConfiguration) WithExport(value *ExportSpecApplyConfiguration) *MiroirVolumeSpecApplyConfiguration {
+	b.Export = value
 	return b
 }

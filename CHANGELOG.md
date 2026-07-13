@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.12](https://github.com/home-operations/miroir/compare/0.4.11...0.4.12) (2026-07-13)
+
+
+### Features
+
+* enable RWX (ReadWriteMany) over the NFS gateway ([#164](https://github.com/home-operations/miroir/issues/164)) ([072e09c](https://github.com/home-operations/miroir/commit/072e09c97d8b8d016fd641977f4a3493dd4472a6))
+
+## [0.4.11](https://github.com/home-operations/miroir/compare/0.4.10...0.4.11) (2026-07-13)
+
+
+### Features
+
+* RWX export reconciler — per-volume NFS gateway workloads ([#163](https://github.com/home-operations/miroir/issues/163)) ([47731f3](https://github.com/home-operations/miroir/commit/47731f3e91914894bd0753d5473b136ea7310366))
+* RWX gateway runtime — NFS-Ganesha share manager ([#162](https://github.com/home-operations/miroir/issues/162)) ([766bfc1](https://github.com/home-operations/miroir/commit/766bfc1bbc024063ee32d5cda0a3f13f04425200))
+* RWX groundwork: internal/stage extraction and export CRD types ([#161](https://github.com/home-operations/miroir/issues/161)) ([fbf123f](https://github.com/home-operations/miroir/commit/fbf123febe91ed01374c70129a3d66e351092fdf))
+
 ## [0.4.10](https://github.com/home-operations/miroir/compare/0.4.9...0.4.10) (2026-07-12)
 
 

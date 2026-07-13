@@ -50,6 +50,18 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: sharedSecret
       type:
         scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.ExportSpec
+  map:
+    fields:
+    - name: fsType
+      type:
+        scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.ExportStatus
+  map:
+    fields:
+    - name: address
+      type:
+        scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNode
   map:
     fields:
@@ -181,6 +193,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: drbd
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.DRBDSpec
+    - name: export
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.ExportSpec
     - name: quorumPolicy
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.QuorumPolicy
@@ -208,6 +223,9 @@ var schemaYAML = typed.YAMLObject(`types:
           elementType:
             namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
           elementRelationship: atomic
+    - name: export
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.ExportStatus
     - name: formatted
       type:
         scalar: boolean

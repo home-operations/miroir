@@ -41,6 +41,7 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/nodemap"
+	"github.com/home-operations/miroir/internal/stage"
 )
 
 // Controller implements csi.ControllerServer (notes/DESIGN.md §6.1). It translates
@@ -147,6 +148,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if err != nil {
 		return nil, err
 	}
+	shared := isShared(req.GetVolumeCapabilities())
+	if err := validateSharedRequest(shared, replicas, quorum); err != nil {
+		return nil, err
+	}
 
 	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
 	source, srcReplicas, sourceFormatted, err := c.resolveSource(ctx, snapID, sizeBytes, replicas)
@@ -203,6 +208,9 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		}
 		vol.Spec.DRBD = drbdSpec
 	}
+	if shared {
+		vol.Spec.Export = &miroirv1alpha1.ExportSpec{FSType: exportFSType(req.GetVolumeCapabilities())}
+	}
 	createErr := c.Client.Create(ctx, vol)
 	c.allocMu.Unlock()
 
@@ -224,7 +232,6 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	topology := accessibleTopology(vol)
 	var contentSource *csi.VolumeContentSource
 	if source != nil && source.SnapshotName != "" {
 		contentSource = &csi.VolumeContentSource{
@@ -239,7 +246,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		Volume: &csi.Volume{
 			VolumeId:           vol.Name,
 			CapacityBytes:      sizeBytes,
-			AccessibleTopology: topology,
+			AccessibleTopology: accessibleTopology(vol),
 			ContentSource:      contentSource,
 		},
 	}, nil
@@ -274,6 +281,14 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 	}
 	if err := validateCapabilities(req.GetVolumeCapabilities()); err != nil {
 		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil //nolint:nilerr
+	}
+	// Multi-node access is only real if the volume was provisioned with an
+	// NFS gateway; confirming RWX on an RWO volume (or vice versa) would
+	// promise access the mount path cannot deliver.
+	if isShared(req.GetVolumeCapabilities()) != (vol.Spec.Export != nil) {
+		return &csi.ValidateVolumeCapabilitiesResponse{
+			Message: "requested access mode does not match the volume's provisioning",
+		}, nil
 	}
 	return &csi.ValidateVolumeCapabilitiesResponse{
 		Confirmed: &csi.ValidateVolumeCapabilitiesResponse_Confirmed{
@@ -612,11 +627,12 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 	existingDiskful := len(existing.Spec.DiskfulReplicas())
 	if existing.Spec.SizeBytes != sizeBytes || existingDiskful != replicas ||
 		(replicas > 1 && existing.Spec.QuorumPolicy != quorum) ||
-		existingSource != sourceSnapshot {
+		existingSource != sourceSnapshot ||
+		(existing.Spec.Export != nil) != (vol.Spec.Export != nil) {
 		return status.Errorf(codes.AlreadyExists,
-			"volume %s exists with size=%d diskful=%d quorum=%s source=%q (requested size=%d replicas=%d quorum=%s source=%q)",
-			vol.Name, existing.Spec.SizeBytes, existingDiskful, existing.Spec.QuorumPolicy, existingSource,
-			sizeBytes, replicas, quorum, sourceSnapshot)
+			"volume %s exists with size=%d diskful=%d quorum=%s source=%q rwx=%t (requested size=%d replicas=%d quorum=%s source=%q rwx=%t)",
+			vol.Name, existing.Spec.SizeBytes, existingDiskful, existing.Spec.QuorumPolicy, existingSource, existing.Spec.Export != nil,
+			sizeBytes, replicas, quorum, sourceSnapshot, vol.Spec.Export != nil)
 	}
 	*vol = *existing
 	return nil
@@ -679,8 +695,6 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	if newSize == 0 {
 		return nil, status.Error(codes.InvalidArgument, "capacity range is required")
 	}
-	nodeExpansion := req.GetVolumeCapability().GetBlock() == nil
-
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -688,6 +702,9 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 		}
 		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
 	}
+	// RWX volumes are grown by the gateway (it holds the only mount), and a
+	// block volume needs no filesystem grow — neither triggers node expansion.
+	nodeExpansion := req.GetVolumeCapability().GetBlock() == nil && vol.Spec.Export == nil
 	if newSize > vol.Spec.SizeBytes {
 		base := vol.DeepCopy()
 		vol.Spec.SizeBytes = newSize
@@ -943,31 +960,7 @@ func (c *Controller) markVolumeFormatted(ctx context.Context, name string) error
 	if err := c.reader().Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 		return err
 	}
-	return markFormatted(ctx, c.Client, vol)
-}
-
-// markFormatted flips the Formatted status flag once; shared by the
-// controller (clone inheritance) and the node service (post-mkfs).
-func markFormatted(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume) error {
-	if vol.Status.Formatted {
-		return nil
-	}
-	base := vol.DeepCopy()
-	vol.Status.Formatted = true
-	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
-}
-
-// markActivated latches the Activated status flag once, the first time a
-// node stages the volume for a consumer. It gates split-brain auto-recovery
-// (see agent VolumeReconciler.recoverSplitBrain): a staged volume may hold
-// data, so its divergence is never auto-discarded.
-func markActivated(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume) error {
-	if vol.Status.Activated {
-		return nil
-	}
-	base := vol.DeepCopy()
-	vol.Status.Activated = true
-	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
+	return stage.MarkFormatted(ctx, c.Client, vol)
 }
 
 func parseReplicas(params map[string]string) (int, error) {
@@ -999,24 +992,20 @@ func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) 
 	}
 }
 
-// accessibleTopology lists the nodes a volume's PV may pin consumers to:
-// its diskful replica nodes, or nothing for a remote-access volume (its
-// consumers run anywhere; a stage on a non-replica node attaches a
-// diskless client leg instead).
-func accessibleTopology(vol *miroirv1alpha1.MiroirVolume) []*csi.Topology {
-	if vol.Spec.AllowRemoteAccess {
+// validateSharedRequest rejects RWX shapes the NFS gateway cannot serve.
+func validateSharedRequest(shared bool, replicas int, quorum miroirv1alpha1.QuorumPolicy) error {
+	if !shared {
 		return nil
 	}
-	topology := make([]*csi.Topology, 0, len(vol.Spec.Replicas))
-	for _, r := range vol.Spec.Replicas {
-		if r.Diskless {
-			continue
-		}
-		topology = append(topology, &csi.Topology{
-			Segments: map[string]string{constants.TopologyKey: r.Node},
-		})
+	if replicas < 2 {
+		return status.Error(codes.InvalidArgument,
+			"RWX volumes need at least 2 replicas so the NFS gateway can fail over to a surviving node")
 	}
-	return topology
+	if quorum == miroirv1alpha1.QuorumLastManStanding {
+		return status.Error(codes.InvalidArgument,
+			"RWX volumes require freeze quorum: last-man-standing risks two gateways writing during a partition")
+	}
+	return nil
 }
 
 // parseAllowRemoteAccess reads the remote-access StorageClass parameter.
@@ -1052,14 +1041,70 @@ func validateCapabilities(caps []*csi.VolumeCapability) error {
 			csi.VolumeCapability_AccessMode_SINGLE_NODE_SINGLE_WRITER,
 			csi.VolumeCapability_AccessMode_SINGLE_NODE_MULTI_WRITER,
 			csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY:
+		case csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+			csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY:
+			// RWX is served over NFS from a shared filesystem; a block
+			// device mounted on two nodes has no such coordination.
+			if c.GetBlock() != nil {
+				return status.Error(codes.InvalidArgument,
+					"multi-node access is filesystem-only; block volumes are single-node")
+			}
 		default:
 			return status.Errorf(codes.InvalidArgument,
-				"unsupported access mode %s (miroir is RWO/RWOP only)",
-				c.GetAccessMode().GetMode())
+				"unsupported access mode %s", c.GetAccessMode().GetMode())
 		}
 		if c.GetMount() == nil && c.GetBlock() == nil {
 			return status.Error(codes.InvalidArgument, "capability must be mount or block")
 		}
 	}
 	return nil
+}
+
+// isShared reports whether the request is for an RWX (multi-node) volume.
+func isShared(caps []*csi.VolumeCapability) bool {
+	for _, c := range caps {
+		switch c.GetAccessMode().GetMode() {
+		case csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER,
+			csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY:
+			return true
+		}
+	}
+	return false
+}
+
+// defaultFSType is the filesystem used when a mount capability names none.
+const defaultFSType = "ext4"
+
+// exportFSType is the filesystem the gateway formats an RWX volume with,
+// taken from the first mount capability (ext4 when unset).
+func exportFSType(caps []*csi.VolumeCapability) string {
+	for _, c := range caps {
+		if fs := c.GetMount().GetFsType(); fs != "" {
+			return fs
+		}
+	}
+	return defaultFSType
+}
+
+// accessibleTopology reports the nodes a volume can be published from. It
+// is nil for an RWX volume: its NFS gateway is reachable cluster-wide, so
+// the PV carries no node-affinity constraint and consumers schedule
+// anywhere.
+func accessibleTopology(vol *miroirv1alpha1.MiroirVolume) []*csi.Topology {
+	// Unpinned either way: an RWX volume's NFS gateway is reachable
+	// cluster-wide, and a remote-access volume's consumers attach a
+	// diskless client leg on whatever node they land on.
+	if vol.Spec.Export != nil || vol.Spec.AllowRemoteAccess {
+		return nil
+	}
+	top := make([]*csi.Topology, 0, len(vol.Spec.Replicas))
+	for _, r := range vol.Spec.Replicas {
+		if r.Diskless {
+			continue
+		}
+		top = append(top, &csi.Topology{
+			Segments: map[string]string{constants.TopologyKey: r.Node},
+		})
+	}
+	return top
 }

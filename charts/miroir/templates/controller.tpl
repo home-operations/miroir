@@ -65,6 +65,10 @@ spec:
             - --auto-diskful-after={{ . }}
             {{- end }}
             - --drbd-port-base={{ .Values.drbd.portBase }}
+            # RWX gateway: the controller spawns per-volume NFS-Ganesha
+            # Deployments in its own namespace from this image.
+            - --gateway-image={{ include "miroir.gatewayImage" . }}
+            - --gateway-service-account={{ include "miroir.gatewayName" . }}
             {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
             - --leader-elect=true
             - --leader-election-id={{ include "miroir.leaderElectionID" . }}
@@ -74,10 +78,15 @@ spec:
             {{- with .Values.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.extraEnv }}
           env:
+            # The controller creates gateway workloads in its own namespace.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }

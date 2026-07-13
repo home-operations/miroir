@@ -34,6 +34,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 	// Group=miroir.home-operations.com, Version=v1alpha1
 	case v1alpha1.SchemeGroupVersion.WithKind("DRBDSpec"):
 		return &apiv1alpha1.DRBDSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ExportSpec"):
+		return &apiv1alpha1.ExportSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ExportStatus"):
+		return &apiv1alpha1.ExportStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNode"):
 		return &apiv1alpha1.MiroirNodeApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNodeSpec"):

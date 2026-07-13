@@ -15,14 +15,16 @@ limitations under the License.
 */
 
 // miroir is a low-resource replicated block storage driver for Kubernetes.
-// One binary, two modes (notes/DESIGN.md §4.2):
+// One binary, several modes (notes/DESIGN.md §4.2):
 //
 //	--mode=controller  CSI Identity+Controller services (Deployment)
 //	--mode=agent       CSI Identity+Node services + node reconciler (DaemonSet)
+//	--mode=gateway     NFS-Ganesha share manager for one RWX volume (per-volume Deployment)
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -52,6 +54,8 @@ import (
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/csi"
 	"github.com/home-operations/miroir/internal/drbd"
+	"github.com/home-operations/miroir/internal/export"
+	"github.com/home-operations/miroir/internal/gateway"
 	"github.com/home-operations/miroir/internal/membership"
 	"github.com/home-operations/miroir/internal/nodemap"
 )
@@ -105,6 +109,31 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool, a
 	return nil
 }
 
+// setupExport registers the RWX gateway reconciler, which maintains the
+// per-volume NFS-Ganesha Deployment and Service. It is skipped when no
+// gateway image is configured — RWX is off until the chart wires one.
+func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string) error {
+	if image == "" {
+		setupLog.Info("no --gateway-image set; RWX (ReadWriteMany) volumes are disabled")
+		return nil
+	}
+	r := &export.Reconciler{
+		Client:         mgr.GetClient(),
+		Namespace:      namespace,
+		Image:          image,
+		ServiceAccount: serviceAccount,
+	}
+	if err := r.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("export reconciler: %w", err)
+	}
+	return nil
+}
+
+// errNodeUnmapped marks a node that is not in the storage map: it runs a
+// client-only agent (CSI node service for RWX/NFS consumers) rather than
+// failing to start.
+var errNodeUnmapped = errors.New("node absent from the storage node map")
+
 // backendFor resolves this node's storage entry from the node map and
 // builds its backend — shared by setup and agent mode so the two can
 // never wire Config differently.
@@ -115,7 +144,7 @@ func backendFor(nodeName, nodesConfig, vg, thinPool string) (backend.Backend, mi
 	}
 	entry, ok := nodes[nodeName]
 	if !ok {
-		return nil, "", fmt.Errorf("node %s absent from the node map (Helm values: nodes)", nodeName)
+		return nil, "", errNodeUnmapped
 	}
 	be, err := backend.New(entry.Backend, backend.Config{
 		VolumeGroup: vg,
@@ -165,6 +194,55 @@ func addVerifyScheduler(mgr manager.Manager, nodeName string, drbdReady bool, sc
 	}
 }
 
+// runSetup provisions the node-local pool and returns. It reads the node
+// map from a file and drives lvm/zfs directly, needing no API connection.
+func runSetup(nodeName, nodesConfig, vg, thinPool string) {
+	if nodeName == "" {
+		setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
+		os.Exit(1)
+	}
+	be, _, err := backendFor(nodeName, nodesConfig, vg, thinPool)
+	if err != nil {
+		setupLog.Error(err, "unable to build the node's backend")
+		os.Exit(1)
+	}
+	if err := be.Setup(context.Background()); err != nil {
+		setupLog.Error(err, "backend pool setup failed", "node", nodeName)
+		os.Exit(1)
+	}
+	setupLog.Info("pool ready", "node", nodeName)
+}
+
+// runGateway serves one RWX volume over NFS and blocks until the process
+// is signalled. It builds a direct client (no manager/cache) and drives
+// the host's DRBD/mount tooling like the agent, exiting non-zero if the
+// export ever fails so the pod restarts.
+func runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir string) {
+	if nodeName == "" {
+		setupLog.Error(nil, "--node-name (or NODE_NAME) is required in gateway mode")
+		os.Exit(1)
+	}
+	if volumeName == "" {
+		setupLog.Error(nil, "--volume is required in gateway mode")
+		os.Exit(1)
+	}
+	cl, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		setupLog.Error(err, "unable to build client")
+		os.Exit(1)
+	}
+	drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
+	if err := gateway.Run(ctrl.SetupSignalHandler(), cl, drbdDriver, gateway.Config{
+		VolumeID:    volumeName,
+		NodeName:    nodeName,
+		ExportDir:   exportDir,
+		GaneshaConf: ganeshaConf,
+	}, setupLog.WithName("gateway")); err != nil {
+		setupLog.Error(err, "gateway exited")
+		os.Exit(1)
+	}
+}
+
 func main() {
 	var (
 		mode             string
@@ -179,6 +257,9 @@ func main() {
 		leaderElect      bool
 		leaderElectionID string
 		leaderElectionNS string
+		podNamespace     string
+		gatewayImage     string
+		gatewaySA        string
 
 		// agent mode
 		nodeName          string
@@ -188,8 +269,13 @@ func main() {
 		poolStatsInterval time.Duration
 		volumeWorkers     int
 		verifySchedule    string
+
+		// gateway mode
+		volumeName  string
+		exportDir   string
+		ganeshaConf string
 	)
-	flag.StringVar(&mode, "mode", "", "controller | agent | setup")
+	flag.StringVar(&mode, "mode", "", "controller | agent | setup | gateway")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081",
 		"single operational endpoint: /metrics plus the /healthz and /readyz probes (org port standard)")
@@ -214,6 +300,12 @@ func main() {
 		"leader-election Lease name; keep it stable across upgrades (controller)")
 	flag.StringVar(&leaderElectionNS, "leader-election-namespace", "",
 		"leader-election Lease namespace; empty auto-detects the pod's namespace in-cluster (controller)")
+	flag.StringVar(&podNamespace, "namespace", os.Getenv("POD_NAMESPACE"),
+		"the controller's own namespace, where per-RWX-volume gateway workloads are created (controller)")
+	flag.StringVar(&gatewayImage, "gateway-image", "",
+		"container image for per-RWX-volume NFS gateway pods; empty disables RWX (controller)")
+	flag.StringVar(&gatewaySA, "gateway-service-account", "",
+		"ServiceAccount for gateway pods, with the RBAC the gateway needs (controller)")
 	flag.IntVar(&volumeWorkers, "volume-workers", 4,
 		"concurrent volume reconciles per agent (agent)")
 	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
@@ -225,6 +317,11 @@ func main() {
 	flag.StringVar(&thinPool, "lvm-thinpool", "thinpool", "LVM thin pool LV (agent, lvmthin)")
 	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
 		"rendered DRBD config dir (agent; hostPath-backed)")
+	flag.StringVar(&volumeName, "volume", "", "MiroirVolume to export over NFS (gateway)")
+	flag.StringVar(&exportDir, "export-dir", "/export",
+		"parent directory for the per-volume mount point (gateway)")
+	flag.StringVar(&ganeshaConf, "ganesha-conf", "/etc/ganesha/ganesha.conf",
+		"path the rendered NFS-Ganesha config is written to (gateway)")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -234,24 +331,15 @@ func main() {
 
 	validateDRBDPortBase(drbdPortBase)
 
-	// Setup mode provisions the node-local pool and exits. It reads the node
-	// map from a file and drives lvm/zfs directly, so it needs neither the
-	// controller-runtime manager nor an API connection — build neither.
+	// Setup and gateway modes drive the host directly and need neither the
+	// controller-runtime manager nor (for setup) an API connection, so they
+	// build neither and exit before the manager is constructed.
 	if mode == "setup" {
-		if nodeName == "" {
-			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
-			os.Exit(1)
-		}
-		be, _, err := backendFor(nodeName, nodesConfig, vg, thinPool)
-		if err != nil {
-			setupLog.Error(err, "unable to build the node's backend")
-			os.Exit(1)
-		}
-		if err := be.Setup(context.Background()); err != nil {
-			setupLog.Error(err, "backend pool setup failed", "node", nodeName)
-			os.Exit(1)
-		}
-		setupLog.Info("pool ready", "node", nodeName)
+		runSetup(nodeName, nodesConfig, vg, thinPool)
+		return
+	}
+	if mode == "gateway" {
+		runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir)
 		return
 	}
 
@@ -336,6 +424,10 @@ func main() {
 			setupLog.Error(err, "unable to set up membership reconcilers")
 			os.Exit(1)
 		}
+		if err := setupExport(mgr, podNamespace, gatewayImage, gatewaySA); err != nil {
+			setupLog.Error(err, "unable to set up export reconciler")
+			os.Exit(1)
+		}
 		serveCSI(mgr, csiSocket, identity, controller, nil)
 
 	case "agent":
@@ -343,10 +435,17 @@ func main() {
 			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in agent mode")
 			os.Exit(1)
 		}
-		// Agents refuse to start on nodes absent from the node map: the
-		// DaemonSet's chart-side scope is every schedulable node, but only
-		// storage nodes run an agent-backed backend.
+		// The DaemonSet's chart-side scope is every schedulable node, but
+		// only storage nodes run an agent-backed backend. A node absent from
+		// the map holds no volumes and runs a client-only node service so
+		// pods there can still mount RWX (NFS) volumes.
 		be, backendType, err := backendFor(nodeName, nodesConfig, vg, thinPool)
+		if errors.Is(err, errNodeUnmapped) {
+			setupLog.Info("node not in the storage map; running client-only node service", "node", nodeName)
+			node := csi.NewNode(mgr.GetClient(), nodeName, &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec})
+			serveCSI(mgr, csiSocket, identity, nil, node)
+			break
+		}
 		if err != nil {
 			setupLog.Error(err, "unable to build the node's backend")
 			os.Exit(1)
@@ -452,7 +551,7 @@ func main() {
 		serveCSI(mgr, csiSocket, identity, nil, node)
 
 	default:
-		setupLog.Error(nil, "--mode must be controller, agent, or setup")
+		setupLog.Error(nil, "--mode must be controller, agent, setup, or gateway")
 		os.Exit(1)
 	}
 

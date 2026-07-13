@@ -67,6 +67,10 @@ Kubernetes: `>=1.31.0`
 | extraArgs | list | `[]` | Extra arguments for the controller container. |
 | extraEnv | list | `[]` | Extra environment variables for the controller container. |
 | fullnameOverride | string | `""` | Override the fully qualified name prefix of every rendered object. |
+| gateway.image.digest | string | `""` |  |
+| gateway.image.pullPolicy | string | `"IfNotPresent"` |  |
+| gateway.image.repository | string | `"ghcr.io/home-operations/miroir-gateway"` |  |
+| gateway.image.tag | string | `""` |  |
 | global.affinity | object | `{}` |  |
 | global.commonLabels | object | `{}` | Labels stamped on every rendered object (fleet-wide labelling). |
 | global.imagePullSecrets | list | `[]` | Pull secrets added to every pod (controller, agent, setup, uninstall). |

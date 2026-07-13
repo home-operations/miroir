@@ -271,6 +271,43 @@
       "title": "fullnameOverride",
       "type": "string"
     },
+    "gateway": {
+      "description": "=============================================================================\nGateway (per-RWX-volume NFS share manager)\n=============================================================================\nThe controller spawns one gateway Deployment per RWX (ReadWriteMany)\nvolume: it mounts the volume's device on a replica node and exports it\nover NFSv4 (userspace NFS-Ganesha), which consumers on any node mount.\nThe image is the agent userland plus NFS-Ganesha.",
+      "properties": {
+        "image": {
+          "properties": {
+            "digest": {
+              "default": "",
+              "description": "Pins the image by digest (sha256:…); takes precedence over the tag.\nThe release pipeline fills this with the published image's digest.",
+              "title": "digest",
+              "type": "string"
+            },
+            "pullPolicy": {
+              "default": "IfNotPresent",
+              "title": "pullPolicy",
+              "type": "string"
+            },
+            "repository": {
+              "default": "ghcr.io/home-operations/miroir-gateway",
+              "title": "repository",
+              "type": "string"
+            },
+            "tag": {
+              "default": "",
+              "description": "Overrides the image tag; defaults to the chart appVersion.",
+              "title": "tag",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "image",
+          "type": "object"
+        }
+      },
+      "required": [],
+      "title": "gateway",
+      "type": "object"
+    },
     "global": {
       "description": "Fleet-wide defaults (kopiur layout). imagePullSecrets and commonLabels\nreach every pod/object; the scheduling globals apply to the controller —\nthe only freely schedulable workload (the agent DaemonSet must run on\nevery schedulable node for the CSI node service, and the setup Job is\nnode-pinned).",
       "properties": {

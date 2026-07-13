@@ -133,6 +133,24 @@ spec:
                 required:
                 - port
                 type: object
+              export:
+                description: |-
+                  Export, if set, serves the volume as a shared filesystem over NFS
+                  (RWX). Set by the controller when the volume is created from a
+                  MULTI_NODE access mode; immutable.
+                properties:
+                  fsType:
+                    description: |-
+                      FSType is the filesystem the gateway formats and mounts on the
+                      device. Persisted here because mkfs happens in the gateway, which
+                      never sees a CSI VolumeCapability; consumers only ever see NFS.
+                    enum:
+                    - ext4
+                    - xfs
+                    type: string
+                required:
+                - fsType
+                type: object
               quorumPolicy:
                 description: QuorumPolicy applies only when len(Replicas) > 1.
                 enum:
@@ -240,6 +258,12 @@ spec:
             - message: a client leg cannot share a node with a replica
               rule: '!has(self.clients) || self.clients.all(c, !self.replicas.exists(r,
                 r.node == c.node))'
+            - message: a volume cannot gain or lose its NFS export (RWX) in place
+              rule: has(self.export) == has(oldSelf.export)
+            - message: replicated RWX volumes must use freeze quorum (a rescheduled
+                gateway under last-man-standing risks dual-primary split-brain)
+              rule: '!(has(self.export) && has(self.drbd)) || self.quorumPolicy ==
+                ''freeze'''
           status:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.
@@ -310,6 +334,18 @@ spec:
                   - type
                   type: object
                 type: array
+              export:
+                description: |-
+                  Export is the observed state of the NFS gateway, set only on RWX
+                  volumes (spec.export). Written by the export reconciler.
+                properties:
+                  address:
+                    description: |-
+                      Address is the share Service's ClusterIP. Consumers mount
+                      <address>:/<volume> over NFS. Empty until the reconciler has
+                      created the Service and read back its allocated ClusterIP.
+                    type: string
+                type: object
               formatted:
                 description: |-
                   Formatted is set once the volume has ever carried a filesystem —
