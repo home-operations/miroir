@@ -40,7 +40,8 @@ import (
 // creation and persisted in the CRD; `address` overrides that for a
 // dedicated replication NIC.
 type Node struct {
-	// Backend selects the storage implementation: "lvmthin" | "zfs".
+	// Backend selects the storage implementation: "lvmthin" | "zfs" |
+	// "loopfile".
 	Backend miroirv1alpha1.BackendType `json:"backend"`
 	// Zone is an optional failure domain (rack, host group, AZ). When set,
 	// the controller spreads a volume's replicas across distinct zones;
