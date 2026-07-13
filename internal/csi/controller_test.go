@@ -72,9 +72,10 @@ var testNodes = nodemap.Map{
 
 // readyOnGet flips a created volume to Ready, simulating the agent.
 // NB: depends on the fake client returning the same object pointer.
-func readyOnGet(s *runtime.Scheme) client.WithWatch {
+func readyOnGet(s *runtime.Scheme, objs ...client.Object) client.WithWatch {
 	return fake.NewClientBuilder().
 		WithScheme(s).
+		WithObjects(objs...).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -207,7 +208,14 @@ func rwxCaps() []*csi.VolumeCapability {
 
 func TestCreateVolumeRWXSetsExport(t *testing.T) {
 	s := newScheme(t)
-	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second, DRBDPortBase: 7000}
+	// Node objects back the replication-address resolution place() runs
+	// for the 2-replica placement.
+	c := &Controller{
+		Client:           readyOnGet(s, nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)),
+		Nodes:            testNodes,
+		ProvisionTimeout: 2 * time.Second,
+		DRBDPortBase:     7000,
+	}
 
 	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
