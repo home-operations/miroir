@@ -160,6 +160,29 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
+        # A consumer has been running on a diskless leg (client or
+        # tie-breaker) for a while: every read and write crosses the
+        # replication network. Auto-diskful converts the leg when enabled
+        # and the node has capacity, so a sustained firing means it is
+        # disabled, blocked, or the node holds no storage.
+        - alert: MiroirVolumeRemoteConsumer
+          expr: miroir_volume_diskless_primary == 1
+          for: 30m
+          labels:
+            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "info") | nindent 12 }}
+          annotations:
+            summary: >-
+              Volume {{ "{{" }} $labels.volume {{ "}}" }} is consumed remotely
+              from {{ "{{" }} $labels.node {{ "}}" }}
+            description: >-
+              The pod runs on a diskless DRBD leg at replication-network
+              speed. Set autoDiskfulAfter to convert settled consumers to a
+              local replica, pin the workload to a replica node, or accept
+              the network path.
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
     - name: miroir.pools
       rules:
         # Matches the agent's PoolUsageHigh condition: thin pools and ZFS

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -28,6 +29,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
@@ -35,6 +37,7 @@ import (
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
+	"github.com/home-operations/miroir/internal/drbd"
 	"github.com/home-operations/miroir/internal/stage"
 )
 
@@ -100,7 +103,185 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 // divergent replicas (see stage.Device). Kept as a method so the node
 // service's call sites and tests read unchanged.
 func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroirv1alpha1.MiroirVolume, error) {
+	// The client-leg decision is deliberately node-service-only: the RWX
+	// gateway stages through stage.Device on a replica node and must never
+	// attach a client leg when misplaced.
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+		}
+		return "", nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
+	}
+	i := slices.IndexFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
+		return r.Node == n.NodeName
+	})
+	if i < 0 && vol.Spec.AllowRemoteAccess {
+		// No replica here, but the volume serves remote consumers: attach
+		// (or use) an ephemeral diskless client leg.
+		return n.clientDevicePath(ctx, vol)
+	}
+	if i >= 0 && vol.Spec.Replicas[i].Diskless && vol.Spec.AllowRemoteAccess {
+		// The tie-breaker's diskless leg serves I/O the same way a client
+		// leg does; without PV node affinity the scheduler may
+		// legitimately land a pod here.
+		return n.disklessDevicePath(ctx, vol)
+	}
 	return stage.Device(ctx, n.deps(), volumeID)
+}
+
+// clientDevicePath resolves the device for an ephemeral diskless client
+// leg on this node, creating the spec entry on first use. The membership
+// reconciler completes the entry and the agent realizes it; until then the
+// stage returns Unavailable and the CO retries.
+func (n *Node) clientDevicePath(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (string, *miroirv1alpha1.MiroirVolume, error) {
+	if vol.Spec.ClientForNode(n.NodeName) == nil {
+		if err := n.addClientLeg(ctx, vol); err != nil {
+			return "", nil, err
+		}
+		return "", nil, status.Errorf(codes.Unavailable,
+			"volume %s: attaching diskless client leg on node %s", vol.Name, n.NodeName)
+	}
+	return n.disklessDevicePath(ctx, vol)
+}
+
+// disklessDevicePath verifies a local diskless leg (client or tie-breaker)
+// can serve I/O: the leg is realized, the volume has quorum, and at least
+// one diskful peer with current data is reachable — all reads and writes
+// cross the replication network to it.
+func (n *Node) disklessDevicePath(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (string, *miroirv1alpha1.MiroirVolume, error) {
+	st, ok := vol.Status.PerNode[n.NodeName]
+	if !ok || st.DevicePath == "" {
+		return "", nil, status.Errorf(codes.Unavailable,
+			"volume %s diskless leg not realized on node %s", vol.Name, n.NodeName)
+	}
+	live, err := n.DRBD.Status(ctx, vol.Name)
+	if err != nil {
+		return "", nil, status.Errorf(codes.Unavailable,
+			"volume %s DRBD state unreadable on node %s: %v", vol.Name, n.NodeName, err)
+	}
+	if live.SplitBrain {
+		return "", nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s is split-brain on node %s — manual resolution required", vol.Name, n.NodeName)
+	}
+	if !live.Quorum {
+		return "", nil, status.Errorf(codes.Unavailable,
+			"volume %s has no quorum on node %s", vol.Name, n.NodeName)
+	}
+	if !anyUpToDatePeerLive(vol, n.NodeName, live) {
+		return "", nil, status.Errorf(codes.Unavailable,
+			"volume %s has no reachable UpToDate replica from node %s", vol.Name, n.NodeName)
+	}
+	// Same hold as stage.Device (#144): mid-recovery a never-activated
+	// birth-split volume can look healthy from a diskless leg — quorum
+	// back, an UpToDate survivor serving — while the losing leg is still
+	// divergent and disconnected. Staging here would latch Activated and
+	// close the auto-recovery that heals the loser.
+	if !vol.Status.Activated && !vol.Status.Formatted && !allDiskfulPeersLive(vol, n.NodeName, live) {
+		for node, rep := range vol.Status.PerNode {
+			if rep.SplitBrain {
+				return "", nil, status.Errorf(codes.Unavailable,
+					"volume %s is recovering from split-brain (reported by node %s)", vol.Name, node)
+			}
+		}
+	}
+	return st.DevicePath, vol, nil
+}
+
+// allDiskfulPeersLive reports whether every diskful peer's replication link
+// is established from this leg's view — the corroboration that keeps a
+// stale split-brain slot from holding a healthy volume.
+func allDiskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
+	for _, rep := range diskfulPeerReplicas(vol, self) {
+		if !live.PeerConnected[rep.NodeID] {
+			return false
+		}
+	}
+	return true
+}
+
+// diskfulPeerReplicas yields the completed diskful replicas excluding
+// self — the one peers-walk both live gates below share, so their skip
+// rules (diskless excluded per the bug #78 class, incomplete membership
+// entries skipped) cannot drift apart.
+func diskfulPeerReplicas(vol *miroirv1alpha1.MiroirVolume, self string) []miroirv1alpha1.Replica {
+	out := make([]miroirv1alpha1.Replica, 0, len(vol.Spec.Replicas))
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == self || rep.Diskless || rep.Address == "" {
+			continue
+		}
+		out = append(out, rep)
+	}
+	return out
+}
+
+// anyUpToDatePeerLive reports whether at least one diskful replica is
+// connected and UpToDate per the live kernel view — the minimum for a
+// diskless leg to serve I/O.
+func anyUpToDatePeerLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
+	for _, rep := range diskfulPeerReplicas(vol, self) {
+		if live.PeerConnected[rep.NodeID] && live.PeerDiskState[rep.NodeID] == drbd.DiskUpToDate {
+			return true
+		}
+	}
+	return false
+}
+
+// addClientLeg appends a bare client entry for this node; membership
+// completes it (node-id, address, finalizer) and the local agent realizes
+// the diskless leg.
+func (n *Node) addClientLeg(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+	if vol.Spec.DRBD == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"volume %s is unreplicated; it cannot serve remote consumers", vol.Name)
+	}
+	if len(vol.Spec.Clients) >= 2 {
+		// MaxItems=2: one consumer plus a pod-move overlap. A third means a
+		// stale leg (e.g. a lost node that never unstaged) needs removal.
+		return status.Errorf(codes.ResourceExhausted,
+			"volume %s already has %d client legs (%v) — remove a stale one to attach on %s",
+			vol.Name, len(vol.Spec.Clients), clientNodes(vol), n.NodeName)
+	}
+	now := metav1.Now()
+	vol.Spec.Clients = append(vol.Spec.Clients, miroirv1alpha1.VolumeClient{Node: n.NodeName, AddedAt: &now})
+	if err := n.Client.Update(ctx, vol); err != nil {
+		return status.Errorf(codes.Unavailable, "add client leg for %s on %s: %v", vol.Name, n.NodeName, err)
+	}
+	return nil
+}
+
+func clientNodes(vol *miroirv1alpha1.MiroirVolume) []string {
+	nodes := make([]string, 0, len(vol.Spec.Clients))
+	for _, cl := range vol.Spec.Clients {
+		nodes = append(nodes, cl.Node)
+	}
+	return nodes
+}
+
+// removeClientLeg drops this node's client leg after unstage; the agent
+// tears the local DRBD leg down via the removal path and releases the
+// finalizer. No-op when the node holds no client leg or the volume is
+// already gone.
+func (n *Node) removeClientLeg(ctx context.Context, volumeID string) error {
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
+	}
+	i := slices.IndexFunc(vol.Spec.Clients, func(c miroirv1alpha1.VolumeClient) bool {
+		return c.Node == n.NodeName
+	})
+	if i < 0 {
+		return nil
+	}
+	vol.Spec.Clients = slices.Delete(vol.Spec.Clients, i, i+1)
+	if err := n.Client.Update(ctx, vol); err != nil && !apierrors.IsNotFound(err) {
+		// Conflict or transient API failure: the CO retries NodeUnstage.
+		return status.Errorf(codes.Unavailable, "remove client leg for %s on %s: %v", volumeID, n.NodeName, err)
+	}
+	return nil
 }
 
 // NodeStageVolume makes the device usable at the staging path: filesystem
@@ -241,6 +422,11 @@ func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolume
 	}
 	if err := mount.CleanupMountPoint(target, n.Mounter, true); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage: %v", err)
+	}
+	// A client leg follows its consumer: with the device released, drop the
+	// spec entry so peers stop dialing it and the local agent tears it down.
+	if err := n.removeClientLeg(ctx, req.GetVolumeId()); err != nil {
+		return nil, err
 	}
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }

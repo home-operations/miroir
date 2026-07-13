@@ -30,6 +30,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -105,6 +106,25 @@ const drbdPollInterval = 30 * time.Second
 // errSplitBrain gives the split-brain transition log a real error value.
 var errSplitBrain = errors.New("DRBD split-brain detected")
 
+// legState classifies this node's part in the volume: the replica index
+// (-1 when not a replica), whether the local leg is diskless — a
+// tie-breaker replica, or a client leg from spec.clients, which realizes
+// identically (no backend, DRBD "disk none"; never also a replica, per CRD
+// validation) — whether any leg is placed here at all, and whether that
+// leg still awaits membership completion (no address).
+func legState(vol *miroirv1alpha1.MiroirVolume, node string) (idx int, localDiskless, present, incomplete bool) {
+	idx = slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == node
+	})
+	mine := idx >= 0
+	clientLeg := vol.Spec.ClientForNode(node)
+	localDiskless = (mine && vol.Spec.Replicas[idx].Diskless) || clientLeg != nil
+	present = mine || clientLeg != nil
+	incomplete = (mine && vol.Spec.Replicas[idx].Address == "") ||
+		(clientLeg != nil && clientLeg.Address == "")
+	return idx, localDiskless, present, incomplete
+}
+
 // Reconcile realizes (or tears down) this node's replica of one volume.
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -114,22 +134,18 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	idx := slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
-		return rep.Node == r.NodeName
-	})
-	mine := idx >= 0
-	localDiskless := mine && vol.Spec.Replicas[idx].Diskless
+	idx, localDiskless, present, incomplete := legState(vol, r.NodeName)
 
 	if !vol.DeletionTimestamp.IsZero() {
-		return r.reconcileDeletion(ctx, vol, mine)
+		return r.reconcileDeletion(ctx, vol, present)
 	}
-	if !mine {
-		// Not placed here, but a held finalizer means this replica was
-		// removed from spec.replicas: tear down the local leg once it is
-		// safe (notes/DESIGN.md §4.2).
+	if !present {
+		// Not placed here, but a held finalizer means this replica (or
+		// client leg) was removed from the spec: tear down the local leg
+		// once it is safe (notes/DESIGN.md §4.2).
 		return r.reconcileRemoval(ctx, vol)
 	}
-	if vol.Spec.DRBD != nil && vol.Spec.Replicas[idx].Address == "" {
+	if vol.Spec.DRBD != nil && incomplete {
 		// A just-added entry the membership reconciler has not completed
 		// yet (no NodeID/address): nothing can be realized safely. Logged
 		// so a volume stuck waiting is visible — this wait is normally a
@@ -264,6 +280,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			resyncRatio:    st.ResyncPercent / 100,
 			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
 		})
+	} else {
+		recordDisklessMetrics(vol.Name, st.Primary)
 	}
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: !localDiskless,
@@ -276,6 +294,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Diskless:      localDiskless,
 		DiskFailed:    diskFailed,
 		Message:       detachedDiskMessage(diskFailed),
+		PrimarySince:  primarySince(vol, r.NodeName, st.Primary),
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -340,6 +359,8 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 			resyncRatio:    st.ResyncPercent / 100,
 			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
 		})
+	} else {
+		recordDisklessMetrics(vol.Name, st.Primary)
 	}
 	return true, ctrl.Result{RequeueAfter: drbdPollInterval}
 }
@@ -479,7 +500,7 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alph
 // rendering them would produce a config DRBD cannot parse, and the peer
 // cannot connect before completion anyway.
 func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string, minor int32, localDiskless bool, discardGranularity int64) drbd.Resource {
-	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas))
+	peers := make([]drbd.Peer, 0, len(vol.Spec.Replicas)+len(vol.Spec.Clients))
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Address == "" {
 			continue
@@ -489,6 +510,17 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 			NodeID:   rep.NodeID,
 			Address:  rep.Address,
 			Diskless: rep.Diskless,
+		})
+	}
+	for _, cl := range vol.Spec.Clients {
+		if cl.Address == "" {
+			continue
+		}
+		peers = append(peers, drbd.Peer{
+			Node:     cl.Node,
+			NodeID:   cl.NodeID,
+			Address:  cl.Address,
+			Diskless: true,
 		})
 	}
 	return drbd.Resource{
@@ -836,6 +868,21 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.
 // omitempty are always set (SSA must own them even at zero — Connected
 // false is a statement, not an absence), omitempty fields only when
 // non-zero (absent → SSA clears the previous value this manager owned).
+// primarySince keeps a stable timestamp for how long this leg has been
+// Primary: stamped on the first pass that observes the role, carried
+// through subsequent passes, dropped on demotion (the device closed). The
+// auto-diskful reconciler reads its age for tie-breaker conversion.
+func primarySince(vol *miroirv1alpha1.MiroirVolume, node string, primary bool) *metav1.Time {
+	if !primary {
+		return nil
+	}
+	if prev := vol.Status.PerNode[node].PrimarySince; prev != nil {
+		return prev
+	}
+	now := metav1.Now()
+	return &now
+}
+
 func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusApplyConfiguration {
 	ac := acv1alpha1.ReplicaStatus().
 		WithDeviceCreated(st.DeviceCreated).
@@ -855,6 +902,9 @@ func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusA
 	}
 	if st.Diskless {
 		ac = ac.WithDiskless(true)
+	}
+	if st.PrimarySince != nil {
+		ac = ac.WithPrimarySince(*st.PrimarySince)
 	}
 	if st.DiskFailed {
 		ac = ac.WithDiskFailed(true)

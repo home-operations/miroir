@@ -91,7 +91,7 @@ func TestPlaceWeightsByFreeSpace(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client))
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestPlaceRefusesOvercommit(t *testing.T) {
 	}
 
 	// Default 2× ratio: 15 + 10 = 25 GiB provisioned > 20 GiB cap on both.
-	_, err := c.place(t.Context(), nil, 1, 10*gib, volNew, placementVols(t, c.Client))
+	_, err := c.place(t.Context(), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("overcommit must be ResourceExhausted, got %v", err)
 	}
@@ -130,7 +130,7 @@ func TestPlaceTopologyPinnedRefusedWhenOvercommitted(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	_, err := c.place(t.Context(), topologyPref(nodeKharkiv), 1, 10*gib, volNew, placementVols(t, c.Client))
+	_, err := c.place(t.Context(), topologyPref(nodeKharkiv), 1, 10*gib, volNew, placementVols(t, c.Client), false)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("pinned overcommitted node must be ResourceExhausted, got %v", err)
 	}
@@ -140,7 +140,7 @@ func TestPlaceFallsBackWithoutStats(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: placementClient(s), Nodes: testNodes}
 
-	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client))
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestPlaceHonoursConfiguredRatio(t *testing.T) {
 	}
 
 	// 11 GiB on a 10 GiB pool breaches a 1× ratio on every node.
-	_, err := c.place(t.Context(), nil, 1, 11*gib, volNew, placementVols(t, c.Client))
+	_, err := c.place(t.Context(), nil, 1, 11*gib, volNew, placementVols(t, c.Client), false)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("1x ratio must refuse an over-capacity volume, got %v", err)
 	}
@@ -239,7 +239,7 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 		},
 	}
 
-	got, err := c.place(t.Context(), nil, 2, 5*gib, volNew, placementVols(t, c.Client))
+	got, err := c.place(t.Context(), nil, 2, 5*gib, volNew, placementVols(t, c.Client), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,5 +247,60 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 	slices.Sort(nodes)
 	if !slices.Equal(nodes, []string{nodeKharkiv, nodeOslo}) {
 		t.Fatalf("replicas must span zones a and b (kharkiv+oslo), got %v", nodes)
+	}
+}
+
+// topologyReq mirrors a strict-topology provisioner request: the
+// scheduler-selected node as both requisite and preferred.
+func topologyReq(node string) *csi.TopologyRequirement {
+	t := topologyPref(node)
+	t.Requisite = t.Preferred
+	return t
+}
+
+// A remote-access volume whose first consumer sits on a non-storage node
+// must not wedge: the scheduler-selected topology is unsatisfiable by
+// design (the pod will attach through a diskless client leg), so placement
+// falls back to capacity ranking instead of refusing.
+func TestPlaceRemoteAccessIgnoresNonStorageTopology(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib),
+			miroirNodeObj(nodeParis, 100*gib, 10*gib),
+			nodeObj(nodeKharkiv, addrKharkiv),
+			nodeObj(nodeParis, addrParis),
+		),
+		Nodes: testNodes,
+	}
+
+	got, err := c.place(t.Context(), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 replicas on storage nodes, got %+v", got)
+	}
+	for _, rep := range got {
+		if rep.Node == "edge-node" {
+			t.Fatalf("non-storage node must not receive a replica: %+v", got)
+		}
+	}
+}
+
+// Without remote access the same request keeps refusing — a pod pinned to
+// a non-storage node could never reach its volume.
+func TestPlaceStrictRefusesNonStorageTopology(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib),
+			miroirNodeObj(nodeParis, 100*gib, 10*gib),
+		),
+		Nodes: testNodes,
+	}
+
+	if _, err := c.place(t.Context(), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), false); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("non-storage topology without remote access must refuse, got %v", err)
 	}
 }

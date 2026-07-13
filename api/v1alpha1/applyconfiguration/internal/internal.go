@@ -181,6 +181,15 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirVolumeSpec
   map:
     fields:
+    - name: allowRemoteAccess
+      type:
+        scalar: boolean
+    - name: clients
+      type:
+        list:
+          elementType:
+            namedType: com.github.home-operations.miroir.api.v1alpha1.VolumeClient
+          elementRelationship: atomic
     - name: drbd
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.DRBDSpec
@@ -284,6 +293,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: message
       type:
         scalar: string
+    - name: primarySince
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: sizeBytes
       type:
         scalar: numeric
@@ -292,6 +304,21 @@ var schemaYAML = typed.YAMLObject(`types:
         scalar: boolean
 - name: com.github.home-operations.miroir.api.v1alpha1.SnapshotNodeState
   scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.VolumeClient
+  map:
+    fields:
+    - name: addedAt
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: address
+      type:
+        scalar: string
+    - name: node
+      type:
+        scalar: string
+    - name: nodeID
+      type:
+        scalar: numeric
 - name: com.github.home-operations.miroir.api.v1alpha1.VolumePhase
   scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.VolumeSource

@@ -61,6 +61,9 @@ spec:
             - --provision-timeout={{ .Values.provisionTimeout }}
             - --overcommit-ratio={{ .Values.overcommitRatio }}
             - --auto-tie-breaker={{ .Values.autoTieBreaker }}
+            {{- with .Values.autoDiskfulAfter }}
+            - --auto-diskful-after={{ . }}
+            {{- end }}
             - --drbd-port-base={{ .Values.drbd.portBase }}
             # RWX gateway: the controller spawns per-volume NFS-Ganesha
             # Deployments in its own namespace from this image.

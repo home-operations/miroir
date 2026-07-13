@@ -20,6 +20,11 @@ parameters:
   # freeze: never diverges, halts on any disconnect; last-man-standing:
   # survivor keeps writing on node loss, split-brain alerts on reconnect.
   miroir.home-operations.com/quorum: {{ $sc.quorum | default "freeze" }}
+  {{- if hasKey $sc "allowRemoteVolumeAccess" }}
+  # Absent defaults to allowed (controller-side); rendered only when the
+  # entry pins it either way.
+  miroir.home-operations.com/allowRemoteVolumeAccess: {{ $sc.allowRemoteVolumeAccess | quote }}
+  {{- end }}
   {{- end }}
   csi.storage.k8s.io/fstype: {{ $sc.fsType | default "ext4" }}
 {{- end }}

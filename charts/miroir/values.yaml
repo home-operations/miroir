@@ -223,6 +223,13 @@ nodes: {}
 #                 writable at the risk of split-brain. See the root README,
 #                 "Replication and quorum".
 #   fsType        ext4 | xfs, default ext4
+#   allowRemoteVolumeAccess
+#                 true | false (replicated only; the controller defaults
+#                 absent to true, matching LINSTOR): pods on nodes without
+#                 a replica consume the volume through an ephemeral
+#                 diskless DRBD leg at replication-network speed. Set
+#                 false to pin pods to replica nodes for local reads. See
+#                 the root README, "Remote consumers".
 #   reclaimPolicy Delete | Retain, default Delete
 #   isDefault     set the cluster default-class annotation, default false
 # Example (coexisting with OpenEBS, which stays the cluster default):

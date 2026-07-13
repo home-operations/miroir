@@ -68,6 +68,10 @@ var (
 		Name: "miroir_volume_verify_out_of_sync_bytes",
 		Help: "Out-of-sync bytes the last scheduled verify found (0 = clean). Findings also surface in miroir_volume_out_of_sync_bytes until a disconnect/connect resync clears them.",
 	}, []string{volumeLabel})
+	metricDisklessPrimary = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_diskless_primary",
+		Help: "1 while this node's diskless leg (client or tie-breaker) is DRBD Primary: a consumer runs here and every read and write crosses the replication network. Sustained 1 means the workload pays network I/O — auto-diskful (autoDiskfulAfter) converts the leg to a local replica when the node has storage capacity.",
+	}, []string{volumeLabel})
 
 	// Pool gauges are unlabelled: each node runs exactly one backend pool,
 	// and the PodMonitor stamps a node label on every series.
@@ -89,7 +93,7 @@ func init() {
 	metrics.Registry.MustRegister(
 		metricUpToDate, metricConnected, metricSplitBrain, metricSuspended,
 		metricResyncRatio, metricQuorum, metricDiskFailed, metricOutOfSyncBytes,
-		metricVerifyTimestamp, metricVerifyOutOfSyncBytes,
+		metricVerifyTimestamp, metricVerifyOutOfSyncBytes, metricDisklessPrimary,
 		metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
 	)
 }
@@ -124,6 +128,14 @@ func dropVolumeMetrics(volume string) {
 	metricOutOfSyncBytes.DeleteLabelValues(volume)
 	metricVerifyTimestamp.DeleteLabelValues(volume)
 	metricVerifyOutOfSyncBytes.DeleteLabelValues(volume)
+	metricDisklessPrimary.DeleteLabelValues(volume)
+}
+
+// recordDisklessMetrics publishes a diskless leg's view. Deliberately not
+// the diskful gauges: a tie-breaker reading up_to_date=0 or losing its own
+// quorum would fire the data-leg alerts for a leg that holds no data.
+func recordDisklessMetrics(volume string, primary bool) {
+	metricDisklessPrimary.WithLabelValues(volume).Set(boolGauge(primary))
 }
 
 // recordVerifyMetrics publishes the outcome of a completed verify pass. The

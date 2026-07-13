@@ -17,6 +17,13 @@ limitations under the License.
 // Package constants holds cross-component identifiers for the miroir driver.
 package constants
 
+import "time"
+
+// StatsStaleAfter ignores MiroirNode figures older than this as unknown —
+// the agent republishes every ~60s, so a few missed polls mean the node is
+// down and its stats can't be trusted for placement or auto-diskful.
+const StatsStaleAfter = 5 * time.Minute
+
 const (
 	// DriverName is the CSI driver name, also the CRD API group.
 	DriverName = "miroir.home-operations.com"
@@ -35,4 +42,10 @@ const (
 
 	// ParamQuorum is the StorageClass parameter for the 2-node policy.
 	ParamQuorum = "miroir.home-operations.com/quorum"
+
+	// ParamAllowRemoteAccess is the StorageClass parameter that lets pods
+	// on nodes without a replica consume the volume through an ephemeral
+	// diskless client leg (name matches the LINSTOR parameter operators
+	// know). "true" drops the PV's node affinity.
+	ParamAllowRemoteAccess = "miroir.home-operations.com/allowRemoteVolumeAccess"
 )

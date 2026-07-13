@@ -62,6 +62,12 @@ type ReplicaStatusApplyConfiguration struct {
 	DiskFailed *bool `json:"diskFailed,omitempty"`
 	// Message carries the last reconcile error, if any.
 	Message *string `json:"message,omitempty"`
+	// PrimarySince is when this node's leg last became DRBD Primary (a
+	// consumer holds the device open); cleared on demotion. Maintained by
+	// the agent from the kernel role, so it survives unstage bookkeeping
+	// being skipped (force-killed pods). The auto-diskful reconciler keys
+	// tie-breaker conversion on its age.
+	PrimarySince *v1.Time `json:"primarySince,omitempty"`
 	// LastVerifyTime is when the last scheduled online verify completed for
 	// this volume. Only the coordinator (first diskful replica) initiates a
 	// verify, so only its slot carries this.
@@ -156,6 +162,14 @@ func (b *ReplicaStatusApplyConfiguration) WithDiskFailed(value bool) *ReplicaSta
 // If called multiple times, the Message field is set to the value of the last call.
 func (b *ReplicaStatusApplyConfiguration) WithMessage(value string) *ReplicaStatusApplyConfiguration {
 	b.Message = &value
+	return b
+}
+
+// WithPrimarySince sets the PrimarySince field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PrimarySince field is set to the value of the last call.
+func (b *ReplicaStatusApplyConfiguration) WithPrimarySince(value v1.Time) *ReplicaStatusApplyConfiguration {
+	b.PrimarySince = &value
 	return b
 }
 

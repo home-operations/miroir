@@ -90,10 +90,6 @@ const (
 	// is also 7000; operators co-locating with Rook host-network Ceph can
 	// move this via the --drbd-port-base flag / drbd.portBase Helm value.
 	defaultDRBDPortBase = 7000
-	// statsStaleAfter ignores MiroirNode figures older than this as
-	// unknown — the agent republishes every ~60s, so a few missed polls
-	// mean the node is down and its stats can't be trusted for placement.
-	statsStaleAfter = 5 * time.Minute
 )
 
 // ControllerGetCapabilities advertises exactly what is implemented.
@@ -148,16 +144,13 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if err != nil {
 		return nil, err
 	}
+	remoteAccess, err := parseAllowRemoteAccess(req.GetParameters(), replicas)
+	if err != nil {
+		return nil, err
+	}
 	shared := isShared(req.GetVolumeCapabilities())
-	if shared {
-		if replicas < 2 {
-			return nil, status.Error(codes.InvalidArgument,
-				"RWX volumes need at least 2 replicas so the NFS gateway can fail over to a surviving node")
-		}
-		if quorum == miroirv1alpha1.QuorumLastManStanding {
-			return nil, status.Error(codes.InvalidArgument,
-				"RWX volumes require freeze quorum: last-man-standing risks two gateways writing during a partition")
-		}
+	if err := validateSharedRequest(shared, replicas, quorum); err != nil {
+		return nil, err
 	}
 
 	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
@@ -183,7 +176,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 	placed := srcReplicas
 	if snapID == "" {
-		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols)
+		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
@@ -200,6 +193,12 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			SizeBytes: sizeBytes,
 			Replicas:  placed,
 			Source:    source,
+			// Export volumes are consumed over NFS, never through DRBD
+			// legs: leaving AllowRemoteAccess unset keeps every client-leg
+			// path closed for them (their PV is unpinned via Export
+			// already), so a stray device resolution on a consumer node
+			// fails loudly instead of attaching a leg.
+			AllowRemoteAccess: remoteAccess && !shared,
 		},
 	}
 	for _, r := range placed {
@@ -357,7 +356,7 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 // provisions. For replicated volumes it resolves each node's InternalIP
 // and assigns DRBD node ids by slice position — replicas[0] is the GI-seed
 // winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume) ([]miroirv1alpha1.Replica, error) {
+func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool) ([]miroirv1alpha1.Replica, error) {
 	if len(c.Nodes) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"need %d storage nodes, have %d (Helm values: nodes)", count, len(c.Nodes))
@@ -405,7 +404,12 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 			}
 		}
 	}
-	if reqs != nil && len(reqs.GetRequisite()) > 0 && len(ordered) == 0 {
+	if reqs != nil && len(reqs.GetRequisite()) > 0 && len(ordered) == 0 && !remoteAccess {
+		// On a remote-access volume the scheduler may pick a non-storage
+		// node for the first consumer (the PV will carry no affinity);
+		// fall through to capacity-ranked placement — the pod attaches
+		// through a diskless client leg. Everything else refuses: the pod
+		// could never reach a volume placed off its node.
 		return nil, status.Error(codes.ResourceExhausted,
 			"no storage node satisfies the requested topology")
 	}
@@ -542,7 +546,7 @@ func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.M
 	}
 	out := make(map[string]miroirv1alpha1.MiroirNodeStatus, len(list.Items))
 	for _, n := range list.Items {
-		if n.Status.ObservedAt == nil || time.Since(n.Status.ObservedAt.Time) > statsStaleAfter {
+		if n.Status.ObservedAt == nil || time.Since(n.Status.ObservedAt.Time) > constants.StatsStaleAfter {
 			continue
 		}
 		out[n.Name] = n.Status
@@ -993,6 +997,45 @@ func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) 
 	}
 }
 
+// validateSharedRequest rejects RWX shapes the NFS gateway cannot serve.
+func validateSharedRequest(shared bool, replicas int, quorum miroirv1alpha1.QuorumPolicy) error {
+	if !shared {
+		return nil
+	}
+	if replicas < 2 {
+		return status.Error(codes.InvalidArgument,
+			"RWX volumes need at least 2 replicas so the NFS gateway can fail over to a surviving node")
+	}
+	if quorum == miroirv1alpha1.QuorumLastManStanding {
+		return status.Error(codes.InvalidArgument,
+			"RWX volumes require freeze quorum: last-man-standing risks two gateways writing during a partition")
+	}
+	return nil
+}
+
+// parseAllowRemoteAccess reads the remote-access StorageClass parameter.
+// Absent defaults to allowed on replicated classes (matching linstor-csi);
+// set "false" to pin pods to replica nodes. Only replicated volumes can
+// serve remote consumers (a diskless leg needs DRBD peers to read from):
+// replicas:1 classes default off and reject an explicit "true" rather
+// than silently ignoring it.
+func parseAllowRemoteAccess(params map[string]string, replicas int) (bool, error) {
+	raw := params[constants.ParamAllowRemoteAccess]
+	if raw == "" {
+		return replicas > 1, nil
+	}
+	enabled, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, status.Errorf(codes.InvalidArgument,
+			"invalid %s=%q (want true | false)", constants.ParamAllowRemoteAccess, raw)
+	}
+	if enabled && replicas <= 1 {
+		return false, status.Errorf(codes.InvalidArgument,
+			"%s requires a replicated class (replicas > 1)", constants.ParamAllowRemoteAccess)
+	}
+	return enabled, nil
+}
+
 func validateCapabilities(caps []*csi.VolumeCapability) error {
 	if len(caps) == 0 {
 		return status.Error(codes.InvalidArgument, "volume capabilities are required")
@@ -1053,7 +1096,10 @@ func exportFSType(caps []*csi.VolumeCapability) string {
 // the PV carries no node-affinity constraint and consumers schedule
 // anywhere.
 func accessibleTopology(vol *miroirv1alpha1.MiroirVolume) []*csi.Topology {
-	if vol.Spec.Export != nil {
+	// Unpinned either way: an RWX volume's NFS gateway is reachable
+	// cluster-wide, and a remote-access volume's consumers attach a
+	// diskless client leg on whatever node they land on.
+	if vol.Spec.Export != nil || vol.Spec.AllowRemoteAccess {
 		return nil
 	}
 	top := make([]*csi.Topology, 0, len(vol.Spec.Replicas))

@@ -286,9 +286,12 @@ Behavior and knobs:
   `{node: <name>, diskless: true}` to a volume's `spec.replicas`.
 - **Remove or move one** by deleting its entry from
   `spec.replicas`; the node's agent detaches and cleans up (removal
-  waits until both data legs are connected and `UpToDate`). The
-  `diskless` flag itself is immutable — remove and re-add the entry
-  instead of editing it.
+  waits until both data legs are connected and `UpToDate`). A
+  diskful replica can never become diskless in place — remove and
+  re-add the entry instead. The other direction is allowed: flipping
+  `diskless: false` on a tie-breaker makes its agent attach a fresh
+  backing device to the live leg and full-sync it (this is how
+  auto-diskful converts a tie-breaker).
 
 ### `last-man-standing`
 
@@ -298,6 +301,79 @@ partitioned they diverge. DRBD detects the split-brain on reconnect
 and deliberately stays disconnected (`after-sb-* disconnect`, never
 auto-resolve); an operator inspects both legs and picks the loser.
 Volumes with this policy never get a tie-breaker.
+
+### Remote consumers
+
+Replicated volumes are consumable from any node by default (matching
+LINSTOR): the PV carries no node affinity, and a pod scheduled on a
+node without a replica consumes the volume through an ephemeral
+**diskless client leg** — a DRBD peer with `disk none` that the CSI
+node service adds to `spec.clients` at stage time and removes at
+unstage. The membership reconciler completes it (node id, address)
+exactly like an operator-added replica, and a pod landing on the
+tie-breaker's node stages through the tie-breaker leg directly.
+
+Set `allowRemoteVolumeAccess: false` on a `storageClasses` entry (the
+`miroir.home-operations.com/allowRemoteVolumeAccess` StorageClass
+parameter) to opt that class out: its PVs then pin pods to the diskful
+replica nodes, guaranteeing local reads.
+
+Trade-offs to understand:
+
+- **Every remote read and write crosses the replication network.** A
+  remote consumer runs at network speed; pin latency-sensitive
+  workloads with `allowRemoteVolumeAccess: "false"` so a replica is
+  always under the pod.
+- **Replica nodes are only preferred at first use.** The first
+  consumer's node is pinned as a replica when it is a storage node
+  (falling back to capacity-ranked placement when it is not). After
+  that there is no soft preference: PV node affinity is all-or-nothing
+  in Kubernetes, so the scheduler is blind to replica locations. Keep
+  locality-sensitive workloads on the default class, or pin them with
+  their own node/pod affinity.
+- **An attached client shifts quorum math.** DRBD counts every peer's
+  vote: a 2+1 volume with a client attached has 4 votes, so majority
+  becomes 3. While the client is connected this is neutral-to-helpful
+  (the client's vote replaces a lost node's); the regression window is
+  two simultaneous failures, which majority-of-4 freezes where
+  majority-of-3 tolerated one loss. Client legs come and go with pods,
+  so the math shifts at stage/unstage, not permanently.
+- **Consumers must run on nodes listed in `nodes`.** Agents only start
+  on mapped nodes, so a pod scheduled onto an unmapped node has no CSI
+  driver to mount with and wedges in `ContainerCreating` — and with no
+  PV affinity, nothing steers the scheduler away. Until a
+  client-capable agent for unmapped nodes lands, keep every
+  schedulable node in the map (a `loopfile` entry with a few spare GB
+  is enough) or set `allowRemoteVolumeAccess: "false"`.
+- **A lost node can strand its client leg.** If a node dies without
+  unstaging, its entry in `spec.clients` (and teardown finalizer)
+  lingers, holding a quorum vote and blocking volume deletion until the
+  node returns or the entry is removed by hand — the same semantics as
+  a dead replica node. Remove it by deleting the `spec.clients` entry.
+
+#### Auto-diskful
+
+Set `autoDiskfulAfter` (e.g. `"10m"`) to convert a client leg that has
+stayed attached past the threshold into a diskful replica on its node —
+LINSTOR's auto-diskful. The consumer evidently lives there, so it gets
+a local replica and stops paying network I/O: the entry moves from
+`spec.clients` to `spec.replicas`, membership completes it as a
+FullSync joiner, and the agent attaches a backing device to the live
+resource while the pod keeps running. Conversion requires the client's
+node in the `nodes` map with fresh pool stats and room for the volume's
+full size, and a Ready volume; a 2+1 volume's tie-breaker is replaced
+by the third data copy (three diskful votes need no tie-breaker).
+Volumes already at 3 diskful replicas are left alone — evicting a
+replica is an operator decision. Empty (the default) disables it.
+
+On a fully-mapped cluster (every node in `nodes`) the volume's
+non-replica node is its tie-breaker, so a settled consumer stages
+through that leg and no client leg ever exists. Auto-diskful covers
+this too: a tie-breaker leg whose device has been held Primary past
+the threshold (the agent stamps `primarySince` from the kernel role)
+is flipped diskful **in place** — node id and address kept, a fresh
+backing device attached to the live resource, full-synced under the
+running pod.
 
 ### At a glance
 

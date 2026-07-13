@@ -18,12 +18,16 @@ package csi
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	mount "k8s.io/mount-utils"
+	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -241,5 +245,186 @@ func TestDevicePathRefusesForeignNode(t *testing.T) {
 	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
 	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("a node without a replica must be FailedPrecondition, got %v", err)
+	}
+}
+
+// remoteVolume is a 2-replica volume on paris+oslo with remote access
+// allowed; this node (kharkiv) holds no replica.
+func remoteVolume() *miroirv1alpha1.MiroirVolume {
+	return &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:         1 << 30,
+			DRBD:              &miroirv1alpha1.DRBDSpec{Port: 7000},
+			AllowRemoteAccess: true,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeParis, NodeID: 0, Address: addrParis},
+				{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
+			},
+		},
+	}
+}
+
+// healthyRemoteStatus is the live view of a diskless leg with quorum and
+// both diskful peers reachable and current.
+func healthyRemoteStatus() drbd.Status {
+	return drbd.Status{
+		DiskState:     drbd.DiskDiskless,
+		Quorum:        true,
+		PeerConnected: map[int32]bool{0: true, 1: true},
+		PeerDiskState: map[int32]string{0: drbd.DiskUpToDate, 1: drbd.DiskUpToDate},
+	}
+}
+
+// First stage on a non-replica node: the leg is attached (spec.clients
+// gains this node) and the stage retries until the agent realizes it.
+func TestDevicePathRemoteAttachAddsClientLeg(t *testing.T) {
+	n := newNode(t, remoteVolume(), fakeDRBDStatus{})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
+		t.Fatalf("first remote stage must be Unavailable (leg attaching), got %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	cl := got.Spec.ClientForNode(nodeKharkiv)
+	if cl == nil {
+		t.Fatalf("client leg not added: %+v", got.Spec.Clients)
+	}
+	if cl.AddedAt == nil {
+		t.Fatal("client leg must be stamped with AddedAt (auto-diskful keys on it)")
+	}
+}
+
+// Without the StorageClass opt-in a non-replica node stays refused.
+func TestDevicePathRemoteRefusedWithoutOptIn(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.AllowRemoteAccess = false
+	n := newNode(t, v, fakeDRBDStatus{})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("non-replica node must be FailedPrecondition, got %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.Clients) != 0 {
+		t.Fatalf("no client leg may be added without opt-in: %+v", got.Spec.Clients)
+	}
+}
+
+// A realized client leg serves once the volume has quorum and a current
+// diskful peer is reachable.
+func TestDevicePathClientLegServes(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+	}
+	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
+	dev, _, err := n.devicePath(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev != devDrbd1000 {
+		t.Fatalf("dev = %q, want %s", dev, devDrbd1000)
+	}
+}
+
+// A diskless leg without quorum, or with no current peer to read from,
+// must not stage: all its I/O rides the peers.
+func TestDevicePathClientLegRefusesUnhealthy(t *testing.T) {
+	noQuorum := healthyRemoteStatus()
+	noQuorum.Quorum = false
+	stalePeers := healthyRemoteStatus()
+	stalePeers.PeerDiskState = map[int32]string{0: "Inconsistent", 1: "DUnknown"}
+	for name, st := range map[string]drbd.Status{"no quorum": noQuorum, "no UpToDate peer": stalePeers} {
+		t.Run(name, func(t *testing.T) {
+			v := remoteVolume()
+			v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+			v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+				nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+			}
+			n := newNode(t, v, fakeDRBDStatus{st: st})
+			if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
+				t.Fatalf("unhealthy diskless leg must be Unavailable, got %v", err)
+			}
+		})
+	}
+}
+
+// On a remote-access volume the tie-breaker's own diskless leg serves I/O
+// — without PV affinity the scheduler may legitimately land a pod there.
+func TestDevicePathTieBreakerServesRemoteVolume(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Replicas = append(v.Spec.Replicas,
+		miroirv1alpha1.Replica{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv, Diskless: true})
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+	}
+	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
+	dev, _, err := n.devicePath(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev != devDrbd1000 {
+		t.Fatalf("dev = %q, want %s", dev, devDrbd1000)
+	}
+}
+
+// Unstage drops the client leg so peers stop dialing it and the local
+// agent tears it down.
+func TestNodeUnstageRemovesClientLeg(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	n := newNode(t, v, fakeDRBDStatus{})
+	n.Mounter = mount.NewSafeFormatAndMount(mount.NewFakeMounter(nil), utilexec.New())
+
+	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: filepath.Join(t.TempDir(), "absent"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.Clients) != 0 {
+		t.Fatalf("client leg must be removed at unstage: %+v", got.Spec.Clients)
+	}
+}
+
+// The #144 staging hold applies to diskless legs too: a never-activated
+// birth-split volume mid-recovery (quorum back, survivor UpToDate, loser
+// divergent with its link down) must not be staged through a client or
+// tie-breaker leg — that would latch Activated and close auto-recovery.
+func TestDevicePathDisklessHoldsRecoveringSplitBrain(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+		nodeOslo:    {DeviceCreated: true, SplitBrain: true},
+	}
+	st := healthyRemoteStatus()
+	delete(st.PeerConnected, 1) // the losing leg's link is down
+	n := newNode(t, v, fakeDRBDStatus{st: st})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
+		t.Fatalf("recovering split-brain must hold diskless staging, got %v", err)
+	}
+}
+
+// A stale split slot must not hold a diskless leg whose data links are all
+// live — mirroring the diskful hold's corroboration.
+func TestDevicePathDisklessStaleSplitSlotIgnored(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+		nodeOslo:    {DeviceCreated: true, SplitBrain: true}, // stale
+	}
+	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
+	if _, _, err := n.devicePath(t.Context(), volPvc1); err != nil {
+		t.Fatalf("live diskless leg must stage despite a stale slot: %v", err)
 	}
 }

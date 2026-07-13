@@ -81,12 +81,25 @@ func init() {
 }
 
 // setupMembership registers the membership reconciler (completes
-// operator-added replica entries) and, when enabled, the tie-breaker
-// retrofit for pre-existing 2-replica freeze volumes (#70).
-func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool) error {
+// operator-added replica entries), the tie-breaker retrofit for
+// pre-existing 2-replica freeze volumes (#70) when enabled, and the
+// auto-diskful converter for long-lived client legs when a threshold is
+// set.
+func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool, autoDiskfulAfter time.Duration) error {
 	r := &membership.Reconciler{Client: mgr.GetClient(), Nodes: nodes}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("membership reconciler: %w", err)
+	}
+	if autoDiskfulAfter > 0 {
+		ad := &membership.AutoDiskfulReconciler{
+			Client:   mgr.GetClient(),
+			Nodes:    nodes,
+			After:    autoDiskfulAfter,
+			Recorder: mgr.GetEventRecorder("miroir-controller"),
+		}
+		if err := ad.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("auto-diskful reconciler: %w", err)
+		}
 	}
 	if !autoTieBreaker {
 		return nil
@@ -260,6 +273,7 @@ func main() {
 		provisionTimeout time.Duration
 		overcommitRatio  float64
 		autoTieBreaker   bool
+		autoDiskfulAfter time.Duration
 		drbdPortBase     int
 		leaderElect      bool
 		leaderElectionID string
@@ -293,6 +307,9 @@ func main() {
 		"wait for agents to realise a new volume (controller; 0 → default)")
 	flag.Float64Var(&overcommitRatio, "overcommit-ratio", 0,
 		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
+	flag.DurationVar(&autoDiskfulAfter, "auto-diskful-after", 0,
+		"convert a diskless client leg into a diskful replica once it has been attached this long "+
+			"(controller; 0 disables; needs a storage node with capacity — see LINSTOR auto-diskful)")
 	flag.BoolVar(&autoTieBreaker, "auto-tie-breaker", true,
 		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
 	flag.IntVar(&drbdPortBase, "drbd-port-base", 7000,
@@ -419,7 +436,7 @@ func main() {
 			AutoTieBreaker:   autoTieBreaker,
 			DRBDPortBase:     int32(drbdPortBase),
 		}
-		if err := setupMembership(mgr, nodes, autoTieBreaker); err != nil {
+		if err := setupMembership(mgr, nodes, autoTieBreaker, autoDiskfulAfter); err != nil {
 			setupLog.Error(err, "unable to set up membership reconcilers")
 			os.Exit(1)
 		}

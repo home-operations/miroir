@@ -62,6 +62,55 @@ spec:
               replication layer in place (internal DRBD metadata cannot be added
               under a live filesystem), and a replicated one keeps 2–3 replicas.
             properties:
+              allowRemoteAccess:
+                description: |-
+                  AllowRemoteAccess permits pods on nodes without a replica: the PV
+                  carries no node affinity, and staging on a non-replica node attaches
+                  an ephemeral diskless client leg (spec.clients). From the
+                  StorageClass parameter; replicated volumes only.
+                type: boolean
+              clients:
+                description: |-
+                  Clients are ephemeral diskless consumer legs, added at stage time on
+                  non-replica nodes and removed at unstage. Bounded small: RWO means
+                  one consumer, plus headroom for an attach/detach overlap during a
+                  pod move.
+                items:
+                  description: |-
+                    VolumeClient is an ephemeral diskless consumer leg: a DRBD peer with no
+                    backing device on a node that runs a pod but holds no replica. All its
+                    I/O crosses the replication network. Added by the CSI node service at
+                    stage time (spec.allowRemoteAccess volumes only), completed by the
+                    membership reconciler like a replica, removed at unstage. Unlike a
+                    diskless tie-breaker it is not placed for quorum — but DRBD counts every
+                    peer's vote, so an attached client does shift quorum math (see README).
+                  properties:
+                    addedAt:
+                      description: |-
+                        AddedAt is when the CSI node service attached this leg. The
+                        auto-diskful reconciler keys its conversion threshold on it.
+                      format: date-time
+                      type: string
+                    address:
+                      description: |-
+                        Address is the replication endpoint, resolved like a replica's
+                        (node-map override, else the Node's InternalIP).
+                      type: string
+                    node:
+                      description: Node is the Kubernetes node name consuming the
+                        volume remotely.
+                      type: string
+                    nodeID:
+                      description: |-
+                        NodeID is the DRBD node id, unique across replicas and clients,
+                        assigned by the membership reconciler.
+                      format: int32
+                      type: integer
+                  required:
+                  - node
+                  type: object
+                maxItems: 2
+                type: array
               drbd:
                 description: DRBD is set by the controller when len(Replicas) > 1.
                 properties:
@@ -197,12 +246,21 @@ spec:
             - message: the first replica must be diskful (not a diskless tie-breaker)
               rule: 'size(self.replicas) > 0 ? !has(self.replicas[0].diskless) ||
                 !self.replicas[0].diskless : true'
-            - message: a replica's diskless flag is immutable; remove the replica
-                and re-add it instead
+            - message: 'a diskful replica cannot become diskless in place; remove
+                the replica and re-add it instead (diskless→diskful is allowed: the
+                agent attaches a disk to the live leg)'
               rule: self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
-                || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))
+                || (has(o.diskless) && o.diskless) || !(has(r.diskless) && r.diskless)))
             - message: a volume cannot gain or lose its replication layer in place
               rule: has(self.drbd) == has(oldSelf.drbd)
+            - message: client legs are only valid on replicated volumes
+              rule: '!has(self.clients) || has(self.drbd)'
+            - message: a client leg cannot share a node with a replica
+              rule: '!has(self.clients) || self.clients.all(c, !self.replicas.exists(r,
+                r.node == c.node))'
+            - message: an NFS-exported (RWX) volume is consumed over NFS and cannot
+                have DRBD client legs
+              rule: '!has(self.clients) || !has(self.export)'
             - message: a volume cannot gain or lose its NFS export (RWX) in place
               rule: has(self.export) == has(oldSelf.export)
             - message: replicated RWX volumes must use freeze quorum (a rescheduled
@@ -362,6 +420,15 @@ spec:
                       type: string
                     message:
                       description: Message carries the last reconcile error, if any.
+                      type: string
+                    primarySince:
+                      description: |-
+                        PrimarySince is when this node's leg last became DRBD Primary (a
+                        consumer holds the device open); cleared on demotion. Maintained by
+                        the agent from the kernel role, so it survives unstage bookkeeping
+                        being skipped (force-killed pods). The auto-diskful reconciler keys
+                        tie-breaker conversion on its age.
+                      format: date-time
                       type: string
                     sizeBytes:
                       description: |-
