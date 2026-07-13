@@ -212,27 +212,27 @@ nodes: {}
 # =============================================================================
 # Storage classes
 # =============================================================================
-storageClass:
-  create: true
-  name: miroir-local
-  # Coexists with OpenEBS: openebs-zfs stays the cluster default.
-  isDefault: false
-  fsType: ext4
-  replicas: 1
-  reclaimPolicy: Delete
-
-replicatedStorageClass:
-  create: true
-  name: miroir-replicated
-  isDefault: false
-  fsType: ext4
-  # freeze: refuse writes (I/O errors) without a peer majority — never
-  # diverges; with autoTieBreaker a third node keeps 2-replica volumes
-  # writable through a single node loss. last-man-standing: the survivor
-  # keeps writing even alone, at the risk of split-brain. See the root
-  # README, "Replication and quorum".
-  quorum: freeze # | last-man-standing
-  reclaimPolicy: Delete
+# -- StorageClasses to create. Empty by default: declare the classes you
+# want. One local + one replicated is the common pair (see the example
+# below). Per entry:
+#   name          (required) the StorageClass name
+#   replicas      replica count, default 1; >1 makes it DRBD-replicated
+#   quorum        freeze | last-man-standing (replicated only, default
+#                 freeze). freeze never diverges but halts writes without a
+#                 peer majority; last-man-standing keeps the survivor
+#                 writable at the risk of split-brain. See the root README,
+#                 "Replication and quorum".
+#   fsType        ext4 | xfs, default ext4
+#   reclaimPolicy Delete | Retain, default Delete
+#   isDefault     set the cluster default-class annotation, default false
+# Example (coexisting with OpenEBS, which stays the cluster default):
+#   storageClasses:
+#     - name: miroir-local
+#       replicas: 1
+#     - name: miroir-replicated
+#       replicas: 2
+#       quorum: freeze
+storageClasses: []
 
 # Requires the cluster-wide snapshot-controller + CRDs (deployed
 # separately; kube-system/snapshot-controller in the homelab).

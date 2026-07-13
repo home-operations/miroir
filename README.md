@@ -138,10 +138,13 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
 The chart deploys a single `miroir-controller` Deployment, a
 `miroir-agent` DaemonSet on every schedulable node (pods can mount
 miroir volumes from any node; only nodes in the `nodes` map hold
-storage), and two StorageClasses: `miroir-local` (1 replica) and
-`miroir-replicated` (2 replicas, DRBD9). Per-node setup jobs
-provision each pool on install and upgrade, and the agent re-runs
-the same idempotent setup at startup; existing pools are reused.
+storage). No StorageClasses are created by default — declare the ones
+you want under `storageClasses` (see the chart values for the canonical
+`miroir-local` / `miroir-replicated` pair the examples below use; an
+entry is local at `replicas: 1` and DRBD-replicated at `replicas: 2`).
+Per-node setup jobs provision each pool on install and upgrade, and the
+agent re-runs the same idempotent setup at startup; existing pools are
+reused.
 
 ### 3. Claim a volume
 
@@ -233,8 +236,7 @@ Replicated volumes are 2-way synchronous (DRBD protocol C): a write
 completes only once both legs have it. The quorum policy decides what
 happens when the nodes can no longer see each other, and is set per
 StorageClass via the `miroir.home-operations.com/quorum` parameter
-(the chart's `miroir-replicated` class uses
-`replicatedStorageClass.quorum`).
+(the `quorum` field on a `storageClasses` entry with `replicas > 1`).
 
 ### `freeze` (default)
 

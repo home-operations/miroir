@@ -5,126 +5,94 @@ release:
   name: miroir
   namespace: miroir-system
 tests:
-  - it: renders both StorageClasses and the VolumeSnapshotClass with defaults
+  - it: creates no StorageClasses by default, only the snapshot class
     asserts:
       - hasDocuments:
-          count: 3
-      - documentIndex: 0
-        equal:
-          path: kind
-          value: StorageClass
-      - documentIndex: 0
-        equal:
-          path: apiVersion
-          value: storage.k8s.io/v1
-      - documentIndex: 0
-        equal:
-          path: metadata.name
-          value: miroir-local
-      - documentIndex: 1
-        equal:
-          path: kind
-          value: StorageClass
-      - documentIndex: 1
-        equal:
-          path: apiVersion
-          value: storage.k8s.io/v1
-      - documentIndex: 1
-        equal:
-          path: metadata.name
-          value: miroir-replicated
-      - documentIndex: 2
-        equal:
-          path: kind
-          value: VolumeSnapshotClass
-      - documentIndex: 2
-        equal:
-          path: apiVersion
-          value: snapshot.storage.k8s.io/v1
-      - documentIndex: 2
-        equal:
+          count: 1
+      - isKind:
+          of: VolumeSnapshotClass
+      - equal:
           path: metadata.name
           value: miroir-snap
 
-  - it: miroir-local mirrors its values verbatim
-    documentSelector:
-      path: metadata.name
-      value: miroir-local
+  - it: renders one StorageClass per entry plus the snapshot class
+    set:
+      storageClasses:
+        - name: miroir-local
+          replicas: 1
+          isDefault: true
+        - name: miroir-replicated
+          replicas: 2
+          quorum: freeze
+    asserts:
+      - hasDocuments:
+          count: 3
+      - documentSelector: { path: metadata.name, value: miroir-local }
+        isKind:
+          of: StorageClass
+      - documentSelector: { path: metadata.name, value: miroir-replicated }
+        isKind:
+          of: StorageClass
+      - documentSelector: { path: metadata.name, value: miroir-snap }
+        isKind:
+          of: VolumeSnapshotClass
+
+  - it: a replicas=1 entry is local — no quorum parameter, defaults applied
+    set:
+      storageClasses:
+        - name: miroir-local
+          replicas: 1
+    documentSelector: { path: metadata.name, value: miroir-local }
     asserts:
       - equal:
           path: provisioner
           value: miroir.home-operations.com
       - equal:
-          path: volumeBindingMode
-          value: WaitForFirstConsumer
-      - equal:
-          path: allowVolumeExpansion
-          value: true
-      - equal:
-          path: reclaimPolicy
-          value: Delete
-      - equal:
           path: parameters["miroir.home-operations.com/replicas"]
           value: "1"
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
-          value: ext4
+          value: ext4 # default
+      - equal:
+          path: reclaimPolicy
+          value: Delete # default
       - equal:
           path: metadata.annotations["storageclass.kubernetes.io/is-default-class"]
-          value: "false"
+          value: "false" # default
+      - notExists:
+          path: parameters["miroir.home-operations.com/quorum"]
 
-  - it: miroir-replicated hard-codes replicas=2 and exposes quorum
-    documentSelector:
-      path: metadata.name
-      value: miroir-replicated
+  - it: a replicas>1 entry is replicated — quorum defaults to freeze
+    set:
+      storageClasses:
+        - name: r
+          replicas: 3
+    documentSelector: { path: metadata.name, value: r }
     asserts:
       - equal:
           path: parameters["miroir.home-operations.com/replicas"]
-          value: "2"
+          value: "3"
       - equal:
           path: parameters["miroir.home-operations.com/quorum"]
           value: freeze
-      - equal:
-          path: parameters["csi.storage.k8s.io/fstype"]
-          value: ext4
 
-  - it: miroir-snap is a Delete snapshot class bound to miroir.home-operations.com
-    documentSelector:
-      path: metadata.name
-      value: miroir-snap
-    asserts:
-      - equal:
-          path: driver
-          value: miroir.home-operations.com
-      - equal:
-          path: deletionPolicy
-          value: Delete
-
-  - it: honours customised storageClass values
+  - it: honours per-entry overrides (isDefault, fsType, reclaimPolicy, quorum)
     set:
-      storageClass:
-        create: true
-        name: custom-local
-        isDefault: true
-        fsType: xfs
-        replicas: 3
-        reclaimPolicy: Retain
-    documentSelector:
-      path: metadata.name
-      value: custom-local
+      storageClasses:
+        - name: custom
+          replicas: 2
+          quorum: last-man-standing
+          fsType: xfs
+          reclaimPolicy: Retain
+          isDefault: true
+    documentSelector: { path: metadata.name, value: custom }
     asserts:
-      - equal:
-          path: kind
-          value: StorageClass
-      - equal:
-          path: apiVersion
-          value: storage.k8s.io/v1
       - equal:
           path: metadata.annotations["storageclass.kubernetes.io/is-default-class"]
           value: "true"
       - equal:
-          path: parameters["miroir.home-operations.com/replicas"]
-          value: "3"
+          path: parameters["miroir.home-operations.com/quorum"]
+          value: last-man-standing
       - equal:
           path: parameters["csi.storage.k8s.io/fstype"]
           value: xfs
@@ -132,76 +100,23 @@ tests:
           path: reclaimPolicy
           value: Retain
 
-  - it: honours the replicated quorum + name overrides
-    set:
-      replicatedStorageClass:
-        create: true
-        name: custom-replicated
-        quorum: last-man-standing
-        fsType: zfs
-    documentSelector:
-      path: metadata.name
-      value: custom-replicated
-    asserts:
-      - equal:
-          path: kind
-          value: StorageClass
-      - equal:
-          path: parameters["miroir.home-operations.com/quorum"]
-          value: last-man-standing
-      - equal:
-          path: parameters["csi.storage.k8s.io/fstype"]
-          value: zfs
-
-  - it: drops miroir-local when storageClass.create is false
-    set:
-      storageClass.create: false
-    asserts:
-      - hasDocuments:
-          count: 2
-      - documentIndex: 0
-        equal:
-          path: metadata.name
-          value: miroir-replicated
-      - documentIndex: 1
-        equal:
-          path: metadata.name
-          value: miroir-snap
-
-  - it: drops miroir-replicated when replicatedStorageClass.create is false
-    set:
-      replicatedStorageClass.create: false
-    asserts:
-      - hasDocuments:
-          count: 2
-      - documentIndex: 0
-        equal:
-          path: metadata.name
-          value: miroir-local
-      - documentIndex: 1
-        equal:
-          path: metadata.name
-          value: miroir-snap
-
-  - it: drops miroir-snap when volumeSnapshotClass.create is false
+  - it: drops the snapshot class when volumeSnapshotClass.create is false
     set:
       volumeSnapshotClass.create: false
+      storageClasses:
+        - name: only-local
+          replicas: 1
     asserts:
       - hasDocuments:
-          count: 2
-      - documentIndex: 0
-        equal:
+          count: 1
+      - isKind:
+          of: StorageClass
+      - equal:
           path: metadata.name
-          value: miroir-local
-      - documentIndex: 1
-        equal:
-          path: metadata.name
-          value: miroir-replicated
+          value: only-local
 
-  - it: emits nothing when every create flag is false
+  - it: emits nothing when no classes and snapshot disabled
     set:
-      storageClass.create: false
-      replicatedStorageClass.create: false
       volumeSnapshotClass.create: false
     asserts:
       - hasDocuments:

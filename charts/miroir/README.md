@@ -111,12 +111,6 @@ Kubernetes: `>=1.31.0`
 | priorityClassName | string | `"system-cluster-critical"` | system-cluster-critical protects the single controller from eviction under node pressure — while it is down, no volume can be provisioned, expanded, or snapshotted. |
 | provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
 | replicaCount | int | `1` | Controller replicas. Anything above 1 automatically enables leader election: the extras are warm standbys (failover is lease expiry, ~15s, instead of a full pod reschedule), the rollout strategy switches to RollingUpdate, and a PodDisruptionBudget keeps one replica through voluntary disruptions. Pointless on a single-node cluster (the node is the failure domain); pair with global.affinity (pod anti-affinity) so replicas land on different nodes. |
-| replicatedStorageClass.create | bool | `true` |  |
-| replicatedStorageClass.fsType | string | `"ext4"` |  |
-| replicatedStorageClass.isDefault | bool | `false` |  |
-| replicatedStorageClass.name | string | `"miroir-replicated"` |  |
-| replicatedStorageClass.quorum | string | `"freeze"` |  |
-| replicatedStorageClass.reclaimPolicy | string | `"Delete"` |  |
 | resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Controller resources. |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
@@ -124,12 +118,7 @@ Kubernetes: `>=1.31.0`
 | sidecars.resizer.timeout | string | `"120s"` |  |
 | sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0"` |  |
 | sidecars.snapshotter.timeout | string | `"120s"` |  |
-| storageClass.create | bool | `true` |  |
-| storageClass.fsType | string | `"ext4"` |  |
-| storageClass.isDefault | bool | `false` |  |
-| storageClass.name | string | `"miroir-local"` |  |
-| storageClass.reclaimPolicy | string | `"Delete"` |  |
-| storageClass.replicas | int | `1` |  |
+| storageClasses | list | `[]` | StorageClasses to create. Empty by default: declare the classes you want. One local + one replicated is the common pair (see the example below). Per entry:   name          (required) the StorageClass name   replicas      replica count, default 1; >1 makes it DRBD-replicated   quorum        freeze | last-man-standing (replicated only, default                 freeze). freeze never diverges but halts writes without a                 peer majority; last-man-standing keeps the survivor                 writable at the risk of split-brain. See the root README,                 "Replication and quorum".   fsType        ext4 | xfs, default ext4   reclaimPolicy Delete | Retain, default Delete   isDefault     set the cluster default-class annotation, default false Example (coexisting with OpenEBS, which stays the cluster default):   storageClasses:     - name: miroir-local       replicas: 1     - name: miroir-replicated       replicas: 2       quorum: freeze |
 | uninstall.image | string | `"registry.k8s.io/kubectl:v1.36.2"` |  |
 | volumeSnapshotClass.create | bool | `true` |  |
 | volumeSnapshotClass.deletionPolicy | string | `"Delete"` |  |

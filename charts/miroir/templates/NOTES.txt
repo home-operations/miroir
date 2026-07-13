@@ -7,11 +7,10 @@ Workloads:
   agent       DaemonSet/{{ include "miroir.agentName" . }}            one per schedulable node
 
 Storage classes:
-{{- if .Values.storageClass.create }}
-  - {{ .Values.storageClass.name }}         provisioner={{ include "miroir.csiDriverName" . }}, replicas={{ .Values.storageClass.replicas }}, fsType={{ .Values.storageClass.fsType }}
-{{- end }}
-{{- if .Values.replicatedStorageClass.create }}
-  - {{ .Values.replicatedStorageClass.name }}     provisioner={{ include "miroir.csiDriverName" . }}, replicas=2, quorum={{ .Values.replicatedStorageClass.quorum }}, fsType={{ .Values.replicatedStorageClass.fsType }}
+{{- range .Values.storageClasses }}
+  - {{ .name }}  replicas={{ .replicas | default 1 }}{{ if gt (int (.replicas | default 1)) 1 }}, quorum={{ .quorum | default "freeze" }}{{ end }}, fsType={{ .fsType | default "ext4" }}{{ if .isDefault }} (cluster default){{ end }}
+{{- else }}
+  (none — set `storageClasses` in values to create one; see values.yaml for the example pair)
 {{- end }}
 {{- if .Values.volumeSnapshotClass.create }}
 Snapshot class:

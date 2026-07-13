@@ -1,39 +1,31 @@
-{{- if .Values.storageClass.create }}
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: {{ .Values.storageClass.name }}
-  annotations:
-    storageclass.kubernetes.io/is-default-class: {{ .Values.storageClass.isDefault | quote }}
-provisioner: {{ include "miroir.csiDriverName" . }}
-volumeBindingMode: WaitForFirstConsumer
-allowVolumeExpansion: true
-reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
-parameters:
-  miroir.home-operations.com/replicas: {{ .Values.storageClass.replicas | quote }}
-  csi.storage.k8s.io/fstype: {{ .Values.storageClass.fsType }}
-{{- end }}
-{{- if .Values.replicatedStorageClass.create }}
+{{- range $i, $sc := .Values.storageClasses }}
+{{- if $i }}
 ---
+{{- end }}
+{{- $replicas := $sc.replicas | default 1 }}
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: {{ .Values.replicatedStorageClass.name }}
+  name: {{ $sc.name }}
   annotations:
-    storageclass.kubernetes.io/is-default-class: {{ .Values.replicatedStorageClass.isDefault | quote }}
-provisioner: {{ include "miroir.csiDriverName" . }}
+    storageclass.kubernetes.io/is-default-class: {{ $sc.isDefault | default false | quote }}
+provisioner: {{ include "miroir.csiDriverName" $ }}
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
-reclaimPolicy: {{ .Values.replicatedStorageClass.reclaimPolicy }}
+reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
 parameters:
-  miroir.home-operations.com/replicas: "2"
-  # last-man-standing: survivor keeps writing on node loss, split-brain
-  # alerts on reconnect; freeze: never diverges, halts on any disconnect.
-  miroir.home-operations.com/quorum: {{ .Values.replicatedStorageClass.quorum }}
-  csi.storage.k8s.io/fstype: {{ .Values.replicatedStorageClass.fsType }}
+  miroir.home-operations.com/replicas: {{ $replicas | quote }}
+  {{- if gt (int $replicas) 1 }}
+  # freeze: never diverges, halts on any disconnect; last-man-standing:
+  # survivor keeps writing on node loss, split-brain alerts on reconnect.
+  miroir.home-operations.com/quorum: {{ $sc.quorum | default "freeze" }}
+  {{- end }}
+  csi.storage.k8s.io/fstype: {{ $sc.fsType | default "ext4" }}
 {{- end }}
 {{- if .Values.volumeSnapshotClass.create }}
+{{- if .Values.storageClasses }}
 ---
+{{- end }}
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
