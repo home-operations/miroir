@@ -204,6 +204,56 @@ pv_b=$(recycle_pvc)
 recycle_destroy "$pv_b"
 ok "recreate under reused claim came up healthy ($pv_a -> $pv_b)"
 
+step "RWX: shared filesystem across two nodes"
+kubectl apply -n "$NS" -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwx-data
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: $SC
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+pod_manifest rwx-a rwx-data "$node" | kubectl apply -f -
+pod_manifest rwx-b rwx-data "$other" | kubectl apply -f -
+kubectl wait -n "$NS" pod/rwx-a pod/rwx-b --for=condition=Ready --timeout="$TIMEOUT" \
+    || die "RWX pods not ready on both nodes"
+rwx_pv=$(kubectl get pvc -n "$NS" rwx-data -o jsonpath='{.spec.volumeName}')
+ok "RWX PVC bound ($rwx_pv), pods running on $node and $other"
+
+step "RWX: write on one node visible on the other"
+kubectl exec -n "$NS" rwx-a -- sh -c 'echo hello-from-a > /data/shared && sync'
+# NFS close-to-open: rwx-a closed the file, so rwx-b sees the write.
+got=$(kubectl exec -n "$NS" rwx-b -- cat /data/shared)
+[ "$got" = hello-from-a ] || die "RWX cross-node read got '$got', want hello-from-a"
+ok "write on $node read back on $other over NFS"
+
+step "RWX: gateway pod failover"
+gw=$(kubectl get pod -n miroir-system -l miroir.home-operations.com/volume="$rwx_pv" \
+    -o jsonpath='{.items[0].metadata.name}')
+[ -n "$gw" ] || die "no gateway pod found for $rwx_pv"
+kubectl delete pod -n miroir-system "$gw" --wait
+kubectl rollout status -n miroir-system "deploy/miroir-share-$rwx_pv" --timeout="$TIMEOUT" \
+    || die "gateway did not reschedule"
+# Hard mounts stall through the reschedule and NFS grace, then resume. Retry
+# a bounded write until the replacement gateway is serving again.
+deadline=$((SECONDS + 180))
+until kubectl exec -n "$NS" --request-timeout=20s rwx-b -- sh -c 'echo after-failover >> /data/shared && sync' 2>/dev/null; do
+    [ "$SECONDS" -lt "$deadline" ] || die "RWX did not recover after gateway failover"
+    sleep 5
+done
+kubectl exec -n "$NS" rwx-a -- grep -q after-failover /data/shared \
+    || die "post-failover write not visible on $node"
+ok "RWX survived gateway reschedule and stayed writable"
+
+# Clean up the RWX resources so the teardown check below stays about the
+# RWO PVs it already tracks.
+kubectl delete pod -n "$NS" rwx-a rwx-b --wait
+kubectl delete pvc -n "$NS" rwx-data --wait
+
 step "teardown leaves nothing behind"
 pv2=$(kubectl get pvc -n "$NS" smoke-restore -o jsonpath='{.spec.volumeName}')
 kubectl delete namespace "$NS" --wait=true --timeout=120s

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"golang.org/x/sys/unix"
@@ -215,12 +216,30 @@ func (n *Node) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRe
 	return &csi.NodeExpandVolumeResponse{CapacityBytes: req.GetCapacityRange().GetRequiredBytes()}, nil
 }
 
-// NodeUnstageVolume unmounts the staging path. Idempotent.
-func (n *Node) NodeUnstageVolume(_ context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+// nfsUnmountTimeout bounds a forced NFS unmount so a dead gateway cannot
+// wedge NodeUnstageVolume indefinitely.
+const nfsUnmountTimeout = 30 * time.Second
+
+// NodeUnstageVolume unmounts the staging path. Idempotent. An export
+// volume's staging mount is NFS: if its gateway has died a plain unmount
+// blocks, so force it with a deadline. The volume lookup is best-effort —
+// a volume already deleted falls back to the normal cleanup.
+func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	if req.GetVolumeId() == "" || req.GetStagingTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and staging path are required")
 	}
-	if err := mount.CleanupMountPoint(req.GetStagingTargetPath(), n.Mounter, true); err != nil {
+	target := req.GetStagingTargetPath()
+
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err == nil && vol.Spec.Export != nil {
+		if forcer, ok := n.Mounter.Interface.(mount.MounterForceUnmounter); ok {
+			if err := mount.CleanupMountWithForce(target, forcer, true, nfsUnmountTimeout); err != nil {
+				return nil, status.Errorf(codes.Internal, "unstage: %v", err)
+			}
+			return &csi.NodeUnstageVolumeResponse{}, nil
+		}
+	}
+	if err := mount.CleanupMountPoint(target, n.Mounter, true); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage: %v", err)
 	}
 	return &csi.NodeUnstageVolumeResponse{}, nil

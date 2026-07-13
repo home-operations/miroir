@@ -207,11 +207,12 @@ func rwxCaps() []*csi.VolumeCapability {
 
 func TestCreateVolumeRWXSetsExport(t *testing.T) {
 	s := newScheme(t)
-	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second, DRBDPortBase: 7000}
 
 	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
 		VolumeCapabilities: rwxCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 	})
 	if err != nil {
@@ -227,6 +228,22 @@ func TestCreateVolumeRWXSetsExport(t *testing.T) {
 	}
 	if vol.Spec.Export == nil || vol.Spec.Export.FSType != "xfs" {
 		t.Fatalf("expected export spec fsType=xfs, got %+v", vol.Spec.Export)
+	}
+}
+
+func TestCreateVolumeRejectsRWXSingleReplica(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes}
+
+	// RWX needs a second replica node for the gateway to fail over to.
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: rwxCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "1"},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("single-replica RWX must be rejected, got %v", err)
 	}
 }
 

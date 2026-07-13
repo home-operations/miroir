@@ -84,6 +84,13 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 				Spec: corev1.PodSpec{
 					ServiceAccountName: serviceAccount,
 					Affinity:           nodeAffinity(diskfulNodes(vol)),
+					// Evict 30s after the node goes unreachable, not the 5m
+					// default: the gateway is a singleton, so failover cannot
+					// start until this pod is gone from the dead node.
+					Tolerations: []corev1.Toleration{
+						{Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To[int64](30)},
+						{Key: "node.kubernetes.io/unreachable", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To[int64](30)},
+					},
 					Containers: []corev1.Container{{
 						Name:  "gateway",
 						Image: image,
