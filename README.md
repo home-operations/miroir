@@ -294,23 +294,26 @@ Volumes with this policy never get a tie-breaker.
 
 ### Remote consumers
 
-By default a pod can only run on a node holding a replica: the PV
-carries node affinity to the diskful legs, and reads are local. Set
-`replicatedStorageClass.allowRemoteVolumeAccess: true` (the
+Replicated volumes are consumable from any node by default (matching
+LINSTOR): the PV carries no node affinity, and a pod scheduled on a
+node without a replica consumes the volume through an ephemeral
+**diskless client leg** — a DRBD peer with `disk none` that the CSI
+node service adds to `spec.clients` at stage time and removes at
+unstage. The membership reconciler completes it (node id, address)
+exactly like an operator-added replica, and a pod landing on the
+tie-breaker's node stages through the tie-breaker leg directly.
+
+Set `replicatedStorageClass.allowRemoteVolumeAccess: false` (the
 `miroir.home-operations.com/allowRemoteVolumeAccess` StorageClass
-parameter) to drop that affinity: a pod scheduled on any node consumes
-the volume through an ephemeral **diskless client leg** — a DRBD peer
-with `disk none` that the CSI node service adds to `spec.clients` at
-stage time and removes at unstage. The membership reconciler completes
-it (node id, address) exactly like an operator-added replica, and a pod
-landing on the tie-breaker's node stages through the tie-breaker leg
-directly.
+parameter) to opt a class out: its PVs then pin pods to the diskful
+replica nodes, guaranteeing local reads.
 
-Trade-offs to understand before enabling it:
+Trade-offs to understand:
 
-- **Every read and write crosses the replication network.** A remote
-  consumer runs at network speed; the affinity default exists because
-  local reads are the point of keeping a replica under the pod.
+- **Every remote read and write crosses the replication network.** A
+  remote consumer runs at network speed; pin latency-sensitive
+  workloads with `allowRemoteVolumeAccess: "false"` so a replica is
+  always under the pod.
 - **Replica nodes are only preferred at first use.** The first
   consumer's node is pinned as a replica when it is a storage node
   (falling back to capacity-ranked placement when it is not). After

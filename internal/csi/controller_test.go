@@ -49,6 +49,7 @@ const (
 	addrOslo    = "192.168.1.43"
 	volPvc1     = "pvc-1"
 	paramTrue   = "true"
+	paramFalse  = "false"
 	volSrc      = "pvc-src"
 	volNew      = "pvc-new"
 	snapSnap1   = "snap-1"
@@ -260,6 +261,8 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		Parameters: map[string]string{
 			constants.ParamReplicas: "2",
 			constants.ParamQuorum:   string(miroirv1alpha1.QuorumLastManStanding),
+			// Strict locality: this test asserts the affinity-carrying path.
+			constants.ParamAllowRemoteAccess: paramFalse,
 		},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
@@ -403,7 +406,11 @@ func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-tb",
 		VolumeCapabilities: volCaps(),
-		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		Parameters: map[string]string{
+			constants.ParamReplicas: "2",
+			// Strict locality: this test asserts the affinity-carrying path.
+			constants.ParamAllowRemoteAccess: paramFalse,
+		},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
 				{Segments: map[string]string{constants.TopologyKey: nodeKharkiv}},
@@ -1137,11 +1144,12 @@ func TestParseAllowRemoteAccess(t *testing.T) {
 		want     bool
 		wantErr  bool
 	}{
-		"absent defaults off":       {raw: "", replicas: 2, want: false},
-		"explicit false":            {raw: "false", replicas: 2, want: false},
-		"enabled on replicated":     {raw: paramTrue, replicas: 2, want: true},
-		"rejected on unreplicated":  {raw: paramTrue, replicas: 1, wantErr: true},
-		"rejected on invalid value": {raw: "yes", replicas: 2, wantErr: true},
+		"absent defaults on (replicated)":    {raw: "", replicas: 2, want: true},
+		"absent defaults off (unreplicated)": {raw: "", replicas: 1, want: false},
+		"explicit false":                     {raw: paramFalse, replicas: 2, want: false},
+		"enabled on replicated":              {raw: paramTrue, replicas: 2, want: true},
+		"rejected on unreplicated":           {raw: paramTrue, replicas: 1, wantErr: true},
+		"rejected on invalid value":          {raw: "yes", replicas: 2, wantErr: true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

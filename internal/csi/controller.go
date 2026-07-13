@@ -1027,13 +1027,15 @@ func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) 
 }
 
 // parseAllowRemoteAccess reads the remote-access StorageClass parameter.
-// Only replicated volumes can serve remote consumers (a diskless leg needs
-// DRBD peers to read from), so the flag is rejected on replicas:1 classes
-// rather than silently ignored.
+// Absent defaults to allowed on replicated classes (matching linstor-csi);
+// set "false" to pin pods to replica nodes. Only replicated volumes can
+// serve remote consumers (a diskless leg needs DRBD peers to read from):
+// replicas:1 classes default off and reject an explicit "true" rather
+// than silently ignoring it.
 func parseAllowRemoteAccess(params map[string]string, replicas int) (bool, error) {
 	raw := params[constants.ParamAllowRemoteAccess]
 	if raw == "" {
-		return false, nil
+		return replicas > 1, nil
 	}
 	enabled, err := strconv.ParseBool(raw)
 	if err != nil {

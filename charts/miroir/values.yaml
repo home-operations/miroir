@@ -211,9 +211,11 @@ replicatedStorageClass:
   fsType: ext4
   # -- Let pods on nodes without a replica consume volumes through an
   # ephemeral diskless DRBD leg (all I/O crosses the replication network).
-  # Drops the PV's node affinity, so pods schedule anywhere. See the root
-  # README, "Remote consumers", for the quorum-vote implications.
-  allowRemoteVolumeAccess: false
+  # Drops the PV's node affinity, so pods schedule anywhere. On by default,
+  # matching LINSTOR; set false to pin pods to replica nodes for local
+  # reads. See the root README, "Remote consumers", for the quorum-vote
+  # implications.
+  allowRemoteVolumeAccess: true
   # freeze: refuse writes (I/O errors) without a peer majority — never
   # diverges; with autoTieBreaker a third node keeps 2-replica volumes
   # writable through a single node loss. last-man-standing: the survivor

@@ -606,8 +606,8 @@
     "replicatedStorageClass": {
       "properties": {
         "allowRemoteVolumeAccess": {
-          "default": false,
-          "description": "Let pods on nodes without a replica consume volumes through an\nephemeral diskless DRBD leg (all I/O crosses the replication network).\nDrops the PV's node affinity, so pods schedule anywhere. See the root\nREADME, \"Remote consumers\", for the quorum-vote implications.",
+          "default": true,
+          "description": "Let pods on nodes without a replica consume volumes through an\nephemeral diskless DRBD leg (all I/O crosses the replication network).\nDrops the PV's node affinity, so pods schedule anywhere. On by default,\nmatching LINSTOR; set false to pin pods to replica nodes for local\nreads. See the root README, \"Remote consumers\", for the quorum-vote\nimplications.",
           "title": "allowRemoteVolumeAccess",
           "type": "boolean"
         },

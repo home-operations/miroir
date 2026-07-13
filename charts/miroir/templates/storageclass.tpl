@@ -30,9 +30,7 @@ parameters:
   # last-man-standing: survivor keeps writing on node loss, split-brain
   # alerts on reconnect; freeze: never diverges, halts on any disconnect.
   miroir.home-operations.com/quorum: {{ .Values.replicatedStorageClass.quorum }}
-  {{- if .Values.replicatedStorageClass.allowRemoteVolumeAccess }}
-  miroir.home-operations.com/allowRemoteVolumeAccess: "true"
-  {{- end }}
+  miroir.home-operations.com/allowRemoteVolumeAccess: {{ .Values.replicatedStorageClass.allowRemoteVolumeAccess | quote }}
   csi.storage.k8s.io/fstype: {{ .Values.replicatedStorageClass.fsType }}
 {{- end }}
 {{- if .Values.volumeSnapshotClass.create }}
