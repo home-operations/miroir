@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.14](https://github.com/home-operations/miroir/compare/0.4.13...0.4.14) (2026-07-13)
+
+
+### Bug Fixes
+
+* **controller:** scope gateway Deployment/Service informers to the namespace ([#174](https://github.com/home-operations/miroir/issues/174)) ([ba89f6a](https://github.com/home-operations/miroir/commit/ba89f6a67be50cf5a5e9d770a6c5e5bd471502ec))
+
 ## [0.4.13](https://github.com/home-operations/miroir/compare/0.4.12...0.4.13) (2026-07-13)
 
 
