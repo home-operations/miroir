@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.13](https://github.com/home-operations/miroir/compare/0.4.12...0.4.13) (2026-07-13)
+
+
+### Bug Fixes
+
+* **csi:** seed Node objects in the RWX CreateVolume test ([#172](https://github.com/home-operations/miroir/issues/172)) ([a4d1b56](https://github.com/home-operations/miroir/commit/a4d1b566fb3ed4e69715ecf0380bd0fc4556206d))
+
 ## [0.4.12](https://github.com/home-operations/miroir/compare/0.4.11...0.4.12) (2026-07-13)
 
 
