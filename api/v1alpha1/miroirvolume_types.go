@@ -90,6 +90,20 @@ type VolumeSource struct {
 	SnapshotName string `json:"snapshotName"`
 }
 
+// ExportSpec turns the volume into a shared filesystem (RWX): a gateway
+// pod on one replica node stages the device and serves it over NFS;
+// consumers on any node mount the export. The gateway is the volume's
+// only writer, so DRBD single-primary fencing is unchanged (no
+// allow-two-primaries). Set at creation from a MULTI_NODE access mode
+// and immutable thereafter.
+type ExportSpec struct {
+	// FSType is the filesystem the gateway formats and mounts on the
+	// device. Persisted here because mkfs happens in the gateway, which
+	// never sees a CSI VolumeCapability; consumers only ever see NFS.
+	// +kubebuilder:validation:Enum=ext4;xfs
+	FSType string `json:"fsType"`
+}
+
 // DiskfulReplicas returns the non-diskless replicas — those that hold
 // actual data. Use this instead of the raw slice where diskless
 // tie-breakers must be excluded (capacity, phase, snapshot barrier).
@@ -128,6 +142,8 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="size(self.replicas) > 0 ? !has(self.replicas[0].diskless) || !self.replicas[0].diskless : true",message="the first replica must be diskful (not a diskless tie-breaker)"
 // +kubebuilder:validation:XValidation:rule="self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node || (has(o.diskless) && o.diskless) == (has(r.diskless) && r.diskless)))",message="a replica's diskless flag is immutable; remove the replica and re-add it instead"
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) == has(oldSelf.drbd)",message="a volume cannot gain or lose its replication layer in place"
+// +kubebuilder:validation:XValidation:rule="has(self.export) == has(oldSelf.export)",message="a volume cannot gain or lose its NFS export (RWX) in place"
+// +kubebuilder:validation:XValidation:rule="!(has(self.export) && has(self.drbd)) || self.quorumPolicy == 'freeze'",message="replicated RWX volumes must use freeze quorum (a rescheduled gateway under last-man-standing risks dual-primary split-brain)"
 type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
 	// +kubebuilder:validation:Minimum=1
@@ -149,6 +165,11 @@ type MiroirVolumeSpec struct {
 	// Source, if set, provisions content from a snapshot (CoW clone).
 	// +optional
 	Source *VolumeSource `json:"source,omitempty"`
+	// Export, if set, serves the volume as a shared filesystem over NFS
+	// (RWX). Set by the controller when the volume is created from a
+	// MULTI_NODE access mode; immutable.
+	// +optional
+	Export *ExportSpec `json:"export,omitempty"`
 }
 
 // ReplicaStatus is the per-node observed state, written by that node's agent.
@@ -207,6 +228,16 @@ type ReplicaStatus struct {
 	LastVerifyOutOfSyncBytes *int64 `json:"lastVerifyOutOfSyncBytes,omitempty"`
 }
 
+// ExportStatus is the observed state of an RWX volume's NFS gateway,
+// written by the export reconciler.
+type ExportStatus struct {
+	// Address is the share Service's ClusterIP. Consumers mount
+	// <address>:/<volume> over NFS. Empty until the reconciler has
+	// created the Service and read back its allocated ClusterIP.
+	// +optional
+	Address string `json:"address,omitempty"`
+}
+
 // MiroirVolumeStatus is the observed state aggregated from node agents.
 type MiroirVolumeStatus struct {
 	// Phase summarizes the volume state for the controller and humans.
@@ -215,6 +246,10 @@ type MiroirVolumeStatus struct {
 	// PerNode maps node name to that agent's observed state.
 	// +optional
 	PerNode map[string]ReplicaStatus `json:"perNode,omitempty"`
+	// Export is the observed state of the NFS gateway, set only on RWX
+	// volumes (spec.export). Written by the export reconciler.
+	// +optional
+	Export *ExportStatus `json:"export,omitempty"`
 	// Formatted is set once the volume has ever carried a filesystem —
 	// first mkfs at stage time, or inherited from the snapshot source on
 	// restore. A blank device on a formatted volume is data loss: the

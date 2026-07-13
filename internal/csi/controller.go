@@ -41,6 +41,7 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/nodemap"
+	"github.com/home-operations/miroir/internal/stage"
 )
 
 // Controller implements csi.ControllerServer (notes/DESIGN.md §6.1). It translates
@@ -954,31 +955,7 @@ func (c *Controller) markVolumeFormatted(ctx context.Context, name string) error
 	if err := c.reader().Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 		return err
 	}
-	return markFormatted(ctx, c.Client, vol)
-}
-
-// markFormatted flips the Formatted status flag once; shared by the
-// controller (clone inheritance) and the node service (post-mkfs).
-func markFormatted(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume) error {
-	if vol.Status.Formatted {
-		return nil
-	}
-	base := vol.DeepCopy()
-	vol.Status.Formatted = true
-	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
-}
-
-// markActivated latches the Activated status flag once, the first time a
-// node stages the volume for a consumer. It gates split-brain auto-recovery
-// (see agent VolumeReconciler.recoverSplitBrain): a staged volume may hold
-// data, so its divergence is never auto-discarded.
-func markActivated(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume) error {
-	if vol.Status.Activated {
-		return nil
-	}
-	base := vol.DeepCopy()
-	vol.Status.Activated = true
-	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
+	return stage.MarkFormatted(ctx, c.Client, vol)
 }
 
 func parseReplicas(params map[string]string) (int, error) {

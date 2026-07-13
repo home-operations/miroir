@@ -27,6 +27,7 @@ import (
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/drbd"
+	"github.com/home-operations/miroir/internal/stage"
 )
 
 // devDrbd1000 is the staged DRBD device path shared by the fixtures.
@@ -58,7 +59,7 @@ func stagedVolume() *miroirv1alpha1.MiroirVolume {
 	return v
 }
 
-func newNode(t *testing.T, vol *miroirv1alpha1.MiroirVolume, d DRBDStatus) *Node {
+func newNode(t *testing.T, vol *miroirv1alpha1.MiroirVolume, d stage.DRBDStatus) *Node {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
