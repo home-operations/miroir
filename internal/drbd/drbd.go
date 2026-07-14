@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -293,8 +294,7 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 				if owned(res.Name) {
 					continue
 				}
-				// drbdsetup down works without a .res file.
-				if _, err := d.Exec(ctx, "drbdsetup", "down", res.Name); err != nil {
+				if err := d.downResource(ctx, res.Name); err != nil {
 					return fmt.Errorf("down orphan %s: %w", res.Name, err)
 				}
 			}
@@ -342,8 +342,8 @@ func (d *Driver) DownSecondaries(ctx context.Context) error {
 		if res.Role == rolePrimary {
 			continue
 		}
-		if _, err := d.Exec(ctx, "drbdsetup", "down", res.Name); err != nil {
-			errs = append(errs, fmt.Errorf("down %s: %w", res.Name, err))
+		if err := d.downResource(ctx, res.Name); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
@@ -654,16 +654,51 @@ func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int3
 	return nil
 }
 
+// downTimeout bounds drbdsetup down. A device stuck in Detaching (kernel
+// ref-count corruption, put_ldev assertion) makes down hang in D-state
+// forever; without a bound it pins the reconcile worker and head-of-line-
+// blocks every other volume on the node. Shorter than execTimeout because
+// down on healthy hardware completes in milliseconds.
+const downTimeout = 30 * time.Second
+
+// downResource disconnects each peer connection then downs the resource.
+// Disconnecting first avoids a kernel deadlock when the peer is mid-resync:
+// drbdsetup down can enter uninterruptible sleep negotiating teardown with
+// an active connection. drbdsetup disconnect requires a peer_node_id, so
+// the peers are enumerated from status. Best-effort: a resource already
+// StandAlone or not configured has no connections to disconnect.
+// drbdsetup, not drbdadm: drbdadm refuses conflicting .res files, and
+// teardown is how a conflict gets removed.
+func (d *Driver) downResource(ctx context.Context, name string) error {
+	if out, err := d.Exec(ctx, "drbdsetup", "status", "--json", name); err == nil {
+		var parsed []jsonStatus
+		if json.Unmarshal([]byte(out), &parsed) == nil {
+			for _, res := range parsed {
+				if res.Name != name {
+					continue
+				}
+				for _, conn := range res.Connections {
+					_, _ = d.Exec(ctx, "drbdsetup", "disconnect", name,
+						strconv.Itoa(int(conn.PeerNodeID)))
+				}
+			}
+		}
+	}
+	downCtx, cancel := context.WithTimeout(ctx, downTimeout)
+	defer cancel()
+	if _, err := d.Exec(downCtx, "drbdsetup", "down", name); err != nil {
+		return fmt.Errorf("down %s: %w", name, err)
+	}
+	return nil
+}
+
 // Down stops the resource and removes its rendered state. Idempotent.
-// drbdsetup, not drbdadm: drbdadm refuses to do anything while any two
-// .res files in the directory conflict, and teardown is how a conflict
-// gets removed. drbdsetup needs no config and exits 0 for unknown names.
 func (d *Driver) Down(ctx context.Context, name string) error {
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
-	if _, err := d.Exec(ctx, "drbdsetup", "down", name); err != nil {
-		return fmt.Errorf("down %s: %w", name, err)
+	if err := d.downResource(ctx, name); err != nil {
+		return err
 	}
 	for _, suffix := range stateSuffixes {
 		if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
