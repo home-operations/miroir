@@ -36,17 +36,19 @@ ENTRYPOINT ["/usr/local/bin/miroir"]
 #     older than the module is the supported direction, and miroir only
 #     uses ancient ops (create -V/snapshot/clone/promote/volsize).
 FROM debian:trixie-slim AS agent
-# LINBIT's keyring deb installs /etc/apt/trusted.gpg.d/linbit-keyring.gpg.
-ADD https://packages.linbit.com/public/linbit-keyring/trixie/linbit-keyring.deb /tmp/linbit-keyring.deb
-RUN sed -i 's|^Components: main$|Components: main contrib|' /etc/apt/sources.list.d/debian.sources && \
+RUN export DEBIAN_FRONTEND=noninteractive && \
+    sed -i 's|^Components: main$|Components: main contrib|' /etc/apt/sources.list.d/debian.sources && \
     apt-get update -qq && \
     # ca-certificates: apt needs TLS trust to reach the LINBIT repo. Kept
     # installed — the gateway stage's apt-get update fetches from it too.
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates && \
-    dpkg -i /tmp/linbit-keyring.deb && rm /tmp/linbit-keyring.deb && \
-    echo "deb https://packages.linbit.com/public trixie misc" > /etc/apt/sources.list.d/linbit.list && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://packages.linbit.com/package-signing-pubkey.asc \
+      -o /etc/apt/keyrings/linbit.asc && \
+    echo "deb [signed-by=/etc/apt/keyrings/linbit.asc] https://packages.linbit.com/public trixie misc" \
+      > /etc/apt/sources.list.d/linbit.list && \
     apt-get update -qq && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    apt-get install -y --no-install-recommends \
     drbd-utils \
     lvm2 \
     zfsutils-linux \
@@ -65,6 +67,9 @@ RUN sed -i 's|^Components: main$|Components: main contrib|' /etc/apt/sources.lis
     util-linux \
     mount \
     coreutils && \
+    # curl was only needed to fetch the signing key above.
+    apt-get purge -y curl && \
+    apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 # No udevd is reachable from the container: stop libdevmapper from waiting
 # on udev cookies and lvm from querying udev for the device list.
