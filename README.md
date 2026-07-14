@@ -21,46 +21,12 @@ synchronous replication (2-3 replicas) via DRBD9.
   serves block devices, plus a per-volume NFS export for
   `ReadWriteMany` (see [ReadWriteMany (RWX)](#readwritemany-rwx)); it
   is not a general-purpose exporter.
-
-## How it compares to LINSTOR and blockstor
-
-miroir runs the same data plane as [LINSTOR][linstor] and
-[blockstor][blockstor]: DRBD 9 replicating thin LVM or ZFS volumes,
-synchronous protocol C, quorum with diskless tie-breakers. The
-difference is the control plane.
-
-- **LINSTOR** is the reference DRBD orchestrator and the right choice
-  at fleet scale: resource groups with placement counts, automatic
-  eviction and rebalancing, many storage backends, WAN replication
-  via DRBD Proxy. That power rides on a Java controller with its own
-  database and a satellite RPC protocol; on Kubernetes the Piraeus
-  stack adds an operator, controller, per-node satellites, CSI
-  drivers, and an HA controller, each its own workload to run and
-  upgrade.
-- **blockstor** is a clean-room Go reimplementation of the LINSTOR
-  model for Cozystack: the resource-definition / resource-group
-  abstractions (plus auto-evict and rebalancing) with CRDs in place
-  of the JVM and database. Architecturally it is miroir's closest
-  relative.
-- **miroir** cuts the scope to what 2-3 nodes actually need. The
-  Kubernetes API is the _only_ control plane: the controller writes
-  MiroirVolume objects and node agents realize them; no controller
-  database, no inter-node RPC protocol, no operator managing an
-  operator. One small static image serves as both the controller
-  Deployment and the agent DaemonSet, and the Helm chart is the
-  entire configuration surface. Placement, quorum tie-breakers, and
-  barrier-consistent snapshots are automated; resource groups,
-  auto-evict, and multi-site replication deliberately are not. If you
-  need those, run LINSTOR.
-
-Where the bigger projects encode operational wisdom, miroir adopts it
-instead of relearning it: `on-io-error detach`, the resync,
-activity-log, and discard tuning knobs, and the
-majority-quorum-plus-tie-breaker default all follow what LINSTOR and
-blockstor ship.
-
-[linstor]: https://github.com/LINBIT/linstor-server
-[blockstor]: https://github.com/cozystack/blockstor
+- You're at fleet scale. Resource groups, automatic eviction and
+  rebalancing, and multi-site replication are
+  [LINSTOR](https://github.com/LINBIT/linstor-server)'s territory;
+  miroir runs the same DRBD9 data plane but deliberately stops at
+  what 2-3 nodes need, with the Kubernetes API as its only control
+  plane.
 
 ## Requirements
 
