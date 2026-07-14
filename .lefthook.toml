@@ -21,9 +21,14 @@ exclude = ["charts/miroir/README.md"]
 [pre-commit.commands.format-json]
 exclude = ["charts/miroir/values.schema.json"]
 
+# Generated CRD/RBAC YAMLs are .prettierignore'd; exclude them here too, or a
+# commit staging only generated YAML feeds oxfmt an all-ignored input list and
+# it exits 2. (An earlier `run = "... || true"` override stopped working when
+# lefthook v2 dropped shell interpretation of run strings.)
 [pre-commit.commands.format-yaml]
-glob = ["*.yaml", "*.yml"]
-# Generated CRD YAMLs are .prettierignore'd (oxfmt respects them); override
-# run so oxfmt doesn't error when its only inputs are all ignored files.
-run = "oxfmt {staged_files} || true"
-stage_fixed = true
+exclude = [
+  "charts/miroir/crds/*.yaml",
+  "config/crd/bases/*.yaml",
+  "config/rbac/role.yaml",
+  "config/webhook/manifests.yaml",
+]
