@@ -865,13 +865,28 @@ func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.Controlle
 // same overcommit headroom place() guards on — capacity×ratio − provisioned —
 // so the scheduler filters a node exactly when placement would reject it.
 //
-// The provisioner calls this once per (StorageClass, topology segment); miroir's
-// pool capacity is per-node and independent of a class's replica count, so the
-// parameters are not consulted. A node without fresh stats reports zero (the
-// scheduler avoids it) until its agent publishes — self-healing within
-// poolStatsInterval; place() stays the authority and still allows an
-// unknown-stats node if the pod lands there anyway.
+// The provisioner calls this once per (StorageClass, topology segment) with
+// the class's parameters, and the agent registers the driver on every node —
+// so segments arrive for non-storage nodes too. Those mirror place(): a
+// remote-access class (replicated, allowRemoteVolumeAccess not false) serves
+// consumers anywhere through a diskless client leg, so a non-storage segment
+// answers with the roomiest pool ("can the volume be placed at all") instead
+// of 0, which would wrongly filter pods off nodes place() accepts. A storage
+// segment always answers its own headroom — place() pins a scheduler-preferred
+// storage node and holds it to the overcommit guard, remote access or not.
+// A node without fresh stats reports zero (the scheduler avoids it) until its
+// agent publishes — self-healing within poolStatsInterval; place() stays the
+// authority and still allows an unknown-stats node if the pod lands there
+// anyway.
 func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+	replicas, err := parseReplicas(req.GetParameters())
+	if err != nil {
+		return nil, err
+	}
+	remoteAccess, err := parseAllowRemoteAccess(req.GetParameters(), replicas)
+	if err != nil {
+		return nil, err
+	}
 	stats, err := c.poolStats(ctx)
 	if err != nil {
 		return nil, err
@@ -896,17 +911,28 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 		return max(0, int64(float64(st.CapacityBytes)*ratio)-provisioned[node])
 	}
 
+	// The roomiest node's headroom — the largest volume the cluster can
+	// still place, since a volume's replica lands in one node's pool.
+	roomiest := func() int64 {
+		var best int64
+		for node := range c.Nodes {
+			best = max(best, available(node))
+		}
+		return best
+	}
+
 	// Topology-aware provisioner: one segment per call → that node's headroom.
 	if seg := req.GetAccessibleTopology().GetSegments(); seg != nil {
-		return &csi.GetCapacityResponse{AvailableCapacity: available(seg[constants.TopologyKey])}, nil
+		node := seg[constants.TopologyKey]
+		if _, isStorage := c.Nodes[node]; !isStorage && remoteAccess {
+			// Consumers here attach a diskless client leg; the volume lands
+			// wherever place() ranks best.
+			return &csi.GetCapacityResponse{AvailableCapacity: roomiest()}, nil
+		}
+		return &csi.GetCapacityResponse{AvailableCapacity: available(node)}, nil
 	}
-	// No segment: report the roomiest node — a volume's replica lands in one
-	// node's pool, so that is the largest volume the cluster can still place.
-	var best int64
-	for node := range c.Nodes {
-		best = max(best, available(node))
-	}
-	return &csi.GetCapacityResponse{AvailableCapacity: best}, nil
+	// No segment: cluster-wide answer.
+	return &csi.GetCapacityResponse{AvailableCapacity: roomiest()}, nil
 }
 
 // ListVolumes returns all provisioned volumes for external-provisioner reconciliation.

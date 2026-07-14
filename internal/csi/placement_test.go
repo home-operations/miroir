@@ -399,3 +399,44 @@ func TestGetCapacityNoTopologyReportsBestNode(t *testing.T) {
 		t.Fatalf("no-topology capacity = %d, want roomiest node %d", resp.GetAvailableCapacity(), 200*gib)
 	}
 }
+
+// A remote-access class (replicated; allowRemoteVolumeAccess defaults true)
+// leaves the PV unpinned and place() accepts a first consumer on a
+// non-storage node (diskless client leg) — that segment must answer the
+// roomiest pool, not 0, or the scheduler filters pods off nodes CreateVolume
+// would accept. A storage segment still answers its own headroom: place()
+// pins a scheduler-preferred storage node and holds it to the overcommit
+// guard, remote access or not.
+func TestGetCapacityRemoteAccessSegments(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 10*gib, 0), // 20 GiB headroom
+			miroirNodeObj(nodeParis, 100*gib, 0),  // 200 GiB headroom
+		),
+		Nodes: testNodes,
+	}
+	remoteParams := map[string]string{constants.ParamReplicas: "2"}
+
+	req := topologySegment(nodeOslo) // not a storage node
+	req.Parameters = remoteParams
+	resp, err := c.GetCapacity(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 200*gib {
+		t.Fatalf("non-storage segment of a remote-access class = %d, want roomiest %d",
+			resp.GetAvailableCapacity(), 200*gib)
+	}
+
+	req = topologySegment(nodeKharkiv)
+	req.Parameters = remoteParams
+	resp, err = c.GetCapacity(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 20*gib {
+		t.Fatalf("storage segment = %d, want its own headroom %d",
+			resp.GetAvailableCapacity(), 20*gib)
+	}
+}
