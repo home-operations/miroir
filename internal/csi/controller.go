@@ -870,14 +870,15 @@ func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.Controlle
 // so segments arrive for non-storage nodes too. Those mirror place(): a
 // remote-access class (replicated, allowRemoteVolumeAccess not false) serves
 // consumers anywhere through a diskless client leg, so a non-storage segment
-// answers with the roomiest pool ("can the volume be placed at all") instead
-// of 0, which would wrongly filter pods off nodes place() accepts. A storage
-// segment always answers its own headroom — place() pins a scheduler-preferred
-// storage node and holds it to the overcommit guard, remote access or not.
-// A node without fresh stats reports zero (the scheduler avoids it) until its
-// agent publishes — self-healing within poolStatsInterval; place() stays the
-// authority and still allows an unknown-stats node if the pod lands there
-// anyway.
+// answers "can the volume be placed at all" instead of 0, which would wrongly
+// filter pods off nodes place() accepts. A storage segment is a node place()
+// will pin (and hold to the overcommit guard), remote access or not, so it
+// contributes its own headroom. Every diskful replica needs its own node's
+// pool, so a replicated class is additionally bounded by the peers' headroom
+// (see capacityFor). A node without fresh stats reports zero (the scheduler
+// avoids it) until its agent publishes — self-healing within
+// poolStatsInterval; place() stays the authority and still allows an
+// unknown-stats node if the pod lands there anyway.
 func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
 	replicas, err := parseReplicas(req.GetParameters())
 	if err != nil {
@@ -911,28 +912,54 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 		return max(0, int64(float64(st.CapacityBytes)*ratio)-provisioned[node])
 	}
 
-	// The roomiest node's headroom — the largest volume the cluster can
-	// still place, since a volume's replica lands in one node's pool.
-	roomiest := func() int64 {
-		var best int64
-		for node := range c.Nodes {
-			best = max(best, available(node))
+	// capacityFor is the largest volume the class can still place: each of
+	// its `replicas` diskful legs needs a distinct node's pool, so the
+	// answer is the replicas-th largest per-node headroom — 0 when fewer
+	// nodes have room, matching place()'s "only N of M storage nodes"
+	// refusal. A pinned scheduler-preferred storage node consumes one leg
+	// slot and bounds the answer with its own headroom (place() honors the
+	// pin unconditionally); empty means unpinned.
+	capacityFor := func(pinned string) int64 {
+		need := replicas
+		bound := int64(-1) // no bound yet; always set before returning
+		if pinned != "" {
+			bound = available(pinned)
+			need--
 		}
-		return best
+		if need == 0 {
+			return bound
+		}
+		peers := make([]int64, 0, len(c.Nodes))
+		for node := range c.Nodes {
+			if node != pinned {
+				peers = append(peers, available(node))
+			}
+		}
+		slices.SortFunc(peers, func(a, b int64) int { return cmp.Compare(b, a) })
+		if len(peers) < need {
+			return 0
+		}
+		if bound < 0 || peers[need-1] < bound {
+			bound = peers[need-1]
+		}
+		return bound
 	}
 
-	// Topology-aware provisioner: one segment per call → that node's headroom.
+	// Topology-aware provisioner: one segment per call.
 	if seg := req.GetAccessibleTopology().GetSegments(); seg != nil {
 		node := seg[constants.TopologyKey]
-		if _, isStorage := c.Nodes[node]; !isStorage && remoteAccess {
-			// Consumers here attach a diskless client leg; the volume lands
-			// wherever place() ranks best.
-			return &csi.GetCapacityResponse{AvailableCapacity: roomiest()}, nil
+		if _, isStorage := c.Nodes[node]; !isStorage {
+			if remoteAccess {
+				// Consumers here attach a diskless client leg; the volume
+				// lands wherever place() ranks best.
+				return &csi.GetCapacityResponse{AvailableCapacity: capacityFor("")}, nil
+			}
+			return &csi.GetCapacityResponse{}, nil // no pool, class pinned to replica nodes
 		}
-		return &csi.GetCapacityResponse{AvailableCapacity: available(node)}, nil
+		return &csi.GetCapacityResponse{AvailableCapacity: capacityFor(node)}, nil
 	}
 	// No segment: cluster-wide answer.
-	return &csi.GetCapacityResponse{AvailableCapacity: roomiest()}, nil
+	return &csi.GetCapacityResponse{AvailableCapacity: capacityFor("")}, nil
 }
 
 // ListVolumes returns all provisioned volumes for external-provisioner reconciliation.

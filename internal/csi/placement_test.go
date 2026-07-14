@@ -402,11 +402,12 @@ func TestGetCapacityNoTopologyReportsBestNode(t *testing.T) {
 
 // A remote-access class (replicated; allowRemoteVolumeAccess defaults true)
 // leaves the PV unpinned and place() accepts a first consumer on a
-// non-storage node (diskless client leg) — that segment must answer the
-// roomiest pool, not 0, or the scheduler filters pods off nodes CreateVolume
-// would accept. A storage segment still answers its own headroom: place()
-// pins a scheduler-preferred storage node and holds it to the overcommit
-// guard, remote access or not.
+// non-storage node (diskless client leg) — that segment must not answer 0,
+// or the scheduler filters pods off nodes CreateVolume would accept. Each
+// diskful leg needs its own pool, so a 2-replica class is bounded by the
+// 2nd-largest headroom. A storage segment answers its own headroom bounded
+// by the peers': place() pins a scheduler-preferred storage node and holds
+// it to the overcommit guard, remote access or not.
 func TestGetCapacityRemoteAccessSegments(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
@@ -424,19 +425,45 @@ func TestGetCapacityRemoteAccessSegments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.GetAvailableCapacity() != 200*gib {
-		t.Fatalf("non-storage segment of a remote-access class = %d, want roomiest %d",
-			resp.GetAvailableCapacity(), 200*gib)
+	if resp.GetAvailableCapacity() != 20*gib {
+		t.Fatalf("non-storage segment of a 2-replica class = %d, want 2nd-largest headroom %d",
+			resp.GetAvailableCapacity(), 20*gib)
 	}
 
-	req = topologySegment(nodeKharkiv)
+	req = topologySegment(nodeParis)
 	req.Parameters = remoteParams
 	resp, err = c.GetCapacity(t.Context(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// paris pinned (200 GiB) + one peer leg on kharkiv (20 GiB) → 20 GiB.
 	if resp.GetAvailableCapacity() != 20*gib {
-		t.Fatalf("storage segment = %d, want its own headroom %d",
+		t.Fatalf("storage segment = %d, want min(own, peer) %d",
 			resp.GetAvailableCapacity(), 20*gib)
+	}
+}
+
+// A replicated class must not publish capacity a placement cannot honor:
+// with one storage node roomy and the other full, a 2-replica volume has
+// nowhere for its second leg — place() refuses, so the segment reports 0.
+func TestGetCapacityReplicatedNeedsAllLegs(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 10*gib, 0),  // 20 GiB headroom
+			miroirNodeObj(nodeParis, 10*gib, 0),    // full below
+			volOn("existing-p", nodeParis, 25*gib), // 25 > 2×10 — overcommitted
+		),
+		Nodes: testNodes,
+	}
+	req := topologySegment(nodeKharkiv)
+	req.Parameters = map[string]string{constants.ParamReplicas: "2"}
+	resp, err := c.GetCapacity(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 0 {
+		t.Fatalf("2-replica class with one full peer must report 0, got %d",
+			resp.GetAvailableCapacity())
 	}
 }
