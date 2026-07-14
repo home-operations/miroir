@@ -67,28 +67,76 @@ blockstor ship.
 - Kubernetes ≥ 1.31.
 - A `kubelet` directory the agent can `hostPath`-mount (default
   `/var/lib/kubelet`; override `agent.kubeletDir` in Helm values).
-- Storage kernel module(s) on each storage node:
-    - `lvmthin`: the `dm_thin_pool` module.
-    - `zfs`: userland + kernel module on the same minor. On Talos
-      that's the `siderolabs/zfs` extension; otherwise install ZFS
-      however you normally do.
-    - `loopfile`: the `loop` module and a reflink-capable filesystem
-      for `baseDir` (XFS `reflink=1`, e.g. Talos `/var`, or btrfs).
-- For DRBD9 replication: `drbd` and `drbd_transport_tcp` kernel
-  modules, plus `drbd-utils` (`drbdadm`, `drbdsetup`, `drbdmeta`).
+- Kernel modules on each storage node (per-OS notes below):
+  `dm_thin_pool` (lvmthin), ZFS (zfs), `loop` plus a reflink-capable
+  filesystem for `baseDir` (loopfile), and, for replication, the
+  DRBD9 `drbd` and `drbd_transport_tcp` modules.
 - Kubelet [graceful node shutdown][gns], so the agent (a
   `system-node-critical` pod) is stopped _after_ workloads on reboot
   and can release DRBD backings before the backend pool exports;
-  otherwise a node reboot can wedge unmounting the pool. On Talos it
-  is on by default; give critical pods enough of the window via
-  `machine.kubelet.extraConfig.shutdownGracePeriodCriticalPods` (≥ the
-  agent's `terminationGracePeriodSeconds`, default 60s).
+  otherwise a node reboot can wedge unmounting the pool.
+
+All storage userland (`drbdadm`, `lvm`, `zfs`, `mkfs`, `mount.nfs`)
+ships inside the agent image; nodes only provide kernel modules.
 
 [gns]: https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/#graceful-node-shutdown
 
-Talos Linux is the primary target because it ships these modules
-ready to go, but nothing in the controller or agent is
-Talos-specific.
+### Talos
+
+Talos is the primary target. The stock kernel ships `dm_thin_pool`
+and `loop` (the agent loads them on demand), and `/var` is XFS with
+`reflink=1`, so `lvmthin` and `loopfile` work out of the box. DRBD
+and ZFS modules come from [Image Factory][factory] system extensions;
+build the install image with:
+
+- `siderolabs/drbd` for replication
+- `siderolabs/zfs` for the zfs backend
+
+Load DRBD with its usermode helper disabled: the kernel side
+otherwise calls out to `/sbin/drbdadm` on the host, which does not
+exist on Talos. Graceful node shutdown is on by default; size the
+critical-pod window to cover the agent's
+`terminationGracePeriodSeconds` (default 60s):
+
+```yaml
+machine:
+    kernel:
+        modules:
+            - name: drbd
+              parameters:
+                  - usermode_helper=disabled
+            - name: drbd_transport_tcp
+    kubelet:
+        extraConfig:
+            shutdownGracePeriod: 120s
+            shutdownGracePeriodCriticalPods: 60s
+```
+
+[factory]: https://factory.talos.dev
+
+### Debian/Ubuntu
+
+Stock kernels ship `dm_thin_pool` and `loop`, so `lvmthin` and
+`loopfile` need nothing extra. For the rest:
+
+- **DRBD9**: the in-tree `drbd.ko` is the 8.4 API and does **not**
+  work with miroir's DRBD9 configuration. Install `drbd-dkms` and
+  kernel headers from the [LINBIT PPA][ppa] (Ubuntu) or LINBIT's
+  Debian repositories. Unless the host has a matching `drbd-utils`
+  installed, disable the usermode helper for the same reason as on
+  Talos: `options drbd usermode_helper=disabled` in
+  `/etc/modprobe.d/drbd.conf`.
+- **zfs backend**: Ubuntu kernels ship the ZFS module
+  (`linux-modules-extra`); on Debian install `zfs-dkms` (contrib).
+  The agent's ZFS userland is 2.3, and userland older than the
+  node's module is the supported direction.
+- Enable kubelet graceful node shutdown (`shutdownGracePeriod` /
+  `shutdownGracePeriodCriticalPods` in the kubelet config) with a
+  critical-pod window ≥ the agent's grace period (default 60s).
+
+[ppa]: https://launchpad.net/~linbit/+archive/ubuntu/linbit-drbd9-stack
+
+Nothing in the controller or agent is otherwise OS-specific.
 
 ## Quickstart
 
@@ -166,7 +214,7 @@ storageClasses:
 | Backend    | You provide                            | Notes                                  |
 | ---------- | -------------------------------------- | -------------------------------------- |
 | `lvmthin`  | A partition or disk for the thin pool  | `dm_thin_pool` kernel module           |
-| `zfs`      | A ZFS pool, you specify the dataset    | Userland and kmod on the same minor    |
+| `zfs`      | A ZFS pool, you specify the dataset    | ZFS module on the node (Requirements)  |
 | `loopfile` | A path on a reflink-capable filesystem | `loop` module; XFS `reflink=1` / btrfs |
 
 The [chart README](charts/miroir/README.md) documents every value:
