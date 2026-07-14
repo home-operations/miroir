@@ -51,6 +51,7 @@ Kubernetes: `>=1.31.0`
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | agent.volumeWorkers | int | `4` | Concurrent volume reconciles per agent. Per-volume work is serialized by controller-runtime regardless; this bounds how many distinct volumes one agent works at once. |
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
+| drbd.alExtents | string | `""` | al-extents, the DRBD activity-log size (number of 4 MiB extents kept "hot"). DRBD's default (1237) forces frequent metadata updates under a scattered random-write workload; raising it (e.g. 6007) cuts that write amplification at the cost of a longer resync of the active region after a crash. Empty leaves DRBD's default. Must be a prime below 65534. |
 | drbd.net.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises resync throughput on fast links. |
 | drbd.onIoError | string | `"detach"` |  |
 | drbd.portBase | int | `7000` | Lowest TCP port for DRBD replication links, one per replicated volume ascending (7000, 7001, …). The agent runs hostNetwork so these bind on the node's kernel. Ceph mgr dashboard's non-SSL default is also 7000; co-locating with Rook host-network Ceph requires moving one of them (see issue #148). Existing volumes keep their assigned ports. |
@@ -113,6 +114,9 @@ Kubernetes: `>=1.31.0`
 | provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
 | replicaCount | int | `1` | Controller replicas. Anything above 1 automatically enables leader election: the extras are warm standbys (failover is lease expiry, ~15s, instead of a full pod reschedule), the rollout strategy switches to RollingUpdate, and a PodDisruptionBudget keeps one replica through voluntary disruptions. Pointless on a single-node cluster (the node is the failure domain); pair with global.affinity (pod anti-affinity) so replicas land on different nodes. |
 | resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Controller resources. |
+| sidecars.healthMonitor.enabled | bool | `false` |  |
+| sidecars.healthMonitor.image | string | `"registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.18.0"` |  |
+| sidecars.healthMonitor.interval | string | `"1m"` |  |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
 | sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.2.1"` |  |

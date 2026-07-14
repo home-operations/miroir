@@ -117,6 +117,44 @@ func TestDevicePathHealthyReturnsDevice(t *testing.T) {
 	}
 }
 
+// NodeGetVolumeStats attaches the volume's replication health so kubelet's
+// volume-health metric reflects a degraded leg alongside the capacity stats.
+func TestNodeGetVolumeStatsReportsCondition(t *testing.T) {
+	v := stagedVolume()
+	v.Status.Phase = miroirv1alpha1.VolumeDegraded
+	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
+
+	resp, err := n.NodeGetVolumeStats(t.Context(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId:   volPvc1,
+		VolumePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.GetVolumeCondition().GetAbnormal() {
+		t.Fatalf("degraded volume must report abnormal condition, got %+v", resp.GetVolumeCondition())
+	}
+	if len(resp.GetUsage()) == 0 {
+		t.Fatal("expected capacity usage alongside the condition")
+	}
+}
+
+// A stats call for a volume that has been deleted must still succeed — the
+// condition is best-effort, capacity is the contract.
+func TestNodeGetVolumeStatsMissingVolume(t *testing.T) {
+	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
+	resp, err := n.NodeGetVolumeStats(t.Context(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId:   "missing",
+		VolumePath: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetVolumeCondition() != nil {
+		t.Fatalf("missing volume should carry no condition, got %+v", resp.GetVolumeCondition())
+	}
+}
+
 // A diskless tie-breaker node must never stage the volume: it holds no
 // data leg, only a quorum vote.
 func TestDevicePathRefusesDisklessNode(t *testing.T) {

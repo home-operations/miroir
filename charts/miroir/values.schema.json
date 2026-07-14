@@ -143,6 +143,16 @@
     "drbd": {
       "description": "=============================================================================\nDRBD replication tuning\n=============================================================================\nDRBD replication tuning applied cluster-wide through the common{} section of\nglobal_common.conf; every resource inherits it. Leave a value empty to use\nDRBD's built-in default. Tune to your replication network — see the LINBIT\n\"Tuning the DRBD Resync Controller\" guide.",
       "properties": {
+        "alExtents": {
+          "default": "",
+          "description": "al-extents, the DRBD activity-log size (number of 4 MiB extents kept\n\"hot\"). DRBD's default (1237) forces frequent metadata updates under a\nscattered random-write workload; raising it (e.g. 6007) cuts that write\namplification at the cost of a longer resync of the active region after a\ncrash. Empty leaves DRBD's default. Must be a prime below 65534.",
+          "required": [],
+          "title": "alExtents",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
         "net": {
           "properties": {
             "maxBuffers": {
@@ -686,6 +696,30 @@
     "sidecars": {
       "description": "=============================================================================\nCSI sidecars (upstream sig-storage images)\n=============================================================================",
       "properties": {
+        "healthMonitor": {
+          "description": "external-health-monitor-controller: polls ControllerGetVolume and raises a\nPVC event when a volume reports split-brain/degraded/disk-failed (the same\nhealth the agents fold into status.phase). Off by default — the\nmiroir_volume_* metrics already carry this; enable for native PVC events.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "title": "enabled",
+              "type": "boolean"
+            },
+            "image": {
+              "default": "registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.18.0",
+              "title": "image",
+              "type": "string"
+            },
+            "interval": {
+              "default": "1m",
+              "description": "How often the monitor re-checks every volume's condition.",
+              "title": "interval",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "healthMonitor",
+          "type": "object"
+        },
         "provisioner": {
           "properties": {
             "image": {

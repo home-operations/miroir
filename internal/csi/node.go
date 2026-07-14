@@ -87,6 +87,7 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 		csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 		csi.NodeServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
+		csi.NodeServiceCapability_RPC_VOLUME_CONDITION,
 	}
 	resp := &csi.NodeGetCapabilitiesResponse{}
 	for _, t := range caps {
@@ -503,22 +504,34 @@ func (n *Node) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeSta
 	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and path are required")
 	}
+	resp := &csi.NodeGetVolumeStatsResponse{VolumeCondition: n.lookupVolumeCondition(ctx, req.GetVolumeId())}
 	// A raw-block publish path is a bind-mounted device file: statfs
 	// there reports the host filesystem backing the target dir, not the
 	// volume. No filesystem, no usage to report.
 	if fi, err := os.Stat(req.GetVolumePath()); err == nil && !fi.IsDir() {
-		return &csi.NodeGetVolumeStatsResponse{}, nil
+		return resp, nil
 	}
 	stats, err := statfsAt(req.GetVolumePath())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "volume stats: %v", err)
 	}
-	return &csi.NodeGetVolumeStatsResponse{
-		Usage: []*csi.VolumeUsage{
-			{Unit: csi.VolumeUsage_BYTES, Total: stats.total, Used: stats.used, Available: stats.available},
-			{Unit: csi.VolumeUsage_INODES, Total: stats.inodes, Used: stats.inodesUsed, Available: stats.inodesAvail},
-		},
-	}, nil
+	resp.Usage = []*csi.VolumeUsage{
+		{Unit: csi.VolumeUsage_BYTES, Total: stats.total, Used: stats.used, Available: stats.available},
+		{Unit: csi.VolumeUsage_INODES, Total: stats.inodes, Used: stats.inodesUsed, Available: stats.inodesAvail},
+	}
+	return resp, nil
+}
+
+// lookupVolumeCondition reports the volume's replication health for the stats
+// RPC. Best-effort: a lookup failure (volume mid-delete, transient API error)
+// must not fail NodeGetVolumeStats, whose primary job is capacity — the
+// controller's ControllerGetVolume reports the same condition regardless.
+func (n *Node) lookupVolumeCondition(ctx context.Context, volumeID string) *csi.VolumeCondition {
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
+		return nil
+	}
+	return volumeCondition(vol)
 }
 
 type fsStatResult struct {

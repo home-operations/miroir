@@ -101,6 +101,8 @@ func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.Control
 		csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
+		csi.ControllerServiceCapability_RPC_GET_VOLUME,
+		csi.ControllerServiceCapability_RPC_VOLUME_CONDITION,
 	}
 	resp := &csi.ControllerGetCapabilitiesResponse{}
 	for _, t := range caps {
@@ -829,6 +831,32 @@ func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRe
 	return resp, nil
 }
 
+// ControllerGetVolume reports one volume's replication health to the
+// external-health-monitor, which raises it as an event on the PVC. The
+// condition is derived from the same aggregated status the agents publish.
+func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.ControllerGetVolumeRequest) (*csi.ControllerGetVolumeResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume id is required")
+	}
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+		}
+		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
+	}
+	return &csi.ControllerGetVolumeResponse{
+		Volume: &csi.Volume{
+			VolumeId:           vol.Name,
+			CapacityBytes:      vol.Spec.SizeBytes,
+			AccessibleTopology: accessibleTopology(vol),
+		},
+		Status: &csi.ControllerGetVolumeResponse_VolumeStatus{
+			VolumeCondition: volumeCondition(vol),
+		},
+	}, nil
+}
+
 // ListVolumes returns all provisioned volumes for external-provisioner reconciliation.
 func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
 	vols := &miroirv1alpha1.MiroirVolumeList{}
@@ -865,6 +893,9 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 				VolumeId:           v.Name,
 				CapacityBytes:      v.Spec.SizeBytes,
 				AccessibleTopology: accessibleTopology(v),
+			},
+			Status: &csi.ListVolumesResponse_VolumeStatus{
+				VolumeCondition: volumeCondition(v),
 			},
 		})
 	}
