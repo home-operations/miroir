@@ -29,7 +29,7 @@ import (
 //
 // MiroirSnapshotStatus is the observed state aggregated from node agents.
 // The snapshot exists as a backend CoW snapshot on every replica of the
-// source volume (DESIGN.md §4.5.4).
+// source volume.
 type MiroirSnapshotStatusApplyConfiguration struct {
 	// ReadyToUse is true once every replica holds the snapshot.
 	ReadyToUse *bool `json:"readyToUse,omitempty"`

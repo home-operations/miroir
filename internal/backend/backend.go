@@ -14,10 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package backend abstracts the node-local thin-provisioned storage layer
-// (notes/DESIGN.md §4.1a). DRBD replicates whatever block device a Backend
-// provides, so replicas of one volume may use different backends on
-// different nodes (ZFS zvol on paris, LVM thin LV on kharkiv).
+// Package backend abstracts the node-local thin-provisioned storage
+// layer. DRBD replicates whatever block device a Backend provides, so
+// replicas of one volume may use different backends on different nodes
+// (ZFS zvol on paris, LVM thin LV on kharkiv).
 package backend
 
 import (
@@ -48,9 +48,9 @@ type PoolStats struct {
 // Implementations are thin wrappers over the lvm/zfs CLIs; all methods are
 // idempotent so reconcilers can retry safely.
 type Backend interface {
-	// Setup bootstraps the node-local pool on first start if absent
-	// (notes/DESIGN.md §7.2): lvmthin creates PV/VG/thin-pool on the configured
-	// device; zfs creates the parent dataset. Idempotent.
+	// Setup bootstraps the node-local pool on first start if absent:
+	// lvmthin creates PV/VG/thin-pool on the configured device; zfs
+	// creates the parent dataset. Idempotent.
 	Setup(ctx context.Context) error
 	// Create provisions a thin device of the given virtual size and
 	// returns its device path. Succeeds without re-checking size when the

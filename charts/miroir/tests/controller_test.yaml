@@ -457,3 +457,18 @@ tests:
       - equal:
           path: spec.template.spec.containers[1].env[1].name
           value: POD_NAME
+
+  - it: omits auto-diskful-after by default
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --auto-diskful-after=10m
+  - it: passes auto-diskful-after when autoDiskfulAfter is set
+    documentIndex: 0
+    set:
+      autoDiskfulAfter: 10m
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --auto-diskful-after=10m

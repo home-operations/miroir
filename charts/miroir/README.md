@@ -50,6 +50,7 @@ Kubernetes: `>=1.31.0`
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | agent.volumeWorkers | int | `4` | Concurrent volume reconciles per agent. Per-volume work is serialized by controller-runtime regardless; this bounds how many distinct volumes one agent works at once. |
+| autoDiskfulAfter | string | `""` | Convert a diskless leg (client or tie-breaker) that has stayed DRBD Primary past this duration into a local diskful replica on its node, so a settled consumer stops paying network I/O (LINSTOR's auto-diskful; Go duration, e.g. "10m"). Conversion needs the leg's node in `nodes` with fresh pool stats and room for the volume's full size. Empty disables it. See the root README, "Auto-diskful". |
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
 | drbd.alExtents | string | `""` | al-extents, the DRBD activity-log size (number of 4 MiB extents kept "hot"). DRBD's default (1237) forces frequent metadata updates under a scattered random-write workload; raising it (e.g. 6007) cuts that write amplification at the cost of a longer resync of the active region after a crash. Empty leaves DRBD's default. Must be a prime below 65534. |
 | drbd.net.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises resync throughput on fast links. |

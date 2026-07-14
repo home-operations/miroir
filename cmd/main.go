@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // miroir is a low-resource replicated block storage driver for Kubernetes.
-// One binary, several modes (notes/DESIGN.md §4.2):
+// One binary, several modes:
 //
 //	--mode=controller  CSI Identity+Controller services (Deployment)
 //	--mode=agent       CSI Identity+Node services + node reconciler (DaemonSet)
@@ -465,8 +465,8 @@ func main() {
 			setupLog.Error(err, "unable to build the node's backend")
 			os.Exit(1)
 		}
-		// Bootstrap the node-local pool before serving anything
-		// (notes/DESIGN.md §7.2): first start on a fresh node creates
+		// Bootstrap the node-local pool before serving anything: first
+		// start on a fresh node creates
 		// PV/VG/thin-pool (lvmthin) or the parent dataset (zfs).
 		if err := be.Setup(context.Background()); err != nil {
 			setupLog.Error(err, "backend pool setup failed")
@@ -546,8 +546,7 @@ func main() {
 			setupLog.Error(err, "unable to set up snapshot reconciler")
 			os.Exit(1)
 		}
-		// Publishes this node's pool capacity for capacity-aware placement
-		// (notes/DESIGN.md §4.6).
+		// Publishes this node's pool capacity for capacity-aware placement.
 		if err := mgr.Add(&agent.PoolStatsPublisher{
 			Client:      mgr.GetClient(),
 			NodeName:    nodeName,

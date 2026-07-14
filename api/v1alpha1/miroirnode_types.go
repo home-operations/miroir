@@ -13,7 +13,7 @@ type MiroirNodeSpec struct {
 }
 
 // MiroirNodeStatus is the pool capacity this node's agent publishes for
-// capacity-aware placement and overcommit guardrails (DESIGN.md §4.6).
+// capacity-aware placement and overcommit guardrails.
 // On a shared pool (e.g. ZFS shared with OpenEBS) the figures are
 // pool-level, so a co-tenant's growth correctly shrinks miroir's headroom.
 type MiroirNodeStatus struct {

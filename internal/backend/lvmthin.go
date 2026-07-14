@@ -41,7 +41,7 @@ func newLVMThin(cfg Config, e Exec) *lvmThin {
 }
 
 // Setup creates PV → VG → thin pool on the configured device if the VG does
-// not exist yet (notes/DESIGN.md §7.2: kharkiv's r-miroir raw partition). Metadata
+// not exist yet (kharkiv's r-miroir raw partition). Metadata
 // LV is sized 1 GiB per dm-thin guidance (§4.6).
 func (l *lvmThin) Setup(ctx context.Context) error {
 	if _, err := l.lvm(ctx, "vgs", l.vg); err == nil {
@@ -198,7 +198,7 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 	}
 	if !ok {
 		// A writable thin snapshot of the snapshot is the clone: instant
-		// CoW within the same pool, no data copy (notes/DESIGN.md §4.5.5).
+		// CoW within the same pool, no data copy.
 		_, err = l.lvm(ctx, "lvcreate",
 			"--snapshot",
 			"--name", vol,

@@ -44,7 +44,7 @@ type Resource struct {
 	Minor int32
 	// Port is the TCP port for all of this resource's connections.
 	Port int32
-	// Quorum selects the 2-node consistency mode (DESIGN §3.2).
+	// Quorum selects the 2-node consistency mode.
 	Quorum miroirv1alpha1.QuorumPolicy
 	// LocalNode is the node this config is rendered on; its peer entry
 	// gets the real backing path, all others the placeholder.
@@ -120,8 +120,8 @@ func Render(r Resource) string {
 		b.WriteString("        cram-hmac-alg sha1;\n")
 		fmt.Fprintf(&b, "        shared-secret %q;\n", r.Secret)
 	}
-	// Never auto-resolve diverged data: an operator picks the loser
-	// (DESIGN §3.2). discard-zero-changes and consensus let DRBD pick
+	// Never auto-resolve diverged data: an operator picks the loser.
+	// discard-zero-changes and consensus let DRBD pick
 	// one — a zero-changes verdict trusts generation identifiers that
 	// day0-seeded clones share without sharing history.
 	b.WriteString("        after-sb-0pri disconnect;\n")

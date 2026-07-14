@@ -44,7 +44,7 @@ import (
 	"github.com/home-operations/miroir/internal/stage"
 )
 
-// Controller implements csi.ControllerServer (notes/DESIGN.md §6.1). It translates
+// Controller implements csi.ControllerServer. It translates
 // CSI RPCs into MiroirVolume objects and waits for node agents to realize
 // them — the Kubernetes API is the only channel to the data plane (§4.2).
 type Controller struct {
@@ -62,7 +62,7 @@ type Controller struct {
 	ProvisionTimeout time.Duration
 	// OvercommitRatio bounds thin-provisioning overcommit: CreateVolume is
 	// refused when a node's provisioned total would exceed
-	// capacity×ratio (notes/DESIGN.md §4.6). Zero → defaultOvercommitRatio.
+	// capacity×ratio. Zero → defaultOvercommitRatio.
 	OvercommitRatio float64
 	// AutoTieBreaker adds a diskless tie-breaker replica to new 2-replica
 	// freeze volumes when a spare storage node exists (#70).
@@ -82,8 +82,8 @@ type Controller struct {
 
 const (
 	defaultProvisionTimeout = 120 * time.Second // matches sidecars.provisioner.timeout
-	// defaultOvercommitRatio caps provisioned-over-capacity per pool
-	// (notes/DESIGN.md §4.6); 2× is the documented default.
+	// defaultOvercommitRatio caps provisioned-over-capacity per pool;
+	// 2× is the documented default.
 	defaultOvercommitRatio = 2.0
 	// defaultDRBDPortBase is the lowest DRBD replication port when
 	// DRBDPortBase is unset (zero). Ceph mgr dashboard's non-SSL default
@@ -117,7 +117,7 @@ func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.Control
 }
 
 // CreateVolume provisions a MiroirVolume and waits until its agents report
-// Ready (notes/DESIGN.md §4.5.1). Idempotent by volume name.
+// Ready. Idempotent by volume name.
 func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
 	if req.GetName() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume name is required")
@@ -261,7 +261,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 }
 
 // DeleteVolume removes the MiroirVolume; agents tear down local state via
-// the finalizer before it disappears (notes/DESIGN.md §4.5.7). Idempotent.
+// the finalizer before it disappears. Idempotent.
 func (c *Controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
@@ -351,7 +351,7 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 
 // place selects count replica nodes: the scheduler's preference first
 // (WaitForFirstConsumer), then the remaining eligible storage nodes by
-// free space — capacity-aware spread (notes/DESIGN.md §4.6). Nodes whose
+// free space — capacity-aware spread. Nodes whose
 // projected provisioned total would breach the overcommit ratio are
 // excluded, and a chosen node breaching it (e.g. a topology-pinned one)
 // fails the request so the scheduler retries elsewhere. Pools without
@@ -539,7 +539,7 @@ func (c *Controller) reader() client.Reader {
 }
 
 // poolStats returns the fresh pool capacity each storage node's agent
-// published (notes/DESIGN.md §4.6). Stale or never-published nodes are
+// published. Stale or never-published nodes are
 // omitted — placement treats them as unknown (eligible, no free-space
 // signal) so a cold cluster still provisions.
 func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.MiroirNodeStatus, error) {

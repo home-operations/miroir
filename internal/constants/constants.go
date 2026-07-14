@@ -29,7 +29,7 @@ const (
 	DriverName = "miroir.home-operations.com"
 
 	// TopologyKey is the CSI topology key reported by NodeGetInfo; its
-	// value is the Kubernetes node name (notes/DESIGN.md §6.5).
+	// value is the Kubernetes node name.
 	TopologyKey = "miroir.home-operations.com/node"
 
 	// FinalizerPrefix + node name blocks MiroirVolume deletion until that

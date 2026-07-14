@@ -185,7 +185,7 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 		}
 
 		// FormatAndMount formats only when the device has no filesystem —
-		// the mkfs-if-blank step of notes/DESIGN.md §4.5.2.
+		// the mkfs-if-blank step.
 		if err := d.Mounter.FormatAndMount(dev, target, fsType, flags); err != nil {
 			return status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
 		}

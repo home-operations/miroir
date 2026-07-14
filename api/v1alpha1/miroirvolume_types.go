@@ -16,7 +16,7 @@ const (
 	BackendLoopfile BackendType = "loopfile"
 )
 
-// QuorumPolicy selects the 2-node consistency mode (DESIGN.md §3.2).
+// QuorumPolicy selects the 2-node consistency mode.
 // +kubebuilder:validation:Enum=last-man-standing;freeze
 type QuorumPolicy string
 

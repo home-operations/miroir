@@ -27,7 +27,7 @@ import (
 
 // loopfile provisions volumes as sparse files on a node's existing
 // filesystem, each attached as a loop device — no dedicated disk and no
-// LVM/ZFS pool to format (notes/DESIGN.md §4.1a). It is the "use whatever's
+// LVM/ZFS pool to format. It is the "use whatever's
 // already mounted" backend: Longhorn's sparse-file replicas, but replicated
 // by in-kernel DRBD instead of a userspace engine.
 //
@@ -316,7 +316,7 @@ func (lf *loopfile) sizeOf(ctx context.Context, file string) (int64, error) {
 
 func (lf *loopfile) Stats(ctx context.Context) (PoolStats, error) {
 	// The "pool" is the filesystem holding the base directory; headroom must
-	// account for everything on it, not only miroir files (notes/DESIGN.md §4.6).
+	// account for everything on it, not only miroir files.
 	out, err := lf.exec(ctx, "df", "-B1", "-P", lf.baseDir)
 	if err != nil {
 		return PoolStats{}, err

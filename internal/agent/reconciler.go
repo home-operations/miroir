@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package agent realizes MiroirVolume desired state on one node: it creates,
 // resizes, and deletes backing devices via the node's Backend and reports
-// observed state back through the CRD status (notes/DESIGN.md §4.2).
+// observed state back through the CRD status.
 package agent
 
 import (
@@ -48,7 +48,7 @@ import (
 )
 
 // VolumeReconciler converges local state for volumes that place a replica on
-// NodeName. Level-triggered: safe to restart at any point (notes/DESIGN.md §4.2).
+// NodeName. Level-triggered: safe to restart at any point.
 type VolumeReconciler struct {
 	client.Client
 	NodeName string
@@ -142,7 +142,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if !present {
 		// Not placed here, but a held finalizer means this replica (or
 		// client leg) was removed from the spec: tear down the local leg
-		// once it is safe (notes/DESIGN.md §4.2).
+		// once it is safe.
 		return r.reconcileRemoval(ctx, vol)
 	}
 	if vol.Spec.DRBD != nil && incomplete {
@@ -991,7 +991,7 @@ func detachedDiskMessage(diskFailed bool) string {
 }
 
 // computePhase aggregates per-node states into the volume phase the CSI
-// controller waits on (notes/DESIGN.md §4.5.1).
+// controller waits on.
 func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
