@@ -144,6 +144,20 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
+        {{- if .Values.sidecars.healthMonitor.enabled }}
+        - name: csi-external-health-monitor-controller
+          image: {{ .Values.sidecars.healthMonitor.image }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --monitor-interval={{ .Values.sidecars.healthMonitor.interval }}
+            - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        {{- end }}
       volumes:
         - name: socket-dir
           emptyDir: {}

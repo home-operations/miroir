@@ -111,6 +111,15 @@ sidecars:
     image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
     # Online grow can block on a rebooting node; keep >= provisionTimeout.
     timeout: 120s
+  # external-health-monitor-controller: polls ControllerGetVolume and raises a
+  # PVC event when a volume reports split-brain/degraded/disk-failed (the same
+  # health the agents fold into status.phase). Off by default — the
+  # miroir_volume_* metrics already carry this; enable for native PVC events.
+  healthMonitor:
+    enabled: false
+    image: registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.18.0
+    # How often the monitor re-checks every volume's condition.
+    interval: 1m
 
 # =============================================================================
 # Agent (per-node DaemonSet: storage userland + CSI node service)
@@ -279,6 +288,15 @@ drbd:
   # Diskless and serves reads/writes via the peer instead of surfacing
   # EIO into the pod. Set to pass_on to propagate errors instead.
   onIoError: detach
+  # @schema
+  # type: [integer, string]
+  # @schema
+  # -- al-extents, the DRBD activity-log size (number of 4 MiB extents kept
+  # "hot"). DRBD's default (1237) forces frequent metadata updates under a
+  # scattered random-write workload; raising it (e.g. 6007) cuts that write
+  # amplification at the cost of a longer resync of the active region after a
+  # crash. Empty leaves DRBD's default. Must be a prime below 65534.
+  alExtents: ""
   resync:
     # -- c-plan-ahead in 0.1s units; a value > 0 enables DRBD's variable-rate resync controller.
     planAhead: ""

@@ -36,6 +36,9 @@ data:
         {{- with .Values.drbd.onIoError }}
             on-io-error {{ . }};
         {{- end }}
+        {{- with .Values.drbd.alExtents }}
+            al-extents {{ . }};
+        {{- end }}
         {{- with .Values.drbd.resync }}
         {{- if .planAhead }}
             c-plan-ahead {{ .planAhead }};
