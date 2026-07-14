@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.2](https://github.com/home-operations/miroir/compare/0.6.1...0.6.2) (2026-07-14)
+
+
+### Features
+
+* **csi:** add GetCapacity for storage-capacity-aware scheduling ([#189](https://github.com/home-operations/miroir/issues/189)) ([4a99204](https://github.com/home-operations/miroir/commit/4a992048d339f71abdb252b4d904ab20957c98b4))
+* **csi:** report volume health via CSI VolumeCondition; add al-extents knob ([#187](https://github.com/home-operations/miroir/issues/187)) ([9861e40](https://github.com/home-operations/miroir/commit/9861e40f324c78d5f9d4630fd61e84e93db0a1d7))
+
+
+### Bug Fixes
+
+* **drbd:** disconnect before down to prevent kernel deadlock ([#188](https://github.com/home-operations/miroir/issues/188)) ([328f40b](https://github.com/home-operations/miroir/commit/328f40b15be54ce0c96277a9efd987e3dfb80d38))
+
+
+### Miscellaneous Chores
+
+* **lint:** use modernize linter ([#183](https://github.com/home-operations/miroir/issues/183)) ([559ad6e](https://github.com/home-operations/miroir/commit/559ad6eee9d355323d47d8025bc44f5308fd049b))
+* **mise:** Update tool oxfmt (0.58.0 → 0.59.0) ([#185](https://github.com/home-operations/miroir/issues/185)) ([82eedf6](https://github.com/home-operations/miroir/commit/82eedf66c1e8e178e9322f28851695e992ca8da8))
+* **mise:** Update tool zizmor (1.26.1 → 1.27.0) ([#186](https://github.com/home-operations/miroir/issues/186)) ([09dc09d](https://github.com/home-operations/miroir/commit/09dc09daee130b5d15505186368434560f73969c))
+
 ## [0.6.1](https://github.com/home-operations/miroir/compare/0.6.0...0.6.1) (2026-07-13)
 
 
