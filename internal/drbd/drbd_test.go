@@ -586,7 +586,9 @@ func TestVirginMetadata(t *testing.T) {
 }
 
 func TestDownRemovesState(t *testing.T) {
-	fe := &fakeExec{}
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"pvc-1","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	r := testResource(nodeKharkiv)
 
@@ -596,7 +598,21 @@ func TestDownRemovesState(t *testing.T) {
 	if err := d.Down(t.Context(), volPvc1); err != nil {
 		t.Fatal(err)
 	}
+	// Disconnect must precede down, with the peer_node_id from status.
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
 	fe.calledWith(t, "drbdsetup down pvc-1")
+	discIdx, downIdx := -1, -1
+	for i, c := range fe.calls {
+		if strings.Contains(c, "drbdsetup disconnect pvc-1") {
+			discIdx = i
+		}
+		if strings.Contains(c, "drbdsetup down pvc-1") {
+			downIdx = i
+		}
+	}
+	if discIdx < 0 || downIdx < 0 || discIdx > downIdx {
+		t.Fatalf("disconnect must precede down, got calls: %v", fe.calls)
+	}
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.res")); !os.IsNotExist(err) {
 		t.Fatal("res file must be removed")
 	}
@@ -675,8 +691,8 @@ func TestStatusPerPeerDiskState(t *testing.T) {
 func TestDownSecondariesSkipsPrimary(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[
-			{"name":"pvc-1","role":"Primary"},
-			{"name":"pvc-2","role":"Secondary"}]`,
+			{"name":"pvc-1","role":"Primary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]},
+			{"name":"pvc-2","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
@@ -685,15 +701,28 @@ func TestDownSecondariesSkipsPrimary(t *testing.T) {
 	}
 	// Primary legs are still open — skipped.
 	fe.notCalledWith(t, "drbdsetup down pvc-1")
+	fe.notCalledWith(t, "drbdsetup disconnect pvc-1")
+	fe.calledWith(t, "drbdsetup disconnect pvc-2 1")
 	fe.calledWith(t, "drbdsetup down pvc-2")
+	// Peer ids come from the sweep's own status parse — no per-resource
+	// re-fetch (shutdown is time-bounded; see cmd/main.go).
+	statusCalls := 0
+	for _, c := range fe.calls {
+		if strings.Contains(c, cmdDrbdsetupStatus) {
+			statusCalls++
+		}
+	}
+	if statusCalls != 1 {
+		t.Fatalf("want exactly 1 status call, got %d: %v", statusCalls, fe.calls)
+	}
 }
 
 func TestDownSecondariesContinuesOnError(t *testing.T) {
 	fe := &fakeExec{
 		responses: map[string]string{
 			cmdDrbdsetupStatus: `[
-				{"name":"pvc-2","role":"Secondary"},
-				{"name":"pvc-3","role":"Secondary"}]`,
+				{"name":"pvc-2","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]},
+				{"name":"pvc-3","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
 		},
 		errOn: map[string]error{"down pvc-2": errors.New("Device is held open by someone")},
 	}
@@ -704,6 +733,7 @@ func TestDownSecondariesContinuesOnError(t *testing.T) {
 		t.Fatalf("want a joined error naming pvc-2, got %v", err)
 	}
 	// One stuck resource must not strand the rest of the sweep.
+	fe.calledWith(t, "drbdsetup disconnect pvc-3 1")
 	fe.calledWith(t, "drbdsetup down pvc-3")
 }
 
