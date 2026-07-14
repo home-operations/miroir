@@ -149,7 +149,8 @@ tests:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
-        verifyAlg: crc32c
+        verify:
+          algorithm: crc32c
         resync:
           discardGranularity: "65536"
     documentIndex: 1
@@ -191,3 +192,15 @@ tests:
         equal:
           path: metadata.namespace
           value: storage
+
+  - it: fails loudly when the pre-0.7 drbd.verifyAlg key is still set
+    set:
+      nodes:
+        kharkiv:
+          backend: lvmthin
+          device: /dev/disk/by-partlabel/r-miroir
+      drbd:
+        verifyAlg: crc32c
+    asserts:
+      - failedTemplate:
+          errorMessage: "drbd.verifyAlg was renamed to drbd.verify.algorithm"

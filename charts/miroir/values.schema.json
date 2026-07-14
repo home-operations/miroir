@@ -231,9 +231,15 @@
         },
         "verify": {
           "properties": {
+            "algorithm": {
+              "default": "crc32c",
+              "description": "verify-alg, arming `drbdadm verify \u003cres\u003e` — the only cross-leg\nintegrity check (a zfs scrub only validates one leg against itself).\nDefaulted to crc32c: drbd.ko depends on libcrc32c so it is present on\nevery node, and it costs nothing until a verify runs. Empty disables\nverification, including the schedule below.",
+              "title": "algorithm",
+              "type": "string"
+            },
             "schedule": {
               "default": "",
-              "description": "Cron spec (5-field, agent-local/UTC time) for a scheduled online\nverify of every replicated volume. The agent initiates it once per\nvolume from the coordinator (first diskful replica), serialized per\nnode, skipping volumes that are resyncing or already verifying.\nFindings land in the volume's status (`lastVerifyOutOfSyncBytes`), the\n`miroir_volume_verify_*` metrics, and a `VerifyOutOfSync` event. Empty\n= no scheduled verify (run it by hand). Requires `verifyAlg` set.",
+              "description": "Cron spec (5-field, agent-local/UTC time) for a scheduled online\nverify of every replicated volume. The agent initiates it once per\nvolume from the coordinator (first diskful replica), serialized per\nnode, skipping volumes that are resyncing or already verifying.\nFindings land in the volume's status (`lastVerifyOutOfSyncBytes`), the\n`miroir_volume_verify_*` metrics, and a `VerifyOutOfSync` event. Empty\n= no scheduled verify (run it by hand). Requires `algorithm` set.",
               "title": "schedule",
               "type": "string"
             },
@@ -247,12 +253,6 @@
           "required": [],
           "title": "verify",
           "type": "object"
-        },
-        "verifyAlg": {
-          "default": "crc32c",
-          "description": "verify-alg arms `drbdadm verify \u003cres\u003e` — the only cross-leg\nintegrity check (a zfs scrub only validates one leg against itself).\nDefaulted to crc32c: drbd.ko depends on libcrc32c so it is present on\nevery node, and it costs nothing until a verify runs. Schedule the\nverify pass yourself (cron, quiet hours); out-of-sync blocks surface\nin the kernel log and `drbdsetup status`. Empty disables verification.",
-          "title": "verifyAlg",
-          "type": "string"
         }
       },
       "required": [],

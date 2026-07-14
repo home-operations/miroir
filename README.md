@@ -437,7 +437,7 @@ devices mishandle it; `drbd.resync.discardGranularity` remains as a
 manual cluster-wide fallback).
 
 **Verification** is the only cross-leg integrity check (a ZFS scrub
-validates one leg against itself). `drbd.verifyAlg` (default
+validates one leg against itself). `drbd.verify.algorithm` (default
 `crc32c`) arms it, and `drbd.verify.schedule` (5-field cron, e.g.
 `"0 4 * * 0"`) runs an online verify of every replicated volume on
 that cadence, serialized per node and skipping volumes that are
