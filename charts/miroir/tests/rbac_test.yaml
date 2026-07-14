@@ -194,3 +194,24 @@ tests:
       - equal:
           path: subjects[0].namespace
           value: miroir-system
+  - it: grants CSIStorageCapacity RBAC only when the capacity feature is enabled
+    set:
+      storageCapacity:
+        enabled: true
+    asserts:
+      - documentIndex: 2
+        contains:
+          path: rules
+          content:
+            apiGroups: ["storage.k8s.io"]
+            resources: ["csistoragecapacities"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - it: omits CSIStorageCapacity RBAC by default
+    asserts:
+      - documentIndex: 2
+        notContains:
+          path: rules
+          content:
+            apiGroups: ["storage.k8s.io"]
+            resources: ["csistoragecapacities"]
+            verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

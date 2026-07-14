@@ -103,6 +103,7 @@ func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.Control
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		csi.ControllerServiceCapability_RPC_GET_VOLUME,
 		csi.ControllerServiceCapability_RPC_VOLUME_CONDITION,
+		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
 	}
 	resp := &csi.ControllerGetCapabilitiesResponse{}
 	for _, t := range caps {
@@ -855,6 +856,110 @@ func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.Controlle
 			VolumeCondition: volumeCondition(vol),
 		},
 	}, nil
+}
+
+// GetCapacity reports a storage node's provisionable headroom so the
+// kube-scheduler (via the external-provisioner's CSIStorageCapacity objects)
+// steers a WaitForFirstConsumer pod onto a node whose pool can hold the volume,
+// instead of landing there and having CreateVolume refuse it. The number is the
+// same overcommit headroom place() guards on — capacity×ratio − provisioned —
+// so the scheduler filters a node exactly when placement would reject it.
+//
+// The provisioner calls this once per (StorageClass, topology segment) with
+// the class's parameters, and the agent registers the driver on every node —
+// so segments arrive for non-storage nodes too. Those mirror place(): a
+// remote-access class (replicated, allowRemoteVolumeAccess not false) serves
+// consumers anywhere through a diskless client leg, so a non-storage segment
+// answers "can the volume be placed at all" instead of 0, which would wrongly
+// filter pods off nodes place() accepts. A storage segment is a node place()
+// will pin (and hold to the overcommit guard), remote access or not, so it
+// contributes its own headroom. Every diskful replica needs its own node's
+// pool, so a replicated class is additionally bounded by the peers' headroom
+// (see capacityFor). A node without fresh stats reports zero (the scheduler
+// avoids it) until its agent publishes — self-healing within
+// poolStatsInterval; place() stays the authority and still allows an
+// unknown-stats node if the pod lands there anyway.
+func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+	replicas, err := parseReplicas(req.GetParameters())
+	if err != nil {
+		return nil, err
+	}
+	remoteAccess, err := parseAllowRemoteAccess(req.GetParameters(), replicas)
+	if err != nil {
+		return nil, err
+	}
+	stats, err := c.poolStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list := &miroirv1alpha1.MiroirVolumeList{}
+	if err := c.reader().List(ctx, list); err != nil {
+		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
+	}
+	provisioned := provisionedPerNode(list.Items, "")
+	ratio := c.OvercommitRatio
+	if ratio <= 0 {
+		ratio = defaultOvercommitRatio
+	}
+	available := func(node string) int64 {
+		if _, ok := c.Nodes[node]; !ok {
+			return 0 // not a storage node — no pool here
+		}
+		st, ok := stats[node]
+		if !ok || st.CapacityBytes <= 0 {
+			return 0 // no fresh stats yet; excluded until the agent publishes
+		}
+		return max(0, int64(float64(st.CapacityBytes)*ratio)-provisioned[node])
+	}
+
+	// capacityFor is the largest volume the class can still place: each of
+	// its `replicas` diskful legs needs a distinct node's pool, so the
+	// answer is the replicas-th largest per-node headroom — 0 when fewer
+	// nodes have room, matching place()'s "only N of M storage nodes"
+	// refusal. A pinned scheduler-preferred storage node consumes one leg
+	// slot and bounds the answer with its own headroom (place() honors the
+	// pin unconditionally); empty means unpinned.
+	capacityFor := func(pinned string) int64 {
+		need := replicas
+		bound := int64(-1) // no bound yet; always set before returning
+		if pinned != "" {
+			bound = available(pinned)
+			need--
+		}
+		if need == 0 {
+			return bound
+		}
+		peers := make([]int64, 0, len(c.Nodes))
+		for node := range c.Nodes {
+			if node != pinned {
+				peers = append(peers, available(node))
+			}
+		}
+		slices.SortFunc(peers, func(a, b int64) int { return cmp.Compare(b, a) })
+		if len(peers) < need {
+			return 0
+		}
+		if bound < 0 || peers[need-1] < bound {
+			bound = peers[need-1]
+		}
+		return bound
+	}
+
+	// Topology-aware provisioner: one segment per call.
+	if seg := req.GetAccessibleTopology().GetSegments(); seg != nil {
+		node := seg[constants.TopologyKey]
+		if _, isStorage := c.Nodes[node]; !isStorage {
+			if remoteAccess {
+				// Consumers here attach a diskless client leg; the volume
+				// lands wherever place() ranks best.
+				return &csi.GetCapacityResponse{AvailableCapacity: capacityFor("")}, nil
+			}
+			return &csi.GetCapacityResponse{}, nil // no pool, class pinned to replica nodes
+		}
+		return &csi.GetCapacityResponse{AvailableCapacity: capacityFor(node)}, nil
+	}
+	// No segment: cluster-wide answer.
+	return &csi.GetCapacityResponse{AvailableCapacity: capacityFor("")}, nil
 }
 
 // ListVolumes returns all provisioned volumes for external-provisioner reconciliation.

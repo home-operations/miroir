@@ -779,6 +779,19 @@
       "title": "sidecars",
       "type": "object"
     },
+    "storageCapacity": {
+      "description": "Storage-capacity-aware scheduling. When enabled, the external-provisioner\npublishes CSIStorageCapacity objects from the driver's GetCapacity RPC\n(capacity × overcommitRatio − provisioned, per storage node) and the\nkube-scheduler steers a WaitForFirstConsumer pod onto a node whose pool can\nhold the volume — instead of landing there and having CreateVolume refuse it\nand reschedule. CreateVolume's own overcommit guard stays the authority.\nOff by default: it is a behavior change — with storageCapacity on, the\nscheduler treats a (node, class) pair with no published capacity as unfit, so\na freshly installed cluster waits for agents to publish pool stats (up to\nagent.poolStatsInterval) before the first pod schedules.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "enabled",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "title": "storageCapacity",
+      "type": "object"
+    },
     "storageClasses": {
       "description": "=============================================================================\nStorage classes\n=============================================================================\nStorageClasses to create. Empty by default: declare the classes you\nwant. One local + one replicated is the common pair (see the example\nbelow). Per entry:\n  name          (required) the StorageClass name\n  replicas      replica count, default 1; \u003e1 makes it DRBD-replicated\n  quorum        freeze | last-man-standing (replicated only, default\n                freeze). freeze never diverges but halts writes without a\n                peer majority; last-man-standing keeps the survivor\n                writable at the risk of split-brain. See the root README,\n                \"Replication and quorum\".\n  fsType        ext4 | xfs, default ext4\n  allowRemoteVolumeAccess\n                true | false (replicated only; the controller defaults\n                absent to true, matching LINSTOR): pods on nodes without\n                a replica consume the volume through an ephemeral\n                diskless DRBD leg at replication-network speed. Set\n                false to pin pods to replica nodes for local reads. See\n                the root README, \"Remote consumers\".\n  reclaimPolicy Delete | Retain, default Delete\n  isDefault     set the cluster default-class annotation, default false\nExample (coexisting with OpenEBS, which stays the cluster default):\n  storageClasses:\n    - name: miroir-local\n      replicas: 1\n    - name: miroir-replicated\n      replicas: 2\n      quorum: freeze",
       "items": {

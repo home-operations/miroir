@@ -57,6 +57,18 @@ overcommitRatio: 2
 # spare storage node exists, so majority quorum survives a single node
 # loss. Also retrofits existing freeze volumes at controller startup.
 autoTieBreaker: true
+# Storage-capacity-aware scheduling. When enabled, the external-provisioner
+# publishes CSIStorageCapacity objects from the driver's GetCapacity RPC
+# (capacity × overcommitRatio − provisioned, per storage node) and the
+# kube-scheduler steers a WaitForFirstConsumer pod onto a node whose pool can
+# hold the volume — instead of landing there and having CreateVolume refuse it
+# and reschedule. CreateVolume's own overcommit guard stays the authority.
+# Off by default: it is a behavior change — with storageCapacity on, the
+# scheduler treats a (node, class) pair with no published capacity as unfit, so
+# a freshly installed cluster waits for agents to publish pool stats (up to
+# agent.poolStatsInterval) before the first pod schedules.
+storageCapacity:
+  enabled: false
 # -- Controller replicas. Anything above 1 automatically enables leader
 # election: the extras are warm standbys (failover is lease expiry, ~15s,
 # instead of a full pod reschedule), the rollout strategy switches to
