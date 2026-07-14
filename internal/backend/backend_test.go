@@ -165,7 +165,7 @@ func TestZFSCreate(t *testing.T) {
 	if dev != "/dev/zvol/tank/miroir/pvc-1" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
-	// Sparse + 4k volblocksize per notes/DESIGN.md §4.1a / SPIKE P0-1, lz4.
+	// Sparse + 4k volblocksize plus lz4.
 	fe.calledWith(t, "zfs create -s -b 4096 -o compression=lz4 -V 10737418240 tank/miroir/pvc-1")
 }
 

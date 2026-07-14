@@ -41,7 +41,7 @@ import (
 	"github.com/home-operations/miroir/internal/stage"
 )
 
-// Node implements csi.NodeServer (notes/DESIGN.md §4.5.2). It looks the volume up
+// Node implements csi.NodeServer. It looks the volume up
 // in the CRD (the source of truth) and stages its node-local device.
 type Node struct {
 	csi.UnimplementedNodeServer

@@ -12,7 +12,7 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
-// Capacity-aware placement surface (DESIGN.md §4.6): each storage agent
+// Capacity-aware placement surface: each storage agent
 // publishes its pool capacity to a MiroirNode the controller reads at
 // placement. Provisioning itself exercises the placement path in the
 // lifecycle spec; here we assert the stats the decision rests on.

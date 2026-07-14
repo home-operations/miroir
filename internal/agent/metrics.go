@@ -24,7 +24,7 @@ import (
 )
 
 // Exposed on the agent's metrics endpoint; the split-brain gauge is the
-// alerting hook for the last-man-standing failure mode (DESIGN §3.2).
+// alerting hook for the last-man-standing failure mode.
 const volumeLabel = "volume"
 
 var (

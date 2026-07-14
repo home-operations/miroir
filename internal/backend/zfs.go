@@ -24,7 +24,7 @@ import (
 )
 
 // zfsBackend provisions sparse zvols under a dedicated dataset (paris's
-// backend; pool shared with OpenEBS LocalPV-ZFS — notes/DESIGN.md §4.1a).
+// backend; pool shared with OpenEBS LocalPV-ZFS).
 // volblocksize is fixed at 4k to align with the LVM-thin peer leg.
 type zfsBackend struct {
 	dataset string
@@ -37,7 +37,7 @@ func newZFS(cfg Config, e Exec) *zfsBackend {
 
 // Setup creates the parent dataset (e.g. tank/miroir) if absent — the
 // namespace separating miroir zvols from OpenEBS datasets in the shared
-// pool (notes/DESIGN.md §4.1a).
+// pool.
 func (z *zfsBackend) Setup(ctx context.Context) error {
 	ok, err := z.exists(ctx, z.dataset)
 	if err != nil || ok {
@@ -242,7 +242,7 @@ func (z *zfsBackend) volSize(ctx context.Context, vol string) (int64, error) {
 
 func (z *zfsBackend) Stats(ctx context.Context) (PoolStats, error) {
 	// Pool-level stats: the pool is shared with OpenEBS, so headroom must
-	// account for everything in it, not only miroir zvols (notes/DESIGN.md §4.6).
+	// account for everything in it, not only miroir zvols.
 	pool := z.pool()
 	out, err := z.exec(ctx, "zpool", "get", "-Hpo", "value", "size,allocated", pool)
 	if err != nil {

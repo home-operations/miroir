@@ -640,7 +640,7 @@ shows the failing call to clean up manually.
 
 ## Development
 
-Architecture: [notes/DESIGN.md](notes/DESIGN.md). Planned work lives
-in the [issue tracker](https://github.com/home-operations/miroir/issues).
+Planned work lives in the
+[issue tracker](https://github.com/home-operations/miroir/issues).
 Tooling pinned with [mise](https://mise.jdx.dev); `mise run test`,
 `mise run lint`, `mise run build`, `mise run manifests`.

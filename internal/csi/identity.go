@@ -26,7 +26,7 @@ import (
 )
 
 // Identity implements csi.IdentityServer for both the controller and the
-// agent (notes/DESIGN.md §6.1).
+// agent.
 type Identity struct {
 	csi.UnimplementedIdentityServer
 	// Version is injected from main's ldflags.

@@ -38,19 +38,19 @@ import (
 
 const (
 	// DefaultPoolStatsInterval is how often the agent republishes pool
-	// capacity (DESIGN.md §4.6 — "every ~60s").
+	// capacity (every ~60s).
 	DefaultPoolStatsInterval = 60 * time.Second
 	// ConditionPoolUsageHigh fires on a MiroirNode once data or metadata
 	// usage crosses poolUsageWarnPercent.
 	ConditionPoolUsageHigh = "PoolUsageHigh"
 	// poolUsageWarnPercent is the warn line for both data and dm-thin
-	// metadata; ZFS also degrades badly past ~85% full (DESIGN.md §4.6).
+	// metadata; ZFS also degrades badly past ~85% full.
 	poolUsageWarnPercent = 80
 )
 
 // PoolStatsPublisher samples this node's backend pool capacity on an
 // interval and publishes it to the node's MiroirNode object, where the
-// controller reads it for capacity-aware placement (DESIGN.md §4.6).
+// controller reads it for capacity-aware placement.
 type PoolStatsPublisher struct {
 	Client      client.Client
 	NodeName    string
