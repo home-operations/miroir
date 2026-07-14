@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/home-operations/miroir/compare/0.6.2...0.7.0) (2026-07-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **chart:** rename drbd.verifyAlg to drbd.verify.algorithm ([#192](https://github.com/home-operations/miroir/issues/192))
+
+### Features
+
+* **chart:** rename drbd.verifyAlg to drbd.verify.algorithm ([#192](https://github.com/home-operations/miroir/issues/192)) ([9ddbb02](https://github.com/home-operations/miroir/commit/9ddbb0293daf7648d8c1a79f3b305ad432eb85bc))
+
+
+### Documentation
+
+* **readme:** refresh for recent features; lean pass and layout examples ([#190](https://github.com/home-operations/miroir/issues/190)) ([447f179](https://github.com/home-operations/miroir/commit/447f179dfcdda6fd4fa9d9675789d73287e71799))
+
 ## [0.6.2](https://github.com/home-operations/miroir/compare/0.6.1...0.6.2) (2026-07-14)
 
 
