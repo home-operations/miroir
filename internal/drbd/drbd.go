@@ -294,7 +294,7 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 				if owned(res.Name) {
 					continue
 				}
-				if err := d.downResource(ctx, res.Name); err != nil {
+				if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
 					return fmt.Errorf("down orphan %s: %w", res.Name, err)
 				}
 			}
@@ -342,7 +342,7 @@ func (d *Driver) DownSecondaries(ctx context.Context) error {
 		if res.Role == rolePrimary {
 			continue
 		}
-		if err := d.downResource(ctx, res.Name); err != nil {
+		if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -654,35 +654,26 @@ func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int3
 	return nil
 }
 
-// downTimeout bounds drbdsetup down. A device stuck in Detaching (kernel
-// ref-count corruption, put_ldev assertion) makes down hang in D-state
-// forever; without a bound it pins the reconcile worker and head-of-line-
-// blocks every other volume on the node. Shorter than execTimeout because
-// down on healthy hardware completes in milliseconds.
+// downTimeout tightens RealExec's 2-minute bound for drbdsetup down. A
+// device wedged mid-teardown (stuck Detaching) leaves down in D-state, and
+// teardown retries every ~10s — a 2-minute pin per attempt head-of-line-
+// blocks the reconcile worker. 30s is generous: down on healthy hardware
+// completes in milliseconds. The bound frees the worker, not the device —
+// a D-state child ignores the SIGKILL and keeps its holds.
 const downTimeout = 30 * time.Second
 
-// downResource disconnects each peer connection then downs the resource.
-// Disconnecting first avoids a kernel deadlock when the peer is mid-resync:
-// drbdsetup down can enter uninterruptible sleep negotiating teardown with
-// an active connection. drbdsetup disconnect requires a peer_node_id, so
-// the peers are enumerated from status. Best-effort: a resource already
-// StandAlone or not configured has no connections to disconnect.
-// drbdsetup, not drbdadm: drbdadm refuses conflicting .res files, and
-// teardown is how a conflict gets removed.
-func (d *Driver) downResource(ctx context.Context, name string) error {
-	if out, err := d.Exec(ctx, "drbdsetup", "status", "--json", name); err == nil {
-		var parsed []jsonStatus
-		if json.Unmarshal([]byte(out), &parsed) == nil {
-			for _, res := range parsed {
-				if res.Name != name {
-					continue
-				}
-				for _, conn := range res.Connections {
-					_, _ = d.Exec(ctx, "drbdsetup", "disconnect", name,
-						strconv.Itoa(int(conn.PeerNodeID)))
-				}
-			}
-		}
+// downResource disconnects each peer connection, then downs the resource.
+// Disconnecting first avoids a kernel deadlock: drbdsetup down on a
+// resource with an active resync connection can enter uninterruptible
+// sleep negotiating teardown with the peer. Disconnects are best-effort
+// (a StandAlone or unconfigured connection errors harmlessly); drbdsetup
+// needs no config, takes peers by node id, and down exits 0 for unknown
+// names, keeping teardown idempotent. drbdsetup, not drbdadm: drbdadm
+// refuses conflicting .res files, and teardown is how a conflict gets
+// removed.
+func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32) error {
+	for _, id := range peerIDs {
+		_, _ = d.Exec(ctx, "drbdsetup", "disconnect", name, strconv.Itoa(int(id)))
 	}
 	downCtx, cancel := context.WithTimeout(ctx, downTimeout)
 	defer cancel()
@@ -692,12 +683,33 @@ func (d *Driver) downResource(ctx context.Context, name string) error {
 	return nil
 }
 
+// livePeerIDs reports the resource's DRBD peer node ids per the kernel's
+// live view — the ids downResource must disconnect. Empty when the
+// resource is down or the status is unreadable (nothing to disconnect).
+func (d *Driver) livePeerIDs(ctx context.Context, name string) []int32 {
+	out, err := d.Exec(ctx, "drbdsetup", "status", "--json", name)
+	if err != nil {
+		return nil
+	}
+	var parsed []jsonStatus
+	if json.Unmarshal([]byte(out), &parsed) != nil {
+		return nil
+	}
+	var ids []int32
+	for _, res := range parsed {
+		if res.Name == name {
+			ids = append(ids, res.peerIDs()...)
+		}
+	}
+	return ids
+}
+
 // Down stops the resource and removes its rendered state. Idempotent.
 func (d *Driver) Down(ctx context.Context, name string) error {
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
-	if err := d.downResource(ctx, name); err != nil {
+	if err := d.downResource(ctx, name, d.livePeerIDs(ctx, name)); err != nil {
 		return err
 	}
 	for _, suffix := range stateSuffixes {
@@ -809,6 +821,16 @@ type jsonStatus struct {
 			OutOfSyncKiB     int64   `json:"out-of-sync"`
 		} `json:"peer_devices"`
 	} `json:"connections"`
+}
+
+// peerIDs lists the entry's connection peer node ids — the handles
+// drbdsetup disconnect takes.
+func (s jsonStatus) peerIDs() []int32 {
+	ids := make([]int32, 0, len(s.Connections))
+	for _, c := range s.Connections {
+		ids = append(ids, c.PeerNodeID)
+	}
+	return ids
 }
 
 // Status parses `drbdsetup status --json <res>`.

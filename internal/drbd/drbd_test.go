@@ -704,6 +704,17 @@ func TestDownSecondariesSkipsPrimary(t *testing.T) {
 	fe.notCalledWith(t, "drbdsetup disconnect pvc-1")
 	fe.calledWith(t, "drbdsetup disconnect pvc-2 1")
 	fe.calledWith(t, "drbdsetup down pvc-2")
+	// Peer ids come from the sweep's own status parse — no per-resource
+	// re-fetch (shutdown is time-bounded; see cmd/main.go).
+	statusCalls := 0
+	for _, c := range fe.calls {
+		if strings.Contains(c, cmdDrbdsetupStatus) {
+			statusCalls++
+		}
+	}
+	if statusCalls != 1 {
+		t.Fatalf("want exactly 1 status call, got %d: %v", statusCalls, fe.calls)
+	}
 }
 
 func TestDownSecondariesContinuesOnError(t *testing.T) {
