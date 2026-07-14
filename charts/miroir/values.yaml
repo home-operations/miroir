@@ -57,6 +57,13 @@ overcommitRatio: 2
 # spare storage node exists, so majority quorum survives a single node
 # loss. Also retrofits existing freeze volumes at controller startup.
 autoTieBreaker: true
+# -- Convert a diskless leg (client or tie-breaker) that has stayed DRBD
+# Primary past this duration into a local diskful replica on its node, so a
+# settled consumer stops paying network I/O (LINSTOR's auto-diskful; Go
+# duration, e.g. "10m"). Conversion needs the leg's node in `nodes` with
+# fresh pool stats and room for the volume's full size. Empty disables it.
+# See the root README, "Auto-diskful".
+autoDiskfulAfter: ""
 # Storage-capacity-aware scheduling. When enabled, the external-provisioner
 # publishes CSIStorageCapacity objects from the driver's GetCapacity RPC
 # (capacity × overcommitRatio − provisioned, per storage node) and the
