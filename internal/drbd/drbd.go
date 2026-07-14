@@ -903,6 +903,53 @@ func (d *Driver) KernelAvailable(ctx context.Context) bool {
 	return err == nil
 }
 
+// KernelFloor is the minimum DRBD kernel module version the agent runs
+// against (Talos ≥ 1.13.0 ships it via the siderolabs/drbd extension).
+// Rendering a 9.3.1-era option (peer-tiebreaker, bitmap granularity)
+// against an older module errors drbdadm for every resource on the node,
+// so the floor is enforced once at startup instead of gating each option.
+const KernelFloor = "9.3.1"
+
+// KernelVersion reports the loaded module's version via drbdadm's
+// DRBD_KERNEL_VERSION (sourced from /proc/drbd). Only meaningful after
+// KernelAvailable: with no module loaded drbdadm falls back to a
+// compile-time guess.
+func (d *Driver) KernelVersion(ctx context.Context) (string, error) {
+	out, err := d.Exec(ctx, "drbdadm", "--version")
+	if err != nil {
+		return "", fmt.Errorf("drbdadm --version: %w", err)
+	}
+	for line := range strings.SplitSeq(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "DRBD_KERNEL_VERSION="); ok {
+			return strings.TrimSpace(v), nil
+		}
+	}
+	return "", errors.New("no DRBD_KERNEL_VERSION in drbdadm --version output")
+}
+
+// BelowKernelFloor reports whether a module version sorts below
+// KernelFloor, comparing dotted components numerically ("9.10" is newer
+// than "9.3"). A version that does not parse reads as below: refusing an
+// unknown platform beats rendering options it may reject.
+func BelowKernelFloor(version string) bool {
+	floor := strings.Split(KernelFloor, ".")
+	parts := strings.Split(strings.TrimSpace(version), ".")
+	for i, f := range floor {
+		want, _ := strconv.Atoi(f)
+		if i >= len(parts) {
+			return true // shorter than the floor: "9.3" < "9.3.1"
+		}
+		got, err := strconv.Atoi(parts[i])
+		if err != nil {
+			return true
+		}
+		if got != want {
+			return got < want
+		}
+	}
+	return false
+}
+
 // DiscardGranularity probes the backing device's discard granularity
 // (lsblk DISC-GRAN, bytes), clamped to [4096, 1MiB] — DRBD's sane range
 // for rs-discard-granularity. 0 means the device does not support

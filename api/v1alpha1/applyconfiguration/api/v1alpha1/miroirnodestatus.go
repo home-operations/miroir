@@ -39,6 +39,11 @@ type MiroirNodeStatusApplyConfiguration struct {
 	// otherwise), rounded — exhausting metadata wedges the pool
 	// independently of data space.
 	MetaUsedPercent *int32 `json:"metaUsedPercent,omitempty"`
+	// DRBDVersion is the DRBD kernel module version the agent probed at
+	// startup (e.g. "9.3.2"); absent on nodes without the module. The
+	// module ships with the host, not the agent image, so this is the
+	// per-node view that makes mixed clusters visible mid-upgrade.
+	DRBDVersion *string `json:"drbdVersion,omitempty"`
 	// ObservedAt is when these figures were last sampled; the controller
 	// ignores stats older than a few poll intervals as unknown.
 	ObservedAt *v1.Time `json:"observedAt,omitempty"`
@@ -74,6 +79,14 @@ func (b *MiroirNodeStatusApplyConfiguration) WithAllocatedBytes(value int64) *Mi
 // If called multiple times, the MetaUsedPercent field is set to the value of the last call.
 func (b *MiroirNodeStatusApplyConfiguration) WithMetaUsedPercent(value int32) *MiroirNodeStatusApplyConfiguration {
 	b.MetaUsedPercent = &value
+	return b
+}
+
+// WithDRBDVersion sets the DRBDVersion field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DRBDVersion field is set to the value of the last call.
+func (b *MiroirNodeStatusApplyConfiguration) WithDRBDVersion(value string) *MiroirNodeStatusApplyConfiguration {
+	b.DRBDVersion = &value
 	return b
 }
 

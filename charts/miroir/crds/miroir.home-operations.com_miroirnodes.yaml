@@ -26,6 +26,9 @@ spec:
     - jsonPath: .status.allocatedBytes
       name: Allocated
       type: integer
+    - jsonPath: .status.drbdVersion
+      name: DRBD
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -142,6 +145,13 @@ spec:
                   - type
                   type: object
                 type: array
+              drbdVersion:
+                description: |-
+                  DRBDVersion is the DRBD kernel module version the agent probed at
+                  startup (e.g. "9.3.2"); absent on nodes without the module. The
+                  module ships with the host, not the agent image, so this is the
+                  per-node view that makes mixed clusters visible mid-upgrade.
+                type: string
               metaUsedPercent:
                 description: |-
                   MetaUsedPercent is the dm-thin metadata usage (lvmthin only; 0

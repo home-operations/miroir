@@ -36,7 +36,11 @@ synchronous replication (2-3 replicas) via DRBD9.
 - Kernel modules on each storage node (per-OS notes below):
   `dm_thin_pool` (lvmthin), ZFS (zfs), `loop` plus a reflink-capable
   filesystem for `baseDir` (loopfile), and, for replication, the
-  DRBD9 `drbd` and `drbd_transport_tcp` modules.
+  DRBD9 `drbd` and `drbd_transport_tcp` modules, **version ≥ 9.3.1**
+  (on Talos: shipped by ≥ 1.13.0). The agent refuses to start on a
+  node whose module is older — the drbd-utils in the agent image
+  render options an older module rejects. Nodes without the module at
+  all are fine (local-only).
 - Kubelet [graceful node shutdown][gns], so the agent (a
   `system-node-critical` pod) is stopped _after_ workloads on reboot
   and can release DRBD backings before the backend pool exports;
@@ -49,7 +53,9 @@ ships inside the agent image; nodes only provide kernel modules.
 
 ### Talos
 
-Talos is the primary target. The stock kernel ships `dm_thin_pool`
+Talos is the primary target — **≥ 1.13.0** for replication (its
+`siderolabs/drbd` extension ships the DRBD 9.3.1 module the agent
+requires). The stock kernel ships `dm_thin_pool`
 and `loop` (the agent loads them on demand), and `/var` is XFS with
 `reflink=1`, so `lvmthin` and `loopfile` work out of the box. DRBD
 and ZFS modules come from [Image Factory][factory] system extensions;
