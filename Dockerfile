@@ -23,21 +23,28 @@ ENTRYPOINT ["/usr/local/bin/miroir"]
 # userland; the kernel modules come from the Talos kernel + extensions.
 # Debian (glibc) because the DRBD/ZFS ecosystem — LINBIT, Piraeus,
 # blockstor — builds and tests the storage stack against glibc only.
-# zfsutils-linux lives in contrib. Version notes (trixie, no backports):
-#   - drbd-utils 9.22: every CLI/JSON surface miroir uses predates it
-#     (adjust --skip-disk 8.9.7, status --json 8.9.8, quorum 8.9.11;
-#     peer_devices/percent-in-sync/out-of-sync/peer-disk-state and the
-#     per-peer `drbdsetup disconnect <res> <peer_node_id>` form
-#     (CTX_PEER_NODE) verified in the v9.22.0 source). The birth
-#     generation depends on drbdadm
+# zfsutils-linux lives in contrib. Version notes:
+#   - drbd-utils comes from LINBIT's public apt repo (native trixie
+#     dist), not Debian trixie, which is frozen at 9.22 with no
+#     backports: the 9.34.x line is what LINBIT builds and tests
+#     against the DRBD 9.3.x kernel module the siderolabs extension
+#     ships. The birth generation depends on drbdadm
 #     new-current-uuid --clear-bitmap behavior — re-validate with
 #     smoke.sh + conformance on real DRBD (the kind e2e exercises the
-#     local backend only) before shipping a base bump.
+#     local backend only) before shipping a utils or base bump.
 #   - zfs userland 2.3 against the siderolabs/zfs 2.4 module: userland
 #     older than the module is the supported direction, and miroir only
 #     uses ancient ops (create -V/snapshot/clone/promote/volsize).
 FROM debian:trixie-slim AS agent
+# LINBIT's keyring deb installs /etc/apt/trusted.gpg.d/linbit-keyring.gpg.
+ADD https://packages.linbit.com/public/linbit-keyring/trixie/linbit-keyring.deb /tmp/linbit-keyring.deb
 RUN sed -i 's|^Components: main$|Components: main contrib|' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update -qq && \
+    # ca-certificates: apt needs TLS trust to reach the LINBIT repo. Kept
+    # installed — the gateway stage's apt-get update fetches from it too.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates && \
+    dpkg -i /tmp/linbit-keyring.deb && rm /tmp/linbit-keyring.deb && \
+    echo "deb https://packages.linbit.com/public trixie misc" > /etc/apt/sources.list.d/linbit.list && \
     apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     drbd-utils \
