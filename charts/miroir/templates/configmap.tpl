@@ -1,6 +1,9 @@
 {{- if not .Values.nodes }}
 {{- fail "Helm values must define `nodes` — the per-node storage topology (see values.yaml)" }}
 {{- end }}
+{{- if hasKey .Values.drbd "verifyAlg" }}
+{{- fail "drbd.verifyAlg was renamed to drbd.verify.algorithm" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -64,7 +67,7 @@ data:
         {{- with .Values.drbd.net.maxBuffers }}
             max-buffers {{ . }};
         {{- end }}
-        {{- with .Values.drbd.verifyAlg }}
+        {{- with .Values.drbd.verify.algorithm }}
             verify-alg {{ . }};
         {{- end }}
         }

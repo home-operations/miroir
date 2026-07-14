@@ -341,16 +341,16 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --verify-schedule=0 5 * * 0
 
-  - it: fails when a verify schedule is set without verifyAlg
+  - it: fails when a verify schedule is set without an algorithm
     set:
       nodes:
         kharkiv:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
-        verifyAlg: ""
         verify:
+          algorithm: ""
           schedule: "0 5 * * 0"
     asserts:
       - failedTemplate:
-          errorMessage: "drbd.verify.schedule requires drbd.verifyAlg — a scheduled verify is meaningless without an arming verify-alg"
+          errorMessage: "drbd.verify.schedule requires drbd.verify.algorithm — a scheduled verify is meaningless without an arming verify-alg"

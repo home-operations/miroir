@@ -9,8 +9,8 @@
 {{-   end }}
 {{- end }}
 {{- $loopDirs = $loopDirs | uniq }}
-{{- if and .Values.drbd.verify.schedule (not .Values.drbd.verifyAlg) }}
-{{- fail "drbd.verify.schedule requires drbd.verifyAlg — a scheduled verify is meaningless without an arming verify-alg" }}
+{{- if and .Values.drbd.verify.schedule (not .Values.drbd.verify.algorithm) }}
+{{- fail "drbd.verify.schedule requires drbd.verify.algorithm — a scheduled verify is meaningless without an arming verify-alg" }}
 {{- end }}
 apiVersion: apps/v1
 kind: DaemonSet
