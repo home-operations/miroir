@@ -304,3 +304,98 @@ func TestPlaceStrictRefusesNonStorageTopology(t *testing.T) {
 		t.Fatalf("non-storage topology without remote access must refuse, got %v", err)
 	}
 }
+
+// topologySegment builds a single-segment GetCapacity request the way the
+// topology-aware external-provisioner does.
+func topologySegment(node string) *csi.GetCapacityRequest {
+	return &csi.GetCapacityRequest{
+		AccessibleTopology: &csi.Topology{Segments: map[string]string{constants.TopologyKey: node}},
+	}
+}
+
+// GetCapacity reports capacity×ratio − provisioned for the requested node, so
+// the scheduler filters a node exactly when place() would refuse it.
+func TestGetCapacityPerNode(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 10*gib, 0),
+			miroirNodeObj(nodeParis, 10*gib, 0),
+			volOn("existing-p", nodeParis, 5*gib),
+		),
+		Nodes: testNodes,
+	}
+	// Default 2× ratio: kharkiv headroom = 20 - 0 = 20 GiB; paris = 20 - 5 = 15 GiB.
+	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeKharkiv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 20*gib {
+		t.Fatalf("kharkiv capacity = %d, want %d", resp.GetAvailableCapacity(), 20*gib)
+	}
+	resp, err = c.GetCapacity(t.Context(), topologySegment(nodeParis))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 15*gib {
+		t.Fatalf("paris capacity = %d, want %d", resp.GetAvailableCapacity(), 15*gib)
+	}
+}
+
+// A node whose pool is provisioned past capacity×ratio reports zero, matching
+// place()'s overcommit refusal.
+func TestGetCapacityOvercommittedIsZero(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 10*gib, 0),
+			volOn("existing-k", nodeKharkiv, 25*gib), // 25 > 2×10
+		),
+		Nodes: testNodes,
+	}
+	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeKharkiv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 0 {
+		t.Fatalf("overcommitted node must report 0, got %d", resp.GetAvailableCapacity())
+	}
+}
+
+// A node without fresh stats, an unknown segment, and a non-storage node all
+// report zero so the scheduler steers elsewhere until stats land.
+func TestGetCapacityUnknownIsZero(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s, miroirNodeObj(nodeKharkiv, 10*gib, 0)),
+		Nodes:  testNodes,
+	}
+	// paris is a storage node but has published no stats yet.
+	if resp, _ := c.GetCapacity(t.Context(), topologySegment(nodeParis)); resp.GetAvailableCapacity() != 0 {
+		t.Fatalf("statless node must report 0, got %d", resp.GetAvailableCapacity())
+	}
+	// oslo is not in the storage map at all.
+	if resp, _ := c.GetCapacity(t.Context(), topologySegment(nodeOslo)); resp.GetAvailableCapacity() != 0 {
+		t.Fatalf("non-storage node must report 0, got %d", resp.GetAvailableCapacity())
+	}
+}
+
+// With no topology segment, GetCapacity reports the roomiest node — the
+// largest volume the cluster can still place.
+func TestGetCapacityNoTopologyReportsBestNode(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeKharkiv, 10*gib, 0), // 20 GiB headroom
+			miroirNodeObj(nodeParis, 100*gib, 0),  // 200 GiB headroom
+		),
+		Nodes: testNodes,
+	}
+	resp, err := c.GetCapacity(t.Context(), &csi.GetCapacityRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 200*gib {
+		t.Fatalf("no-topology capacity = %d, want roomiest node %d", resp.GetAvailableCapacity(), 200*gib)
+	}
+}

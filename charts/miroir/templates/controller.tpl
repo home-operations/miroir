@@ -114,6 +114,25 @@ spec:
             - --timeout={{ .Values.sidecars.provisioner.timeout }}
             - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
             - --default-fstype=ext4
+            {{- if .Values.storageCapacity.enabled }}
+            - --enable-capacity
+            # Own the CSIStorageCapacity objects from the controller Deployment
+            # (pod → ReplicaSet → Deployment) so they are garbage-collected with it.
+            - --capacity-ownerref-level=2
+            {{- end }}
+          {{- if .Values.storageCapacity.enabled }}
+          env:
+            # The provisioner reads these to create CSIStorageCapacity objects in
+            # this namespace and resolve the owning Deployment.
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          {{- end }}
           resources:
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 128Mi }

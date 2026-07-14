@@ -429,3 +429,31 @@ tests:
       - equal:
           path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
           value: "true"
+
+  - it: leaves the provisioner without capacity flags by default
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[1].args
+          content: --enable-capacity
+  - it: wires the provisioner capacity feature when storageCapacity is enabled
+    documentIndex: 0
+    set:
+      storageCapacity:
+        enabled: true
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[1].name
+          value: csi-provisioner
+      - contains:
+          path: spec.template.spec.containers[1].args
+          content: --enable-capacity
+      - contains:
+          path: spec.template.spec.containers[1].args
+          content: --capacity-ownerref-level=2
+      - equal:
+          path: spec.template.spec.containers[1].env[0].name
+          value: NAMESPACE
+      - equal:
+          path: spec.template.spec.containers[1].env[1].name
+          value: POD_NAME

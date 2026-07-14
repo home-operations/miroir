@@ -103,6 +103,7 @@ func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.Control
 		csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		csi.ControllerServiceCapability_RPC_GET_VOLUME,
 		csi.ControllerServiceCapability_RPC_VOLUME_CONDITION,
+		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
 	}
 	resp := &csi.ControllerGetCapabilitiesResponse{}
 	for _, t := range caps {
@@ -855,6 +856,57 @@ func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.Controlle
 			VolumeCondition: volumeCondition(vol),
 		},
 	}, nil
+}
+
+// GetCapacity reports a storage node's provisionable headroom so the
+// kube-scheduler (via the external-provisioner's CSIStorageCapacity objects)
+// steers a WaitForFirstConsumer pod onto a node whose pool can hold the volume,
+// instead of landing there and having CreateVolume refuse it. The number is the
+// same overcommit headroom place() guards on — capacity×ratio − provisioned —
+// so the scheduler filters a node exactly when placement would reject it.
+//
+// The provisioner calls this once per (StorageClass, topology segment); miroir's
+// pool capacity is per-node and independent of a class's replica count, so the
+// parameters are not consulted. A node without fresh stats reports zero (the
+// scheduler avoids it) until its agent publishes — self-healing within
+// poolStatsInterval; place() stays the authority and still allows an
+// unknown-stats node if the pod lands there anyway.
+func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (*csi.GetCapacityResponse, error) {
+	stats, err := c.poolStats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list := &miroirv1alpha1.MiroirVolumeList{}
+	if err := c.reader().List(ctx, list); err != nil {
+		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
+	}
+	provisioned := provisionedPerNode(list.Items, "")
+	ratio := c.OvercommitRatio
+	if ratio <= 0 {
+		ratio = defaultOvercommitRatio
+	}
+	available := func(node string) int64 {
+		if _, ok := c.Nodes[node]; !ok {
+			return 0 // not a storage node — no pool here
+		}
+		st, ok := stats[node]
+		if !ok || st.CapacityBytes <= 0 {
+			return 0 // no fresh stats yet; excluded until the agent publishes
+		}
+		return max(0, int64(float64(st.CapacityBytes)*ratio)-provisioned[node])
+	}
+
+	// Topology-aware provisioner: one segment per call → that node's headroom.
+	if seg := req.GetAccessibleTopology().GetSegments(); seg != nil {
+		return &csi.GetCapacityResponse{AvailableCapacity: available(seg[constants.TopologyKey])}, nil
+	}
+	// No segment: report the roomiest node — a volume's replica lands in one
+	// node's pool, so that is the largest volume the cluster can still place.
+	var best int64
+	for node := range c.Nodes {
+		best = max(best, available(node))
+	}
+	return &csi.GetCapacityResponse{AvailableCapacity: best}, nil
 }
 
 // ListVolumes returns all provisioned volumes for external-provisioner reconciliation.

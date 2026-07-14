@@ -76,6 +76,16 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+  {{- if .Values.storageCapacity.enabled }}
+  # external-provisioner capacity feature: publishes CSIStorageCapacity and
+  # walks pod → ReplicaSet → Deployment for the owner reference.
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csistoragecapacities"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get"]
+  {{- end }}
   {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
   # leader election (replicaCount > 1 or leaderElection.enabled): the
   # controller manager and each CSI sidecar hold their own

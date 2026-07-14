@@ -28,3 +28,11 @@ tests:
       - contains:
           path: spec.volumeLifecycleModes
           content: Persistent
+  - it: flips storageCapacity when the capacity feature is enabled
+    set:
+      storageCapacity:
+        enabled: true
+    asserts:
+      - equal:
+          path: spec.storageCapacity
+          value: true

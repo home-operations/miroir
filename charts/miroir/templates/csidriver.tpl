@@ -8,4 +8,4 @@ spec:
   fsGroupPolicy: ReadWriteOnceWithFSType
   volumeLifecycleModes:
     - Persistent
-  storageCapacity: false
+  storageCapacity: {{ .Values.storageCapacity.enabled }}
