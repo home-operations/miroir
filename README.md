@@ -396,24 +396,19 @@ Trade-offs to understand:
   preference: PV node affinity is all-or-nothing, so the scheduler is
   blind to replica locations. Keep locality-sensitive workloads on a
   pinned class, or steer them with their own node/pod affinity.
-- **An attached client shifts quorum math.** DRBD counts every peer's
-  vote: a 2+1 volume with a client attached has 4 votes, so majority
-  becomes 3. While the client is connected this is neutral-to-helpful
-  (the client's vote replaces a lost node's); the regression window
-  is two simultaneous failures, which majority-of-4 freezes where
-  majority-of-3 tolerated one loss. Client legs come and go with
-  pods, so the math shifts at stage/unstage, not permanently.
+- **An attached client shifts quorum math.** Its DRBD vote raises the
+  majority threshold while attached (a 2+1 volume becomes 4 votes,
+  majority 3); neutral-to-helpful for a single failure, stricter for
+  two simultaneous ones.
 - **Consumers must run on nodes listed in `nodes`.** Agents only
   start on mapped nodes, so a pod scheduled onto an unmapped node has
-  no CSI driver to mount with and wedges in `ContainerCreating`, and
-  with no PV affinity nothing steers the scheduler away. Keep every
+  no CSI driver and wedges in `ContainerCreating`. Keep every
   schedulable node in the map (a `loopfile` entry with a few spare GB
   is enough) or set `allowRemoteVolumeAccess: "false"`.
-- **A lost node can strand its client leg.** If a node dies without
-  unstaging, its entry in `spec.clients` (and teardown finalizer)
-  lingers, holding a quorum vote and blocking volume deletion until
-  the node returns or the entry is removed by hand; the same
-  semantics as a dead replica node.
+- **A lost node can strand its client leg.** Like a dead replica
+  node, its `spec.clients` entry holds a quorum vote and blocks
+  volume deletion until the node returns or the entry is removed by
+  hand.
 
 #### Auto-diskful
 
@@ -593,11 +588,6 @@ and `monitoring.dashboards.enabled: true` installs a Grafana
 dashboard, either a sidecar-labelled ConfigMap or a grafana-operator
 `GrafanaDashboard` CR via `monitoring.dashboards.grafanaOperator`.
 
-Both processes also expose controller-runtime metrics
-(`controller_runtime_reconcile_errors_total` is the wedged-reconcile
-signal), and mounted volumes get `kubelet_volume_stats_*` for free
-via CSI.
-
 ## Coexistence with other provisioners
 
 - **OpenEBS LocalPV-ZFS**: keep your pool and let `openebs-zfs` stay
@@ -626,19 +616,13 @@ via CSI.
 - **Replicated volume stuck in `Degraded`**: one leg isn't
   `UpToDate`. `kubectl describe miroirvolume <name>` shows per-node
   status; usually a transient DRBD sync.
-- **Replicated volume stuck `Connecting`, no split-brain, PVC hangs
-  in `ContainerCreating`**: the DRBD replication port (default 7000,
-  allocated per volume ascending) is likely occupied by a
-  host-network tenant, most commonly the Ceph mgr dashboard. The
-  agent runs `hostNetwork: true`, so the collision is silent: `dmesg`
-  on the node shows `Failed to initiate connection, err=-98`
-  (EADDRINUSE), and peers dialing in log
-  `Wrong magic value 0x48545450` (`"HTTP"` in ASCII).
-  `curl -sI http://<node>:7000/` identifies the squatter. Fix by
-  setting `drbd.portBase` (e.g. `7100`), or move the Ceph dashboard
-  (`cephClusterSpec.dashboard.port: 8081`). Existing volumes keep
-  their assigned ports; only new allocations use the new base
-  ([#148](https://github.com/home-operations/miroir/issues/148)).
+- **Replicated volume stuck `Connecting`, no split-brain**: a
+  host-network tenant (commonly the Ceph mgr dashboard) occupies the
+  DRBD replication port; `dmesg` shows
+  `Failed to initiate connection, err=-98`. Set `drbd.portBase` (e.g.
+  `7100`) to move miroir's range; existing volumes keep their ports.
+  Full forensics in
+  [#148](https://github.com/home-operations/miroir/issues/148).
 
 ## Uninstall
 
@@ -654,37 +638,9 @@ what is stuck, and the agent log on the affected node
 (`kubectl logs -n miroir-system -l app.kubernetes.io/component=agent`)
 shows the failing call to clean up manually.
 
-## Roadmap
-
-**Should land soon**
-
-- [x] Capacity-aware placement
-- [x] CSI `CSIStorageCapacity` reporting per pool (opt-in:
-      `storageCapacity.enabled`)
-- [x] Per-volume DRBD state metrics (`miroir_volume_up_to_date` /
-      `connected` / `split_brain` / `suspended` / `resync_ratio`;
-      opt-in PodMonitor via `monitoring.podMonitor.enabled`)
-- [x] Per-volume quorum / failed-disk / out-of-sync gauges and pool
-      capacity metrics
-
-**Natural extensions**
-
-- [ ] Online volume migration (node-to-node, backend-to-backend)
-- [ ] Thick LVM volumes
-- [ ] Read-only clones
-- [ ] Pool hot-resize
-
-**Waiting on upstream**
-
-- [ ] `VolumeGroupSnapshot` (Kubernetes 1.36 GA)
-- [ ] CBT-based incremental backups (`thin_delta` / `zfs diff`)
-
-**Nice-to-have**
-
-- [ ] `mctl` CLI wrapping the CRDs
-
 ## Development
 
-Architecture: [notes/DESIGN.md](notes/DESIGN.md). Tooling pinned with
-[mise](https://mise.jdx.dev); `mise run test`, `mise run lint`,
-`mise run build`, `mise run manifests`.
+Architecture: [notes/DESIGN.md](notes/DESIGN.md). Planned work lives
+in the [issue tracker](https://github.com/home-operations/miroir/issues).
+Tooling pinned with [mise](https://mise.jdx.dev); `mise run test`,
+`mise run lint`, `mise run build`, `mise run manifests`.
