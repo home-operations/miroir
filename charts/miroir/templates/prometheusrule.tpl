@@ -82,6 +82,24 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
+        - alert: MiroirVolumeTeardownWedged
+          expr: miroir_volume_wedged == 1
+          for: 1m
+          labels:
+            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+          annotations:
+            summary: >-
+              Volume {{ "{{" }} $labels.volume {{ "}}" }} teardown is wedged
+              in the DRBD kernel module on {{ "{{" }} $labels.node {{ "}}" }}
+            description: >-
+              The kernel can no longer tear down this volume's DRBD resource
+              (device stuck Detaching after a refcount underflow,
+              LINBIT/drbd#137). The agent parked the teardown at a slow
+              retry; reboot the node to clear the kernel state.
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
         - alert: MiroirVolumeDiskFailed
           expr: miroir_volume_disk_failed == 1
           for: 5m

@@ -532,11 +532,18 @@ func main() {
 		if drbdReady {
 			// Reap kernel resources and rendered config orphaned by a crash
 			// between up and down — they hold backing devices open forever.
+			// The sweeps return an error only when the API list fails: exit
+			// so the restart retries it (without the list they cannot tell
+			// orphaned from owned, and nothing else re-runs them). Sweep
+			// execution itself is best-effort and logged inside — a wedged
+			// resource (LINBIT/drbd#137) must not keep the agent from
+			// serving the node's healthy volumes (issue #195).
 			if err := sweepOrphans(nodeName, drbdDriver); err != nil {
 				setupLog.Error(err, "orphan sweep failed")
 				os.Exit(1)
 			}
-			// Lift any IO barrier left by a previous agent crash.
+			// Lift any IO barrier left by a previous agent crash; same
+			// fatal-only-on-API-failure contract.
 			if err := resumeStaleBarriers(drbdDriver, apiStartupWait); err != nil {
 				setupLog.Error(err, "barrier resume sweep failed")
 				os.Exit(1)
@@ -576,6 +583,7 @@ func main() {
 			DRBD:       drbdDriver,
 			DRBDEvents: drbdEvents,
 			Workers:    volumeWorkers,
+			Recorder:   mgr.GetEventRecorder("miroir-agent"),
 		}
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")
@@ -586,6 +594,7 @@ func main() {
 			NodeName: nodeName,
 			Pools:    pools,
 			DRBD:     drbdDriver,
+			Recorder: mgr.GetEventRecorder("miroir-agent"),
 		}
 		if err := snapReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up snapshot reconciler")
@@ -708,6 +717,8 @@ func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver) {
 
 // sweepOrphans removes DRBD state with no owning volume on this node,
 // using a direct (uncached) client — the manager has not started yet.
+// Returns an error only when the volume list cannot be fetched; the sweep
+// itself is best-effort and its failures are logged here (issue #195).
 func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
@@ -733,14 +744,20 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 			}
 		}
 	}
-	return driver.SweepOrphans(context.Background(),
-		func(name string) bool { return owned[name] })
+	if err := driver.SweepOrphans(context.Background(),
+		func(name string) bool { return owned[name] }); err != nil {
+		setupLog.Error(err, "orphan sweep incomplete")
+	}
+	return nil
 }
 
 // resumeStaleBarriers lifts suspend-io left behind by a previous crash.
 // The kernel's view drives the sweep: a crash between suspend-io and the
 // status patch leaves a frozen device no snapshot records. Barriers whose
 // round is still within the deadline are the reconciler's to drive.
+// Returns an error only when the snapshot list cannot be fetched; resume
+// failures are per-resource, logged here — one wedged resource must not
+// strand the other frozen volumes' barriers (issue #195).
 func resumeStaleBarriers(driver *drbd.Driver, apiBudget time.Duration) error {
 	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
@@ -764,13 +781,17 @@ func resumeStaleBarriers(driver *drbd.Driver, apiBudget time.Duration) error {
 		setupLog.Error(err, "cannot list suspended resources; skipping barrier sweep")
 		return nil
 	}
+	var errs []error
 	for _, vol := range suspended {
 		if fresh[vol] {
 			continue
 		}
 		if err := driver.ResumeIO(context.Background(), vol); err != nil {
-			return fmt.Errorf("resume stale barrier on %s: %w", vol, err)
+			errs = append(errs, fmt.Errorf("resume stale barrier on %s: %w", vol, err))
 		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		setupLog.Error(err, "barrier resume sweep incomplete")
 	}
 	return nil
 }

@@ -870,6 +870,224 @@ func TestDownSecondariesContinuesOnError(t *testing.T) {
 	fe.calledWith(t, "drbdsetup down pvc-3")
 }
 
+func TestSweepOrphansContinuesOnError(t *testing.T) {
+	fe := &fakeExec{
+		responses: map[string]string{
+			cmdDrbdsetupStatus: `[
+				{"name":"pvc-1","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]},
+				{"name":"pvc-2","role":"Secondary","connections":[]}]`,
+		},
+		errOn: map[string]error{"down pvc-1": errors.New("signal: killed")},
+	}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	for _, name := range []string{volPvc1, "pvc-2"} {
+		if err := os.WriteFile(d.path(name+".res"), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := d.SweepOrphans(t.Context(), func(string) bool { return false })
+	if err == nil || !strings.Contains(err.Error(), volPvc1) {
+		t.Fatalf("want a joined error naming pvc-1, got %v", err)
+	}
+	// One wedged orphan must not strand the rest of the sweep.
+	fe.calledWith(t, "drbdsetup down pvc-2")
+	// The wedged resource is still configured in the kernel: its rendered
+	// config must survive, while the downed orphan's is removed.
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("wedged resource's config must remain: %v", err)
+	}
+	if _, err := os.Stat(d.path("pvc-2.res")); !os.IsNotExist(err) {
+		t.Fatalf("downed orphan's config must be removed, got %v", err)
+	}
+}
+
+// A resource stuck Detaching with the connections gone is wedged in the
+// kernel (LINBIT/drbd#137): Down must never spawn another down — each
+// attempt can strand another unkillable process. The first sighting
+// defers (a killed down's detach may still be draining); the second
+// consecutive sighting escalates to ErrWedged.
+func TestDownWedgedSkipsDown(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Detaching"}],"connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	err := d.Down(t.Context(), volPvc1)
+	if err == nil || errors.Is(err, ErrWedged) {
+		t.Fatalf("first sighting must defer without escalating, got %v", err)
+	}
+	if err := d.Down(t.Context(), volPvc1); !errors.Is(err, ErrWedged) {
+		t.Fatalf("second consecutive sighting must return ErrWedged, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+	// The rendered config stays: the resource is still configured in the
+	// kernel, and a post-reboot retry finishes the teardown.
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("wedged resource's config must remain: %v", err)
+	}
+}
+
+// A lingering StandAlone connection — which disconnect refuses (-9) and
+// cannot remove — must not defeat the wedge signature.
+func TestDownWedgedWithStandAlonePeer(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Detaching"}],
+			"connections":[{"peer-node-id":1,"connection-state":"StandAlone"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = d.Down(t.Context(), volPvc1)
+	if err := d.Down(t.Context(), volPvc1); !errors.Is(err, ErrWedged) {
+		t.Fatalf("StandAlone peer must not defeat the signature, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+}
+
+// A completed teardown between two sightings resets the escalation: the
+// signature vanishing means the drain finished, so a later teardown of a
+// same-named resource must start from a clean slate.
+func TestDownWedgeSightingResetsWhenSignatureClears(t *testing.T) {
+	wedged := `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Detaching"}],"connections":[]}]`
+	healthy := `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + DiskUpToDate + `"}],"connections":[]}]`
+	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: wedged}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = d.Down(t.Context(), volPvc1) // first sighting recorded
+	fe.responses[cmdDrbdsetupStatus] = healthy
+	if err := d.Down(t.Context(), volPvc1); err != nil {
+		t.Fatalf("signature gone: down must proceed, got %v", err)
+	}
+	fe.calledWith(t, "drbdsetup down pvc-1")
+	// Re-render and wedge again: escalation must need two fresh sightings.
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe.responses[cmdDrbdsetupStatus] = wedged
+	if err := d.Down(t.Context(), volPvc1); errors.Is(err, ErrWedged) {
+		t.Fatal("a cleared sighting must not carry over to a fresh wedge")
+	}
+}
+
+// Detaching with a peer connection still up is a normal teardown
+// transient, not the wedge signature — down must proceed.
+func TestDownDetachingWithPeersStillDowns(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Detaching"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Down(t.Context(), volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup down pvc-1")
+}
+
+// A wedged orphan must be skipped from the sweep's own status parse —
+// spawning a down against it can only hang 30s and strand another
+// unkillable process per agent boot.
+func TestSweepOrphansSkipsWedgedWithoutDown(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Secondary","devices":[{"disk-state":"Detaching"}],"connections":[]},
+			{"name":"pvc-2","role":"Secondary","connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	err := d.SweepOrphans(t.Context(), func(string) bool { return false })
+	if !errors.Is(err, ErrWedged) {
+		t.Fatalf("want the wedged orphan surfaced as ErrWedged, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, "drbdsetup down pvc-2")
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("wedged orphan's config must remain: %v", err)
+	}
+}
+
+// An unreadable kernel view must abort the sweep before any file is
+// removed: a live resource is then indistinguishable from a stale file,
+// and stripping its config is the state the stuck-guard exists to prevent.
+func TestSweepOrphansKeepsFilesWhenStatusUnreadable(t *testing.T) {
+	fe := &fakeExec{errOn: map[string]error{
+		cmdDrbdsetupStatus: errors.New("signal: killed"),
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.SweepOrphans(t.Context(), func(string) bool { return false }); err == nil {
+		t.Fatal("an unreadable status must surface an error")
+	}
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("no file may be removed without the kernel view: %v", err)
+	}
+}
+
+// DownSecondaries must not spawn a down against a wedged resource either:
+// at shutdown it can only hang until the deadline and strand an
+// unkillable process into the reboot.
+func TestDownSecondariesSkipsWedged(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Secondary","devices":[{"disk-state":"Detaching"}],"connections":[]},
+			{"name":"pvc-2","role":"Secondary","connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	err := d.DownSecondaries(t.Context())
+	if !errors.Is(err, ErrWedged) {
+		t.Fatalf("want the wedged resource surfaced as ErrWedged, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, "drbdsetup down pvc-2")
+}
+
+func TestSweepOrphansSkipsOwned(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Secondary","connections":[]},
+			{"name":"pvc-2","role":"Secondary","connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	owned := func(name string) bool { return name == volPvc1 }
+	if err := d.SweepOrphans(t.Context(), owned); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, "drbdsetup down pvc-2")
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("owned resource's config must remain: %v", err)
+	}
+}
+
 func TestIsResizeDuringResync(t *testing.T) {
 	if !IsResizeDuringResync(errors.New("exit status 10: Resize not allowed during resync.")) {
 		t.Fatal("must match DRBD's resync refusal")

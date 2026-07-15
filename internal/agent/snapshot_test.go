@@ -27,6 +27,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -132,6 +133,122 @@ func TestSnapshotCoordinatorFailsOverFromDeadReplica0(t *testing.T) {
 	}
 	if got.Status.IOSuspended {
 		t.Fatalf("survivor coordinator must void the dead round: %+v", got.Status)
+	}
+}
+
+// A suspend-io that fails persistently (e.g. a wedged kernel module,
+// LINBIT/drbd#137) must not ride the workqueue's exponential backoff
+// forever: after barrierFailLimit consecutive failures the round parks at
+// barrierRetryAfter with a BarrierStuck warning.
+func TestSnapshotBarrierStuckParksAfterLimit(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{
+		statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+			"connections":[{"connection-state":"Connected"}]}]`,
+		errOn: map[string]error{"suspend-io": errors.New(
+			"exit status 20: Command 'drbdsetup suspend-io 1001' did not terminate within 5 seconds")},
+	}
+	rec := events.NewFakeRecorder(8)
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}, Recorder: rec}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	for i := 1; i < barrierFailLimit; i++ {
+		if _, err := r.Reconcile(t.Context(), req); err == nil {
+			t.Fatalf("failure %d must surface for the fast backoff", i)
+		}
+	}
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil {
+		t.Fatalf("failure %d must park the retry, not error: %v", barrierFailLimit, err)
+	}
+	if res.RequeueAfter != barrierRetryAfter {
+		t.Fatalf("want %v parked retry, got %v", barrierRetryAfter, res.RequeueAfter)
+	}
+	select {
+	case e := <-rec.Events:
+		if !strings.Contains(e, "BarrierStuck") {
+			t.Fatalf("want a BarrierStuck warning, got %q", e)
+		}
+	default:
+		t.Fatal("want a BarrierStuck warning event")
+	}
+}
+
+// On a wedged module the status read is the call that fails (hanging
+// until execTimeout kills it); it must ride the same bounded retry as
+// suspend-io or the give-up never engages.
+func TestSnapshotStatusFailureParksAfterLimit(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{errOn: map[string]error{cmdStatus: errors.New("signal: killed")}}
+	rec := events.NewFakeRecorder(8)
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}, Recorder: rec}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	for i := 1; i < barrierFailLimit; i++ {
+		if _, err := r.Reconcile(t.Context(), req); err == nil {
+			t.Fatalf("failure %d must surface for the fast backoff", i)
+		}
+	}
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != barrierRetryAfter {
+		t.Fatalf("want parked retry %v, got %v / %v", barrierRetryAfter, res.RequeueAfter, err)
+	}
+	select {
+	case e := <-rec.Events:
+		if !strings.Contains(e, "BarrierStuck") {
+			t.Fatalf("want a BarrierStuck warning, got %q", e)
+		}
+	default:
+		t.Fatal("want a BarrierStuck warning event")
+	}
+}
+
+// The failure count must die with the snapshot on the volume-already-gone
+// finalizer path too, or a later snapshot reusing the name inherits it
+// pre-parked.
+func TestSnapshotVolGoneClearsBarrierFails(t *testing.T) {
+	s := newScheme(t)
+	snap := snapObj(snapSnap1, volPvc1, nodeA)
+	now := metav1.NewTime(time.Now())
+	snap.DeletionTimestamp = &now
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}).Build()
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD:         &drbd.Driver{StateDir: t.TempDir(), Exec: (&fakeDRBDExec{}).run},
+		barrierFails: map[string]int{snapSnap1: 3}}
+
+	reconcileSnap(t, r, snapSnap1)
+
+	r.barrierFailsMu.Lock()
+	_, leaked := r.barrierFails[snapSnap1]
+	r.barrierFailsMu.Unlock()
+	if leaked {
+		t.Fatal("the failure count must die with the snapshot on the vol-gone path")
 	}
 }
 

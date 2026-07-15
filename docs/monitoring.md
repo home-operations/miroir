@@ -14,9 +14,11 @@ diskful per-volume gauges also carry a `pool` label naming the pool
 backing that node's leg — pools are per-node, so two legs of one
 volume can report different pools — which lets you scope volume
 health to a pool (the shipped dashboard's `pool` variable does
-exactly that). `miroir_volume_diskless_primary` is the exception: a
-diskless leg holds no backing device in any pool, so it stays
-volume-only. The agent exports, per volume on that node:
+exactly that). `miroir_volume_diskless_primary` and
+`miroir_volume_wedged` are the exceptions: a diskless leg holds no
+backing device in any pool, and a wedged teardown's pool can be
+unknowable, so both stay volume-only. The agent exports, per volume
+on that node:
 
 | Metric                                        | Meaning                                                                                                                                   |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -32,6 +34,7 @@ volume-only. The agent exports, per volume on that node:
 | `miroir_volume_diskless_primary`              | 1 while a diskless leg (client or tie-breaker) is Primary here: the consumer pays network I/O; see auto-diskful                           |
 | `miroir_volume_verify_last_timestamp_seconds` | unix time of the last completed scheduled verify; alert on staleness to catch a schedule that stopped firing                              |
 | `miroir_volume_verify_out_of_sync_bytes`      | out-of-sync bytes the last scheduled verify found (0 = clean)                                                                             |
+| `miroir_volume_wedged`                        | 1 when the kernel can no longer tear down this volume's DRBD resource (LINBIT/drbd#137); only a node reboot clears it                     |
 
 Each agent additionally exports its pool capacities
 (`miroir_pool_capacity_bytes` / `miroir_pool_allocated_bytes` /
@@ -67,7 +70,7 @@ on their PVCs (`kubectl describe pvc`).
 
 `monitoring.prometheusRule.enabled: true` ships starter alerts for
 all of the above (split-brain, quorum lost, stranded barrier, disk
-failed, degraded replication, sustained out-of-sync, an unavailable
+failed, a wedged teardown, degraded replication, sustained out-of-sync, an unavailable
 RWX export, a stale verify schedule, pool and thin-metadata usage,
 and a down agent — a node whose agent stops answering scrapes loses
 every `miroir_*` series, so none of the per-volume alerts can fire
@@ -78,5 +81,6 @@ dashboard, either a sidecar-labelled ConfigMap or a grafana-operator
 
 The per-volume alerts inherit the `pool` label and name the pool in
 their summaries, so Alertmanager routes and silences can target a
-single pool. The dashboard's `pool` variable defaults to **All**;
+single pool (the wedged-teardown alert is the exception: a pool can
+be unknowable mid-teardown, so its metric carries only `volume`). The dashboard's `pool` variable defaults to **All**;
 narrowing it filters the volume-health and pool panels together.

@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -47,6 +48,14 @@ type Driver struct {
 	// Mknod creates device nodes; injectable because the real call needs
 	// CAP_MKNOD. Nil means unix.Mknod.
 	Mknod func(path string, mode uint32, dev int) error
+
+	// wedgeSeen stamps resources whose teardown wore the wedge signature
+	// once (see ErrWedged). Down escalates only on the second consecutive
+	// sighting: a killed down whose detach is still draining wears the
+	// same signature briefly, and a premature ErrWedged pages "reboot
+	// required" for a state that resolves itself.
+	wedgeMu   sync.Mutex
+	wedgeSeen map[string]bool
 }
 
 // isMissingMetadata matches drbdadm's complaint when a backing device
@@ -292,41 +301,61 @@ var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"
 
 // SweepOrphans tears down kernel resources and rendered config files with
 // no owning volume on this node — leftovers of an agent crash between up
-// and down, which would otherwise hold backing devices open forever.
+// and down, which would otherwise hold backing devices open forever. Best
+// effort per resource: errors are joined so one stuck resource cannot
+// strand the rest. An unreadable kernel view aborts the whole sweep,
+// files included — without it a live resource is indistinguishable from a
+// stale file, and stripping its config is the state this sweep's own
+// stuck-guard exists to prevent.
 func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool) error {
 	out, err := d.Exec(ctx, "drbdsetup", "status", "--json")
-	if err == nil {
-		var parsed []jsonStatus
-		if jsonErr := json.Unmarshal([]byte(out), &parsed); jsonErr == nil {
-			for _, res := range parsed {
-				if owned(res.Name) {
-					continue
-				}
-				if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
-					return fmt.Errorf("down orphan %s: %w", res.Name, err)
-				}
-			}
+	if err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
+	var parsed []jsonStatus
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		return fmt.Errorf("parse status: %w", err)
+	}
+	var errs []error
+	stuck := map[string]bool{}
+	for _, res := range parsed {
+		if owned(res.Name) {
+			continue
+		}
+		// A wedged orphan's down can only hang 30s and strand another
+		// unkillable process (issue #195); the signature is already in
+		// hand from this sweep's own parse, so skip without spawning one.
+		if res.wedgeSignature() {
+			errs = append(errs, fmt.Errorf("orphan %s: %w", res.Name, ErrWedged))
+			stuck[res.Name] = true
+			continue
+		}
+		if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
+			errs = append(errs, fmt.Errorf("down orphan %s: %w", res.Name, err))
+			stuck[res.Name] = true
 		}
 	}
 	entries, err := os.ReadDir(d.StateDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+		if !os.IsNotExist(err) {
+			errs = append(errs, err)
 		}
-		return err
+		return errors.Join(errs...)
 	}
 	for _, e := range entries {
 		name, found := strings.CutSuffix(e.Name(), ".res")
-		if !found || owned(name) {
+		// A resource whose down failed is still configured in the kernel;
+		// its rendered config stays visible to recovery tooling.
+		if !found || owned(name) || stuck[name] {
 			continue
 		}
 		for _, suffix := range stateSuffixes {
 			if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
-				return err
+				errs = append(errs, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // DownSecondaries brings down every resource this node holds Secondary,
@@ -348,6 +377,13 @@ func (d *Driver) DownSecondaries(ctx context.Context) error {
 	var errs []error
 	for _, res := range parsed {
 		if res.Role == rolePrimary {
+			continue
+		}
+		// Never spawn a down against the wedge signature (issue #195):
+		// it can only hang until the shutdown deadline and strand an
+		// unkillable process into the reboot.
+		if res.wedgeSignature() {
+			errs = append(errs, fmt.Errorf("%s: %w", res.Name, ErrWedged))
 			continue
 		}
 		if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
@@ -670,18 +706,46 @@ func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int3
 // a D-state child ignores the SIGKILL and keeps its holds.
 const downTimeout = 30 * time.Second
 
+// disconnectTimeout bounds each best-effort disconnect in downResource,
+// which otherwise rides RealExec's 2-minute bound — per peer, per teardown
+// attempt — when the kernel resource is wedged. A healthy disconnect
+// completes in milliseconds.
+const disconnectTimeout = 10 * time.Second
+
+// ErrWedged marks a resource the kernel can no longer tear down: the
+// device is stuck Detaching with nothing left to disconnect, so drbdsetup
+// down blocks in uninterruptible sleep and the next attempt hits the same
+// wall (refcount underflow, LINBIT/drbd#137). Callers must leave the fast
+// retry loop — every extra down attempt can strand another unkillable
+// process — and surface that only a node reboot clears it. Down escalates
+// to this only on the second consecutive sighting of the signature, so a
+// detach still draining gets one retry cycle to finish first.
+var ErrWedged = errors.New("resource wedged in kernel (LINBIT/drbd#137): node reboot required")
+
 // downResource disconnects each peer connection, then downs the resource.
 // Disconnecting first avoids a kernel deadlock: drbdsetup down on a
 // resource with an active resync connection can enter uninterruptible
 // sleep negotiating teardown with the peer. Disconnects are best-effort
-// (a StandAlone or unconfigured connection errors harmlessly); drbdsetup
+// (a StandAlone or unconfigured connection errors harmlessly) — except
+// when one is killed at its deadline: then the connection may be half-torn
+// and running down would race exactly that teardown, so the down is
+// deferred to the caller's retry (which disconnects again). drbdsetup
 // needs no config, takes peers by node id, and down exits 0 for unknown
 // names, keeping teardown idempotent. drbdsetup, not drbdadm: drbdadm
 // refuses conflicting .res files, and teardown is how a conflict gets
 // removed.
 func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32) error {
 	for _, id := range peerIDs {
-		_, _ = d.Exec(ctx, "drbdsetup", "disconnect", name, strconv.Itoa(int(id)))
+		dcCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
+		_, _ = d.Exec(dcCtx, "drbdsetup", "disconnect", name, strconv.Itoa(int(id)))
+		expired := dcCtx.Err() != nil
+		cancel()
+		if expired {
+			// ErrBusy: the caller's short retry re-disconnects; the state
+			// clears on its own once the kernel finishes the teardown.
+			return fmt.Errorf("disconnect %s peer %d killed after %s; deferring down: %w",
+				name, id, disconnectTimeout, backend.ErrBusy)
+		}
 	}
 	downCtx, cancel := context.WithTimeout(ctx, downTimeout)
 	defer cancel()
@@ -691,33 +755,71 @@ func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32)
 	return nil
 }
 
-// livePeerIDs reports the resource's DRBD peer node ids per the kernel's
-// live view — the ids downResource must disconnect. Empty when the
-// resource is down or the status is unreadable (nothing to disconnect).
-func (d *Driver) livePeerIDs(ctx context.Context, name string) []int32 {
+// liveTeardownView reports the resource's DRBD peer node ids per the
+// kernel's live view — the ids downResource must disconnect — and whether
+// the resource wears the wedge signature (see jsonStatus.wedgeSignature).
+// Empty/false when the resource is down or the status is unreadable
+// (nothing to disconnect).
+func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []int32, wedged bool) {
 	out, err := d.Exec(ctx, "drbdsetup", "status", "--json", name)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	var parsed []jsonStatus
 	if json.Unmarshal([]byte(out), &parsed) != nil {
-		return nil
+		return nil, false
 	}
-	var ids []int32
 	for _, res := range parsed {
-		if res.Name == name {
-			ids = append(ids, res.peerIDs()...)
+		if res.Name != name {
+			continue
+		}
+		peerIDs = append(peerIDs, res.peerIDs()...)
+		if res.wedgeSignature() {
+			wedged = true
 		}
 	}
-	return ids
+	return peerIDs, wedged
+}
+
+// markWedgeSighting records one sighting of the wedge signature and
+// reports whether an earlier consecutive sighting was already on record.
+func (d *Driver) markWedgeSighting(name string) (again bool) {
+	d.wedgeMu.Lock()
+	defer d.wedgeMu.Unlock()
+	if d.wedgeSeen == nil {
+		d.wedgeSeen = map[string]bool{}
+	}
+	again = d.wedgeSeen[name]
+	d.wedgeSeen[name] = true
+	return again
+}
+
+func (d *Driver) clearWedgeSighting(name string) {
+	d.wedgeMu.Lock()
+	delete(d.wedgeSeen, name)
+	d.wedgeMu.Unlock()
 }
 
 // Down stops the resource and removes its rendered state. Idempotent.
+// A resource wearing the wedge signature never gets another down spawned:
+// the first sighting defers (the detach may still be draining), a second
+// consecutive one returns ErrWedged (wrapped).
 func (d *Driver) Down(ctx context.Context, name string) error {
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
-	if err := d.downResource(ctx, name, d.livePeerIDs(ctx, name)); err != nil {
+	peerIDs, wedged := d.liveTeardownView(ctx, name)
+	if wedged {
+		if d.markWedgeSighting(name) {
+			return fmt.Errorf("down %s: %w", name, ErrWedged)
+		}
+		// ErrBusy: one short retry cycle for a drain to finish before the
+		// signature escalates.
+		return fmt.Errorf("down %s: detach in flight after a killed down; deferring: %w",
+			name, backend.ErrBusy)
+	}
+	d.clearWedgeSighting(name)
+	if err := d.downResource(ctx, name, peerIDs); err != nil {
 		return err
 	}
 	for _, suffix := range stateSuffixes {
@@ -744,6 +846,16 @@ const DiskInconsistent = "Inconsistent"
 // tie-breaker-ness (that is spec-driven, see Replica.Diskless); it is
 // only meaningful for observing a detach on a leg the spec says is diskful.
 const DiskDiskless = "Diskless"
+
+// diskDetaching is the transient disk state while the kernel drains a
+// detach. Seen at teardown entry (with the connections already gone) it
+// means a previous down was killed mid-flight — see ErrWedged.
+const diskDetaching = "Detaching"
+
+// connStandAlone is the connection state of a peer DRBD gave up
+// reconnecting to. drbdsetup disconnect refuses it (-9), so a StandAlone
+// entry can linger in status through every teardown attempt.
+const connStandAlone = "StandAlone"
 
 // rolePrimary is the DRBD role of a node that holds the device open.
 const rolePrimary = "Primary"
@@ -829,6 +941,25 @@ type jsonStatus struct {
 			OutOfSyncKiB     int64   `json:"out-of-sync"`
 		} `json:"peer_devices"`
 	} `json:"connections"`
+}
+
+// wedgeSignature reports the kernel view of a teardown that cannot make
+// progress: device stuck Detaching while every remaining connection is
+// one disconnect cannot act on (StandAlone) or already gone. A healthy
+// detach completes in milliseconds once the peers are out of the way, and
+// nothing but teardown detaches, so this state means a previous down was
+// killed mid-flight and never completed — a drain still finishing, or the
+// refcount underflow of LINBIT/drbd#137 (see ErrWedged).
+func (s jsonStatus) wedgeSignature() bool {
+	if len(s.Devices) == 0 || s.Devices[0].DiskState != diskDetaching {
+		return false
+	}
+	for _, c := range s.Connections {
+		if c.ConnectionState != connStandAlone {
+			return false
+		}
+	}
+	return true
 }
 
 // peerIDs lists the entry's connection peer node ids — the handles
