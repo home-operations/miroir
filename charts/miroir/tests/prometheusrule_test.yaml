@@ -23,9 +23,10 @@ tests:
           path: metadata.namespace
           value: miroir-system
 
-  - it: should have the volume, pool, export and agent rule groups
+  - it: should have the volume, pool, export and agent rule groups with the gateway enabled
     set:
       monitoring.prometheusRule.enabled: true
+      gateway.enabled: true
     asserts:
       - lengthEqual:
           path: spec.groups
@@ -63,6 +64,17 @@ tests:
       - equal:
           path: spec.groups[3].rules[0].expr
           value: up{container="agent", namespace="miroir-system"} == 0
+
+  - it: should omit the export rule group by default (RWX is opt-in)
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - lengthEqual:
+          path: spec.groups
+          count: 3
+      - equal:
+          path: spec.groups[2].name
+          value: miroir.agents
 
   - it: should render the verify staleness rule only with a verify schedule
     set:

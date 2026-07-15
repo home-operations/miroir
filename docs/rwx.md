@@ -4,6 +4,14 @@ A PVC with `accessModes: [ReadWriteMany]` (or `ReadOnlyMany`) on a
 replicated class is served as a **shared filesystem over NFS**: many
 pods on many nodes read and write it at once, like CephFS.
 
+RWX is **opt-in**: set `gateway.enabled: true` in Helm values first.
+It is off by default because gateway pods run privileged in the
+release namespace and any user who can create a PVC can cause one to
+be spawned — enabling the capability is an explicit operator
+decision. While disabled, an RWX PVC is rejected at provision time
+with a clear message on the PVC's events; enabling the gateway lets
+a pending RWX PVC provision on the next retry.
+
 ```yaml
 apiVersion: v1
 kind: PersistentVolumeClaim

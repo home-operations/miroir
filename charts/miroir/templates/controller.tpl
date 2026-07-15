@@ -65,8 +65,10 @@ spec:
             - --auto-diskful-after={{ . }}
             {{- end }}
             - --drbd-port-base={{ .Values.drbd.portBase }}
+            {{- if .Values.gateway.enabled }}
             - --gateway-image={{ include "miroir.gatewayImage" . }}
             - --gateway-service-account={{ include "miroir.gatewayName" . }}
+            {{- end }}
             {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
             - --leader-elect=true
             - --leader-election-id={{ include "miroir.leaderElectionID" . }}

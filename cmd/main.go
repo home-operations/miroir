@@ -436,6 +436,7 @@ func main() {
 			ProvisionTimeout: provisionTimeout,
 			OvercommitRatio:  overcommitRatio,
 			AutoTieBreaker:   autoTieBreaker,
+			RWXEnabled:       gatewayImage != "",
 			DRBDPortBase:     int32(drbdPortBase),
 		}
 		if err := setupMembership(mgr, nodes, autoTieBreaker, autoDiskfulAfter); err != nil {

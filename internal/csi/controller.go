@@ -67,6 +67,12 @@ type Controller struct {
 	// AutoTieBreaker adds a diskless tie-breaker replica to new 2-replica
 	// freeze volumes when a spare storage node exists (#70).
 	AutoTieBreaker bool
+	// RWXEnabled mirrors whether the export reconciler is running (a
+	// gateway image is configured). When false, RWX CreateVolume requests
+	// are rejected at provision time — otherwise the volume would be
+	// created with a spec.export no reconciler ever serves and its
+	// consumers would hang on a gateway that never comes.
+	RWXEnabled bool
 	// DRBDPortBase is the lowest TCP port the allocator hands to replicated
 	// volumes (one per resource, ascending). Zero → defaultDRBDPortBase.
 	// Configurable so operators can move the range off host-network tenants
@@ -145,7 +151,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 	replicas, quorum, remoteAccess := params.replicas, params.quorum, params.remoteAccess
 	shared := isShared(req.GetVolumeCapabilities())
-	if err := validateSharedRequest(shared, replicas, quorum); err != nil {
+	if err := validateSharedRequest(c.RWXEnabled, shared, replicas, quorum); err != nil {
 		return nil, err
 	}
 
@@ -1125,9 +1131,16 @@ func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) 
 }
 
 // validateSharedRequest rejects RWX shapes the NFS gateway cannot serve.
-func validateSharedRequest(shared bool, replicas int, quorum miroirv1alpha1.QuorumPolicy) error {
+// FailedPrecondition (not InvalidArgument) for the disabled case: the
+// request is well-formed and provisioning self-heals on the provisioner's
+// retry once an operator enables the gateway.
+func validateSharedRequest(rwxEnabled, shared bool, replicas int, quorum miroirv1alpha1.QuorumPolicy) error {
 	if !shared {
 		return nil
+	}
+	if !rwxEnabled {
+		return status.Error(codes.FailedPrecondition,
+			"RWX (ReadWriteMany) volumes are disabled: no NFS gateway is configured (set gateway.enabled=true in Helm values)")
 	}
 	if replicas < 2 {
 		return status.Error(codes.InvalidArgument,

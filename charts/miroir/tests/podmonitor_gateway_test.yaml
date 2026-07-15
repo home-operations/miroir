@@ -10,9 +10,17 @@ tests:
       - hasDocuments:
           count: 0
 
+  - it: should not create the gateway PodMonitor when only podMonitor is enabled (RWX is opt-in)
+    set:
+      monitoring.podMonitor.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
   - it: should select gateway pods by their app name on the metrics port
     set:
       monitoring.podMonitor.enabled: true
+      gateway.enabled: true
     asserts:
       - isKind:
           of: PodMonitor
@@ -29,6 +37,7 @@ tests:
   - it: should relabel node and volume onto every series
     set:
       monitoring.podMonitor.enabled: true
+      gateway.enabled: true
     asserts:
       - equal:
           path: spec.podMetricsEndpoints[0].relabelings[0].targetLabel

@@ -21,6 +21,9 @@ exist and where their behavior is explained.
   `verify.algorithm` / `verify.schedule`
   ([verification](resilience.md)), `autoTieBreaker`,
   `autoDiskfulAfter` ([auto-diskful](remote-consumers.md#auto-diskful)).
+- **`gateway`** — the per-RWX-volume NFS gateway: `enabled` (RWX is
+  opt-in, off by default) and the gateway image
+  ([ReadWriteMany](rwx.md)).
 - **`monitoring`** — PodMonitor, PrometheusRule, dashboards
   ([Monitoring](monitoring.md)).
 - **`agent` / `controller` / `sidecars`** — workload knobs: images,
