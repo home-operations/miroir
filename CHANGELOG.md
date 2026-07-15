@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.9.0](https://github.com/home-operations/miroir/compare/0.8.0...0.9.0) (2026-07-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **rwx:** gateway.enabled toggle, RWX off by default ([#207](https://github.com/home-operations/miroir/issues/207))
+
+### Features
+
+* **api:** CEL guards for volume shrink and snapshot retarget, envtest suite ([#208](https://github.com/home-operations/miroir/issues/208)) ([fcfac97](https://github.com/home-operations/miroir/commit/fcfac976c18e5796b872fda2d3ecc97c2926950d))
+* **observability:** agent-down alert and DRBD kernel version info metric ([#203](https://github.com/home-operations/miroir/issues/203)) ([d18d0f2](https://github.com/home-operations/miroir/commit/d18d0f2f98731708e8a7d2d01b65925dba38bc39))
+* **observability:** diskful Primary gauge, gateway health endpoint + liveness, chart description refresh ([#206](https://github.com/home-operations/miroir/issues/206)) ([55284b1](https://github.com/home-operations/miroir/commit/55284b17ceda768499e696d247aa72e2bfeddf4b))
+* **rwx:** gateway.enabled toggle, RWX off by default ([#207](https://github.com/home-operations/miroir/issues/207)) ([501e72d](https://github.com/home-operations/miroir/commit/501e72d28440305e04107446ef3c64da9ecd47fb))
+
+
+### Documentation
+
+* MkDocs Material docs site at miroir.home-operations.com ([#205](https://github.com/home-operations/miroir/issues/205)) ([10ab707](https://github.com/home-operations/miroir/commit/10ab707ecd1607803212990bd5a7f403700dab8c))
+
 ## [0.8.0](https://github.com/home-operations/miroir/compare/0.7.0...0.8.0) (2026-07-15)
 
 
