@@ -401,6 +401,15 @@ spec:
                         DevicePath is the node-local path pods attach to (backing device for
                         replicas:1; /dev/drbd<minor> when replicated).
                       type: string
+                    discardGranularityBytes:
+                      description: |-
+                        DiscardGranularityBytes is the discard granularity this diskful
+                        leg probed from its backing device (0: unsupported or unprobed).
+                        Client legs advertise the max over the diskful legs' values, so
+                        trims from remote consumers align with the real backings instead
+                        of the 512-byte default DRBD assumes for diskless devices.
+                      format: int64
+                      type: integer
                     diskFailed:
                       description: |-
                         DiskFailed latches a diskful leg DRBD detached after a backing I/O

@@ -373,6 +373,11 @@ Trade-offs to understand:
   floor), so attaching and detaching consumers never moves the
   majority threshold, and a dead consumer node leaves no phantom vote
   behind.
+- **Trims from consumers reach the real backings.** A client leg's
+  device advertises the diskful legs' probed discard granularity
+  (DRBD's diskless default is a 512-byte fiction dm-thin would
+  silently drop), so in-pod `fstrim` and `-o discard` free thin-pool
+  space as if the pod ran on a replica node.
 - **Consumers must run on nodes listed in `nodes`.** Agents only
   start on mapped nodes, so a pod scheduled onto an unmapped node has
   no CSI driver and wedges in `ContainerCreating`. Keep every

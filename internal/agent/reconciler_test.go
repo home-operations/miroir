@@ -2151,6 +2151,26 @@ func TestDrbdResourceBitmapGranularity(t *testing.T) {
 	}
 }
 
+// A client leg advertises the max of the diskful legs' published discard
+// granularities (mixed backends: aligned for the coarsest works on all);
+// replicas and tie-breakers advertise nothing.
+func TestDrbdResourceClientDiscardGranularity(t *testing.T) {
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeOslo, NodeID: 2, Address: addrOslo}}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DiscardGranularityBytes: 262144}, // lvmthin chunk
+		nodeParis:   {DiscardGranularityBytes: 16384},  // zvol block
+	}
+
+	if r := drbdResource(v, nodeOslo, "", 1000, true, 0); r.ClientDiscardGranularityBytes != 262144 {
+		t.Fatalf("client granularity = %d, want max(peers) 262144", r.ClientDiscardGranularityBytes)
+	}
+	if r := drbdResource(v, nodeKharkiv, "/dev/vg/pvc-1", 1000, false, 262144); r.ClientDiscardGranularityBytes != 0 {
+		t.Fatalf("a replica must not advertise a client granularity, got %d", r.ClientDiscardGranularityBytes)
+	}
+}
+
 // A client leg (spec.clients) realizes exactly like a diskless
 // tie-breaker: no backing device, DRBD adjust with disk none, and a status
 // slot marked Diskless so CSI can gate staging on the peers' health.
@@ -2163,6 +2183,11 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
 	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeOslo, NodeID: 2, Address: addrOslo}}
 	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeOslo)
+	// A diskful peer has published its backing's discard granularity; the
+	// client's device must advertise it (see the .res assertion below).
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeKharkiv: {DiscardGranularityBytes: 262144},
+	}
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
@@ -2185,13 +2210,18 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	fe.notCalledWith(t, "drbdmeta")
 
 	// The rendered config must exclude the client from quorum voting —
-	// exactly once, on the client's own entry, never on the replicas.
+	// exactly once, on the client's own entry, never on the replicas —
+	// and advertise the diskful peers' discard granularity (the status
+	// fixture publishes kharkiv's 262144) on the local device.
 	res, err := os.ReadFile(filepath.Join(r.DRBD.StateDir, volPvc1+".res"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(string(res), "tiebreaker no;"); n != 1 {
 		t.Fatalf("client leg must render tiebreaker no exactly once, got %d:\n%s", n, res)
+	}
+	if !strings.Contains(string(res), "discard-granularity 262144;") {
+		t.Fatalf("client leg must advertise the peers' discard granularity:\n%s", res)
 	}
 
 	got := &miroirv1alpha1.MiroirVolume{}

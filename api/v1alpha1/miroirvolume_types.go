@@ -267,6 +267,13 @@ type ReplicaStatus struct {
 	// knows after the entry has left spec.replicas.
 	// +optional
 	Diskless bool `json:"diskless,omitempty"`
+	// DiscardGranularityBytes is the discard granularity this diskful
+	// leg probed from its backing device (0: unsupported or unprobed).
+	// Client legs advertise the max over the diskful legs' values, so
+	// trims from remote consumers align with the real backings instead
+	// of the 512-byte default DRBD assumes for diskless devices.
+	// +optional
+	DiscardGranularityBytes int64 `json:"discardGranularityBytes,omitempty"`
 	// DiskFailed latches a diskful leg DRBD detached after a backing I/O
 	// error (on-io-error detach): the agent renders `adjust --skip-disk`
 	// so the next reconcile does not re-attach the failing disk and

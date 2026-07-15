@@ -70,6 +70,13 @@ type Resource struct {
 	// Probed from the backing device; never set for loopfile (loop devices
 	// mishandle it). Overrides the cluster-wide common{} knob.
 	DiscardGranularityBytes int64
+	// ClientDiscardGranularityBytes renders discard-granularity in the
+	// local client leg's disk{} options: the diskless device advertises
+	// this to the filesystem instead of DRBD's 512-byte diskless default,
+	// so consumer-side mkfs/fstrim discards align with the diskful legs'
+	// real backings. 0 renders nothing (keeps the kernel heuristic).
+	// Needs kmod ≥ 9.3.1 / utils ≥ 9.34 — the agent's startup floor.
+	ClientDiscardGranularityBytes int64
 	// BitmapGranularityBytes is passed to create-md as
 	// --bitmap-block-size (0 passes nothing, DRBD defaults to 4k). Not
 	// rendered into the .res: it is an on-disk metadata property fixed
@@ -162,6 +169,14 @@ func Render(r Resource) string {
 				// replicas keep the default yes. Needs drbd-utils ≥ 9.34
 				// and kmod ≥ 9.3.1 — the agent's startup floor.
 				b.WriteString("            tiebreaker no;\n")
+			}
+			// A second disk statement is legal: the string form (none)
+			// and the options form fill different config fields — the
+			// same shape the diskful branch uses for rs-discard-granularity.
+			if p.Node == r.LocalNode && r.ClientDiscardGranularityBytes > 0 {
+				b.WriteString("            disk {\n")
+				fmt.Fprintf(&b, "                discard-granularity %d;\n", r.ClientDiscardGranularityBytes)
+				b.WriteString("            }\n")
 			}
 		} else {
 			disk := peerDiskPlaceholder

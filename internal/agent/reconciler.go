@@ -285,17 +285,18 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		recordDisklessMetrics(vol.Name, st.Primary)
 	}
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
-		DeviceCreated: !localDiskless,
-		DevicePath:    drbd.DevicePath(minor),
-		DRBDMinor:     minor,
-		SizeBytes:     reportSize,
-		DiskState:     st.DiskState,
-		Connected:     connected,
-		SplitBrain:    st.SplitBrain,
-		Diskless:      localDiskless,
-		DiskFailed:    diskFailed,
-		Message:       detachedDiskMessage(diskFailed),
-		PrimarySince:  primarySince(vol, r.NodeName, st.Primary),
+		DeviceCreated:           !localDiskless,
+		DevicePath:              drbd.DevicePath(minor),
+		DRBDMinor:               minor,
+		SizeBytes:               reportSize,
+		DiskState:               st.DiskState,
+		Connected:               connected,
+		SplitBrain:              st.SplitBrain,
+		Diskless:                localDiskless,
+		DiskFailed:              diskFailed,
+		DiscardGranularityBytes: discardGranularity,
+		Message:                 detachedDiskMessage(diskFailed),
+		PrimarySince:            primarySince(vol, r.NodeName, st.Primary),
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -525,6 +526,20 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 			Client:   true,
 		})
 	}
+	// A client leg's device advertises the diskful legs' real discard
+	// granularity (max: aligned for the coarsest backing works on all)
+	// instead of the 512-byte default DRBD assumes for diskless devices —
+	// dm-thin silently drops sub-chunk discards, so trims sized to the
+	// default under-free thin pools. 0 (peers not yet published) renders
+	// nothing and keeps DRBD's default.
+	var clientDiscard int64
+	if vol.Spec.ClientForNode(localNode) != nil {
+		for _, rep := range vol.Spec.Replicas {
+			if !rep.Diskless {
+				clientDiscard = max(clientDiscard, vol.Status.PerNode[rep.Node].DiscardGranularityBytes)
+			}
+		}
+	}
 	return drbd.Resource{
 		Name:          vol.Name,
 		Minor:         minor,
@@ -537,10 +552,11 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 		// Latched failed: render adjust --skip-disk so the failing disk is
 		// not re-attached. Read from prior status, so it lags the detach by
 		// one reconcile. Cleared by a replica re-add (removal drops the slot).
-		SkipDiskAttach:          !localDiskless && vol.Status.PerNode[localNode].DiskFailed,
-		DiscardGranularityBytes: discardGranularity,
-		BitmapGranularityBytes:  vol.Spec.DRBD.BitmapGranularityBytes,
-		Peers:                   peers,
+		SkipDiskAttach:                !localDiskless && vol.Status.PerNode[localNode].DiskFailed,
+		DiscardGranularityBytes:       discardGranularity,
+		ClientDiscardGranularityBytes: clientDiscard,
+		BitmapGranularityBytes:        vol.Spec.DRBD.BitmapGranularityBytes,
+		Peers:                         peers,
 	}
 }
 
@@ -911,6 +927,9 @@ func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusA
 	}
 	if st.DiskFailed {
 		ac = ac.WithDiskFailed(true)
+	}
+	if st.DiscardGranularityBytes != 0 {
+		ac = ac.WithDiscardGranularityBytes(st.DiscardGranularityBytes)
 	}
 	if st.Message != "" {
 		ac = ac.WithMessage(st.Message)
