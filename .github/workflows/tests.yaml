@@ -61,6 +61,11 @@ jobs:
       - name: Running Unit Tests
         run: mise run test
 
+      # envtest apiserver: the only place CRD structural schemas and CEL
+      # validation rules are actually enforced.
+      - name: Running Integration Tests
+        run: mise run test-integration
+
   helm-unittest:
     name: Helm Unit Tests
     runs-on: ubuntu-24.04
