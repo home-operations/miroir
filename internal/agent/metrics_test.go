@@ -60,6 +60,7 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 		suspended:      false,
 		quorum:         true,
 		diskFailed:     true,
+		primary:        true,
 		resyncRatio:    0.425,
 		outOfSyncBytes: 2048 * 1024,
 	})
@@ -88,6 +89,9 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 	if got := testutil.ToFloat64(metricOutOfSyncBytes.WithLabelValues(volume)); got != 2048*1024 {
 		t.Fatalf("out_of_sync_bytes = %v, want %v", got, 2048*1024)
 	}
+	if got := testutil.ToFloat64(metricPrimary.WithLabelValues(volume)); got != 1 {
+		t.Fatalf("primary = %v, want 1", got)
+	}
 
 	dropVolumeMetrics(volume)
 	for _, family := range []string{
@@ -99,6 +103,7 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 		"miroir_volume_quorum",
 		"miroir_volume_disk_failed",
 		"miroir_volume_out_of_sync_bytes",
+		"miroir_volume_primary",
 	} {
 		if hasSeries(t, family, volume) {
 			t.Fatalf("%s{volume=%q} still exposed after drop", family, volume)

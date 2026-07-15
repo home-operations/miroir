@@ -276,6 +276,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			suspended:  st.Suspended,
 			quorum:     st.Quorum,
 			diskFailed: diskFailed,
+			primary:    st.Primary,
 			// drbdsetup reports percent-in-sync and KiB; the exported
 			// gauges are a 0-1 ratio and bytes per Prometheus base units.
 			resyncRatio:    st.ResyncPercent / 100,
@@ -358,6 +359,7 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 			suspended:      st.Suspended,
 			quorum:         st.Quorum,
 			diskFailed:     diskFailedLatch(vol, r.NodeName, st, localDiskless),
+			primary:        st.Primary,
 			resyncRatio:    st.ResyncPercent / 100,
 			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
 		})
