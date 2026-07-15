@@ -26,13 +26,15 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
+const nodeA = "node-a"
+
 // unreplicatedVolume is the minimal valid single-replica volume.
 func unreplicatedVolume(name string) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: "node-a", Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 }
@@ -46,7 +48,7 @@ func replicatedVolume(name string) *miroirv1alpha1.MiroirVolume {
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: "node-a", Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0},
 				{Node: "node-b", Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1},
 				{Node: "node-c", Backend: miroirv1alpha1.BackendLVMThin, NodeID: 2},
 			},
@@ -70,6 +72,66 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(vol), vol)).To(Succeed())
 		vol.Spec.SizeBytes = 2 << 30
 		Expect(k8sClient.Update(ctx, vol)).To(Succeed(), "growth must stay allowed")
+	})
+
+	It("rejects duplicate replica nodes", func() {
+		vol := replicatedVolume("pvc-dup-replica")
+		vol.Spec.Replicas[2].Node = nodeA
+		err := k8sClient.Create(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "duplicate replica nodes must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("must be unique"))
+	})
+
+	It("rejects duplicate client-leg nodes", func() {
+		vol := replicatedVolume("pvc-dup-client")
+		vol.Spec.Replicas = vol.Spec.Replicas[:2]
+		vol.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: "node-d"}, {Node: "node-d"}}
+		err := k8sClient.Create(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "duplicate client nodes must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("must be unique"))
+	})
+
+	It("rejects changing the allocated DRBD port", func() {
+		vol := replicatedVolume("pvc-port-pin")
+		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
+
+		vol.Spec.DRBD.Port = 7001
+		err := k8sClient.Update(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "port change must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("port is immutable"))
+	})
+
+	It("rejects retargeting or adding a clone source", func() {
+		vol := unreplicatedVolume("pvc-source-pin")
+		vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-a"}
+		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
+
+		vol.Spec.Source.SnapshotName = "snap-b"
+		err := k8sClient.Update(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "source retarget must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("source is immutable"))
+
+		unsourced := unreplicatedVolume("pvc-source-add")
+		Expect(k8sClient.Create(ctx, unsourced)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, unsourced)).To(Succeed()) })
+
+		unsourced.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-a"}
+		err = k8sClient.Update(ctx, unsourced)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "adding a source after creation must be rejected, got: %v", err)
+	})
+
+	It("rejects changing the export filesystem after formatting", func() {
+		vol := replicatedVolume("pvc-fstype-pin")
+		vol.Spec.Export = &miroirv1alpha1.ExportSpec{FSType: "ext4"}
+		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
+
+		vol.Spec.Export.FSType = "xfs"
+		err := k8sClient.Update(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "fsType change must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("fsType is immutable"))
 	})
 
 	// Canary for the pre-existing transition rule the agents rely on: a
