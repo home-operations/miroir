@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.0](https://github.com/home-operations/miroir/compare/0.9.0...0.10.0) (2026-07-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pools:** named storage pools per node with a pool StorageClass parameter ([#210](https://github.com/home-operations/miroir/issues/210))
+
+### Features
+
+* **pools:** named storage pools per node with a pool StorageClass parameter ([#210](https://github.com/home-operations/miroir/issues/210)) ([8a62838](https://github.com/home-operations/miroir/commit/8a6283868c29a5c0eaf4535b34ca79fa51ddf492))
+
 ## [0.9.0](https://github.com/home-operations/miroir/compare/0.8.0...0.9.0) (2026-07-15)
 
 
