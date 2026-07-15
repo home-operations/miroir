@@ -29,9 +29,11 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -67,6 +69,8 @@ type VolumeReconciler struct {
 	// KmsgPath overrides /dev/kmsg for the split-brain kernel-log capture
 	// (tests point it at a plain file).
 	KmsgPath string
+	// Recorder emits the TeardownWedged warning; optional.
+	Recorder events.EventRecorder
 
 	// realized caches the last fully realized state per volume so the
 	// steady-state poll only re-execs `drbdsetup status` instead of the
@@ -436,6 +440,9 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 		return ctrl.Result{}, nil
 	}
 	if err := r.teardown(ctx, vol); err != nil {
+		if errors.Is(err, drbd.ErrWedged) {
+			return r.reportWedged(ctx, vol, err)
+		}
 		if errors.Is(err, backend.ErrBusy) {
 			// A force-deleted pod can leave the device open past
 			// NodeUnstage; retry until the mount goes away.
@@ -737,6 +744,9 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	if err := r.teardown(ctx, vol); err != nil {
+		if errors.Is(err, drbd.ErrWedged) {
+			return r.reportWedged(ctx, vol, err)
+		}
 		if errors.Is(err, backend.ErrBusy) {
 			// A pod still staged here holds the device open; it has to
 			// move off this node before the leg can go.
@@ -803,6 +813,12 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 	slot := vol.Status.PerNode[r.NodeName]
 	if vol.Spec.DRBD != nil {
 		if err := r.DRBD.Down(ctx, vol.Name); err != nil {
+			// A kernel-wedged resource must not classify as ErrBusy: the
+			// fast retry would strand another unkillable drbdsetup down
+			// every cycle, and nothing but a reboot clears the wedge.
+			if errors.Is(err, drbd.ErrWedged) {
+				return err
+			}
 			// A still-staged device answers "held open"; classify it as
 			// ErrBusy so teardown takes the 10s retry, not the workqueue's
 			// minutes-long backoff (NodeUnstage releases it shortly).
@@ -853,6 +869,33 @@ func removeNodeFinalizer(ctx context.Context, c client.Client, obj client.Object
 		return err
 	}
 	return nil
+}
+
+// wedgedRequeue spaces teardown retries of a kernel-wedged resource. The
+// 10s ErrBusy cadence would strand another unkillable drbdsetup down every
+// cycle; nothing but a node reboot clears the wedge, so the retry only
+// needs to notice that the reboot happened.
+const wedgedRequeue = 5 * time.Minute
+
+// reportWedged surfaces a teardown the kernel can no longer finish
+// (drbd.ErrWedged) — Warning Event, status message, and the wedged gauge
+// the shipped alerts page on — then parks the retry at wedgedRequeue.
+// The gauge and message clear when a post-reboot retry finishes the
+// teardown (dropVolumeMetrics / slot removal).
+func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
+	ctrl.LoggerFrom(ctx).Error(cause, "teardown wedged in kernel", "volume", vol.Name)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownWedged", "Teardown",
+			"DRBD cannot tear down %s: device stuck Detaching with connections gone (LINBIT/drbd#137); reboot node %s to clear it",
+			vol.Name, r.NodeName)
+	}
+	metricWedged.WithLabelValues(vol.Name).Set(1)
+	st := vol.Status.PerNode[r.NodeName]
+	st.Message = cause.Error()
+	if err := r.patchStatus(ctx, vol, st); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: wedgedRequeue}, nil
 }
 
 func (r *VolumeReconciler) reportError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) error {

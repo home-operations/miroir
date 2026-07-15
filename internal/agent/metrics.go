@@ -83,6 +83,12 @@ var (
 		Name: "miroir_volume_diskless_primary",
 		Help: "1 while this node's diskless leg (client or tie-breaker) is DRBD Primary: a consumer runs here and every read and write crosses the replication network. Sustained 1 means the workload pays network I/O — auto-diskful (autoDiskfulAfter) converts the leg to a local replica when the node has storage capacity.",
 	}, []string{volumeLabel})
+	// Volume-only, like miroir_volume_diskless_primary: the pool a wedged
+	// teardown reported under can be unknowable (see dropVolumeMetrics).
+	metricWedged = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_wedged",
+		Help: "1 when the kernel can no longer tear down this volume's DRBD resource (device stuck Detaching after a refcount underflow, LINBIT/drbd#137); teardown is parked at a slow retry and only a node reboot clears the state.",
+	}, []string{volumeLabel})
 
 	// Pool gauges carry the pool name; the PodMonitor stamps a node label
 	// on every series, so (node, pool) identifies one pool.
@@ -113,7 +119,7 @@ func init() {
 		metricUpToDate, metricConnected, metricSplitBrain, metricSuspended,
 		metricResyncRatio, metricQuorum, metricDiskFailed, metricOutOfSyncBytes,
 		metricVerifyTimestamp, metricVerifyOutOfSyncBytes, metricPrimary, metricDisklessPrimary,
-		metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
+		metricWedged, metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
 		metricDRBDKernelInfo,
 	)
 }
@@ -156,6 +162,7 @@ func dropVolumeMetrics(volume string) {
 	metricVerifyTimestamp.DeletePartialMatch(byVolume)
 	metricVerifyOutOfSyncBytes.DeletePartialMatch(byVolume)
 	metricDisklessPrimary.DeleteLabelValues(volume)
+	metricWedged.DeleteLabelValues(volume)
 }
 
 // recordDisklessMetrics publishes a diskless leg's view. Deliberately not

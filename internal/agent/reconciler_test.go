@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1017,6 +1018,61 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal("finalizer must be retained while the device is held open")
+	}
+}
+
+// A kernel-wedged resource (stuck Detaching with the connections gone,
+// LINBIT/drbd#137) must leave the fast busy-retry: no further down
+// attempt, park at wedgedRequeue, TeardownWedged warning, wedged gauge,
+// actionable Message, finalizer retained.
+func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"Detaching"}],"connections":[]}]`}
+	rec := events.NewFakeRecorder(4)
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	t.Cleanup(func() { dropVolumeMetrics(volPvc1) })
+
+	res, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	if err != nil {
+		t.Fatalf("a wedge must park the retry, not error: %v", err)
+	}
+	if res.RequeueAfter != wedgedRequeue {
+		t.Fatalf("want %v parked retry, got %v", wedgedRequeue, res.RequeueAfter)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+	select {
+	case e := <-rec.Events:
+		if !strings.Contains(e, "TeardownWedged") {
+			t.Fatalf("want a TeardownWedged warning, got %q", e)
+		}
+	default:
+		t.Fatal("want a TeardownWedged warning event")
+	}
+	if got := testutil.ToFloat64(metricWedged.WithLabelValues(volPvc1)); got != 1 {
+		t.Fatalf("wedged gauge = %v, want 1", got)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal("finalizer must be retained while the resource is wedged")
+	}
+	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, "reboot") {
+		t.Fatalf("Message must say a reboot is required, got %q", msg)
 	}
 }
 

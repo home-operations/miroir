@@ -36,7 +36,7 @@ tests:
           value: miroir.volumes
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 8
+          count: 9
       - equal:
           path: spec.groups[1].name
           value: miroir.pools
@@ -84,15 +84,15 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 9
+          count: 10
       - equal:
-          path: spec.groups[0].rules[8].alert
+          path: spec.groups[0].rules[9].alert
           value: MiroirVolumeVerifyStale
       - equal:
-          path: spec.groups[0].rules[8].labels.severity
+          path: spec.groups[0].rules[9].labels.severity
           value: warning
       - equal:
-          path: spec.groups[0].rules[8].expr
+          path: spec.groups[0].rules[9].expr
           value: time() - miroir_volume_verify_last_timestamp_seconds > 9 * 86400
 
   - it: should mark IO-freezing conditions critical
@@ -113,9 +113,18 @@ tests:
           value: critical
       - equal:
           path: spec.groups[0].rules[3].alert
-          value: MiroirVolumeDiskFailed
+          value: MiroirVolumeTeardownWedged
       - equal:
           path: spec.groups[0].rules[3].labels.severity
+          value: critical
+      - equal:
+          path: spec.groups[0].rules[3].expr
+          value: miroir_volume_wedged == 1
+      - equal:
+          path: spec.groups[0].rules[4].alert
+          value: MiroirVolumeDiskFailed
+      - equal:
+          path: spec.groups[0].rules[4].labels.severity
           value: warning
 
   - it: should add extra labels to the PrometheusRule

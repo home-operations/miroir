@@ -578,6 +578,7 @@ func main() {
 			DRBD:       drbdDriver,
 			DRBDEvents: drbdEvents,
 			Workers:    volumeWorkers,
+			Recorder:   mgr.GetEventRecorder("miroir-agent"),
 		}
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")
@@ -588,6 +589,7 @@ func main() {
 			NodeName: nodeName,
 			Pools:    pools,
 			DRBD:     drbdDriver,
+			Recorder: mgr.GetEventRecorder("miroir-agent"),
 		}
 		if err := snapReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up snapshot reconciler")

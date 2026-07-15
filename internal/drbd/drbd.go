@@ -679,6 +679,20 @@ func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int3
 // a D-state child ignores the SIGKILL and keeps its holds.
 const downTimeout = 30 * time.Second
 
+// disconnectTimeout bounds each best-effort disconnect in downResource,
+// which otherwise rides RealExec's 2-minute bound — per peer, per teardown
+// attempt — when the kernel resource is wedged. A healthy disconnect
+// completes in milliseconds.
+const disconnectTimeout = 10 * time.Second
+
+// ErrWedged marks a resource the kernel can no longer tear down: the
+// device is stuck Detaching with every connection already gone, so
+// drbdsetup down blocks in uninterruptible sleep and the next attempt hits
+// the same wall (refcount underflow, LINBIT/drbd#137). Callers must leave
+// the fast retry loop — every extra down attempt can strand another
+// unkillable process — and surface that only a node reboot clears it.
+var ErrWedged = errors.New("resource wedged in kernel (LINBIT/drbd#137): node reboot required")
+
 // downResource disconnects each peer connection, then downs the resource.
 // Disconnecting first avoids a kernel deadlock: drbdsetup down on a
 // resource with an active resync connection can enter uninterruptible
@@ -690,7 +704,9 @@ const downTimeout = 30 * time.Second
 // removed.
 func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32) error {
 	for _, id := range peerIDs {
-		_, _ = d.Exec(ctx, "drbdsetup", "disconnect", name, strconv.Itoa(int(id)))
+		dcCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
+		_, _ = d.Exec(dcCtx, "drbdsetup", "disconnect", name, strconv.Itoa(int(id)))
+		cancel()
 	}
 	downCtx, cancel := context.WithTimeout(ctx, downTimeout)
 	defer cancel()
@@ -700,33 +716,48 @@ func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32)
 	return nil
 }
 
-// livePeerIDs reports the resource's DRBD peer node ids per the kernel's
-// live view — the ids downResource must disconnect. Empty when the
-// resource is down or the status is unreadable (nothing to disconnect).
-func (d *Driver) livePeerIDs(ctx context.Context, name string) []int32 {
+// liveTeardownView reports the resource's DRBD peer node ids per the
+// kernel's live view — the ids downResource must disconnect — and whether
+// the resource carries the wedge signature: device Detaching with no
+// connections left. A healthy detach completes in milliseconds once the
+// peers are gone, and nothing but teardown detaches, so that state at
+// teardown entry means a previous down was killed mid-flight and never
+// completed (ErrWedged). Empty/false when the resource is down or the
+// status is unreadable (nothing to disconnect).
+func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []int32, wedged bool) {
 	out, err := d.Exec(ctx, "drbdsetup", "status", "--json", name)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	var parsed []jsonStatus
 	if json.Unmarshal([]byte(out), &parsed) != nil {
-		return nil
+		return nil, false
 	}
-	var ids []int32
 	for _, res := range parsed {
-		if res.Name == name {
-			ids = append(ids, res.peerIDs()...)
+		if res.Name != name {
+			continue
+		}
+		peerIDs = append(peerIDs, res.peerIDs()...)
+		if len(res.Connections) == 0 && len(res.Devices) > 0 &&
+			res.Devices[0].DiskState == diskDetaching {
+			wedged = true
 		}
 	}
-	return ids
+	return peerIDs, wedged
 }
 
 // Down stops the resource and removes its rendered state. Idempotent.
+// Returns ErrWedged (wrapped) without spawning another down when the
+// kernel shows the resource stuck mid-teardown.
 func (d *Driver) Down(ctx context.Context, name string) error {
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
-	if err := d.downResource(ctx, name, d.livePeerIDs(ctx, name)); err != nil {
+	peerIDs, wedged := d.liveTeardownView(ctx, name)
+	if wedged {
+		return fmt.Errorf("down %s: %w", name, ErrWedged)
+	}
+	if err := d.downResource(ctx, name, peerIDs); err != nil {
 		return err
 	}
 	for _, suffix := range stateSuffixes {
@@ -753,6 +784,11 @@ const DiskInconsistent = "Inconsistent"
 // tie-breaker-ness (that is spec-driven, see Replica.Diskless); it is
 // only meaningful for observing a detach on a leg the spec says is diskful.
 const DiskDiskless = "Diskless"
+
+// diskDetaching is the transient disk state while the kernel drains a
+// detach. Seen at teardown entry (with the connections already gone) it
+// means a previous down was killed mid-flight — see ErrWedged.
+const diskDetaching = "Detaching"
 
 // rolePrimary is the DRBD role of a node that holds the device open.
 const rolePrimary = "Primary"

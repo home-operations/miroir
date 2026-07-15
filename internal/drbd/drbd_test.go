@@ -902,6 +902,51 @@ func TestSweepOrphansContinuesOnError(t *testing.T) {
 	}
 }
 
+// A resource stuck Detaching with the connections gone is wedged in the
+// kernel (LINBIT/drbd#137): Down must return ErrWedged without spawning
+// another down — each attempt can strand another unkillable process.
+func TestDownWedgedSkipsDown(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Detaching"}],"connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	err := d.Down(t.Context(), volPvc1)
+	if !errors.Is(err, ErrWedged) {
+		t.Fatalf("want ErrWedged, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+	// The rendered config stays: the resource is still configured in the
+	// kernel, and a post-reboot retry finishes the teardown.
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("wedged resource's config must remain: %v", err)
+	}
+}
+
+// Detaching with a peer connection still up is a normal teardown
+// transient, not the wedge signature — down must proceed.
+func TestDownDetachingWithPeersStillDowns(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Detaching"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Down(t.Context(), volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup down pvc-1")
+}
+
 func TestSweepOrphansSkipsOwned(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[

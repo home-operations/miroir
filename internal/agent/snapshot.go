@@ -21,11 +21,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -75,6 +78,53 @@ type SnapshotReconciler struct {
 	// pool holding the volume's local replica.
 	Pools Pools
 	DRBD  *drbd.Driver
+	// Recorder emits the BarrierStuck warning; optional.
+	Recorder events.EventRecorder
+
+	// barrierFails counts consecutive suspend-io failures per snapshot.
+	// Past barrierFailLimit the round parks at a slow retry instead of
+	// riding the workqueue's exponential backoff forever — on a wedged
+	// kernel module (LINBIT/drbd#137) suspend-io never succeeds, and
+	// without a bound the silent retries outlive the incident.
+	barrierFailsMu sync.Mutex
+	barrierFails   map[string]int
+}
+
+// barrierFailLimit is how many consecutive suspend-io failures ride the
+// workqueue's fast exponential backoff (transients heal there) before the
+// round parks; barrierRetryAfter is the parked cadence.
+const (
+	barrierFailLimit  = 5
+	barrierRetryAfter = time.Minute
+)
+
+// suspendFailed classifies one suspend-io failure: fast backoff below
+// barrierFailLimit, then a Warning Event and the parked retry.
+func (r *SnapshotReconciler) suspendFailed(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
+	r.barrierFailsMu.Lock()
+	if r.barrierFails == nil {
+		r.barrierFails = map[string]int{}
+	}
+	r.barrierFails[snap.Name]++
+	fails := r.barrierFails[snap.Name]
+	r.barrierFailsMu.Unlock()
+	if fails < barrierFailLimit {
+		return ctrl.Result{}, cause
+	}
+	ctrl.LoggerFrom(ctx).Error(cause, "cannot raise the IO barrier; parking the retry",
+		"snapshot", snap.Name, "volume", vol.Name, "attempts", fails)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(snap, nil, corev1.EventTypeWarning, "BarrierStuck", "Suspend",
+			"cannot raise the IO barrier on %s after %d attempts: %v", vol.Name, fails, cause)
+	}
+	return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
+}
+
+// suspendSucceeded resets the snapshot's consecutive-failure count.
+func (r *SnapshotReconciler) suspendSucceeded(name string) {
+	r.barrierFailsMu.Lock()
+	delete(r.barrierFails, name)
+	r.barrierFailsMu.Unlock()
 }
 
 // backendFor resolves the backend holding the volume's local leg — the
@@ -104,6 +154,9 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if !snap.DeletionTimestamp.IsZero() {
+		// The failure count dies with the snapshot, so a later snapshot
+		// under the same name starts with a clean slate.
+		r.suspendSucceeded(snap.Name)
 		// Deletion runs before the membership gate: a node that left
 		// spec.replicas after the snapshot was cut still holds its
 		// finalizer, and skipping it would wedge the snapshot in
@@ -264,8 +317,9 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 		return ctrl.Result{}, err
 	}
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
-		return ctrl.Result{}, err
+		return r.suspendFailed(ctx, snap, vol, err)
 	}
+	r.suspendSucceeded(snap.Name)
 	var err error
 	if opensRound {
 		// The coordinator owns the round: it sets the barrier fields and
@@ -319,8 +373,9 @@ func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.Mi
 	// Re-assert the local barrier first (idempotent) — a crash or manual
 	// resume-io between phases must not let a leg be cut unprotected.
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
-		return ctrl.Result{}, err
+		return r.suspendFailed(ctx, snap, vol, err)
 	}
+	r.suspendSucceeded(snap.Name)
 	// suspend-io quiesces new writes only; queued writeback must be
 	// drained or the snapshot captures stale content.
 	if err := be.Sync(ctx, vol.Name); err != nil {
