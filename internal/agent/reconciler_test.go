@@ -1105,6 +1105,18 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 		t.Fatalf("Message must carry the swallowed cause, got %q", msg)
 	}
 
+	// The escalation latches: further parked cycles must not re-emit the
+	// Warning Event (the park can outlive the hold by hours).
+	res, err = r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("post-escalation cycle must stay parked, got %v / %v", res.RequeueAfter, err)
+	}
+	select {
+	case e := <-rec.Events:
+		t.Fatalf("parked cycles must not re-emit events, got %q", e)
+	default:
+	}
+
 	// The hold clears: teardown completes, this node's finalizer releases,
 	// and the failure streak resets.
 	fe.errOn = nil
@@ -1122,6 +1134,43 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 	r.busyMu.Unlock()
 	if streak != 0 {
 		t.Fatalf("busy streak must clear on success, still %d entries", streak)
+	}
+}
+
+// A busy streak is "consecutive attempts of one teardown episode": both a
+// volume back on the normal reconcile path (removal cancelled, replica
+// re-added) and a blocked removal must reset it, or the stale count
+// pre-biases a later teardown toward premature escalation.
+func TestReconcileBusyStreakResetsOutsideTeardown(t *testing.T) {
+	s := newScheme(t)
+
+	// Live volume on the normal path.
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		busyFails: map[string]int{volPvc1: busyFailLimit - 1}}
+	reconcile(t, r, volPvc1)
+	if n := r.busyFails[volPvc1]; n != 0 {
+		t.Fatalf("normal reconcile must reset the busy streak, still %d", n)
+	}
+
+	// Pending-removal replica whose teardown is blocked.
+	fb = newFakeBackend()
+	v = vol(volPvc1, nodeB) // leg moved to node-b; node-a keeps its finalizer
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeA)
+	c = fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	r = &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		busyFails: map[string]int{volPvc1: busyFailLimit - 1}}
+	res, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	if err != nil || res.RequeueAfter != 30*time.Second {
+		t.Fatalf("want the 30s removal-blocked requeue, got %v / %v", res.RequeueAfter, err)
+	}
+	if n := r.busyFails[volPvc1]; n != 0 {
+		t.Fatalf("a blocked removal must reset the busy streak, still %d", n)
 	}
 }
 

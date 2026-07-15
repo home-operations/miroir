@@ -160,6 +160,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// once it is safe.
 		return r.reconcileRemoval(ctx, vol)
 	}
+	// A live, placed volume is not tearing down: a busy streak left over
+	// from a cancelled removal must not pre-bias the next teardown episode.
+	r.clearBusyFails(vol.Name)
 	if vol.Spec.DRBD != nil && incomplete {
 		// A just-added entry the membership reconciler has not completed
 		// yet (no NodeID/address): nothing can be realized safely. Logged
@@ -468,21 +471,7 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 		return ctrl.Result{}, nil
 	}
 	if err := r.teardown(ctx, vol); err != nil {
-		if errors.Is(err, drbd.ErrWedged) {
-			r.clearBusyFails(vol.Name)
-			return r.reportWedged(ctx, vol, err)
-		}
-		// Any other outcome means a previously reported wedge is gone —
-		// e.g. the reboot happened and the device is now merely held
-		// open — so the critical alert must stop paging for it.
-		metricWedged.DeleteLabelValues(vol.Name)
-		if errors.Is(err, backend.ErrBusy) {
-			// A force-deleted pod can leave the device open past
-			// NodeUnstage; retry until the mount goes away.
-			return r.reportBusy(ctx, vol, err)
-		}
-		r.clearBusyFails(vol.Name)
-		return ctrl.Result{}, err
+		return r.handleTeardownError(ctx, vol, err)
 	}
 	// Drop metrics only once the device is gone: a retrying teardown
 	// must not blank a volume that still exists.
@@ -773,6 +762,9 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 	}
 	if reason := r.removalBlocked(ctx, vol); reason != "" {
 		log.Info("replica removal blocked", "volume", vol.Name, "reason", reason)
+		// The block interrupts the teardown episode: a busy streak from
+		// before it must not pre-bias the attempts after it unblocks.
+		r.clearBusyFails(vol.Name)
 		st := vol.Status.PerNode[r.NodeName]
 		st.Message = "replica removal blocked: " + reason
 		if err := r.patchStatus(ctx, vol, st); err != nil {
@@ -781,20 +773,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 	if err := r.teardown(ctx, vol); err != nil {
-		if errors.Is(err, drbd.ErrWedged) {
-			r.clearBusyFails(vol.Name)
-			return r.reportWedged(ctx, vol, err)
-		}
-		// A non-wedged outcome retires a previously reported wedge (see
-		// reconcileDeletion); the critical alert must stop paging for it.
-		metricWedged.DeleteLabelValues(vol.Name)
-		if errors.Is(err, backend.ErrBusy) {
-			// A pod still staged here holds the device open; it has to
-			// move off this node before the leg can go.
-			return r.reportBusy(ctx, vol, err)
-		}
-		r.clearBusyFails(vol.Name)
-		return ctrl.Result{}, err
+		return r.handleTeardownError(ctx, vol, err)
 	}
 	dropVolumeMetrics(vol.Name)
 	r.dropRealized(vol.Name)
@@ -932,12 +911,43 @@ func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1
 			vol.Name, r.NodeName)
 	}
 	metricWedged.WithLabelValues(vol.Name).Set(1)
+	return r.parkWithMessage(ctx, vol, cause, wedgedRequeue)
+}
+
+// parkWithMessage stamps the cause on this node's status slot and parks
+// the retry — the shared tail of every teardown/realize escalation
+// (reportWedged, reportBusy, reportRestoreOrphan), kept in one place so
+// the park contract cannot drift between them.
+func (r *VolumeReconciler) parkWithMessage(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error, requeue time.Duration) (ctrl.Result, error) {
 	st := vol.Status.PerNode[r.NodeName]
 	st.Message = cause.Error()
 	if err := r.patchStatus(ctx, vol, st); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: wedgedRequeue}, nil
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// handleTeardownError triages one failed teardown outcome, shared by the
+// deletion and removal paths so the busy-streak bookkeeping cannot drift:
+// a kernel wedge parks via reportWedged, a held-open device paces via
+// reportBusy, anything else surfaces as a hard error. Every non-busy
+// outcome resets the busy streak.
+func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, err error) (ctrl.Result, error) {
+	if errors.Is(err, drbd.ErrWedged) {
+		r.clearBusyFails(vol.Name)
+		return r.reportWedged(ctx, vol, err)
+	}
+	// Any other outcome means a previously reported wedge is gone — e.g.
+	// the reboot happened and the device is now merely held open — so the
+	// critical alert must stop paging for it.
+	metricWedged.DeleteLabelValues(vol.Name)
+	if errors.Is(err, backend.ErrBusy) {
+		// A still-staged (or force-deleted) pod holds the device open;
+		// NodeUnstage releases it once the consumer moves off this node.
+		return r.reportBusy(ctx, vol, err)
+	}
+	r.clearBusyFails(vol.Name)
+	return ctrl.Result{}, err
 }
 
 // busyFailLimit is how many consecutive ErrBusy teardown outcomes ride the
@@ -970,17 +980,18 @@ func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.M
 	}
 	ctrl.LoggerFrom(ctx).Error(cause, "teardown still busy; parking the retry",
 		"volume", vol.Name, "attempts", fails)
-	if r.Recorder != nil {
+	// Latch the escalation on the crossing cycle: the parked retry can
+	// outlive the hold by hours, and re-emitting an identical Event plus a
+	// no-op status write every cycle is pure API churn.
+	if fails == busyFailLimit && r.Recorder != nil {
 		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownBusy", "Teardown",
 			"cannot tear down %s on node %s after %d attempts: %v; something still holds the device (or its backing) open",
 			vol.Name, r.NodeName, fails, cause)
 	}
-	st := vol.Status.PerNode[r.NodeName]
-	st.Message = cause.Error()
-	if err := r.patchStatus(ctx, vol, st); err != nil {
-		return ctrl.Result{}, err
+	if vol.Status.PerNode[r.NodeName].Message == cause.Error() {
+		return ctrl.Result{RequeueAfter: busyRetryAfter}, nil
 	}
-	return ctrl.Result{RequeueAfter: busyRetryAfter}, nil
+	return r.parkWithMessage(ctx, vol, cause, busyRetryAfter)
 }
 
 // clearBusyFails resets the volume's consecutive busy-teardown count.
@@ -1015,12 +1026,7 @@ func (r *VolumeReconciler) reportRestoreOrphan(ctx context.Context, vol *miroirv
 			"cannot restore %s on node %s: source snapshot %s no longer exists; delete the volume or recreate the snapshot",
 			vol.Name, r.NodeName, vol.Spec.Source.SnapshotName)
 	}
-	st := vol.Status.PerNode[r.NodeName]
-	st.Message = cause.Error()
-	if err := r.patchStatus(ctx, vol, st); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{RequeueAfter: restoreOrphanRequeue}, nil
+	return r.parkWithMessage(ctx, vol, cause, restoreOrphanRequeue)
 }
 
 func (r *VolumeReconciler) reportError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) error {
