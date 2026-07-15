@@ -68,6 +68,10 @@ var (
 		Name: "miroir_volume_verify_out_of_sync_bytes",
 		Help: "Out-of-sync bytes the last scheduled verify found (0 = clean). Findings also surface in miroir_volume_out_of_sync_bytes until a disconnect/connect resync clears them.",
 	}, []string{volumeLabel})
+	metricPrimary = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_volume_primary",
+		Help: "1 while this node's diskful leg is DRBD Primary: the consumer pod or the RWX gateway runs here and this leg serves the I/O. Diskless legs report miroir_volume_diskless_primary instead; unreplicated volumes have no DRBD role and always report 0.",
+	}, []string{volumeLabel})
 	metricDisklessPrimary = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_diskless_primary",
 		Help: "1 while this node's diskless leg (client or tie-breaker) is DRBD Primary: a consumer runs here and every read and write crosses the replication network. Sustained 1 means the workload pays network I/O — auto-diskful (autoDiskfulAfter) converts the leg to a local replica when the node has storage capacity.",
@@ -101,7 +105,7 @@ func init() {
 	metrics.Registry.MustRegister(
 		metricUpToDate, metricConnected, metricSplitBrain, metricSuspended,
 		metricResyncRatio, metricQuorum, metricDiskFailed, metricOutOfSyncBytes,
-		metricVerifyTimestamp, metricVerifyOutOfSyncBytes, metricDisklessPrimary,
+		metricVerifyTimestamp, metricVerifyOutOfSyncBytes, metricPrimary, metricDisklessPrimary,
 		metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
 		metricDRBDKernelInfo,
 	)
@@ -116,6 +120,7 @@ func recordVolumeMetrics(volume string, st miroirReplicaView) {
 	metricQuorum.WithLabelValues(volume).Set(boolGauge(st.quorum))
 	metricDiskFailed.WithLabelValues(volume).Set(boolGauge(st.diskFailed))
 	metricOutOfSyncBytes.WithLabelValues(volume).Set(st.outOfSyncBytes)
+	metricPrimary.WithLabelValues(volume).Set(boolGauge(st.primary))
 }
 
 // recordPoolMetrics publishes the node pool sample; one pool per node, so
@@ -135,6 +140,7 @@ func dropVolumeMetrics(volume string) {
 	metricQuorum.DeleteLabelValues(volume)
 	metricDiskFailed.DeleteLabelValues(volume)
 	metricOutOfSyncBytes.DeleteLabelValues(volume)
+	metricPrimary.DeleteLabelValues(volume)
 	metricVerifyTimestamp.DeleteLabelValues(volume)
 	metricVerifyOutOfSyncBytes.DeleteLabelValues(volume)
 	metricDisklessPrimary.DeleteLabelValues(volume)
@@ -170,6 +176,7 @@ type miroirReplicaView struct {
 	suspended      bool
 	quorum         bool
 	diskFailed     bool
+	primary        bool
 	resyncRatio    float64
 	outOfSyncBytes float64
 }

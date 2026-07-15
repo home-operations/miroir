@@ -15,9 +15,6 @@ data:
   nodes.yaml: |
     {{- .Values.nodes | toYaml | nindent 4 }}
 ---
-# drbd-utils global config: the drbd.d hostPath bind shadows the image-baked
-# copy. Cluster-wide resync tuning goes in common{} (inherited by every
-# resource); per-resource settings live in the rendered .res files.
 apiVersion: v1
 kind: ConfigMap
 metadata:

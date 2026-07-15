@@ -37,6 +37,9 @@ const (
 	gatewayAppName = "miroir-gateway"
 	// nfsPort is the NFSv4 port the gateway serves and the Service fronts.
 	nfsPort = 2049
+	// httpPort is the gateway's operational endpoint (/healthz liveness,
+	// /metrics for the gateway PodMonitor) — the org-standard pod port.
+	httpPort = 8081
 )
 
 // shareName is the Deployment/Service name for a volume's gateway.
@@ -103,7 +106,10 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 							ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}},
 						}},
 						SecurityContext: &corev1.SecurityContext{Privileged: &privileged},
-						Ports:           []corev1.ContainerPort{{Name: "nfs", ContainerPort: nfsPort, Protocol: corev1.ProtocolTCP}},
+						Ports: []corev1.ContainerPort{
+							{Name: "nfs", ContainerPort: nfsPort, Protocol: corev1.ProtocolTCP},
+							{Name: "metrics", ContainerPort: httpPort, Protocol: corev1.ProtocolTCP},
+						},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name: "dev", MountPath: "/dev",
 						}},
@@ -122,6 +128,19 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 							},
 							InitialDelaySeconds: 5,
 							PeriodSeconds:       10,
+						},
+						// /healthz answers an NFS NULL RPC against ganesha, so a
+						// wedged-but-listening server (green on the TCP readiness
+						// probe above) gets restarted. It passes unconditionally
+						// while the gateway is still staging — a failover wait must
+						// not be liveness-killed — so no InitialDelay is needed.
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(httpPort)},
+							},
+							PeriodSeconds:    20,
+							TimeoutSeconds:   10,
+							FailureThreshold: 3,
 						},
 					}},
 					Volumes: []corev1.Volume{{

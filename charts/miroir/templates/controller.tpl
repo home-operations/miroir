@@ -10,9 +10,9 @@ spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
   {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
-    type: RollingUpdate # leader election arbitrates the rollout overlap
+    type: RollingUpdate
   {{- else }}
-    type: Recreate # one writer for allocations; no leader election
+    type: Recreate
   {{- end }}
   selector:
     matchLabels:
@@ -65,8 +65,6 @@ spec:
             - --auto-diskful-after={{ . }}
             {{- end }}
             - --drbd-port-base={{ .Values.drbd.portBase }}
-            # RWX gateway: the controller spawns per-volume NFS-Ganesha
-            # Deployments in its own namespace from this image.
             - --gateway-image={{ include "miroir.gatewayImage" . }}
             - --gateway-service-account={{ include "miroir.gatewayName" . }}
             {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
@@ -79,7 +77,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           env:
-            # The controller creates gateway workloads in its own namespace.
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -91,8 +88,6 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ALL] }
           ports:
-            # Serves /metrics plus the /healthz and /readyz probes (single
-            # operational port; see cmd/main.go).
             - name: metrics
               containerPort: 8081
           livenessProbe:
@@ -116,14 +111,10 @@ spec:
             - --default-fstype=ext4
             {{- if .Values.storageCapacity.enabled }}
             - --enable-capacity
-            # Own the CSIStorageCapacity objects from the controller Deployment
-            # (pod → ReplicaSet → Deployment) so they are garbage-collected with it.
             - --capacity-ownerref-level=2
             {{- end }}
           {{- if .Values.storageCapacity.enabled }}
           env:
-            # The provisioner reads these to create CSIStorageCapacity objects in
-            # this namespace and resolve the owning Deployment.
             - name: NAMESPACE
               valueFrom:
                 fieldRef:
@@ -194,8 +185,6 @@ metadata:
     {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: controller
 spec:
-  # Drains take controllers one at a time, so the warm standby picks up the
-  # Lease instead of provisioning stalling on a full pod reschedule.
   maxUnavailable: 1
   selector:
     matchLabels:

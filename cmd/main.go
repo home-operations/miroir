@@ -237,7 +237,7 @@ func runSetup(nodeName, nodesConfig, vg, thinPool string) {
 // is signalled. It builds a direct client (no manager/cache) and drives
 // the host's DRBD/mount tooling like the agent, exiting non-zero if the
 // export ever fails so the pod restarts.
-func runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir string) {
+func runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir, httpAddr string) {
 	if nodeName == "" {
 		setupLog.Error(nil, "--node-name (or NODE_NAME) is required in gateway mode")
 		os.Exit(1)
@@ -257,6 +257,7 @@ func runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir strin
 		NodeName:    nodeName,
 		ExportDir:   exportDir,
 		GaneshaConf: ganeshaConf,
+		HTTPAddr:    httpAddr,
 	}, setupLog.WithName("gateway")); err != nil {
 		setupLog.Error(err, "gateway exited")
 		os.Exit(1)
@@ -359,7 +360,9 @@ func main() {
 		return
 	}
 	if mode == "gateway" {
-		runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir)
+		// The gateway skips the manager but serves the same operational
+		// endpoint itself (/healthz liveness + /metrics) on metricsAddr.
+		runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir, metricsAddr)
 		return
 	}
 

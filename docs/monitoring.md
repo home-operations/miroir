@@ -22,6 +22,7 @@ agent exports, per volume on that node:
 | `miroir_volume_quorum`                        | 0 while a `freeze` volume has lost quorum and refuses writes, the "workloads are failing I/O" signal (always 1 under `last-man-standing`) |
 | `miroir_volume_disk_failed`                   | 1 when this leg's disk was detached after an I/O error and latched failed; replace the disk, then remove and re-add the replica           |
 | `miroir_volume_out_of_sync_bytes`             | worst per-peer out-of-sync bytes: the exposure if the healthiest peer is lost; also counts online-verify findings                         |
+| `miroir_volume_primary`                       | 1 while this node's diskful leg is Primary: the consumer pod or the RWX gateway runs here and this leg serves the I/O                     |
 | `miroir_volume_diskless_primary`              | 1 while a diskless leg (client or tie-breaker) is Primary here: the consumer pays network I/O; see auto-diskful                           |
 | `miroir_volume_verify_last_timestamp_seconds` | unix time of the last completed scheduled verify; alert on staleness to catch a schedule that stopped firing                              |
 | `miroir_volume_verify_out_of_sync_bytes`      | out-of-sync bytes the last scheduled verify found (0 = clean)                                                                             |
@@ -41,6 +42,14 @@ while the volume's NFS gateway is serving (gateway pod available,
 export address published). This is the signal the per-volume gauges
 cannot give you: DRBD replicas stay healthy while a dead gateway
 leaves every NFS client hanging.
+
+Each **gateway** pod additionally serves its own metrics endpoint
+(scraped by a second PodMonitor, with `node` and `volume` labels):
+`miroir_gateway_nfs_healthy` is the result of the last liveness
+probe's NFS NULL call against the pod's local ganesha. The same
+probe backs the pod's `/healthz`, so a ganesha that still accepts
+TCP connections but has stopped answering NFS fails liveness and is
+restarted — previously that failure mode was invisible.
 
 Prometheus is not the only surface. Volume health also flows through
 the CSI `VolumeCondition`: enable `sidecars.healthMonitor.enabled`
