@@ -59,6 +59,9 @@ type Config struct {
 	// GaneshaConf is where the rendered config is written. Default
 	// /etc/ganesha/ganesha.conf.
 	GaneshaConf string
+	// HTTPAddr is the operational endpoint (/healthz liveness probe,
+	// /metrics). Default :8081, the org-standard pod port.
+	HTTPAddr string
 	// StageRetry is how often to retry staging while DRBD promotion is
 	// refused (the failover wait). Default 5s.
 	StageRetry time.Duration
@@ -73,6 +76,9 @@ func (c *Config) withDefaults() {
 	}
 	if c.GaneshaConf == "" {
 		c.GaneshaConf = "/etc/ganesha/ganesha.conf"
+	}
+	if c.HTTPAddr == "" {
+		c.HTTPAddr = ":8081"
 	}
 	if c.StageRetry == 0 {
 		c.StageRetry = 5 * time.Second
@@ -93,6 +99,15 @@ const (
 // (non-nil error → pod restart). It blocks.
 func Run(ctx context.Context, cl client.Client, drbdStatus stage.DRBDStatus, cfg Config, log logr.Logger) error {
 	cfg.withDefaults()
+	// Health endpoint up before staging: /healthz passes unconditionally
+	// until ganesha starts, so the kubelet's liveness probe never kills the
+	// pod during the (possibly minutes-long) failover staging wait.
+	h := &health{
+		volume:  cfg.VolumeID,
+		nfsAddr: fmt.Sprintf("127.0.0.1:%d", ganeshaPort),
+		timeout: 5 * time.Second,
+	}
+	healthErr := h.serve(ctx, cfg.HTTPAddr, log)
 	deps := stage.Deps{
 		Client:   cl,
 		NodeName: cfg.NodeName,
@@ -133,7 +148,7 @@ func Run(ctx context.Context, cl client.Client, drbdStatus stage.DRBDStatus, cfg
 	if err := writeGaneshaConf(cfg, mountPath); err != nil {
 		return err
 	}
-	return supervise(ctx, deps.Mounter, cfg, dev, mountPath, log)
+	return supervise(ctx, deps.Mounter, cfg, dev, mountPath, h, healthErr, log)
 }
 
 // writeGaneshaConf renders and writes the export config and ensures the
@@ -165,13 +180,16 @@ func writeGaneshaConf(cfg Config, mountPath string) error {
 // on the diskful legs; the gateway is where the fs is mounted, so it does
 // the fs grow). It returns nil on a clean ctx-cancelled stop and an error
 // if ganesha exits on its own — a dead server must restart the pod.
-func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Config, dev, mountPath string, log logr.Logger) error {
+func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Config, dev, mountPath string, h *health, healthErr <-chan error, log logr.Logger) error {
 	cmd := exec.Command(ganeshaBin, "-F", "-f", cfg.GaneshaConf, "-N", "NIV_EVENT")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ganesha: %w", err)
 	}
+	// From here /healthz answers with a real NFS NULL probe — a ganesha
+	// that accepts TCP but stops answering RPC now fails liveness.
+	h.serving.Store(true)
 	log.Info("ganesha serving", "export", "/"+cfg.VolumeID, "port", ganeshaPort)
 
 	done := make(chan error, 1)
@@ -197,6 +215,13 @@ func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Confi
 			return nil
 		case err := <-done:
 			return fmt.Errorf("ganesha exited: %w", err)
+		case err := <-healthErr:
+			// The liveness endpoint could not bind or died: the kubelet
+			// would kill the pod as probe-dead anyway, so exit deliberately
+			// with the real reason in the log.
+			_ = cmd.Process.Kill()
+			<-done
+			return err
 		case <-ticker.C:
 			need, err := resizer.NeedResize(dev, mountPath)
 			if err != nil {
