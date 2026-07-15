@@ -1,4 +1,4 @@
-{{- if .Values.monitoring.podMonitor.enabled }}
+{{- if and .Values.monitoring.podMonitor.enabled .Values.gateway.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

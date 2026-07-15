@@ -225,6 +225,7 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
+    {{- if .Values.gateway.enabled }}
     - name: miroir.exports
       rules:
         - alert: MiroirExportUnavailable
@@ -244,6 +245,7 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+    {{- end }}
 
     - name: miroir.agents
       rules:

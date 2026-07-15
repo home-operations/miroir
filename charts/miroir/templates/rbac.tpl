@@ -138,6 +138,7 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "miroir.agentName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.gateway.enabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -206,3 +207,4 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "miroir.gatewayName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}

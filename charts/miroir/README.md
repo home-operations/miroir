@@ -69,6 +69,7 @@ Kubernetes: `>=1.31.0`
 | extraArgs | list | `[]` | Extra arguments for the controller container. |
 | extraEnv | list | `[]` | Extra environment variables for the controller container. |
 | fullnameOverride | string | `""` | Override the fully qualified name prefix of every rendered object. |
+| gateway.enabled | bool | `false` | Serve ReadWriteMany (and ReadOnlyMany) PVCs via per-volume NFS gateways. Opt-in: gateway pods run privileged in the release namespace, and any user who can create a PVC can cause one to be spawned, so enabling RWX is an explicit operator decision. While disabled the controller rejects RWX at provision time with a clear message, and the gateway ServiceAccount, RBAC, PodMonitor, and export alerts are not installed. |
 | gateway.image.digest | string | `""` |  |
 | gateway.image.pullPolicy | string | `"IfNotPresent"` |  |
 | gateway.image.repository | string | `"ghcr.io/home-operations/miroir-gateway"` |  |

@@ -38,14 +38,6 @@ tests:
       - lengthEqual:
           path: spec.template.spec.containers
           count: 4
-      # RWX: the controller is told which gateway image and ServiceAccount
-      # to spawn per-volume NFS gateways with.
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --gateway-image=ghcr.io/home-operations/miroir-gateway:0.0.1
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --gateway-service-account=miroir-gateway
       - contains:
           any: true
           path: spec.template.spec.containers
@@ -472,3 +464,26 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --auto-diskful-after=10m
+  - it: withholds the gateway args by default (RWX is opt-in)
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-image=ghcr.io/home-operations/miroir-gateway:0.0.1
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-service-account=miroir-gateway
+
+  # RWX: the controller is told which gateway image and ServiceAccount
+  # to spawn per-volume NFS gateways with.
+  - it: passes the gateway args when the gateway is enabled
+    documentIndex: 0
+    set:
+      gateway.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-image=ghcr.io/home-operations/miroir-gateway:0.0.1
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-service-account=miroir-gateway

@@ -216,6 +216,7 @@ func TestCreateVolumeRWXSetsExport(t *testing.T) {
 		Client:           readyOnGet(s, nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)),
 		Nodes:            testNodes,
 		ProvisionTimeout: 2 * time.Second,
+		RWXEnabled:       true,
 		DRBDPortBase:     7000,
 	}
 
@@ -249,7 +250,7 @@ func TestCreateVolumeRWXSetsExport(t *testing.T) {
 
 func TestCreateVolumeRejectsRWXSingleReplica(t *testing.T) {
 	s := newScheme(t)
-	c := &Controller{Client: readyOnGet(s), Nodes: testNodes}
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, RWXEnabled: true}
 
 	// RWX needs a second replica node for the gateway to fail over to.
 	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
@@ -283,7 +284,7 @@ func TestCreateVolumeRejectsRWXBlock(t *testing.T) {
 
 func TestCreateVolumeRejectsRWXLastManStanding(t *testing.T) {
 	s := newScheme(t)
-	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, DRBDPortBase: 7000}
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, RWXEnabled: true, DRBDPortBase: 7000}
 
 	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               volPvc1,
@@ -293,6 +294,25 @@ func TestCreateVolumeRejectsRWXLastManStanding(t *testing.T) {
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("RWX with last-man-standing quorum must be rejected, got %v", err)
+	}
+}
+
+// With no gateway configured an RWX volume would carry a spec.export no
+// reconciler ever serves; the request must fail at provision time instead.
+// FailedPrecondition, not InvalidArgument: provisioning self-heals on retry
+// once the gateway is enabled.
+func TestCreateVolumeRejectsRWXWhenDisabled(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, DRBDPortBase: 7000}
+
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: rwxCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("RWX with the gateway disabled must be rejected with FailedPrecondition, got %v", err)
 	}
 }
 

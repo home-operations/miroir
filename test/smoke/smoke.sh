@@ -5,7 +5,8 @@
 #   ./test/smoke/smoke.sh
 #
 # Requires: kubectl pointed at the cluster, the miroir-replicated
-# StorageClass and miroir-snap VolumeSnapshotClass installed.
+# StorageClass and miroir-snap VolumeSnapshotClass installed, and
+# gateway.enabled=true in Helm values (the RWX failover scenario needs it).
 set -euo pipefail
 
 NS=miroir-smoke

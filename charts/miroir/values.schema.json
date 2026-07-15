@@ -284,6 +284,12 @@
     "gateway": {
       "description": "=============================================================================\nGateway (per-RWX-volume NFS share manager)\n=============================================================================\nThe controller spawns one gateway Deployment per RWX (ReadWriteMany)\nvolume: it mounts the volume's device on a replica node and exports it\nover NFSv4 (userspace NFS-Ganesha), which consumers on any node mount.\nThe image is the agent userland plus NFS-Ganesha.",
       "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Serve ReadWriteMany (and ReadOnlyMany) PVCs via per-volume NFS\ngateways. Opt-in: gateway pods run privileged in the release namespace,\nand any user who can create a PVC can cause one to be spawned, so\nenabling RWX is an explicit operator decision. While disabled the\ncontroller rejects RWX at provision time with a clear message, and the\ngateway ServiceAccount, RBAC, PodMonitor, and export alerts are not\ninstalled.",
+          "title": "enabled",
+          "type": "boolean"
+        },
         "image": {
           "properties": {
             "digest": {

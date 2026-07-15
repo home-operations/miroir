@@ -5,7 +5,18 @@ release:
   name: miroir
   namespace: miroir-system
 tests:
-  - it: emits controller + agent + gateway RBAC (SAs, cluster roles, and the namespaced gateway Role)
+  - it: emits controller + agent RBAC by default (gateway RBAC is opt-in)
+    asserts:
+      - hasDocuments:
+          count: 6
+      - documentIndex: 5
+        equal:
+          path: kind
+          value: ClusterRoleBinding
+
+  - it: emits controller + agent + gateway RBAC when the gateway is enabled
+    set:
+      gateway.enabled: true
     asserts:
       - hasDocuments:
           count: 11
