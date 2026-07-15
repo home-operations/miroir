@@ -84,6 +84,10 @@ type Peer struct {
 	// tie-breaker or a client leg: renders "disk none", no meta-disk,
 	// no backend.
 	Diskless bool
+	// Client marks a diskless consumer leg (spec.clients): rendered with
+	// "tiebreaker no" so DRBD never counts its vote, unlike a placed
+	// tie-breaker replica whose vote is its purpose.
+	Client bool
 }
 
 // Render produces the .res file content for the local node.
@@ -142,11 +146,18 @@ func Render(r Resource) string {
 		b.WriteString("        volume 0 {\n")
 		fmt.Fprintf(&b, "            device minor %d;\n", r.Minor)
 		if p.Diskless {
-			// Diskless tie-breaker: joins for quorum voting, stores no
-			// data. No backing device, no on-disk metadata.
+			// Diskless leg: no backing device, no on-disk metadata (the
+			// absent meta-disk directive means "none" for diskless peers).
 			b.WriteString("            disk none;\n")
-			// No meta-disk directive — DRBD treats the absence as "no
-			// metadata device" for diskless peers.
+			if p.Client {
+				// A client leg consumes data but is not placed for
+				// quorum; without this DRBD counts its vote, raising the
+				// majority threshold while a pod is attached and leaving
+				// a stranded vote behind when its node dies. Tie-breaker
+				// replicas keep the default yes. Needs drbd-utils ≥ 9.34
+				// and kmod ≥ 9.3.1 — the agent's startup floor.
+				b.WriteString("            tiebreaker no;\n")
+			}
 		} else {
 			disk := peerDiskPlaceholder
 			if p.Node == r.LocalNode {

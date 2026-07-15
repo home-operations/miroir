@@ -40,7 +40,7 @@ func tieBreakerResource(localNode string) Resource {
 		Peers: []Peer{
 			{Node: nodeKharkiv, NodeID: 0, Address: addrKharkiv},
 			{Node: nodeParis, NodeID: 1, Address: addrParis},
-			{Node: nodeOslo, NodeID: 2, Address: "192.168.1.43", Diskless: true},
+			{Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true},
 		},
 	}
 }
@@ -134,13 +134,13 @@ func TestRenderIPv6Address(t *testing.T) {
 		LocalDisk: "/dev/mapper/x",
 		Peers: []Peer{
 			{Node: nodeKharkiv, NodeID: 0, Address: "fd00::41"},
-			{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
+			{Node: nodeOslo, NodeID: 1, Address: addrOslo},
 		},
 	})
 	if !strings.Contains(out, "address ipv6 [fd00::41]:7000;") {
 		t.Fatalf("IPv6 peer must render family + brackets:\n%s", out)
 	}
-	if !strings.Contains(out, "address ipv4 192.168.1.43:7000;") {
+	if !strings.Contains(out, "address ipv4 "+addrOslo+":7000;") {
 		t.Fatalf("IPv4 peer must stay ipv4:\n%s", out)
 	}
 }

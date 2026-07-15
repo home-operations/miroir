@@ -35,6 +35,7 @@ const (
 	mockCurrentUUID    = "current-uuid 0xDEADBEEF00000001;"
 	addrKharkiv        = "192.168.1.41"
 	addrParis          = "192.168.1.42"
+	addrOslo           = "192.168.1.43"
 )
 
 func testResource(local string) Resource {
@@ -110,6 +111,24 @@ func TestRenderFreezeQuorum(t *testing.T) {
 	out := Render(r)
 	if !strings.Contains(out, "quorum majority;") || !strings.Contains(out, "on-no-quorum io-error;") {
 		t.Fatalf("freeze policy not rendered:\n%s", out)
+	}
+}
+
+// A client leg renders "tiebreaker no" (it must not shift quorum math);
+// a placed tie-breaker replica keeps the default — voting is its purpose.
+func TestRenderClientLegNoTiebreaker(t *testing.T) {
+	r := testResource(nodeKharkiv)
+	r.Peers = append(r.Peers,
+		Peer{Node: "tiebreak-1", NodeID: 2, Address: addrOslo, Diskless: true},
+		Peer{Node: "worker-1", NodeID: 3, Address: "192.168.1.44", Diskless: true, Client: true},
+	)
+	out := Render(r)
+	if n := strings.Count(out, "tiebreaker no;"); n != 1 {
+		t.Fatalf("tiebreaker no must render exactly once (the client leg), got %d:\n%s", n, out)
+	}
+	client := out[strings.Index(out, `on "worker-1"`):]
+	if !strings.Contains(client[:strings.Index(client, "}")+1], "tiebreaker no;") {
+		t.Fatalf("tiebreaker no must sit in the client's volume block:\n%s", out)
 	}
 }
 

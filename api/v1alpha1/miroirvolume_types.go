@@ -95,8 +95,9 @@ type VolumeSource struct {
 // I/O crosses the replication network. Added by the CSI node service at
 // stage time (spec.allowRemoteAccess volumes only), completed by the
 // membership reconciler like a replica, removed at unstage. Unlike a
-// diskless tie-breaker it is not placed for quorum — but DRBD counts every
-// peer's vote, so an attached client does shift quorum math (see README).
+// diskless tie-breaker it is not placed for quorum, and it is rendered
+// with "tiebreaker no" so DRBD never counts its vote — attach/detach
+// leaves the majority threshold alone (see README).
 type VolumeClient struct {
 	// Node is the Kubernetes node name consuming the volume remotely.
 	Node string `json:"node"`

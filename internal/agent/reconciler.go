@@ -522,6 +522,7 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 			NodeID:   cl.NodeID,
 			Address:  cl.Address,
 			Diskless: true,
+			Client:   true,
 		})
 	}
 	return drbd.Resource{
