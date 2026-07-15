@@ -182,9 +182,18 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || !has(self.export)",message="an NFS-exported (RWX) volume is consumed over NFS and cannot have DRBD client legs"
 // +kubebuilder:validation:XValidation:rule="has(self.export) == has(oldSelf.export)",message="a volume cannot gain or lose its NFS export (RWX) in place"
 // +kubebuilder:validation:XValidation:rule="!(has(self.export) && has(self.drbd)) || self.quorumPolicy == 'freeze'",message="replicated RWX volumes must use freeze quorum (a rescheduled gateway under last-man-standing risks dual-primary split-brain)"
+// +kubebuilder:validation:XValidation:rule="self.replicas.all(r, self.replicas.exists_one(o, o.node == r.node))",message="replica nodes must be unique: a node holds at most one leg of a volume"
+// +kubebuilder:validation:XValidation:rule="!has(self.clients) || self.clients.all(c, self.clients.exists_one(o, o.node == c.node))",message="client-leg nodes must be unique"
+// +kubebuilder:validation:XValidation:rule="!has(self.drbd) || !has(oldSelf.drbd) || self.drbd.port == oldSelf.drbd.port",message="drbd.port is immutable: it was allocated cluster-wide at creation and the allocator assumes existing volumes keep their ports"
+// +kubebuilder:validation:XValidation:rule="has(self.source) == has(oldSelf.source) && (!has(self.source) || !has(oldSelf.source) || self.source.snapshotName == oldSelf.source.snapshotName)",message="source is immutable: it records the snapshot this volume was cloned from"
+// +kubebuilder:validation:XValidation:rule="!has(self.export) || !has(oldSelf.export) || self.export.fsType == oldSelf.export.fsType",message="export.fsType is immutable: the gateway formatted the volume with it at first start"
 type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
+	// The transition rule pins it monotonic: nothing downstream supports
+	// shrinking — agents only grow the backing device and the filesystem,
+	// and a shrunk spec would desync DRBD metadata from the device.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="a volume cannot shrink in place: agents only grow the backing device and filesystem; restore a snapshot into a new, smaller volume instead"
 	SizeBytes int64 `json:"sizeBytes"`
 	// Replicas lists the placement of the volume: one entry for local
 	// volumes, two or more for DRBD-replicated ones. MaxItems matches the

@@ -7,7 +7,8 @@ Tooling is pinned with [mise](https://mise.jdx.dev); the everyday
 tasks:
 
 ```bash
-mise run test          # unit tests (regenerates manifests first)
+mise run test              # unit tests (regenerates manifests first)
+mise run test-integration  # envtest apiserver: CRD schema + CEL rules
 mise run lint          # golangci-lint
 mise run build         # bin/miroir
 mise run manifests     # CRD + RBAC generation

@@ -25,6 +25,9 @@ package v1alpha1
 // CSI CreateSnapshot.
 type MiroirSnapshotSpecApplyConfiguration struct {
 	// VolumeName references the MiroirVolume this snapshot captures.
+	// Immutable: the backend CoW snapshots were cut on the source volume's
+	// replicas, so retargeting the reference would point restores and
+	// per-node teardown at a volume that never held them.
 	VolumeName *string `json:"volumeName,omitempty"`
 }
 

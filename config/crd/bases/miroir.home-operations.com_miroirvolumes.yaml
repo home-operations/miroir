@@ -236,11 +236,19 @@ spec:
                 minItems: 1
                 type: array
               sizeBytes:
-                description: SizeBytes is the provisioned (virtual, thin) size of
-                  the volume.
+                description: |-
+                  SizeBytes is the provisioned (virtual, thin) size of the volume.
+                  The transition rule pins it monotonic: nothing downstream supports
+                  shrinking — agents only grow the backing device and the filesystem,
+                  and a shrunk spec would desync DRBD metadata from the device.
                 format: int64
                 minimum: 1
                 type: integer
+                x-kubernetes-validations:
+                - message: 'a volume cannot shrink in place: agents only grow the
+                    backing device and filesystem; restore a snapshot into a new,
+                    smaller volume instead'
+                  rule: self >= oldSelf
               source:
                 description: Source, if set, provisions content from a snapshot (CoW
                   clone).
@@ -290,6 +298,23 @@ spec:
                 gateway under last-man-standing risks dual-primary split-brain)
               rule: '!(has(self.export) && has(self.drbd)) || self.quorumPolicy ==
                 ''freeze'''
+            - message: 'replica nodes must be unique: a node holds at most one leg
+                of a volume'
+              rule: self.replicas.all(r, self.replicas.exists_one(o, o.node == r.node))
+            - message: client-leg nodes must be unique
+              rule: '!has(self.clients) || self.clients.all(c, self.clients.exists_one(o,
+                o.node == c.node))'
+            - message: 'drbd.port is immutable: it was allocated cluster-wide at creation
+                and the allocator assumes existing volumes keep their ports'
+              rule: '!has(self.drbd) || !has(oldSelf.drbd) || self.drbd.port == oldSelf.drbd.port'
+            - message: 'source is immutable: it records the snapshot this volume was
+                cloned from'
+              rule: has(self.source) == has(oldSelf.source) && (!has(self.source)
+                || !has(oldSelf.source) || self.source.snapshotName == oldSelf.source.snapshotName)
+            - message: 'export.fsType is immutable: the gateway formatted the volume
+                with it at first start'
+              rule: '!has(self.export) || !has(oldSelf.export) || self.export.fsType
+                == oldSelf.export.fsType'
           status:
             description: MiroirVolumeStatus is the observed state aggregated from
               node agents.
