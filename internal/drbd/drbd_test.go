@@ -33,9 +33,9 @@ const (
 	cmdAdmVersion      = "drbdadm --version"
 	cmdDumpMD          = "dump-md"
 	mockCurrentUUID    = "current-uuid 0xDEADBEEF00000001;"
-	addrKharkiv        = "192.168.1.41"
-	addrParis          = "192.168.1.42"
-	addrOslo           = "192.168.1.43"
+	addrA              = "192.168.1.41"
+	addrB              = "192.168.1.42"
+	addrC              = "192.168.1.43"
 	nodeWorker1        = "worker-1"
 )
 
@@ -48,14 +48,14 @@ func testResource(local string) Resource {
 		LocalNode: local,
 		LocalDisk: "/dev/vg-miroir/pvc-1",
 		Peers: []Peer{
-			{Node: nodeKharkiv, NodeID: 0, Address: addrKharkiv},
-			{Node: nodeParis, NodeID: 1, Address: addrParis},
+			{Node: nodeA, NodeID: 0, Address: addrA},
+			{Node: nodeB, NodeID: 1, Address: addrB},
 		},
 	}
 }
 
 func TestRenderDeterministicAndLocalDisk(t *testing.T) {
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 	a, b := Render(r), Render(r)
 	if a != b {
 		t.Fatal("render is not deterministic")
@@ -75,7 +75,7 @@ func TestRenderDeterministicAndLocalDisk(t *testing.T) {
 }
 
 func TestRenderSharedSecret(t *testing.T) {
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 	if out := Render(r); strings.Contains(out, "shared-secret") {
 		t.Fatalf("no auth must render for secretless volumes (pre-secret CRs):\n%s", out)
 	}
@@ -107,7 +107,7 @@ func TestParseEvent2(t *testing.T) {
 }
 
 func TestRenderFreezeQuorum(t *testing.T) {
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 	r.Quorum = miroirv1alpha1.QuorumFreeze
 	out := Render(r)
 	if !strings.Contains(out, "quorum majority;") || !strings.Contains(out, "on-no-quorum io-error;") {
@@ -118,9 +118,9 @@ func TestRenderFreezeQuorum(t *testing.T) {
 // A client leg renders "tiebreaker no" (it must not shift quorum math);
 // a placed tie-breaker replica keeps the default — voting is its purpose.
 func TestRenderClientLegNoTiebreaker(t *testing.T) {
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 	r.Peers = append(r.Peers,
-		Peer{Node: "tiebreak-1", NodeID: 2, Address: addrOslo, Diskless: true},
+		Peer{Node: "tiebreak-1", NodeID: 2, Address: addrC, Diskless: true},
 		Peer{Node: nodeWorker1, NodeID: 3, Address: "192.168.1.44", Diskless: true, Client: true},
 	)
 	out := Render(r)
@@ -136,9 +136,9 @@ func TestRenderClientLegNoTiebreaker(t *testing.T) {
 // A client leg rendered on its own node advertises the diskful legs'
 // discard granularity; rendered anywhere else (or unset) it must not.
 func TestRenderClientDiscardGranularity(t *testing.T) {
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 	r.Peers = append(r.Peers,
-		Peer{Node: nodeWorker1, NodeID: 2, Address: addrOslo, Diskless: true, Client: true},
+		Peer{Node: nodeWorker1, NodeID: 2, Address: addrC, Diskless: true, Client: true},
 	)
 	r.ClientDiscardGranularityBytes = 65536
 
@@ -169,7 +169,7 @@ func TestRenderClientDiscardGranularity(t *testing.T) {
 }
 
 func TestRenderNoAutoSplitBrainResolution(t *testing.T) {
-	out := Render(testResource(nodeKharkiv))
+	out := Render(testResource(nodeA))
 	for _, directive := range []string{
 		"after-sb-0pri disconnect;",
 		"after-sb-1pri disconnect;",
@@ -200,10 +200,10 @@ func fakeMknod(string, uint32, int) error { return nil }
 func TestResolveSplitBrainWinnerReconnects(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	// kharkiv is node id 0 — the seed winner and the survivor. It disconnects
+	// node-a is node id 0 — the seed winner and the survivor. It disconnects
 	// first (a bare connect aborts on a peer that already has a net-config)
 	// then reconnects without discarding data.
-	if err := d.ResolveSplitBrain(context.Background(), testResource(nodeKharkiv)); err != nil {
+	if err := d.ResolveSplitBrain(context.Background(), testResource(nodeA)); err != nil {
 		t.Fatalf("ResolveSplitBrain: %v", err)
 	}
 	fe.calledWith(t, "drbdadm disconnect pvc-1")
@@ -214,9 +214,9 @@ func TestResolveSplitBrainWinnerReconnects(t *testing.T) {
 func TestResolveSplitBrainLoserDiscards(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	// paris is node id 1 — the loser: it must disconnect then reconnect
+	// node-b is node id 1 — the loser: it must disconnect then reconnect
 	// discarding its own generation so it becomes SyncTarget.
-	if err := d.ResolveSplitBrain(context.Background(), testResource(nodeParis)); err != nil {
+	if err := d.ResolveSplitBrain(context.Background(), testResource(nodeB)); err != nil {
 		t.Fatalf("ResolveSplitBrain: %v", err)
 	}
 	fe.calledWith(t, "drbdadm disconnect pvc-1")
@@ -226,7 +226,7 @@ func TestResolveSplitBrainLoserDiscards(t *testing.T) {
 func TestResolveSplitBrainDisklessReconnects(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeParis)
+	r := testResource(nodeB)
 	r.LocalDiskless = true // a tie-breaker never discards data
 	if err := d.ResolveSplitBrain(context.Background(), r); err != nil {
 		t.Fatalf("ResolveSplitBrain: %v", err)
@@ -300,7 +300,7 @@ func (f *fakeExec) notCalledWith(t *testing.T, substr string) {
 func TestApplyFreshResource(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 
 	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
@@ -326,7 +326,7 @@ func TestApplyFreshResource(t *testing.T) {
 func TestApplyBitmapGranularity(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 	r.BitmapGranularityBytes = 65536
 
 	if err := d.Apply(t.Context(), r); err != nil {
@@ -397,21 +397,27 @@ func TestKernelVersion(t *testing.T) {
 	}
 }
 
-// The floor compare is numeric per dotted component — "9.10" is newer
-// than "9.3" — and anything unparseable reads as below the floor.
+// The floor compare is semver-based — "9.10" is newer than "9.3", a
+// short "9.3" reads as "9.3.0" — and anything unparseable reads as
+// below the floor.
 func TestBelowKernelFloor(t *testing.T) {
 	cases := map[string]bool{
-		"9.3.1":   false, // the floor itself
-		"9.3.2":   false,
-		"9.4.0":   false,
-		"9.10.0":  false, // numeric, not lexicographic
-		"10.0.0":  false,
-		"9.3.0":   true,
-		"9.2.18":  true,
-		"8.4.11":  true,
-		"9.3":     true, // shorter than the floor
-		"":        true,
-		"unknown": true,
+		"9.3.1":      false, // the floor itself
+		"9.3.2":      false,
+		"9.4.0":      false,
+		"9.10.0":     false, // numeric, not lexicographic
+		"10.0.0":     false,
+		"9.3.1.1":    false, // 4-component vendor build: compared on x.y.z
+		"v9.3.2":     false, // leading v tolerated
+		"9.3.2-1":    false, // suffixed build of a version above the floor
+		"9.3.2+ptf1": false, // LINBIT PTF-style build metadata
+		"9.3.0":      true,
+		"9.2.18":     true,
+		"9.2.18.4":   true, // 4-component below the floor stays below
+		"8.4.11":     true,
+		"9.3":        true, // shorter than the floor
+		"":           true,
+		"unknown":    true,
 	}
 	for version, want := range cases {
 		if got := BelowKernelFloor(version); got != want {
@@ -455,7 +461,7 @@ func TestDiscardGranularity(t *testing.T) {
 func TestApplySkipDiskAttachLeavesDiskDetached(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 	r.SkipDiskAttach = true
 
 	if err := d.Apply(t.Context(), r); err != nil {
@@ -484,7 +490,7 @@ func TestApplyRecreatesOnMissingMetadata(t *testing.T) {
 	}}
 	d := &Driver{StateDir: dir, Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
@@ -504,7 +510,7 @@ func TestApplyRecreatesOnMissingMetadata(t *testing.T) {
 func TestApplyIdempotent(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 
 	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)
@@ -528,7 +534,7 @@ func TestApplyRetriesAfterCreateMDCrash(t *testing.T) {
 		"create-md": errors.New("exit status 20: open failed"),
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeParis)
+	r := testResource(nodeB)
 
 	if err := d.Apply(t.Context(), r); err == nil {
 		t.Fatal("expected create-md failure")
@@ -575,7 +581,7 @@ func TestApplyAdoptsAttachedDevice(t *testing.T) {
 		}},
 	} {
 		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-		if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
+		if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		fe.notCalledWith(t, "create-md")
@@ -602,7 +608,7 @@ func TestApplyAppliesALOnUncleanClone(t *testing.T) {
 	}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm apply-al pvc-1/0")
@@ -622,7 +628,7 @@ func TestApplySurfacesNonDRBDBusyDevice(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err == nil {
+	if err := d.Apply(t.Context(), testResource(nodeA)); err == nil {
 		t.Fatal("busy backing device must surface as an error")
 	}
 	fe.notCalledWith(t, "create-md")
@@ -643,7 +649,7 @@ func TestApplyFastPathCleansStaleSentinel(t *testing.T) {
 		}
 	}
 
-	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "set-gi")
@@ -660,7 +666,7 @@ func TestApplyAdoptsLiveMetadataWithoutMarkers(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "create-md")
@@ -679,7 +685,7 @@ func TestApplyClaimsVirginMetadataWithoutMarkers(t *testing.T) {
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.Apply(t.Context(), testResource(nodeKharkiv)); err != nil {
+	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "create-md")
@@ -717,7 +723,7 @@ func TestDownRemovesState(t *testing.T) {
 		cmdDrbdsetupStatus: `[{"name":"pvc-1","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	r := testResource(nodeKharkiv)
+	r := testResource(nodeA)
 
 	if err := d.Apply(t.Context(), r); err != nil {
 		t.Fatal(err)

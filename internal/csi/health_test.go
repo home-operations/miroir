@@ -51,19 +51,19 @@ func TestVolumeCondition(t *testing.T) {
 		{
 			name: "split-brain wins over everything",
 			vol: volWithStatus("v", miroirv1alpha1.VolumeDegraded, map[string]miroirv1alpha1.ReplicaStatus{
-				nodeParis:   {DiskFailed: true},
-				nodeKharkiv: {SplitBrain: true},
+				nodeB: {DiskFailed: true},
+				nodeA: {SplitBrain: true},
 			}),
 			wantAbnormal: true,
-			wantContains: "split-brain on node " + nodeKharkiv,
+			wantContains: "split-brain on node " + nodeA,
 		},
 		{
 			name: "disk failed when no split-brain",
 			vol: volWithStatus("v", miroirv1alpha1.VolumeReady, map[string]miroirv1alpha1.ReplicaStatus{
-				nodeParis: {DiskFailed: true},
+				nodeB: {DiskFailed: true},
 			}),
 			wantAbnormal: true,
-			wantContains: "backing disk failed on node " + nodeParis,
+			wantContains: "backing disk failed on node " + nodeB,
 		},
 		{
 			name:         "failed phase",
@@ -95,13 +95,13 @@ func TestVolumeCondition(t *testing.T) {
 // so a health event doesn't flap between reconciles.
 func TestVolumeConditionDeterministic(t *testing.T) {
 	vol := volWithStatus("v", miroirv1alpha1.VolumeReady, map[string]miroirv1alpha1.ReplicaStatus{
-		nodeParis:   {SplitBrain: true},
-		nodeKharkiv: {SplitBrain: true},
-		nodeOslo:    {SplitBrain: true},
+		nodeB: {SplitBrain: true},
+		nodeA: {SplitBrain: true},
+		nodeC: {SplitBrain: true},
 	})
 	for range 5 {
-		if msg := volumeCondition(vol).GetMessage(); !strings.Contains(msg, nodeKharkiv) {
-			t.Fatalf("expected lexically-first node %s, got %q", nodeKharkiv, msg)
+		if msg := volumeCondition(vol).GetMessage(); !strings.Contains(msg, nodeA) {
+			t.Fatalf("expected lexically-first node %s, got %q", nodeA, msg)
 		}
 	}
 }

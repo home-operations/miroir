@@ -64,14 +64,14 @@ const statusAborted = `[{"name":"pvc-1",
 		"peer_devices":[{"replication-state":"Off","out-of-sync":512}]}]}]`
 
 func replicatedVol() *miroirv1alpha1.MiroirVolume {
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true},
+		nodeA: {DeviceCreated: true},
 	}
 	return v
 }
@@ -108,9 +108,9 @@ func TestVerifySkipsNonCoordinator(t *testing.T) {
 	v := replicatedVol()
 	c := newClient(t, v)
 	fe := &fakeDRBDExec{statusJSON: statusUpToDate}
-	// Scheduler runs on paris, but the coordinator (first diskful replica) is
-	// kharkiv — paris must not initiate.
-	vs := newVerifyScheduler(t, nodeParis, c, fe, nil)
+	// Scheduler runs on node-b, but the coordinator (first diskful replica) is
+	// node-a — node-b must not initiate.
+	vs := newVerifyScheduler(t, nodeB, c, fe, nil)
 
 	if err := vs.runOnce(t.Context()); err != nil {
 		t.Fatal(err)
@@ -119,11 +119,11 @@ func TestVerifySkipsNonCoordinator(t *testing.T) {
 }
 
 func TestVerifySkipsUnreplicated(t *testing.T) {
-	v := vol(volPvc1, nodeKharkiv) // no DRBD
-	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{nodeKharkiv: {DeviceCreated: true}}
+	v := vol(volPvc1, nodeA) // no DRBD
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{nodeA: {DeviceCreated: true}}
 	c := newClient(t, v)
 	fe := &fakeDRBDExec{statusJSON: statusUpToDate}
-	vs := newVerifyScheduler(t, nodeKharkiv, c, fe, nil)
+	vs := newVerifyScheduler(t, nodeA, c, fe, nil)
 
 	if err := vs.runOnce(t.Context()); err != nil {
 		t.Fatal(err)
@@ -153,13 +153,13 @@ func TestVerifySkipsUnhealthy(t *testing.T) {
 			v := replicatedVol()
 			c := newClient(t, v)
 			fe := &fakeDRBDExec{statusJSON: tc.status}
-			vs := newVerifyScheduler(t, nodeKharkiv, c, fe, nil)
+			vs := newVerifyScheduler(t, nodeA, c, fe, nil)
 
 			if err := vs.runOnce(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			fe.notCalledWith(t, "drbdadm verify")
-			if got := getVol(t, c).Status.PerNode[nodeKharkiv].LastVerifyTime; got != nil {
+			if got := getVol(t, c).Status.PerNode[nodeA].LastVerifyTime; got != nil {
 				t.Fatalf("skipped verify must not record a result, got %v", got)
 			}
 		})
@@ -172,14 +172,14 @@ func TestVerifyHappyPathRecordsCleanResult(t *testing.T) {
 	// gate → in-flight → complete-clean.
 	fe := &fakeDRBDExec{statusSeq: []string{statusUpToDate, statusVerifying, statusClean}}
 	rec := events.NewFakeRecorder(4)
-	vs := newVerifyScheduler(t, nodeKharkiv, c, fe, rec)
+	vs := newVerifyScheduler(t, nodeA, c, fe, rec)
 
 	if err := vs.runOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm verify pvc-1")
 
-	st := getVol(t, c).Status.PerNode[nodeKharkiv]
+	st := getVol(t, c).Status.PerNode[nodeA]
 	if st.LastVerifyTime == nil {
 		t.Fatal("a completed verify must record LastVerifyTime")
 	}
@@ -201,13 +201,13 @@ func TestVerifyOutOfSyncRecordsAndEvents(t *testing.T) {
 	c := newClient(t, v)
 	fe := &fakeDRBDExec{statusSeq: []string{statusUpToDate, statusVerifying, statusDone}}
 	rec := events.NewFakeRecorder(4)
-	vs := newVerifyScheduler(t, nodeKharkiv, c, fe, rec)
+	vs := newVerifyScheduler(t, nodeA, c, fe, rec)
 
 	if err := vs.runOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 
-	st := getVol(t, c).Status.PerNode[nodeKharkiv]
+	st := getVol(t, c).Status.PerNode[nodeA]
 	if st.LastVerifyOutOfSyncBytes == nil || *st.LastVerifyOutOfSyncBytes != 256*1024 {
 		t.Fatalf("verify must record 256 KiB out of sync, got %v", st.LastVerifyOutOfSyncBytes)
 	}
@@ -229,14 +229,14 @@ func TestVerifyDiscardsResultWhenPeerDropsMidPass(t *testing.T) {
 	c := newClient(t, v)
 	fe := &fakeDRBDExec{statusSeq: []string{statusUpToDate, statusVerifying, statusAborted}}
 	rec := events.NewFakeRecorder(4)
-	vs := newVerifyScheduler(t, nodeKharkiv, c, fe, rec)
+	vs := newVerifyScheduler(t, nodeA, c, fe, rec)
 
 	if err := vs.runOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm verify pvc-1")
 
-	if got := getVol(t, c).Status.PerNode[nodeKharkiv].LastVerifyTime; got != nil {
+	if got := getVol(t, c).Status.PerNode[nodeA].LastVerifyTime; got != nil {
 		t.Fatalf("an aborted verify must not record a result, got %v", got)
 	}
 	select {
@@ -251,7 +251,7 @@ func TestVerifyContextCancelStopsCleanly(t *testing.T) {
 	c := newClient(t, v)
 	// Always in-flight: the poll loop only leaves via ctx cancellation.
 	fe := &fakeDRBDExec{statusJSON: statusVerifying, statusSeq: []string{statusUpToDate}}
-	vs := newVerifyScheduler(t, nodeKharkiv, c, fe, nil)
+	vs := newVerifyScheduler(t, nodeA, c, fe, nil)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // cancelled before the poll loop runs
@@ -264,7 +264,7 @@ func TestVerifyContextCancelStopsCleanly(t *testing.T) {
 	// a disconnect, which would resync.
 	fe.notCalledWith(t, "disconnect")
 	fe.notCalledWith(t, "drbdadm down")
-	if got := getVol(t, c).Status.PerNode[nodeKharkiv].LastVerifyTime; got != nil {
+	if got := getVol(t, c).Status.PerNode[nodeA].LastVerifyTime; got != nil {
 		t.Fatalf("an interrupted verify must not record a result, got %v", got)
 	}
 }

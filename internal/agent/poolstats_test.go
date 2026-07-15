@@ -41,14 +41,14 @@ func newPublisher(t *testing.T, fb *fakeBackend, rec events.EventRecorder) (*Poo
 		Build()
 	p := &PoolStatsPublisher{
 		Client:      c,
-		NodeName:    nodeKharkiv,
+		NodeName:    nodeA,
 		Backend:     fb,
 		BackendType: miroirv1alpha1.BackendLVMThin,
 		Recorder:    rec,
 	}
 	get := func() *miroirv1alpha1.MiroirNode {
 		n := &miroirv1alpha1.MiroirNode{}
-		if err := c.Get(t.Context(), types.NamespacedName{Name: nodeKharkiv}, n); err != nil {
+		if err := c.Get(t.Context(), types.NamespacedName{Name: nodeA}, n); err != nil {
 			t.Fatal(err)
 		}
 		return n

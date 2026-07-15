@@ -33,23 +33,23 @@ import (
 )
 
 // clientVol is a Ready 2-replica volume with an aged, completed client leg
-// on oslo.
+// on node-c.
 func clientVol(age time.Duration) *miroirv1alpha1.MiroirVolume {
 	v := replicatedVol()
 	v.Spec.Replicas = v.Spec.Replicas[:2]
 	added := metav1.NewTime(time.Now().Add(-age))
 	v.Spec.Clients = []miroirv1alpha1.VolumeClient{
-		{Node: nodeOslo, NodeID: 2, Address: addrOslo, AddedAt: &added},
+		{Node: nodeC, NodeID: 2, Address: addrC, AddedAt: &added},
 	}
 	v.Status.Phase = miroirv1alpha1.VolumeReady
 	return v
 }
 
-// freshStats is an oslo MiroirNode with room for the volume.
+// freshStats is an node-c MiroirNode with room for the volume.
 func freshStats(free int64) *miroirv1alpha1.MiroirNode {
 	now := metav1.Now()
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeOslo},
+		ObjectMeta: metav1.ObjectMeta{Name: nodeC},
 		Status: miroirv1alpha1.MiroirNodeStatus{
 			CapacityBytes: 100 << 30, AllocatedBytes: 100<<30 - free, ObservedAt: &now,
 		},
@@ -76,7 +76,7 @@ func TestAutoDiskfulConvertsAgedClient(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
 	reconcileAD(t, r, "pvc-1")
@@ -86,10 +86,10 @@ func TestAutoDiskfulConvertsAgedClient(t *testing.T) {
 		t.Fatalf("client leg must be removed: %+v", got.Spec.Clients)
 	}
 	idx := slices.IndexFunc(got.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
-		return rep.Node == nodeOslo
+		return rep.Node == nodeC
 	})
 	if idx < 0 {
-		t.Fatalf("oslo must become a replica: %+v", got.Spec.Replicas)
+		t.Fatalf("node-c must become a replica: %+v", got.Spec.Replicas)
 	}
 	rep := got.Spec.Replicas[idx]
 	if rep.Diskless || rep.Backend != miroirv1alpha1.BackendLVMThin {
@@ -97,7 +97,7 @@ func TestAutoDiskfulConvertsAgedClient(t *testing.T) {
 	}
 	// The leg's live DRBD identity must not change: a node id is immutable
 	// on an up resource and the consumer holds the device open.
-	if rep.NodeID != 2 || rep.Address != addrOslo {
+	if rep.NodeID != 2 || rep.Address != addrC {
 		t.Fatalf("conversion must keep the client leg's node-id/address: %+v", rep)
 	}
 	if !rep.FullSync {
@@ -118,7 +118,7 @@ func TestAutoDiskfulReplacesTieBreaker(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
 	reconcileAD(t, r, "pvc-1")
@@ -136,7 +136,7 @@ func TestAutoDiskfulWaitsForThreshold(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
 	res := reconcileAD(t, r, "pvc-1")
@@ -163,16 +163,16 @@ func TestAutoDiskfulBlocks(t *testing.T) {
 		},
 		"degraded volume": {
 			mutate: func(v *miroirv1alpha1.MiroirVolume) { v.Status.Phase = miroirv1alpha1.VolumeDegraded },
-			nodes:  nodemap.Map{nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin}},
+			nodes:  nodemap.Map{nodeC: {Backend: miroirv1alpha1.BackendLVMThin}},
 			stats:  freshStats(10 << 30),
 		},
 		"no pool stats": {
 			mutate: func(*miroirv1alpha1.MiroirVolume) {},
-			nodes:  nodemap.Map{nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin}},
+			nodes:  nodemap.Map{nodeC: {Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 		"insufficient space": {
 			mutate: func(*miroirv1alpha1.MiroirVolume) {},
-			nodes:  nodemap.Map{nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin}},
+			nodes:  nodemap.Map{nodeC: {Backend: miroirv1alpha1.BackendLVMThin}},
 			stats:  freshStats(1 << 20),
 		},
 	}
@@ -198,17 +198,17 @@ func TestAutoDiskfulBlocks(t *testing.T) {
 	}
 }
 
-// tieBreakerVol is a Ready 2+1 volume whose tie-breaker (oslo) has been
+// tieBreakerVol is a Ready 2+1 volume whose tie-breaker (node-c) has been
 // Primary — a consumer staged through it — for the given duration.
 func tieBreakerVol(primaryFor time.Duration) *miroirv1alpha1.MiroirVolume {
 	v := replicatedVol()
 	v.Spec.Replicas = v.Spec.Replicas[:2]
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
+		Node: nodeC, NodeID: 2, Address: addrC, Diskless: true,
 	})
 	since := metav1.NewTime(time.Now().Add(-primaryFor))
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeOslo: {Diskless: true, PrimarySince: &since},
+		nodeC: {Diskless: true, PrimarySince: &since},
 	}
 	v.Status.Phase = miroirv1alpha1.VolumeReady
 	return v
@@ -223,7 +223,7 @@ func TestAutoDiskfulConvertsTieBreaker(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
 	reconcileAD(t, r, "pvc-1")
@@ -233,7 +233,7 @@ func TestAutoDiskfulConvertsTieBreaker(t *testing.T) {
 	if rep.Diskless {
 		t.Fatalf("tie-breaker must flip diskful: %+v", rep)
 	}
-	if rep.NodeID != 2 || rep.Address != addrOslo {
+	if rep.NodeID != 2 || rep.Address != addrC {
 		t.Fatalf("node-id/address must be kept for the in-place attach: %+v", rep)
 	}
 	if !rep.FullSync || rep.Backend != miroirv1alpha1.BackendLVMThin {
@@ -246,14 +246,14 @@ func TestAutoDiskfulConvertsTieBreaker(t *testing.T) {
 func TestAutoDiskfulTieBreakerWaits(t *testing.T) {
 	young := tieBreakerVol(2 * time.Minute)
 	idle := tieBreakerVol(15 * time.Minute)
-	idle.Status.PerNode[nodeOslo] = miroirv1alpha1.ReplicaStatus{Diskless: true} // no PrimarySince
+	idle.Status.PerNode[nodeC] = miroirv1alpha1.ReplicaStatus{Diskless: true} // no PrimarySince
 	for name, v := range map[string]*miroirv1alpha1.MiroirVolume{"young": young, "idle": idle} {
 		t.Run(name, func(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 				WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 				WithObjects(v, freshStats(10<<30)).Build()
 			r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-				nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+				nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 			}}
 			reconcileAD(t, r, "pvc-1")
 			if got := get(t, &Reconciler{Client: c}, "pvc-1"); !got.Spec.Replicas[2].Diskless {
@@ -269,12 +269,12 @@ func TestPrimarySinceChanged(t *testing.T) {
 	now := metav1.Now()
 	with := tieBreakerVol(time.Minute)
 	without := tieBreakerVol(time.Minute)
-	without.Status.PerNode[nodeOslo] = miroirv1alpha1.ReplicaStatus{Diskless: true}
+	without.Status.PerNode[nodeC] = miroirv1alpha1.ReplicaStatus{Diskless: true}
 	if !primarySinceChanged(without, with) || !primarySinceChanged(with, without) {
 		t.Fatal("a PrimarySince edge must fire the predicate")
 	}
 	same := with.DeepCopy()
-	same.Status.PerNode[nodeOslo] = miroirv1alpha1.ReplicaStatus{Diskless: true, PrimarySince: &now}
+	same.Status.PerNode[nodeC] = miroirv1alpha1.ReplicaStatus{Diskless: true, PrimarySince: &now}
 	if primarySinceChanged(with, same) {
 		t.Fatal("presence-stable PrimarySince must not fire the predicate")
 	}
@@ -292,7 +292,7 @@ func TestAutoDiskfulPermanentBlockSkipsRequeue(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeOslo: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
 	res := reconcileAD(t, r, "pvc-1")

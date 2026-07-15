@@ -36,10 +36,10 @@ import (
 )
 
 const (
-	testNS      = "miroir-system"
-	nodeKharkiv = "kharkiv"
-	nodeParis   = "paris"
-	nodeOslo    = "oslo"
+	testNS = "miroir-system"
+	nodeA  = "node-a"
+	nodeB  = "node-b"
+	nodeC  = "node-c"
 
 	testClusterIP = "10.96.1.5"
 )
@@ -92,7 +92,7 @@ func getDeployment(t *testing.T, cl client.Client, vol string) *appsv1.Deploymen
 }
 
 func TestReconcileCreatesWorkloads(t *testing.T) {
-	vol := exportVolume("pvc-abc", nodeKharkiv, nodeParis)
+	vol := exportVolume("pvc-abc", nodeA, nodeB)
 	r, cl := newReconciler(vol)
 	reconcile(t, r, "pvc-abc")
 
@@ -115,7 +115,7 @@ func TestReconcileCreatesWorkloads(t *testing.T) {
 	// Scheduled onto exactly the volume's diskful replica nodes.
 	got := affinityNodes(t, dep)
 	slices.Sort(got)
-	if want := []string{nodeKharkiv, nodeParis}; !slices.Equal(got, want) {
+	if want := []string{nodeA, nodeB}; !slices.Equal(got, want) {
 		t.Fatalf("affinity nodes = %v, want %v", got, want)
 	}
 	// Fast eviction on node loss (30s, not the 5m default) so a singleton
@@ -136,7 +136,7 @@ func TestReconcileCreatesWorkloads(t *testing.T) {
 }
 
 func TestReconcileAdoptsServiceAndPublishesAddress(t *testing.T) {
-	vol := exportVolume("pvc-xyz", nodeKharkiv, nodeParis)
+	vol := exportVolume("pvc-xyz", nodeA, nodeB)
 	// A Service already exists with an apiserver-assigned ClusterIP (as
 	// after a controller restart): the reconciler must adopt it, keep the
 	// address, and publish it.
@@ -167,7 +167,7 @@ func TestReconcileAdoptsServiceAndPublishesAddress(t *testing.T) {
 }
 
 func TestReconcileSkipsNonExportVolume(t *testing.T) {
-	vol := exportVolume("pvc-plain", nodeKharkiv)
+	vol := exportVolume("pvc-plain", nodeA)
 	vol.Spec.Export = nil // a plain RWO volume
 	r, cl := newReconciler(vol)
 
@@ -181,19 +181,19 @@ func TestReconcileSkipsNonExportVolume(t *testing.T) {
 }
 
 func TestReconcileUpdatesAffinityOnReplicaChange(t *testing.T) {
-	vol := exportVolume("pvc-move", nodeKharkiv, nodeParis)
+	vol := exportVolume("pvc-move", nodeA, nodeB)
 	r, cl := newReconciler(vol)
 	reconcile(t, r, "pvc-move")
 
-	// The replica set is edited (a replica moves to oslo); the gateway's
+	// The replica set is edited (a replica moves to node-c); the gateway's
 	// affinity must follow so it can still schedule on a data node.
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := cl.Get(t.Context(), types.NamespacedName{Name: "pvc-move"}, got); err != nil {
 		t.Fatal(err)
 	}
 	got.Spec.Replicas = []miroirv1alpha1.Replica{
-		{Node: nodeKharkiv, NodeID: 0},
-		{Node: nodeOslo, NodeID: 1},
+		{Node: nodeA, NodeID: 0},
+		{Node: nodeC, NodeID: 1},
 	}
 	if err := cl.Update(t.Context(), got); err != nil {
 		t.Fatal(err)
@@ -202,7 +202,7 @@ func TestReconcileUpdatesAffinityOnReplicaChange(t *testing.T) {
 
 	nodes := affinityNodes(t, getDeployment(t, cl, "pvc-move"))
 	slices.Sort(nodes)
-	if want := []string{nodeKharkiv, nodeOslo}; !slices.Equal(nodes, want) {
+	if want := []string{nodeA, nodeC}; !slices.Equal(nodes, want) {
 		t.Fatalf("affinity nodes after move = %v, want %v", nodes, want)
 	}
 }
@@ -231,7 +231,7 @@ func exportReadyGauge(t *testing.T, volume string) (float64, bool) {
 }
 
 func TestReconcileExportReadyMetric(t *testing.T) {
-	vol := exportVolume("pvc-metric", nodeKharkiv, nodeParis)
+	vol := exportVolume("pvc-metric", nodeA, nodeB)
 	// The Service pre-exists with an apiserver-assigned ClusterIP (the fake
 	// client assigns none), so readiness hinges on gateway availability.
 	svc := buildService(vol, testNS)

@@ -74,11 +74,11 @@ func TestAllocateMinorSkipsMinorsFromOwnRender(t *testing.T) {
 		Name:      "legacy",
 		Minor:     minorBase,
 		Port:      7000,
-		LocalNode: "kharkiv",
+		LocalNode: nodeA,
 		LocalDisk: "/dev/mapper/x",
 		Peers: []Peer{
-			{Node: "kharkiv", NodeID: 0, Address: addrKharkiv},
-			{Node: "paris", NodeID: 1, Address: addrParis},
+			{Node: nodeA, NodeID: 0, Address: addrA},
+			{Node: nodeB, NodeID: 1, Address: addrB},
 		},
 	})
 	if err := os.WriteFile(filepath.Join(dir, "legacy.res"), []byte(res), 0o640); err != nil {

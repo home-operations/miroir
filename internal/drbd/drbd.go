@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
 	"golang.org/x/sys/unix"
 
 	"github.com/home-operations/miroir/internal/backend"
@@ -934,27 +935,28 @@ func (d *Driver) KernelVersion(ctx context.Context) (string, error) {
 	return "", errors.New("no DRBD_KERNEL_VERSION in drbdadm --version output")
 }
 
+// kernelFloor is KernelFloor pre-parsed for comparisons.
+var kernelFloor = semver.MustParse(KernelFloor)
+
 // BelowKernelFloor reports whether a module version sorts below
-// KernelFloor, comparing dotted components numerically ("9.10" is newer
-// than "9.3"). A version that does not parse reads as below: refusing an
+// KernelFloor ("9.10" is newer than "9.3"; a short "9.3" reads as
+// "9.3.0"). A version that does not parse reads as below: refusing an
 // unknown platform beats rendering options it may reject.
 func BelowKernelFloor(version string) bool {
-	floor := strings.Split(KernelFloor, ".")
-	parts := strings.Split(strings.TrimSpace(version), ".")
-	for i, f := range floor {
-		want, _ := strconv.Atoi(f)
-		if i >= len(parts) {
-			return true // shorter than the floor: "9.3" < "9.3.1"
+	trimmed := strings.TrimSpace(version)
+	v, err := semver.NewVersion(trimmed)
+	if err != nil {
+		// semver rejects a 4th dotted component (vendor module builds
+		// like "9.3.1.1") that the floor never needs; compare on the
+		// leading x.y.z before giving up.
+		if parts := strings.SplitN(trimmed, ".", 4); len(parts) == 4 {
+			v, err = semver.NewVersion(strings.Join(parts[:3], "."))
 		}
-		got, err := strconv.Atoi(parts[i])
 		if err != nil {
 			return true
 		}
-		if got != want {
-			return got < want
-		}
 	}
-	return false
+	return v.LessThan(kernelFloor)
 }
 
 // DiscardGranularity probes the backing device's discard granularity

@@ -33,16 +33,16 @@ func TestCordonWatcherTracksUnschedulable(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeKharkiv},
+		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
 		Spec:       corev1.NodeSpec{Unschedulable: true},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(node).Build()
-	w := &CordonWatcher{Client: c, NodeName: nodeKharkiv}
+	w := &CordonWatcher{Client: c, NodeName: nodeA}
 
 	if w.Cordoned() {
 		t.Fatal("must default to not cordoned before any observation")
 	}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: nodeKharkiv}}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: nodeA}}
 	if _, err := w.Reconcile(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}

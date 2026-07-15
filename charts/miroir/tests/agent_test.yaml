@@ -8,7 +8,7 @@ tests:
   - it: renders a DaemonSet with the agent + node-driver-registrar
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     asserts:
@@ -42,7 +42,7 @@ tests:
   - it: agent container runs with mode=agent and a privileged securityContext
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
@@ -84,7 +84,7 @@ tests:
   - it: pod runs with hostNetwork, hostPID and ClusterFirstWithHostNet
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
@@ -117,7 +117,7 @@ tests:
     set:
       agent.kubeletDir: /var/snap/kubelet
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
@@ -141,10 +141,10 @@ tests:
   - it: with no loopfile nodes, no loopfile mount or volume is rendered
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
-        paris:
+        node-b:
           backend: zfs
           zfsDataset: data-pool/miroir
     documentIndex: 0
@@ -159,13 +159,13 @@ tests:
   - it: adds one identity-mounted loopfile mount and hostPath volume per baseDir
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
-        paris:
+        node-b:
           backend: zfs
           zfsDataset: data-pool/miroir
-        le-havre:
+        node-c:
           backend: loopfile
           baseDir: /var/lib/miroir
         backup:
@@ -237,7 +237,7 @@ tests:
   - it: pins the agent image by digest when set, overriding the tag
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       agent:
@@ -253,7 +253,7 @@ tests:
   - it: applies global pull secrets but not global scheduling (agent runs everywhere)
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       global:
@@ -272,7 +272,7 @@ tests:
   - it: wires agent pod metadata and extra args/env after NODE_NAME
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       agent:
@@ -301,7 +301,7 @@ tests:
   - it: omits --verify-schedule by default
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
@@ -313,7 +313,7 @@ tests:
   - it: passes --verify-schedule when a schedule is set
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
@@ -328,7 +328,7 @@ tests:
   - it: omits --verify-schedule while suspended
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
@@ -344,7 +344,7 @@ tests:
   - it: fails when a verify schedule is set without an algorithm
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
