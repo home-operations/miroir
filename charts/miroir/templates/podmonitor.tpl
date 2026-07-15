@@ -14,9 +14,6 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  # Both the controller pod and every agent pod expose a port named
-  # "metrics" — the per-volume miroir_volume_* gauges live on the agents,
-  # so scraping the controller alone would miss all of them.
   selector:
     matchLabels:
       {{- include "miroir.selectorLabels" . | nindent 6 }}
@@ -30,8 +27,6 @@ spec:
       scrapeTimeout: {{ .Values.monitoring.podMonitor.scrapeTimeout | default "10s" }}
       path: {{ .Values.monitoring.podMonitor.path | default "/metrics" }}
       relabelings:
-        # Agents run hostNetwork, so instance is a bare node IP; a node
-        # label keeps per-node storage series readable.
         - sourceLabels: [__meta_kubernetes_pod_node_name]
           targetLabel: node
         {{- with .Values.monitoring.podMonitor.relabelings }}

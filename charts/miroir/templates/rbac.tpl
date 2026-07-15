@@ -21,20 +21,15 @@ metadata:
   labels:
     {{- include "miroir.labels" . | nindent 4 }}
 rules:
-  # miroir desired state
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes", "miroirsnapshots"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
-    # patch: the controller records the Formatted flag on a restored
-    # (clone-from-snapshot) volume so the agent skips mkfs.
     verbs: ["get", "update", "patch"]
-  # capacity-aware placement reads the pool stats agents publish
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
     verbs: ["get", "list", "watch"]
-  # external-provisioner sidecar (topology needs nodes + csinodes)
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
@@ -53,7 +48,6 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["list", "watch", "create", "update", "patch"]
-  # external-snapshotter sidecar
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshotclasses", "volumesnapshots"]
     verbs: ["get", "list", "watch"]
@@ -69,7 +63,6 @@ rules:
   - apiGroups: ["groupsnapshot.storage.k8s.io"]
     resources: ["volumegroupsnapshotcontents/status"]
     verbs: ["update", "patch"]
-  # external-resizer sidecar
   - apiGroups: [""]
     resources: ["persistentvolumeclaims/status"]
     verbs: ["update", "patch"]
@@ -77,12 +70,6 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
   {{- if .Values.storageCapacity.enabled }}
-  # external-provisioner capacity feature: publishes CSIStorageCapacity and
-  # walks pod → ReplicaSet → Deployment for the owner reference. No
-  # `deployments get`: the walk stops at the ReplicaSet and reads the
-  # Deployment's identity from its ownerReferences (pkg/owner/owner.go's
-  # levels==1 special case, "we avoid one lookup and thus the need for RBAC
-  # GET permission for the parent"; verified in the v6.3.0 source).
   - apiGroups: ["storage.k8s.io"]
     resources: ["csistoragecapacities"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -91,9 +78,6 @@ rules:
     verbs: ["get"]
   {{- end }}
   {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
-  # leader election (replicaCount > 1 or leaderElection.enabled): the
-  # controller manager and each CSI sidecar hold their own
-  # coordination.k8s.io Lease
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -123,23 +107,19 @@ metadata:
 rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes", "miroirsnapshots"]
-    verbs: ["get", "list", "watch", "update"] # update releases finalizers
+    verbs: ["get", "list", "watch", "update"]
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     verbs: ["get", "patch"]
-  # each agent owns its own MiroirNode, publishing pool capacity
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes/status"]
     verbs: ["get", "update", "patch"]
-  # PoolUsageHigh events at the 80% capacity warn line
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  # reads its own Node's cordon state to distinguish a node shutdown
-  # (release DRBD backings so the pool can export) from a routine pod restart
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
@@ -159,8 +139,6 @@ subjects:
     name: {{ include "miroir.agentName" . }}
     namespace: {{ .Release.Namespace }}
 ---
-# The controller manages per-RWX-volume gateway workloads in its own
-# namespace only — a namespaced Role, not cluster-wide.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -192,8 +170,6 @@ subjects:
     name: {{ include "miroir.controllerName" . }}
     namespace: {{ .Release.Namespace }}
 ---
-# Gateway pods read their volume and latch its Formatted/Activated status
-# while staging. MiroirVolumes are cluster-scoped, so this is a ClusterRole.
 apiVersion: v1
 kind: ServiceAccount
 metadata:

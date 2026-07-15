@@ -17,17 +17,11 @@ reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
 parameters:
   miroir.home-operations.com/replicas: {{ $replicas | quote }}
   {{- if gt (int $replicas) 1 }}
-  # freeze: never diverges, halts on any disconnect; last-man-standing:
-  # survivor keeps writing on node loss, split-brain alerts on reconnect.
   miroir.home-operations.com/quorum: {{ $sc.quorum | default "freeze" }}
   {{- if hasKey $sc "allowRemoteVolumeAccess" }}
-  # Absent defaults to allowed (controller-side); rendered only when the
-  # entry pins it either way.
   miroir.home-operations.com/allowRemoteVolumeAccess: {{ $sc.allowRemoteVolumeAccess | quote }}
   {{- end }}
   {{- if $sc.bitmapGranularity }}
-  # DRBD bitmap block size in bytes, fixed when a replica's metadata is
-  # created; absent means DRBD's default (4096).
   miroir.home-operations.com/bitmapGranularity: {{ $sc.bitmapGranularity | quote }}
   {{- end }}
   {{- end }}

@@ -25,8 +25,6 @@ spec:
         - operator: Exists
       containers:
         - name: setup
-          # The setup Job bootstraps the node pool with the same storage
-          # userland the agent uses.
           image: {{ include "miroir.agentImage" $ }}
           imagePullPolicy: {{ include "miroir.agentImagePullPolicy" $ }}
           args:

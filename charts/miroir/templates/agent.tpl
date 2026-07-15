@@ -39,25 +39,14 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.agentName" . }}
-      # hostNetwork so the pod IP is the node IP and the container
-      # hostname matches the node — DRBD peers dial the host IP and
-      # match `on <hostname>` blocks; agent ports must be host-unique.
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      # drbdadm/drbdsetup need the host PID namespace for /proc access
-      # to the kernel module's worker threads.
       hostPID: true
-      # system-node-critical so kubelet graceful shutdown stops the agent
-      # after workloads — their DRBD legs are then Secondary and safe to
-      # release (see agentShutdownSweep). Needs Talos
-      # shutdownGracePeriodCriticalPods >= the grace period below (see README).
       {{- include "miroir.imagePullSecrets" . | nindent 6 }}
       priorityClassName: system-node-critical
-      # Longer grace lets the cordon-gated DRBD teardown finish before SIGKILL;
-      # routine restarts stay schedulable and skip it.
       terminationGracePeriodSeconds: 60
       tolerations:
-        - operator: Exists # CSI node service must run on every schedulable node
+        - operator: Exists
       containers:
         - name: agent
           image: {{ include "miroir.agentImage" . }}
@@ -88,10 +77,6 @@ spec:
           securityContext:
             privileged: true
           ports:
-            # Serves /metrics plus the /healthz and /readyz probes (single
-            # operational port; see cmd/main.go). Stays in the agent's 98xx
-            # host-port range: hostNetwork means this binds on the node, and
-            # :8081 is the org-standard pod port other workloads use.
             - name: metrics
               containerPort: 9810
           livenessProbe:
@@ -112,14 +97,8 @@ spec:
             - name: kubelet
               mountPath: {{ .Values.agent.kubeletDir }}
               mountPropagation: Bidirectional
-            # Plain bind of host /dev (no mountPropagation): the
-            # container must share the host's devtmpfs inode table so
-            # kernel-created nodes (zvol/LV activation) appear in-pod.
             - name: dev
               mountPath: /dev
-            # libzfs/libblkid read partition metadata from the host
-            # udev runtime DB; without it zvol operations can see an
-            # empty DB and misread device state.
             - name: run-udev
               mountPath: /run/udev
               readOnly: true
@@ -128,22 +107,13 @@ spec:
             - name: modules
               mountPath: /lib/modules
               readOnly: true
-            # Rendered .res files + create-md/seed markers live on the
-            # host so DRBD state survives pod restarts; the container
-            # path is drbdadm's default include dir. /etc is read-only
-            # on Talos, hence the /var/lib host backing.
             - name: drbd-cfg
               mountPath: /etc/drbd.d
-            # The hostPath bind shadows the image-baked global config;
-            # re-introduce it via subPath or drbdadm warns on every
-            # invocation.
             - name: drbd-global-conf
               mountPath: /etc/drbd.d/global_common.conf
               subPath: global_common.conf
               readOnly: true
 {{- range $i, $dir := $loopDirs }}
-            # loopfile backing files live on the host filesystem; identity
-            # mount so the path matches nodes.yaml baseDir.
             - name: loopfile-base-{{ $i }}
               mountPath: {{ $dir }}
 {{- end }}

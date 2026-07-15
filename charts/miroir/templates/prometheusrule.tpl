@@ -25,8 +25,6 @@ spec:
   groups:
     - name: miroir.volumes
       rules:
-        # DRBD refused to reconnect after divergence; data is forked and
-        # only an operator can pick the losing side.
         - alert: MiroirVolumeSplitBrain
           expr: miroir_volume_split_brain == 1
           for: 1m
@@ -44,9 +42,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # A freeze volume without quorum refuses writes (on-no-quorum
-        # io-error): pods using it are seeing I/O errors right now, even
-        # though the local disk is healthy.
         - alert: MiroirVolumeQuorumLost
           expr: miroir_volume_quorum == 0
           for: 2m
@@ -66,8 +61,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # Snapshot write barriers last seconds; a sustained suspend means a
-        # stranded barrier freezing the workload.
         - alert: MiroirVolumeSuspendedBarrier
           expr: miroir_volume_suspended == 1
           for: 10m
@@ -86,8 +79,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # on-io-error detach latched a failing backing disk; serving
-        # continues via the peer but redundancy is reduced until re-added.
         - alert: MiroirVolumeDiskFailed
           expr: miroir_volume_disk_failed == 1
           for: 5m
@@ -106,7 +97,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # A leg that stays out of UpToDate is running on reduced redundancy.
         - alert: MiroirVolumeNotUpToDate
           expr: miroir_volume_up_to_date == 0
           for: 15m
@@ -124,7 +114,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # Replication links to diskful peers are down.
         - alert: MiroirVolumeDisconnected
           expr: miroir_volume_connected == 0
           for: 10m
@@ -141,8 +130,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # Out-of-sync data that a resync does not drain within an hour is
-        # stuck exposure — or online-verify found silent corruption.
         - alert: MiroirVolumeOutOfSync
           expr: miroir_volume_out_of_sync_bytes > 0
           for: 1h
@@ -162,11 +149,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # A consumer has been running on a diskless leg (client or
-        # tie-breaker) for a while: every read and write crosses the
-        # replication network. Auto-diskful converts the leg when enabled
-        # and the node has capacity, so a sustained firing means it is
-        # disabled, blocked, or the node holds no storage.
         - alert: MiroirVolumeRemoteConsumer
           expr: miroir_volume_diskless_primary == 1
           for: 30m
@@ -186,12 +168,6 @@ spec:
             {{- end }}
         {{- if .Values.drbd.verify.schedule }}
 
-        # Only rendered when a verify schedule is configured. A schedule
-        # that silently stops firing (agent down over the cron slot, verify
-        # suspended and forgotten) erodes the only cross-leg integrity
-        # check; the last-completed timestamp going stale is the signal.
-        # Volumes that never completed a verify have no series and are not
-        # caught here.
         - alert: MiroirVolumeVerifyStale
           expr: >-
             time() - miroir_volume_verify_last_timestamp_seconds
@@ -215,8 +191,6 @@ spec:
 
     - name: miroir.pools
       rules:
-        # Matches the agent's PoolUsageHigh condition: thin pools and ZFS
-        # degrade badly past ~85% full.
         - alert: MiroirPoolUsageHigh
           expr: miroir_pool_allocated_bytes / miroir_pool_capacity_bytes > 0.80
           for: 15m
@@ -234,8 +208,6 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # dm-thin metadata exhaustion corrupts the pool even with data
-        # space free.
         - alert: MiroirPoolMetaUsageHigh
           expr: miroir_pool_meta_used_ratio > 0.80
           for: 15m
@@ -255,11 +227,6 @@ spec:
 
     - name: miroir.exports
       rules:
-        # The gateway is a per-volume singleton: while it is down every NFS
-        # client of the RWX volume hangs, even though the miroir_volume_*
-        # gauges stay green (the DRBD replicas are healthy). 5m rides out a
-        # normal failover — 30s node eviction, reschedule, and DRBD
-        # releasing the dead pod's Primary claim.
         - alert: MiroirExportUnavailable
           expr: miroir_export_ready == 0
           for: 5m
@@ -280,14 +247,6 @@ spec:
 
     - name: miroir.agents
       rules:
-        # A down agent takes every miroir_* series on its node with it, so
-        # the per-volume alerts above go silent instead of firing — and the
-        # agent exits at startup on a below-floor DRBD kernel module, so a
-        # missed node upgrade looks exactly like this. Matched on the
-        # container/namespace target labels rather than job (whose value
-        # depends on PodMonitor naming and user relabelings). A pod that
-        # never became a scrape target (agent unschedulable) has no up
-        # series and is not caught here.
         - alert: MiroirAgentDown
           expr: up{container="agent", namespace="{{ .Release.Namespace }}"} == 0
           for: 10m
