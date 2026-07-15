@@ -10,10 +10,18 @@ kube-controller-tools = "0.21.0"
 kubectl = "1.36.2"
 lefthook = "2.1.10"
 oxfmt = "0.59.0"
+shellcheck = "0.11.0"
 setup-envtest = "0.24.1"
 zizmor = "1.27.0"
 "aqua:dadav/helm-schema" = "0.23.4"
 yq = "4.53.3"
+# Docs site toolchain. The docs are an MkDocs Material site (see `mise run docs`);
+# the MkDocs + Material + pymdown-extensions versions are pinned in pyproject.toml
+# / uv.lock and run via uv, so the only mise-managed tool here is uv itself (which
+# creates the locked venv on first `uv run`). Material bundles mermaid.js and the
+# admonition styling, so there are no separate preprocessor binaries or committed
+# assets to manage. `uv lock` after bumping a docs dependency in pyproject.toml.
+"aqua:astral-sh/uv" = "0.11.28"
 
 [tasks.manifests]
 description = "Generate CRD and RBAC manifests"
@@ -217,6 +225,14 @@ mise run e2e-image
 mise run e2e-provision
 mise run e2e-run
 '''
+
+[tasks.docs]
+description = "Build the docs site (MkDocs Material) into site/"
+run = "scripts/build-docs.sh"
+
+[tasks.docs-serve]
+description = "Serve the docs locally with live reload"
+run = "uv run mkdocs serve"
 
 [tasks.build]
 description = "Build miroir binary"

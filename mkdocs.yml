@@ -1,0 +1,156 @@
+# MkDocs configuration for the miroir documentation site.
+#
+# The book source is the docs/ tree. There is no SUMMARY.md — the page order
+# and grouping live in `nav:` below, and any docs/*.md NOT in `nav:` builds but
+# is unlinked (mkdocs --strict warns about it).
+#
+# `mise run docs` (scripts/build-docs.sh) builds this site. It is published to
+# the custom domain https://miroir.home-operations.com/ (served at the root, so
+# site_url ends "/"). The domain is pinned by the CNAME file build-docs.sh
+# writes into the artifact; the repo's Settings -> Pages custom-domain field
+# must match.
+#
+# The MkDocs + Material toolchain is pinned in pyproject.toml / uv.lock and run
+# via uv (see .mise/config.toml). Material bundles mermaid.js and the admonition
+# styling, so there are no committed preprocessor assets to regenerate.
+site_name: miroir
+site_description: Replicated block storage for small Kubernetes clusters — CSI on LVM thin, ZFS, or loopfile, with synchronous DRBD9 replication.
+site_author: miroir contributors
+site_url: https://miroir.home-operations.com/
+
+repo_url: https://github.com/home-operations/miroir
+repo_name: home-operations/miroir
+# Appended to repo_url + a doc's path relative to docs_dir, e.g.
+# .../edit/main/docs/quickstart.md.
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+site_dir: site
+
+# Fail the build on a broken internal link or a nav entry pointing at a missing
+# file. This is our doc lint; the build-docs.sh / CI invocation passes --strict.
+validation:
+  links:
+    absolute_links: relative_to_docs
+    not_found: warn
+    anchors: warn
+  nav:
+    omitted_files: warn
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    # Light/dark toggle.
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    # NOTE: navigation.tabs is deliberately OFF (matches kopiur): the whole nav
+    # tree lives in the left sidebar as collapsible sections instead of a
+    # horizontal tab bar in the header.
+    - navigation.indexes
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - content.tabs.link
+
+markdown_extensions:
+  # Admonitions use the pymdownx "blocks" syntax (/// note | Title ... ///)
+  # rather than the indented `!!! note` form ON PURPOSE: the repo's pre-commit
+  # hook runs `oxfmt` over markdown, and oxfmt (a CommonMark formatter) strips
+  # the 4-space body indentation that `!!! note` requires, silently breaking
+  # every admonition. The blocks form keeps its body at column 0, so oxfmt
+  # leaves it intact. (Convention: keep a blank line before the closing /// so
+  # oxfmt doesn't fold it into a preceding list item.)
+  - pymdownx.blocks.admonition:
+      # The blocks extension only activates for the type names registered here
+      # (its built-in default list does NOT include `info`). Each name doubles
+      # as the Material CSS class, so this is the canonical Material set.
+      types:
+        - note
+        - abstract
+        - info
+        - tip
+        - success
+        - question
+        - warning
+        - failure
+        - danger
+        - bug
+        - example
+        - quote
+  - pymdownx.blocks.details # collapsible admonitions, if ever needed
+  # Content tabs use the blocks syntax (/// tab | Talos ... ///) for the same
+  # oxfmt reason as the admonitions above. alternate_style is Material's tabbed
+  # look (the legacy style is unmaintained upstream).
+  - pymdownx.blocks.tab:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+      # GitHub-compatible heading slugs (does NOT collapse consecutive
+      # dashes), so anchors match both in-repo cross-links and how GitHub
+      # renders the same .md files.
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        # ```mermaid fenced diagrams, rendered by Material's bundled mermaid.js.
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.snippets:
+      # base_path = repo root so docs can pull real files from the tree via
+      # `--8<-- "charts/miroir/values.yaml"`. check_paths fails the build on a
+      # missing/renamed file.
+      base_path:
+        - "."
+      check_paths: true
+
+plugins:
+  - search
+
+nav:
+  - Introduction: index.md
+  - Getting started:
+      - Requirements: requirements.md
+      - Quickstart: quickstart.md
+  - Concepts:
+      - Replication and quorum: replication.md
+      - Remote consumers and auto-diskful: remote-consumers.md
+      - Disk failures, rebuilds, and verification: resilience.md
+  - User guide:
+      - ReadWriteMany (RWX): rwx.md
+      - Node maintenance and upgrades: maintenance.md
+      - Monitoring: monitoring.md
+      - Helm chart values: configuration.md
+      - Coexistence with other provisioners: coexistence.md
+      - Troubleshooting: troubleshooting.md
+      - Uninstall: uninstall.md
+  - Development: development.md
