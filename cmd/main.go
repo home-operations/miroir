@@ -83,10 +83,13 @@ func init() {
 
 // setupMembership registers the membership reconciler (completes
 // operator-added replica entries), the tie-breaker retrofit for
-// pre-existing 2-replica freeze volumes (#70) when enabled, and the
+// pre-existing 2-replica freeze volumes (#70) when enabled, the
 // auto-diskful converter for long-lived client legs when a threshold is
-// set.
-func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool, autoDiskfulAfter time.Duration) error {
+// set, and the auto-evict reconciler for dead nodes when its threshold
+// is set.
+func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool,
+	autoDiskfulAfter, autoEvictAfter time.Duration,
+) error {
 	r := &membership.Reconciler{Client: mgr.GetClient(), Nodes: nodes}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("membership reconciler: %w", err)
@@ -100,6 +103,17 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool, a
 		}
 		if err := ad.SetupWithManager(mgr); err != nil {
 			return fmt.Errorf("auto-diskful reconciler: %w", err)
+		}
+	}
+	if autoEvictAfter > 0 {
+		ae := &membership.AutoEvictReconciler{
+			Client:   mgr.GetClient(),
+			Nodes:    nodes,
+			After:    autoEvictAfter,
+			Recorder: mgr.GetEventRecorder("miroir-controller"),
+		}
+		if err := ae.SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("auto-evict reconciler: %w", err)
 		}
 	}
 	if !autoTieBreaker {
@@ -322,6 +336,7 @@ func main() {
 		overcommitRatio  float64
 		autoTieBreaker   bool
 		autoDiskfulAfter time.Duration
+		autoEvictAfter   time.Duration
 		drbdPortBase     int
 		leaderElect      bool
 		leaderElectionID string
@@ -356,6 +371,9 @@ func main() {
 	flag.DurationVar(&autoDiskfulAfter, "auto-diskful-after", 0,
 		"convert a diskless client leg into a diskful replica once it has been attached this long "+
 			"(controller; 0 disables; needs a storage node with capacity — see LINSTOR auto-diskful)")
+	flag.DurationVar(&autoEvictAfter, "auto-evict-after", 0,
+		"re-place a dead storage node's replicas once its MiroirNode heartbeat has been stale this long "+
+			"(controller; 0 disables; needs a spare storage node — see LINSTOR auto-evict)")
 	flag.BoolVar(&autoTieBreaker, "auto-tie-breaker", true,
 		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
 	flag.IntVar(&drbdPortBase, "drbd-port-base", 7000,
@@ -483,7 +501,7 @@ func main() {
 			RWXEnabled:       gatewayImage != "",
 			DRBDPortBase:     int32(drbdPortBase),
 		}
-		if err := setupMembership(mgr, nodes, autoTieBreaker, autoDiskfulAfter); err != nil {
+		if err := setupMembership(mgr, nodes, autoTieBreaker, autoDiskfulAfter, autoEvictAfter); err != nil {
 			setupLog.Error(err, "unable to set up membership reconcilers")
 			os.Exit(1)
 		}

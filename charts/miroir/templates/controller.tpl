@@ -64,6 +64,9 @@ spec:
             {{- with .Values.autoDiskfulAfter }}
             - --auto-diskful-after={{ . }}
             {{- end }}
+            {{- with .Values.autoEvictAfter }}
+            - --auto-evict-after={{ . }}
+            {{- end }}
             - --drbd-port-base={{ .Values.drbd.portBase }}
             {{- if .Values.gateway.enabled }}
             - --gateway-image={{ include "miroir.gatewayImage" . }}

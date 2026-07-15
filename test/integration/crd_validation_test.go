@@ -28,6 +28,9 @@ import (
 
 const (
 	nodeA    = "node-a"
+	nodeB    = "node-b"
+	nodeC    = "node-c"
+	nodeD    = "node-d"
 	poolFast = "fast"
 )
 
@@ -52,8 +55,8 @@ func replicatedVolume(name string) *miroirv1alpha1.MiroirVolume {
 			SizeBytes: 1 << 30,
 			Replicas: []miroirv1alpha1.Replica{
 				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0},
-				{Node: "node-b", Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1},
-				{Node: "node-c", Backend: miroirv1alpha1.BackendLVMThin, NodeID: 2},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1},
+				{Node: nodeC, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 2},
 			},
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
 			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
@@ -88,7 +91,7 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 	It("rejects duplicate client-leg nodes", func() {
 		vol := replicatedVolume("pvc-dup-client")
 		vol.Spec.Replicas = vol.Spec.Replicas[:2]
-		vol.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: "node-d"}, {Node: "node-d"}}
+		vol.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeD}, {Node: nodeD}}
 		err := k8sClient.Create(ctx, vol)
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "duplicate client nodes must be rejected, got: %v", err)
 		Expect(err.Error()).To(ContainSubstring("must be unique"))
@@ -177,7 +180,7 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
 
-		vol.Spec.Replicas = append(vol.Spec.Replicas, miroirv1alpha1.Replica{Node: "node-c"})
+		vol.Spec.Replicas = append(vol.Spec.Replicas, miroirv1alpha1.Replica{Node: nodeC})
 		Expect(k8sClient.Update(ctx, vol)).To(Succeed(),
 			"an incomplete add must pass the uniformity rule")
 
@@ -188,6 +191,33 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 		vol.Spec.Replicas[2].FullSync = true
 		Expect(k8sClient.Update(ctx, vol)).To(Succeed(),
 			"completing the entry must pass both pool rules")
+	})
+
+	// The auto-evict swap shape: MaxItems=3 forbids add-before-remove, so
+	// the dead entry leaves and the bare replacement arrives in one
+	// update — which must clear the size, min-diskful, first-diskful, and
+	// per-node transition rules simultaneously.
+	It("allows the atomic evict swap: dead replica out, bare entry in", func() {
+		vol := replicatedVolume("pvc-evict-swap")
+		vol.Spec.Replicas = vol.Spec.Replicas[:2]
+		vol.Spec.Replicas = append(vol.Spec.Replicas,
+			miroirv1alpha1.Replica{Node: nodeC, NodeID: 2, Address: "10.0.3.3", Diskless: true})
+		for i := range vol.Spec.Replicas[:2] {
+			vol.Spec.Replicas[i].Address = "10.0.3." + string(rune('1'+i))
+		}
+		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
+
+		// node-b died: its completed entry is replaced by a bare diskful
+		// add, the surviving diskful leg stays first, the tie-breaker keeps
+		// its slot.
+		vol.Spec.Replicas = []miroirv1alpha1.Replica{
+			vol.Spec.Replicas[0],
+			{Node: nodeD},
+			vol.Spec.Replicas[2],
+		}
+		Expect(k8sClient.Update(ctx, vol)).To(Succeed(),
+			"the one-update swap must pass every replica rule")
 	})
 
 	// Canary for the pre-existing transition rule the agents rely on: a

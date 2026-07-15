@@ -64,6 +64,20 @@ autoTieBreaker: true
 # fresh pool stats and room for the volume's full size. Empty disables it.
 # See the root README, "Auto-diskful".
 autoDiskfulAfter: ""
+# -- Re-place a dead storage node's legs once its heartbeat (MiroirNode
+# status, refreshed ~60s) has been stale this long (LINSTOR's auto-evict;
+# Go duration, e.g. "60m" — keep it well above any reboot or upgrade
+# window). Each affected volume gets one atomic swap: the dead entry out,
+# a fresh replica in (full sync follows). The dead node keeps its teardown
+# finalizer as the record of its never-cleaned leg: deleting an evicted
+# volume still waits for that node, and when the node returns its agent
+# tears the leftover leg down through the normal removal flow.
+# It never acts when more than one node looks dead, when a survivor still
+# sees the node's DRBD links up, when the remaining legs are not clean,
+# or when snapshots pin the volume. Needs a spare storage node carrying
+# the volume's pool; per-node opt-out via `nodes.<name>.autoEvict: false`.
+# Empty disables it (the default: eviction discards the dead node's data).
+autoEvictAfter: ""
 # Storage-capacity-aware scheduling. When enabled, the external-provisioner
 # publishes CSIStorageCapacity objects from the driver's GetCapacity RPC
 # (capacity × overcommitRatio − provisioned, per storage node) and the
@@ -226,10 +240,14 @@ gateway:
 # dedicated storage NIC/VLAN; empty uses the node's InternalIP. It applies
 # to volumes created afterwards — existing volumes keep the address
 # persisted at creation.
+# Optional per-node `autoEvict: false` exempts the node from auto-evict
+# (see `autoEvictAfter`): its legs are never re-placed while it is down —
+# for a node with known long outages.
 # nodes:
 #   kharkiv:
 #     # zone: rack-1         # spread replicas across failure domains
 #     # address: 10.0.100.11 # replicate over a dedicated storage NIC
+#     # autoEvict: false     # never re-place this node's legs (autoEvictAfter)
 #     pools:
 #       default:
 #         backend: lvmthin

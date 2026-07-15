@@ -100,6 +100,37 @@ node-c:
 	}
 }
 
+// autoEvict: false parses (UnmarshalStrict rejects unknown fields, so
+// this guards the schema) and flips AutoEvictAllowed; absence and
+// unmapped nodes resolve as documented.
+func TestAutoEvictOptOut(t *testing.T) {
+	m, err := Load(writeMap(t, `
+node-a:
+  autoEvict: false
+  pools:
+    default:
+      backend: zfs
+      zfsDataset: tank/miroir
+node-b:
+  pools:
+    default:
+      backend: zfs
+      zfsDataset: tank/miroir
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.AutoEvictAllowed(nodeA) {
+		t.Fatal("autoEvict: false must opt the node out")
+	}
+	if !m.AutoEvictAllowed(nodeB) {
+		t.Fatal("absent autoEvict must leave the node eligible")
+	}
+	if m.AutoEvictAllowed("unmapped") {
+		t.Fatal("a node outside the map is never eligible")
+	}
+}
+
 func TestPoolLookup(t *testing.T) {
 	m := Map{nodeA: {Pools: map[string]Pool{
 		"default": {Backend: miroirv1alpha1.BackendLVMThin},
