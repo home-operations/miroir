@@ -292,8 +292,11 @@ var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"
 
 // SweepOrphans tears down kernel resources and rendered config files with
 // no owning volume on this node — leftovers of an agent crash between up
-// and down, which would otherwise hold backing devices open forever.
+// and down, which would otherwise hold backing devices open forever. Best
+// effort: errors are joined so one stuck resource cannot strand the rest.
 func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool) error {
+	var errs []error
+	stuck := map[string]bool{}
 	out, err := d.Exec(ctx, "drbdsetup", "status", "--json")
 	if err == nil {
 		var parsed []jsonStatus
@@ -302,31 +305,37 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 				if owned(res.Name) {
 					continue
 				}
+				// A resource wedged in the kernel (stuck Detaching,
+				// LINBIT/drbd#137) fails its down on every attempt; keep
+				// sweeping the other orphans (issue #195).
 				if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
-					return fmt.Errorf("down orphan %s: %w", res.Name, err)
+					errs = append(errs, fmt.Errorf("down orphan %s: %w", res.Name, err))
+					stuck[res.Name] = true
 				}
 			}
 		}
 	}
 	entries, err := os.ReadDir(d.StateDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+		if !os.IsNotExist(err) {
+			errs = append(errs, err)
 		}
-		return err
+		return errors.Join(errs...)
 	}
 	for _, e := range entries {
 		name, found := strings.CutSuffix(e.Name(), ".res")
-		if !found || owned(name) {
+		// A resource whose down failed is still configured in the kernel;
+		// its rendered config stays visible to recovery tooling.
+		if !found || owned(name) || stuck[name] {
 			continue
 		}
 		for _, suffix := range stateSuffixes {
 			if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
-				return err
+				errs = append(errs, err)
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // DownSecondaries brings down every resource this node holds Secondary,

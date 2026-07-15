@@ -870,6 +870,60 @@ func TestDownSecondariesContinuesOnError(t *testing.T) {
 	fe.calledWith(t, "drbdsetup down pvc-3")
 }
 
+func TestSweepOrphansContinuesOnError(t *testing.T) {
+	fe := &fakeExec{
+		responses: map[string]string{
+			cmdDrbdsetupStatus: `[
+				{"name":"pvc-1","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]},
+				{"name":"pvc-2","role":"Secondary","connections":[]}]`,
+		},
+		errOn: map[string]error{"down pvc-1": errors.New("signal: killed")},
+	}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	for _, name := range []string{volPvc1, "pvc-2"} {
+		if err := os.WriteFile(d.path(name+".res"), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := d.SweepOrphans(t.Context(), func(string) bool { return false })
+	if err == nil || !strings.Contains(err.Error(), volPvc1) {
+		t.Fatalf("want a joined error naming pvc-1, got %v", err)
+	}
+	// One wedged orphan must not strand the rest of the sweep.
+	fe.calledWith(t, "drbdsetup down pvc-2")
+	// The wedged resource is still configured in the kernel: its rendered
+	// config must survive, while the downed orphan's is removed.
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("wedged resource's config must remain: %v", err)
+	}
+	if _, err := os.Stat(d.path("pvc-2.res")); !os.IsNotExist(err) {
+		t.Fatalf("downed orphan's config must be removed, got %v", err)
+	}
+}
+
+func TestSweepOrphansSkipsOwned(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Secondary","connections":[]},
+			{"name":"pvc-2","role":"Secondary","connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	owned := func(name string) bool { return name == volPvc1 }
+	if err := d.SweepOrphans(t.Context(), owned); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, "drbdsetup down pvc-2")
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("owned resource's config must remain: %v", err)
+	}
+}
+
 func TestIsResizeDuringResync(t *testing.T) {
 	if !IsResizeDuringResync(errors.New("exit status 10: Resize not allowed during resync.")) {
 		t.Fatal("must match DRBD's resync refusal")

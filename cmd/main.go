@@ -532,14 +532,16 @@ func main() {
 		if drbdReady {
 			// Reap kernel resources and rendered config orphaned by a crash
 			// between up and down — they hold backing devices open forever.
+			// Best effort: a resource wedged in the kernel (LINBIT/drbd#137)
+			// fails its down on every boot, and exiting on it would keep the
+			// agent from serving the node's healthy volumes (issue #195).
 			if err := sweepOrphans(nodeName, drbdDriver); err != nil {
-				setupLog.Error(err, "orphan sweep failed")
-				os.Exit(1)
+				setupLog.Error(err, "orphan sweep incomplete")
 			}
-			// Lift any IO barrier left by a previous agent crash.
+			// Lift any IO barrier left by a previous agent crash. Best
+			// effort for the same reason as the orphan sweep.
 			if err := resumeStaleBarriers(drbdDriver, apiStartupWait); err != nil {
-				setupLog.Error(err, "barrier resume sweep failed")
-				os.Exit(1)
+				setupLog.Error(err, "barrier resume sweep incomplete")
 			}
 		}
 		// Tracks this node's cordon state so shutdownSweep can tell a node
