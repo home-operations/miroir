@@ -189,7 +189,14 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 		// --max-peers reserves metadata slots up-front: it cannot
 		// be raised later without recreating metadata, so leave
 		// headroom beyond the current 2-node shape.
-		if _, err := d.adm(ctx, "create-md", "--force", "--max-peers", "7", r.Name+"/0"); err != nil {
+		args := []string{"create-md", "--force", "--max-peers", "7"}
+		if r.BitmapGranularityBytes > 0 {
+			// Like max-peers, fixed for this leg's lifetime: adjust
+			// never revisits it, only a metadata recreate could.
+			args = append(args, "--bitmap-block-size",
+				strconv.FormatInt(r.BitmapGranularityBytes, 10))
+		}
+		if _, err := d.adm(ctx, append(args, r.Name+"/0")...); err != nil {
 			return fmt.Errorf("create-md %s: %w", r.Name, err)
 		}
 	}

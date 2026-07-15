@@ -70,6 +70,11 @@ type Resource struct {
 	// Probed from the backing device; never set for loopfile (loop devices
 	// mishandle it). Overrides the cluster-wide common{} knob.
 	DiscardGranularityBytes int64
+	// BitmapGranularityBytes is passed to create-md as
+	// --bitmap-block-size (0 passes nothing, DRBD defaults to 4k). Not
+	// rendered into the .res: it is an on-disk metadata property fixed
+	// when this leg's metadata is created.
+	BitmapGranularityBytes int64
 	// Peers are all members of the resource, including the local node.
 	// A Peer with Diskless=true renders "disk none" and omits meta-disk.
 	Peers []Peer

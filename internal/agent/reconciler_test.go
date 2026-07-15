@@ -2140,6 +2140,17 @@ func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
 	fe.calledWith(t, "drbdadm new-current-uuid --clear-bitmap pvc-1/0")
 }
 
+// The spec's bitmap granularity reaches the render input; create-md picks
+// it up from there (drbd.TestApplyBitmapGranularity pins the argv).
+func TestDrbdResourceBitmapGranularity(t *testing.T) {
+	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000, BitmapGranularityBytes: 65536}
+	r := drbdResource(v, nodeKharkiv, "/dev/vg/pvc-1", 1000, false, 0)
+	if r.BitmapGranularityBytes != 65536 {
+		t.Fatalf("granularity = %d, want 65536", r.BitmapGranularityBytes)
+	}
+}
+
 // A client leg (spec.clients) realizes exactly like a diskless
 // tie-breaker: no backing device, DRBD adjust with disk none, and a status
 // slot marked Diskless so CSI can gate staging on the peers' health.

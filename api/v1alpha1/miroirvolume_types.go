@@ -82,6 +82,16 @@ type DRBDSpec struct {
 	// +kubebuilder:validation:MaxLength=64
 	// +optional
 	SharedSecret string `json:"sharedSecret,omitempty"`
+	// BitmapGranularityBytes is the DRBD bitmap block size handed to
+	// create-md (--bitmap-block-size): each dirty bit tracks this many
+	// bytes, so coarser bits cut bitmap RAM proportionally at the cost of
+	// resyncing more per dirty bit. Applied only when a replica's metadata
+	// is first created — replicas created earlier keep their granularity
+	// (DRBD exchanges bitmaps across differing block sizes). 0 means the
+	// DRBD default (4096). Needs kmod ≥ 9.3.0 (the agent's startup floor).
+	// +kubebuilder:validation:Enum=0;4096;8192;16384;32768;65536;131072;262144;524288;1048576
+	// +optional
+	BitmapGranularityBytes int64 `json:"bitmapGranularityBytes,omitempty"`
 }
 
 // VolumeSource provisions the volume's content from an existing snapshot.

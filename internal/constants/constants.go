@@ -48,4 +48,9 @@ const (
 	// diskless client leg (name matches the LINSTOR parameter operators
 	// know). "true" drops the PV's node affinity.
 	ParamAllowRemoteAccess = "miroir.home-operations.com/allowRemoteVolumeAccess"
+
+	// ParamBitmapGranularity is the StorageClass parameter for the DRBD
+	// bitmap block size in bytes (power of two, 4096–1048576), applied at
+	// metadata creation. Replicated classes only.
+	ParamBitmapGranularity = "miroir.home-operations.com/bitmapGranularity"
 )

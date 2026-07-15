@@ -139,18 +139,11 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			"required %d exceeds limit %d", sizeBytes, limitBytes)
 	}
 
-	replicas, err := parseReplicas(req.GetParameters())
+	params, err := parseClassParams(req.GetParameters())
 	if err != nil {
 		return nil, err
 	}
-	quorum, err := parseQuorum(req.GetParameters())
-	if err != nil {
-		return nil, err
-	}
-	remoteAccess, err := parseAllowRemoteAccess(req.GetParameters(), replicas)
-	if err != nil {
-		return nil, err
-	}
+	replicas, quorum, remoteAccess := params.replicas, params.quorum, params.remoteAccess
 	shared := isShared(req.GetVolumeCapabilities())
 	if err := validateSharedRequest(shared, replicas, quorum); err != nil {
 		return nil, err
@@ -214,6 +207,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			c.allocMu.Unlock()
 			return nil, err
 		}
+		drbdSpec.BitmapGranularityBytes = params.bitmapGranularity
 		vol.Spec.DRBD = drbdSpec
 	}
 	if shared {
@@ -1167,6 +1161,55 @@ func parseAllowRemoteAccess(params map[string]string, replicas int) (bool, error
 			"%s requires a replicated class (replicas > 1)", constants.ParamAllowRemoteAccess)
 	}
 	return enabled, nil
+}
+
+// classParams is the StorageClass-driven shape of a CreateVolume request.
+type classParams struct {
+	replicas          int
+	quorum            miroirv1alpha1.QuorumPolicy
+	remoteAccess      bool
+	bitmapGranularity int64
+}
+
+// parseClassParams validates the StorageClass parameters as one unit;
+// CreateVolume sits at the gocyclo limit, so the per-parameter error
+// branches live here.
+func parseClassParams(raw map[string]string) (classParams, error) {
+	var p classParams
+	var err error
+	if p.replicas, err = parseReplicas(raw); err != nil {
+		return p, err
+	}
+	if p.quorum, err = parseQuorum(raw); err != nil {
+		return p, err
+	}
+	if p.remoteAccess, err = parseAllowRemoteAccess(raw, p.replicas); err != nil {
+		return p, err
+	}
+	p.bitmapGranularity, err = parseBitmapGranularity(raw, p.replicas)
+	return p, err
+}
+
+// parseBitmapGranularity reads the DRBD bitmap block size in bytes; 0
+// (absent) leaves DRBD's default. drbdmeta constrains it to a power of two
+// in [4k, 1M] — rejected here so a bad class fails the RPC, not create-md
+// on the node.
+func parseBitmapGranularity(params map[string]string, replicas int) (int64, error) {
+	raw := params[constants.ParamBitmapGranularity]
+	if raw == "" {
+		return 0, nil
+	}
+	gran, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || gran < 4096 || gran > 1<<20 || gran&(gran-1) != 0 {
+		return 0, status.Errorf(codes.InvalidArgument,
+			"invalid %s=%q (want a power of two in [4096, 1048576])",
+			constants.ParamBitmapGranularity, raw)
+	}
+	if replicas <= 1 {
+		return 0, status.Errorf(codes.InvalidArgument,
+			"%s requires a replicated class (replicas > 1)", constants.ParamBitmapGranularity)
+	}
+	return gran, nil
 }
 
 func validateCapabilities(caps []*csi.VolumeCapability) error {

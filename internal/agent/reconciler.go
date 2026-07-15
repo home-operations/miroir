@@ -539,6 +539,7 @@ func drbdResource(vol *miroirv1alpha1.MiroirVolume, localNode, localDisk string,
 		// one reconcile. Cleared by a replica re-add (removal drops the slot).
 		SkipDiskAttach:          !localDiskless && vol.Status.PerNode[localNode].DiskFailed,
 		DiscardGranularityBytes: discardGranularity,
+		BitmapGranularityBytes:  vol.Spec.DRBD.BitmapGranularityBytes,
 		Peers:                   peers,
 	}
 }
