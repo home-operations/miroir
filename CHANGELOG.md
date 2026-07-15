@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.8.0](https://github.com/home-operations/miroir/compare/0.7.0...0.8.0) (2026-07-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* enforce the DRBD kernel module floor at agent startup ([#198](https://github.com/home-operations/miroir/issues/198))
+
+### Features
+
+* **drbd:** advertise real discard granularity on client legs ([#201](https://github.com/home-operations/miroir/issues/201)) ([e4ff23c](https://github.com/home-operations/miroir/commit/e4ff23cd903b6ba537027be6dd9b3eb32d3e5bbd))
+* **drbd:** exclude client legs from quorum voting ([#199](https://github.com/home-operations/miroir/issues/199)) ([6db9fb7](https://github.com/home-operations/miroir/commit/6db9fb7bd814e52f1608a640e84e5300798b31f7))
+* enforce the DRBD kernel module floor at agent startup ([#198](https://github.com/home-operations/miroir/issues/198)) ([bc76152](https://github.com/home-operations/miroir/commit/bc7615243a7cfb5d91debab8b942c6bd7dabcddf))
+* per-class DRBD bitmap granularity ([#200](https://github.com/home-operations/miroir/issues/200)) ([5b613c2](https://github.com/home-operations/miroir/commit/5b613c21f63c4ecc0a9d1e82111dbdbafc9ebbcd))
+
+
+### Documentation
+
+* **readme:** add node maintenance and upgrade guidance ([#193](https://github.com/home-operations/miroir/issues/193)) ([c8c6d3c](https://github.com/home-operations/miroir/commit/c8c6d3cd4f767aac955498b6d28e38df7f961376))
+
+
+### Code Refactoring
+
+* semver-based kernel floor compare, generic test node names ([#202](https://github.com/home-operations/miroir/issues/202)) ([6980cbc](https://github.com/home-operations/miroir/commit/6980cbc07f10cf3af6cdd3d781cb31fc2f0ddf86))
+
 ## [0.7.0](https://github.com/home-operations/miroir/compare/0.6.2...0.7.0) (2026-07-14)
 
 
