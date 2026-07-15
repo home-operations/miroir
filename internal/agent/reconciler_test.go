@@ -2173,6 +2173,16 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 	fe.notCalledWith(t, "drbdmeta")
 
+	// The rendered config must exclude the client from quorum voting —
+	// exactly once, on the client's own entry, never on the replicas.
+	res, err := os.ReadFile(filepath.Join(r.DRBD.StateDir, volPvc1+".res"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(res), "tiebreaker no;"); n != 1 {
+		t.Fatalf("client leg must render tiebreaker no exactly once, got %d:\n%s", n, res)
+	}
+
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)

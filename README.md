@@ -368,19 +368,20 @@ Trade-offs to understand:
   preference: PV node affinity is all-or-nothing, so the scheduler is
   blind to replica locations. Keep locality-sensitive workloads on a
   pinned class, or steer them with their own node/pod affinity.
-- **An attached client shifts quorum math.** Its DRBD vote raises the
-  majority threshold while attached (a 2+1 volume becomes 4 votes,
-  majority 3); neutral-to-helpful for a single failure, stricter for
-  two simultaneous ones.
+- **An attached client does not vote in quorum.** Client legs render
+  DRBD's `tiebreaker no` (one of the reasons for the 9.3.1 module
+  floor), so attaching and detaching consumers never moves the
+  majority threshold, and a dead consumer node leaves no phantom vote
+  behind.
 - **Consumers must run on nodes listed in `nodes`.** Agents only
   start on mapped nodes, so a pod scheduled onto an unmapped node has
   no CSI driver and wedges in `ContainerCreating`. Keep every
   schedulable node in the map (a `loopfile` entry with a few spare GB
   is enough) or set `allowRemoteVolumeAccess: "false"`.
-- **A lost node can strand its client leg.** Like a dead replica
-  node, its `spec.clients` entry holds a quorum vote and blocks
-  volume deletion until the node returns or the entry is removed by
-  hand.
+- **A lost node can strand its client leg.** Its `spec.clients` entry
+  blocks volume deletion until the node returns or the entry is
+  removed by hand (it holds no quorum vote, so the volume itself
+  stays healthy).
 
 #### Auto-diskful
 
