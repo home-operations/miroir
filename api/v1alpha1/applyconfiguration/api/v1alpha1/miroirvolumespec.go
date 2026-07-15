@@ -34,6 +34,9 @@ import (
 // under a live filesystem), and a replicated one keeps 2–3 replicas.
 type MiroirVolumeSpecApplyConfiguration struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
+	// The transition rule pins it monotonic: nothing downstream supports
+	// shrinking — agents only grow the backing device and the filesystem,
+	// and a shrunk spec would desync DRBD metadata from the device.
 	SizeBytes *int64 `json:"sizeBytes,omitempty"`
 	// Replicas lists the placement of the volume: one entry for local
 	// volumes, two or more for DRBD-replicated ones. MaxItems matches the

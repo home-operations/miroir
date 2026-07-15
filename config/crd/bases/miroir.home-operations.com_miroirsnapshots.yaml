@@ -56,9 +56,16 @@ spec:
               CSI CreateSnapshot.
             properties:
               volumeName:
-                description: VolumeName references the MiroirVolume this snapshot
-                  captures.
+                description: |-
+                  VolumeName references the MiroirVolume this snapshot captures.
+                  Immutable: the backend CoW snapshots were cut on the source volume's
+                  replicas, so retargeting the reference would point restores and
+                  per-node teardown at a volume that never held them.
                 type: string
+                x-kubernetes-validations:
+                - message: 'volumeName is immutable: the snapshot''s backend data
+                    lives on the volume it was cut from'
+                  rule: self == oldSelf
             required:
             - volumeName
             type: object

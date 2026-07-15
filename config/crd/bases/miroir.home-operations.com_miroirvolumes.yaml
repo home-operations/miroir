@@ -236,11 +236,19 @@ spec:
                 minItems: 1
                 type: array
               sizeBytes:
-                description: SizeBytes is the provisioned (virtual, thin) size of
-                  the volume.
+                description: |-
+                  SizeBytes is the provisioned (virtual, thin) size of the volume.
+                  The transition rule pins it monotonic: nothing downstream supports
+                  shrinking — agents only grow the backing device and the filesystem,
+                  and a shrunk spec would desync DRBD metadata from the device.
                 format: int64
                 minimum: 1
                 type: integer
+                x-kubernetes-validations:
+                - message: 'a volume cannot shrink in place: agents only grow the
+                    backing device and filesystem; restore a snapshot into a new,
+                    smaller volume instead'
+                  rule: self >= oldSelf
               source:
                 description: Source, if set, provisions content from a snapshot (CoW
                   clone).

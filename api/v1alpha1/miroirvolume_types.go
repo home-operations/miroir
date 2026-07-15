@@ -184,7 +184,11 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="!(has(self.export) && has(self.drbd)) || self.quorumPolicy == 'freeze'",message="replicated RWX volumes must use freeze quorum (a rescheduled gateway under last-man-standing risks dual-primary split-brain)"
 type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.
+	// The transition rule pins it monotonic: nothing downstream supports
+	// shrinking — agents only grow the backing device and the filesystem,
+	// and a shrunk spec would desync DRBD metadata from the device.
 	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="a volume cannot shrink in place: agents only grow the backing device and filesystem; restore a snapshot into a new, smaller volume instead"
 	SizeBytes int64 `json:"sizeBytes"`
 	// Replicas lists the placement of the volume: one entry for local
 	// volumes, two or more for DRBD-replicated ones. MaxItems matches the

@@ -20,6 +20,10 @@ const (
 // CSI CreateSnapshot.
 type MiroirSnapshotSpec struct {
 	// VolumeName references the MiroirVolume this snapshot captures.
+	// Immutable: the backend CoW snapshots were cut on the source volume's
+	// replicas, so retargeting the reference would point restores and
+	// per-node teardown at a volume that never held them.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="volumeName is immutable: the snapshot's backend data lives on the volume it was cut from"
 	VolumeName string `json:"volumeName"`
 }
 
