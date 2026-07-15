@@ -11,7 +11,7 @@ tests:
     set:
       nameOverride: alt
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: csidriver.tpl
@@ -25,7 +25,7 @@ tests:
     set:
       nameOverride: alt
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
@@ -39,7 +39,7 @@ tests:
     set:
       nameOverride: alt
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
@@ -53,7 +53,7 @@ tests:
     set:
       fullnameOverride: storage
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
@@ -67,7 +67,7 @@ tests:
     set:
       fullnameOverride: storage
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
@@ -93,7 +93,7 @@ tests:
       namespace: miroir-system
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
@@ -109,7 +109,7 @@ tests:
       namespace: miroir-system
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
@@ -122,7 +122,7 @@ tests:
   - it: every workload carries the standard label set
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
@@ -147,7 +147,7 @@ tests:
   - it: Deployment matchLabels only carry the immutable selector set
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl

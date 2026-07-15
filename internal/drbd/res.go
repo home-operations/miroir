@@ -102,6 +102,17 @@ type Peer struct {
 	Client bool
 }
 
+// writeDiskOption renders a one-option disk{} block inside the current
+// volume section; 0 renders nothing (the knob stays at DRBD's default).
+func writeDiskOption(b *strings.Builder, name string, value int64) {
+	if value <= 0 {
+		return
+	}
+	b.WriteString("            disk {\n")
+	fmt.Fprintf(b, "                %s %d;\n", name, value)
+	b.WriteString("            }\n")
+}
+
 // Render produces the .res file content for the local node.
 func Render(r Resource) string {
 	peers := append([]Peer(nil), r.Peers...)
@@ -173,10 +184,8 @@ func Render(r Resource) string {
 			// A second disk statement is legal: the string form (none)
 			// and the options form fill different config fields — the
 			// same shape the diskful branch uses for rs-discard-granularity.
-			if p.Node == r.LocalNode && r.ClientDiscardGranularityBytes > 0 {
-				b.WriteString("            disk {\n")
-				fmt.Fprintf(&b, "                discard-granularity %d;\n", r.ClientDiscardGranularityBytes)
-				b.WriteString("            }\n")
+			if p.Node == r.LocalNode {
+				writeDiskOption(&b, "discard-granularity", r.ClientDiscardGranularityBytes)
 			}
 		} else {
 			disk := peerDiskPlaceholder
@@ -185,10 +194,8 @@ func Render(r Resource) string {
 			}
 			fmt.Fprintf(&b, "            disk %q;\n", disk)
 			b.WriteString("            meta-disk internal;\n")
-			if p.Node == r.LocalNode && r.DiscardGranularityBytes > 0 {
-				b.WriteString("            disk {\n")
-				fmt.Fprintf(&b, "                rs-discard-granularity %d;\n", r.DiscardGranularityBytes)
-				b.WriteString("            }\n")
+			if p.Node == r.LocalNode {
+				writeDiskOption(&b, "rs-discard-granularity", r.DiscardGranularityBytes)
 			}
 		}
 		b.WriteString("        }\n")

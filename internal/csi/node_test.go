@@ -47,7 +47,7 @@ func (f fakeDRBDStatus) Status(context.Context, string) (drbd.Status, error) {
 	return f.st, f.err
 }
 
-// stagedVolume is a single-replica-on-kharkiv replicated volume whose agent
+// stagedVolume is a single-replica-on-node-a replicated volume whose agent
 // has already created the local DRBD device.
 func stagedVolume() *miroirv1alpha1.MiroirVolume {
 	v := &miroirv1alpha1.MiroirVolume{
@@ -55,11 +55,11 @@ func stagedVolume() *miroirv1alpha1.MiroirVolume {
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Address: addrKharkiv}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Address: addrA}},
 		},
 	}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DevicePath: devDrbd1000},
+		nodeA: {DeviceCreated: true, DevicePath: devDrbd1000},
 	}
 	return v
 }
@@ -69,7 +69,7 @@ func newNode(t *testing.T, vol *miroirv1alpha1.MiroirVolume, d stage.DRBDStatus)
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(vol).Build()
-	return &Node{Client: c, NodeName: nodeKharkiv, DRBD: d}
+	return &Node{Client: c, NodeName: nodeA, DRBD: d}
 }
 
 // A split-brain leg must never be staged: mkfs/mount on divergent data
@@ -159,11 +159,11 @@ func TestNodeGetVolumeStatsMissingVolume(t *testing.T) {
 // data leg, only a quorum vote.
 func TestDevicePathRefusesDisklessNode(t *testing.T) {
 	v := stagedVolume()
-	// paris + oslo hold the data; kharkiv (this node) is the tie-breaker.
+	// node-b + node-c hold the data; node-a (this node) is the tie-breaker.
 	v.Spec.Replicas = []miroirv1alpha1.Replica{
-		{Node: nodeParis, NodeID: 0, Address: addrParis},
-		{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
-		{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv, Diskless: true},
+		{Node: nodeB, NodeID: 0, Address: addrB},
+		{Node: nodeC, NodeID: 1, Address: "192.168.1.43"},
+		{Node: nodeA, NodeID: 2, Address: addrA, Diskless: true},
 	}
 	n := newNode(t, v, fakeDRBDStatus{
 		st: drbd.Status{DiskState: "Diskless"},
@@ -173,14 +173,14 @@ func TestDevicePathRefusesDisklessNode(t *testing.T) {
 	}
 }
 
-// twoLegVolume extends stagedVolume with a second diskful replica on paris
+// twoLegVolume extends stagedVolume with a second diskful replica on node-b
 // (node id 1) whose slot records a split-brain — the recovery-in-progress
 // signal the staging hold keys on.
 func twoLegVolume() *miroirv1alpha1.MiroirVolume {
 	v := stagedVolume()
 	v.Spec.Replicas = append(v.Spec.Replicas,
-		miroirv1alpha1.Replica{Node: nodeParis, NodeID: 1, Address: addrParis})
-	v.Status.PerNode[nodeKharkiv] = miroirv1alpha1.ReplicaStatus{
+		miroirv1alpha1.Replica{Node: nodeB, NodeID: 1, Address: addrB})
+	v.Status.PerNode[nodeA] = miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: true, DevicePath: devDrbd1000, SplitBrain: true,
 	}
 	return v
@@ -192,7 +192,7 @@ func twoLegVolume() *miroirv1alpha1.MiroirVolume {
 // the auto-recovery that heals the loser — hold it.
 func TestDevicePathHoldsNeverActivatedRecoveringSplitBrain(t *testing.T) {
 	n := newNode(t, twoLegVolume(), fakeDRBDStatus{
-		st: drbd.Status{DiskState: drbd.DiskUpToDate}, // paris link down: no PeerConnected entry
+		st: drbd.Status{DiskState: drbd.DiskUpToDate}, // node-b link down: no PeerConnected entry
 	})
 	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
 		t.Fatalf("recovering split-brain must hold staging as Unavailable, got %v", err)
@@ -256,7 +256,7 @@ func mountCap() *csi.VolumeCapability {
 // Until the gateway Service has an address, staging must fail retryably so
 // the CSI sidecar keeps retrying rather than failing the pod.
 func TestStageNFSGatewayNotReady(t *testing.T) {
-	n := &Node{NodeName: nodeKharkiv}
+	n := &Node{NodeName: nodeA}
 	if _, err := n.stageNFS(nfsStageReq(mountCap()), exportVolume("")); status.Code(err) != codes.Unavailable {
 		t.Fatalf("unready gateway must be Unavailable, got %v", err)
 	}
@@ -265,7 +265,7 @@ func TestStageNFSGatewayNotReady(t *testing.T) {
 // RWX is filesystem-only; a block capability on an export volume is a
 // misconfiguration, not something to mount.
 func TestStageNFSRejectsBlock(t *testing.T) {
-	n := &Node{NodeName: nodeKharkiv}
+	n := &Node{NodeName: nodeA}
 	block := &csi.VolumeCapability{
 		AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
 		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER},
@@ -279,15 +279,15 @@ func TestStageNFSRejectsBlock(t *testing.T) {
 // or device lookup.
 func TestDevicePathRefusesForeignNode(t *testing.T) {
 	v := stagedVolume()
-	v.Spec.Replicas[0].Node = nodeParis
+	v.Spec.Replicas[0].Node = nodeB
 	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
 	if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("a node without a replica must be FailedPrecondition, got %v", err)
 	}
 }
 
-// remoteVolume is a 2-replica volume on paris+oslo with remote access
-// allowed; this node (kharkiv) holds no replica.
+// remoteVolume is a 2-replica volume on node-b+node-c with remote access
+// allowed; this node (node-a) holds no replica.
 func remoteVolume() *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
@@ -296,8 +296,8 @@ func remoteVolume() *miroirv1alpha1.MiroirVolume {
 			DRBD:              &miroirv1alpha1.DRBDSpec{Port: 7000},
 			AllowRemoteAccess: true,
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeParis, NodeID: 0, Address: addrParis},
-				{Node: nodeOslo, NodeID: 1, Address: "192.168.1.43"},
+				{Node: nodeB, NodeID: 0, Address: addrB},
+				{Node: nodeC, NodeID: 1, Address: "192.168.1.43"},
 			},
 		},
 	}
@@ -325,7 +325,7 @@ func TestDevicePathRemoteAttachAddsClientLeg(t *testing.T) {
 	if err := n.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	cl := got.Spec.ClientForNode(nodeKharkiv)
+	cl := got.Spec.ClientForNode(nodeA)
 	if cl == nil {
 		t.Fatalf("client leg not added: %+v", got.Spec.Clients)
 	}
@@ -355,9 +355,9 @@ func TestDevicePathRemoteRefusedWithoutOptIn(t *testing.T) {
 // diskful peer is reachable.
 func TestDevicePathClientLegServes(t *testing.T) {
 	v := remoteVolume()
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeA, NodeID: 2, Address: addrA}}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+		nodeA: {DevicePath: devDrbd1000, Diskless: true},
 	}
 	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
 	dev, _, err := n.devicePath(t.Context(), volPvc1)
@@ -379,9 +379,9 @@ func TestDevicePathClientLegRefusesUnhealthy(t *testing.T) {
 	for name, st := range map[string]drbd.Status{"no quorum": noQuorum, "no UpToDate peer": stalePeers} {
 		t.Run(name, func(t *testing.T) {
 			v := remoteVolume()
-			v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+			v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeA, NodeID: 2, Address: addrA}}
 			v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-				nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+				nodeA: {DevicePath: devDrbd1000, Diskless: true},
 			}
 			n := newNode(t, v, fakeDRBDStatus{st: st})
 			if _, _, err := n.devicePath(t.Context(), volPvc1); status.Code(err) != codes.Unavailable {
@@ -396,9 +396,9 @@ func TestDevicePathClientLegRefusesUnhealthy(t *testing.T) {
 func TestDevicePathTieBreakerServesRemoteVolume(t *testing.T) {
 	v := remoteVolume()
 	v.Spec.Replicas = append(v.Spec.Replicas,
-		miroirv1alpha1.Replica{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv, Diskless: true})
+		miroirv1alpha1.Replica{Node: nodeA, NodeID: 2, Address: addrA, Diskless: true})
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
+		nodeA: {DevicePath: devDrbd1000, Diskless: true},
 	}
 	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
 	dev, _, err := n.devicePath(t.Context(), volPvc1)
@@ -414,7 +414,7 @@ func TestDevicePathTieBreakerServesRemoteVolume(t *testing.T) {
 // agent tears it down.
 func TestNodeUnstageRemovesClientLeg(t *testing.T) {
 	v := remoteVolume()
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeA, NodeID: 2, Address: addrA}}
 	n := newNode(t, v, fakeDRBDStatus{})
 	n.Mounter = mount.NewSafeFormatAndMount(mount.NewFakeMounter(nil), utilexec.New())
 
@@ -439,10 +439,10 @@ func TestNodeUnstageRemovesClientLeg(t *testing.T) {
 // tie-breaker leg — that would latch Activated and close auto-recovery.
 func TestDevicePathDisklessHoldsRecoveringSplitBrain(t *testing.T) {
 	v := remoteVolume()
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeA, NodeID: 2, Address: addrA}}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
-		nodeOslo:    {DeviceCreated: true, SplitBrain: true},
+		nodeA: {DevicePath: devDrbd1000, Diskless: true},
+		nodeC: {DeviceCreated: true, SplitBrain: true},
 	}
 	st := healthyRemoteStatus()
 	delete(st.PeerConnected, 1) // the losing leg's link is down
@@ -456,10 +456,10 @@ func TestDevicePathDisklessHoldsRecoveringSplitBrain(t *testing.T) {
 // live — mirroring the diskful hold's corroboration.
 func TestDevicePathDisklessStaleSplitSlotIgnored(t *testing.T) {
 	v := remoteVolume()
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeKharkiv, NodeID: 2, Address: addrKharkiv}}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeA, NodeID: 2, Address: addrA}}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DevicePath: devDrbd1000, Diskless: true},
-		nodeOslo:    {DeviceCreated: true, SplitBrain: true}, // stale
+		nodeA: {DevicePath: devDrbd1000, Diskless: true},
+		nodeC: {DeviceCreated: true, SplitBrain: true}, // stale
 	}
 	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
 	if _, _, err := n.devicePath(t.Context(), volPvc1); err != nil {

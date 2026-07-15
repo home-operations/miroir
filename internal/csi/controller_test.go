@@ -41,18 +41,18 @@ import (
 )
 
 const (
-	nodeKharkiv = "kharkiv"
-	nodeParis   = "paris"
-	nodeOslo    = "oslo"
-	addrKharkiv = "192.168.1.41"
-	addrParis   = "192.168.1.42"
-	addrOslo    = "192.168.1.43"
-	volPvc1     = "pvc-1"
-	paramTrue   = "true"
-	paramFalse  = "false"
-	volSrc      = "pvc-src"
-	volNew      = "pvc-new"
-	snapSnap1   = "snap-1"
+	nodeA      = "node-a"
+	nodeB      = "node-b"
+	nodeC      = "node-c"
+	addrA      = "192.168.1.41"
+	addrB      = "192.168.1.42"
+	addrC      = "192.168.1.43"
+	volPvc1    = "pvc-1"
+	paramTrue  = "true"
+	paramFalse = "false"
+	volSrc     = "pvc-src"
+	volNew     = "pvc-new"
+	snapSnap1  = "snap-1"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -68,8 +68,8 @@ func newScheme(t *testing.T) *runtime.Scheme {
 }
 
 var testNodes = nodemap.Map{
-	nodeKharkiv: nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-miroir"},
-	nodeParis:   nodemap.Node{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
+	nodeA: nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-miroir"},
+	nodeB: nodemap.Node{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
 }
 
 // readyOnGet flips a created volume to Ready, simulating the agent.
@@ -133,7 +133,7 @@ func TestCreateVolumePlacesOnPreferredNode(t *testing.T) {
 		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
-				{Segments: map[string]string{constants.TopologyKey: nodeKharkiv}},
+				{Segments: map[string]string{constants.TopologyKey: nodeA}},
 			},
 		},
 	})
@@ -143,8 +143,8 @@ func TestCreateVolumePlacesOnPreferredNode(t *testing.T) {
 	if resp.Volume.VolumeId != volPvc1 || resp.Volume.CapacityBytes != 5<<30 {
 		t.Fatalf("unexpected volume %+v", resp.Volume)
 	}
-	if got := resp.Volume.AccessibleTopology[0].Segments[constants.TopologyKey]; got != nodeKharkiv {
-		t.Fatalf("expected placement on kharkiv, got %s", got)
+	if got := resp.Volume.AccessibleTopology[0].Segments[constants.TopologyKey]; got != nodeA {
+		t.Fatalf("expected placement on node-a, got %s", got)
 	}
 
 	// The CR must exist with the right backend for the chosen node.
@@ -213,7 +213,7 @@ func TestCreateVolumeRWXSetsExport(t *testing.T) {
 	// Node objects back the replication-address resolution place() runs
 	// for the 2-replica placement.
 	c := &Controller{
-		Client:           readyOnGet(s, nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)),
+		Client:           readyOnGet(s, nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)),
 		Nodes:            testNodes,
 		ProvisionTimeout: 2 * time.Second,
 		DRBDPortBase:     7000,
@@ -304,7 +304,7 @@ func TestValidateVolumeCapabilitiesRWXMismatch(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA}},
 		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vol).Build()
@@ -347,7 +347,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, "192.168.1.42")).
+			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, "192.168.1.42")).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {
@@ -375,7 +375,7 @@ func TestCreateVolumeReplicated(t *testing.T) {
 		},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
-				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
+				{Segments: map[string]string{constants.TopologyKey: nodeB}},
 			},
 		},
 	})
@@ -393,12 +393,12 @@ func TestCreateVolumeReplicated(t *testing.T) {
 	if len(vol.Spec.Replicas) != 2 {
 		t.Fatalf("replicas = %d", len(vol.Spec.Replicas))
 	}
-	// Scheduler preference first → paris is replicas[0] (the GI winner).
-	if vol.Spec.Replicas[0].Node != nodeParis || vol.Spec.Replicas[0].NodeID != 0 {
+	// Scheduler preference first → node-b is replicas[0] (the GI winner).
+	if vol.Spec.Replicas[0].Node != nodeB || vol.Spec.Replicas[0].NodeID != 0 {
 		t.Fatalf("unexpected first replica %+v", vol.Spec.Replicas[0])
 	}
 	if vol.Spec.Replicas[0].Address != "192.168.1.42" ||
-		vol.Spec.Replicas[1].Address != addrKharkiv {
+		vol.Spec.Replicas[1].Address != addrA {
 		t.Fatalf("InternalIPs not resolved: %+v", vol.Spec.Replicas)
 	}
 	if vol.Spec.DRBD == nil || vol.Spec.DRBD.Port != 7000 {
@@ -433,12 +433,12 @@ func TestCreateVolumeReplicated(t *testing.T) {
 func TestCreateVolumeReplicatedAddressOverride(t *testing.T) {
 	s := newScheme(t)
 	nodes := maps.Clone(testNodes)
-	paris := nodes[nodeParis]
-	paris.Address = "10.0.100.42"
-	nodes[nodeParis] = paris
+	entry := nodes[nodeB]
+	entry.Address = "10.0.100.42"
+	nodes[nodeB] = entry
 	c := &Controller{
 		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)).
+			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {
@@ -461,7 +461,7 @@ func TestCreateVolumeReplicatedAddressOverride(t *testing.T) {
 		Parameters:         map[string]string{constants.ParamReplicas: "2"},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
-				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
+				{Segments: map[string]string{constants.TopologyKey: nodeB}},
 			},
 		},
 	}); err != nil {
@@ -472,9 +472,9 @@ func TestCreateVolumeReplicatedAddressOverride(t *testing.T) {
 	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-ovr"}, vol); err != nil {
 		t.Fatal(err)
 	}
-	// paris preferred → replicas[0]; its override wins, kharkiv falls back.
+	// node-b preferred → replicas[0]; its override wins, node-a falls back.
 	if vol.Spec.Replicas[0].Address != "10.0.100.42" ||
-		vol.Spec.Replicas[1].Address != addrKharkiv {
+		vol.Spec.Replicas[1].Address != addrA {
 		t.Fatalf("override/fallback not applied: %+v", vol.Spec.Replicas)
 	}
 }
@@ -485,7 +485,7 @@ func tieBreakerController(t *testing.T, autoTieBreaker bool) *Controller {
 	t.Helper()
 	return &Controller{
 		Client: fake.NewClientBuilder().WithScheme(newScheme(t)).
-			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis), nodeObj(nodeOslo, addrOslo)).
+			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, addrB), nodeObj(nodeC, addrC)).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {
@@ -498,9 +498,9 @@ func tieBreakerController(t *testing.T, autoTieBreaker bool) *Controller {
 				},
 			}).Build(),
 		Nodes: nodemap.Map{
-			nodeKharkiv: {Backend: miroirv1alpha1.BackendLVMThin},
-			nodeParis:   {Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
-			nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin},
+			nodeA: {Backend: miroirv1alpha1.BackendLVMThin},
+			nodeB: {Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
+			nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 		},
 		ProvisionTimeout: 2 * time.Second,
 		AutoTieBreaker:   autoTieBreaker,
@@ -522,8 +522,8 @@ func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 		},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
-				{Segments: map[string]string{constants.TopologyKey: nodeKharkiv}},
-				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
+				{Segments: map[string]string{constants.TopologyKey: nodeA}},
+				{Segments: map[string]string{constants.TopologyKey: nodeB}},
 			},
 		},
 	})
@@ -545,7 +545,7 @@ func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 		t.Fatalf("want 2 diskful + 1 tie-breaker, got %+v", vol.Spec.Replicas)
 	}
 	tb := vol.Spec.Replicas[2]
-	if tb.Node != nodeOslo || !tb.Diskless || tb.NodeID != 2 || tb.Address != addrOslo {
+	if tb.Node != nodeC || !tb.Diskless || tb.NodeID != 2 || tb.Address != addrC {
 		t.Fatalf("unexpected tie-breaker %+v", tb)
 	}
 	if tb.Backend != "" {
@@ -560,7 +560,7 @@ func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 // a node map override pins its replication address too.
 func TestCreateVolumeAutoTieBreakerAddressOverride(t *testing.T) {
 	c := tieBreakerController(t, true)
-	c.Nodes[nodeOslo] = nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Address: "10.0.100.44"}
+	c.Nodes[nodeC] = nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Address: "10.0.100.44"}
 
 	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-tbo",
@@ -568,8 +568,8 @@ func TestCreateVolumeAutoTieBreakerAddressOverride(t *testing.T) {
 		Parameters:         map[string]string{constants.ParamReplicas: "2"},
 		AccessibilityRequirements: &csi.TopologyRequirement{
 			Preferred: []*csi.Topology{
-				{Segments: map[string]string{constants.TopologyKey: nodeKharkiv}},
-				{Segments: map[string]string{constants.TopologyKey: nodeParis}},
+				{Segments: map[string]string{constants.TopologyKey: nodeA}},
+				{Segments: map[string]string{constants.TopologyKey: nodeB}},
 			},
 		},
 	}); err != nil {
@@ -580,7 +580,7 @@ func TestCreateVolumeAutoTieBreakerAddressOverride(t *testing.T) {
 	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-tbo"}, vol); err != nil {
 		t.Fatal(err)
 	}
-	if tb := vol.Spec.Replicas[2]; tb.Node != nodeOslo || tb.Address != "10.0.100.44" {
+	if tb := vol.Spec.Replicas[2]; tb.Node != nodeC || tb.Address != "10.0.100.44" {
 		t.Fatalf("tie-breaker did not take the override address: %+v", tb)
 	}
 }
@@ -626,7 +626,7 @@ func TestCreateVolumeAutoTieBreakerSkips(t *testing.T) {
 // tie-breaker on — the volume is created without one.
 func TestCreateVolumeAutoTieBreakerNoSpareNode(t *testing.T) {
 	c := tieBreakerController(t, true)
-	c.Nodes = testNodes // kharkiv + paris only
+	c.Nodes = testNodes // node-a + node-b only
 
 	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-nospare",
@@ -656,14 +656,14 @@ func TestControllerExpandRetryWaitsForRealization(t *testing.T) {
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 10 << 30, // a prior attempt already grew the spec
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin},
-				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS},
 			},
 		},
 		Status: miroirv1alpha1.MiroirVolumeStatus{
 			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
-				nodeKharkiv: {SizeBytes: 5 << 30},
-				nodeParis:   {SizeBytes: 5 << 30},
+				nodeA: {SizeBytes: 5 << 30},
+				nodeB: {SizeBytes: 5 << 30},
 			},
 		},
 	}
@@ -689,12 +689,12 @@ func TestControllerExpandSucceedsOnceRealized(t *testing.T) {
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 10 << 30,
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin},
 			},
 		},
 		Status: miroirv1alpha1.MiroirVolumeStatus{
 			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
-				nodeKharkiv: {SizeBytes: 10 << 30},
+				nodeA: {SizeBytes: 10 << 30},
 			},
 		},
 	}
@@ -741,9 +741,9 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
 			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
-				// paris joined after creation: FullSync stuck in the spec.
-				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2", FullSync: true},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
+				// node-b joined after creation: FullSync stuck in the spec.
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2", FullSync: true},
 			},
 		},
 	}
@@ -752,13 +752,13 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{
-				nodeKharkiv: miroirv1alpha1.SnapshotDone,
-				nodeParis:   miroirv1alpha1.SnapshotDone,
+				nodeA: miroirv1alpha1.SnapshotDone,
+				nodeB: miroirv1alpha1.SnapshotDone,
 			}},
 	}
 	cl := readyOnGet(s)
 	for _, obj := range []client.Object{srcVol, srcSnap,
-		nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
+		nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)} {
 		if err := cl.Create(t.Context(), obj); err != nil {
 			t.Fatal(err)
 		}
@@ -791,7 +791,7 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 			t.Fatalf("clone must not inherit FullSync: %+v", rep)
 		}
 	}
-	if got.Spec.Replicas[0].Address != addrKharkiv || got.Spec.Replicas[1].Address != addrParis {
+	if got.Spec.Replicas[0].Address != addrA || got.Spec.Replicas[1].Address != addrB {
 		t.Fatalf("addresses must be re-resolved: %+v", got.Spec.Replicas)
 	}
 }
@@ -808,8 +808,8 @@ func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
 			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "192.0.2.1"},
-				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "192.0.2.2"},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "192.0.2.1"},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "192.0.2.2"},
 			},
 		},
 	}
@@ -818,13 +818,13 @@ func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{
-				nodeKharkiv: miroirv1alpha1.SnapshotDone,
-				nodeParis:   miroirv1alpha1.SnapshotDone,
+				nodeA: miroirv1alpha1.SnapshotDone,
+				nodeB: miroirv1alpha1.SnapshotDone,
 			}},
 	}
 	cl := readyOnGet(s)
 	for _, obj := range []client.Object{srcVol, srcSnap,
-		nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
+		nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)} {
 		if err := cl.Create(t.Context(), obj); err != nil {
 			t.Fatal(err)
 		}
@@ -833,9 +833,9 @@ func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	nodes := maps.Clone(testNodes)
-	kharkiv := nodes[nodeKharkiv]
-	kharkiv.Address = "10.0.100.1"
-	nodes[nodeKharkiv] = kharkiv
+	entry := nodes[nodeA]
+	entry.Address = "10.0.100.1"
+	nodes[nodeA] = entry
 	c := &Controller{Client: cl, ProvisionTimeout: 2 * time.Second, Nodes: nodes}
 
 	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
@@ -856,7 +856,7 @@ func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
 	if err := cl.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Spec.Replicas[0].Address != "10.0.100.1" || got.Spec.Replicas[1].Address != addrParis {
+	if got.Spec.Replicas[0].Address != "10.0.100.1" || got.Spec.Replicas[1].Address != addrB {
 		t.Fatalf("clone did not re-resolve through the override: %+v", got.Spec.Replicas)
 	}
 }
@@ -874,21 +874,21 @@ func TestCreateVolumeFromSnapshotFullSyncsPostSnapshotReplica(t *testing.T) {
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
 			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
-				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2"},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2"},
 			},
 		},
 	}
-	// The snapshot captured only kharkiv Done; paris was added afterward.
+	// The snapshot captured only node-a Done; node-b was added afterward.
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
-			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
 	cl := readyOnGet(s)
 	for _, obj := range []client.Object{srcVol, srcSnap,
-		nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)} {
+		nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)} {
 		if err := cl.Create(t.Context(), obj); err != nil {
 			t.Fatal(err)
 		}
@@ -919,11 +919,11 @@ func TestCreateVolumeFromSnapshotFullSyncsPostSnapshotReplica(t *testing.T) {
 	for _, r := range got.Spec.Replicas {
 		byNode[r.Node] = r
 	}
-	if byNode[nodeKharkiv].FullSync {
-		t.Fatalf("the Done seed leg must clone, not full-sync: %+v", byNode[nodeKharkiv])
+	if byNode[nodeA].FullSync {
+		t.Fatalf("the Done seed leg must clone, not full-sync: %+v", byNode[nodeA])
 	}
-	if !byNode[nodeParis].FullSync {
-		t.Fatalf("the post-snapshot leg must full-sync (no local snapshot): %+v", byNode[nodeParis])
+	if !byNode[nodeB].FullSync {
+		t.Fatalf("the post-snapshot leg must full-sync (no local snapshot): %+v", byNode[nodeB])
 	}
 }
 
@@ -938,7 +938,7 @@ func TestCreateVolumeAlreadyExistsCacheLagIsUnavailable(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	apiReader := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).Build()
@@ -970,7 +970,7 @@ func TestMarkVolumeFormattedReadsThroughAPIReader(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	// One store: reads through the cached client 404 (informer lag), while
@@ -1016,14 +1016,14 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
-			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
 	cl := readyOnGet(s)
 	if err := cl.Create(t.Context(), srcVol); err != nil {
@@ -1064,7 +1064,7 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	if vol.Spec.Source == nil || vol.Spec.Source.SnapshotName != snapSnap1 {
 		t.Fatalf("new volume must record source snapshot, got %+v", vol.Spec.Source)
 	}
-	if len(vol.Spec.Replicas) != 1 || vol.Spec.Replicas[0].Node != nodeKharkiv {
+	if len(vol.Spec.Replicas) != 1 || vol.Spec.Replicas[0].Node != nodeA {
 		t.Fatalf("placement must follow source volume, got %+v", vol.Spec.Replicas)
 	}
 }
@@ -1077,7 +1077,7 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
@@ -1085,7 +1085,7 @@ func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{
 			ReadyToUse: true, SizeBytes: 5 << 30, SourceFormatted: true,
-			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone},
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone},
 		},
 	}
 	cl := readyOnGet(s)
@@ -1145,7 +1145,7 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
-			Replicas:  []miroirv1alpha1.Replica{{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendLVMThin}},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	cl := readyOnGet(s)
@@ -1156,13 +1156,13 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
-			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
 	snap2 := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-2"},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
-			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeKharkiv: miroirv1alpha1.SnapshotDone}},
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
 	if err := cl.Create(t.Context(), snap1); err != nil {
 		t.Fatal(err)
@@ -1207,7 +1207,7 @@ func TestCreateVolumeRemoteAccessDropsTopology(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj(nodeKharkiv, addrKharkiv), nodeObj(nodeParis, addrParis)).
+			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)).
 			WithInterceptorFuncs(interceptor.Funcs{
 				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {

@@ -15,10 +15,10 @@ tests:
   - it: renders the nodes ConfigMap and the drbd ConfigMap
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
-        paris:
+        node-b:
           backend: zfs
           zfsDataset: data-pool/miroir
     asserts:
@@ -52,10 +52,10 @@ tests:
   - it: embeds the per-node topology in miroir-nodes as YAML
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
-        paris:
+        node-b:
           backend: zfs
           zfsDataset: data-pool/miroir
     documentIndex: 0
@@ -76,7 +76,7 @@ tests:
   - it: keeps the drbd global config to usage-count no and an empty common{}
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 1
@@ -113,7 +113,7 @@ tests:
   - it: renders cluster-wide resync tuning into common{} when set
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
@@ -145,7 +145,7 @@ tests:
   - it: renders discard granularity and verify-alg when set
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:
@@ -165,7 +165,7 @@ tests:
   - it: default emits no discard granularity (loopfile-unsafe, opt-in)
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 1
@@ -180,7 +180,7 @@ tests:
       namespace: storage
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
     asserts:
@@ -196,7 +196,7 @@ tests:
   - it: fails loudly when the pre-0.7 drbd.verifyAlg key is still set
     set:
       nodes:
-        kharkiv:
+        node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
       drbd:

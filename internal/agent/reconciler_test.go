@@ -44,17 +44,17 @@ import (
 )
 
 const (
-	nodeKharkiv           = "kharkiv"
-	nodeParis             = "paris"
-	addrKharkiv           = "192.168.1.41"
-	addrParis             = "192.168.1.42"
+	nodeA                 = "node-a"
+	nodeB                 = "node-b"
+	addrA                 = "192.168.1.41"
+	addrB                 = "192.168.1.42"
 	volPvc1               = "pvc-1"
 	snapSnap1             = "snap-1"
 	diskStateUpToDate     = "UpToDate"
 	diskStateInconsistent = "Inconsistent"
 	diskStateDiskless     = "Diskless"
-	nodeOslo              = "oslo"
-	addrOslo              = "192.168.1.43"
+	nodeC                 = "node-c"
+	addrC                 = "192.168.1.43"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -179,10 +179,10 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(vol(volPvc1, nodeKharkiv)).
+		WithObjects(vol(volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	reconcile(t, r, volPvc1)
 
@@ -196,7 +196,7 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
 	}
-	if got.Status.PerNode[nodeKharkiv].DevicePath != "/dev/fake/pvc-1" {
+	if got.Status.PerNode[nodeA].DevicePath != "/dev/fake/pvc-1" {
 		t.Fatalf("unexpected status %+v", got.Status.PerNode)
 	}
 	// No peers means fully in sync: the zero value would perma-fire any
@@ -210,10 +210,10 @@ func TestReconcileIgnoresForeignVolume(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(vol(volPvc1, "paris")).
+		WithObjects(vol(volPvc1, "node-b")).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	reconcile(t, r, volPvc1)
 
@@ -227,10 +227,10 @@ func TestReconcileReportsBackendError(t *testing.T) {
 	fb := newFakeBackend()
 	fb.failOn = "create"
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(vol(volPvc1, nodeKharkiv)).
+		WithObjects(vol(volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	_, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -245,7 +245,7 @@ func TestReconcileReportsBackendError(t *testing.T) {
 	if got.Status.Phase != miroirv1alpha1.VolumeFailed {
 		t.Fatalf("phase = %s, want Failed", got.Status.Phase)
 	}
-	if got.Status.PerNode[nodeKharkiv].Message == "" {
+	if got.Status.PerNode[nodeA].Message == "" {
 		t.Fatal("error message must be reported in status")
 	}
 }
@@ -256,14 +256,14 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true // backing survived the reboot
-	v := vol(volPvc1, nodeKharkiv)
+	v := vol(volPvc1, nodeA)
 	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-deleted"}
 	// No MiroirSnapshot object in the client: it has been garbage-collected.
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	reconcile(t, r, volPvc1)
 
@@ -280,7 +280,7 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
 	}
-	if got.Status.PerNode[nodeKharkiv].DevicePath != "/dev/fake/pvc-1" {
+	if got.Status.PerNode[nodeA].DevicePath != "/dev/fake/pvc-1" {
 		t.Fatalf("backing not recovered: %+v", got.Status.PerNode)
 	}
 }
@@ -290,13 +290,13 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 func TestReconcileSourceSnapshotGoneAndDeviceMissingFails(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend() // no existing device
-	v := vol(volPvc1, nodeKharkiv)
+	v := vol(volPvc1, nodeA)
 	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-deleted"}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	_, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -312,19 +312,19 @@ func TestReconcileSourceSnapshotGoneAndDeviceMissingFails(t *testing.T) {
 func TestReconcileReplicatedVolume(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, "paris")
+	v := vol(volPvc1, nodeA, "node-b")
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 
 	stateDir := t.TempDir()
 	// Pre-seed .res so assignMinor → AllocateMinor picks minor 1000.
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
 		"resource \"pvc-1\" {\n"+
-			"    on \"kharkiv\" {\n"+
+			"    on \"node-a\" {\n"+
 			"        device minor 1000;\n"+
 			"    }\n"+
 			"}\n",
@@ -340,7 +340,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -361,7 +361,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	st := got.Status.PerNode[nodeKharkiv]
+	st := got.Status.PerNode[nodeA]
 	if st.DevicePath != "/dev/drbd1000" {
 		t.Fatalf("pods must attach the DRBD device, got %q", st.DevicePath)
 	}
@@ -379,7 +379,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	// Peer reports its leg; the next coordinator pass grows DRBD and
 	// publishes the size.
 	base := got.DeepCopy()
-	got.Status.PerNode["paris"] = miroirv1alpha1.ReplicaStatus{
+	got.Status.PerNode["node-b"] = miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true,
 	}
 	if err := c.Status().Patch(t.Context(), got, client.MergeFrom(base)); err != nil {
@@ -393,8 +393,8 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.PerNode[nodeKharkiv].SizeBytes != 1<<30 {
-		t.Fatalf("size must publish after DRBD resize, got %d", got.Status.PerNode[nodeKharkiv].SizeBytes)
+	if got.Status.PerNode[nodeA].SizeBytes != 1<<30 {
+		t.Fatalf("size must publish after DRBD resize, got %d", got.Status.PerNode[nodeA].SizeBytes)
 	}
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready with both legs UpToDate", got.Status.Phase)
@@ -410,22 +410,22 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 	// A peer slot and a CSI-owned Formatted flag this agent must not touch.
 	v.Status.Formatted = true
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeParis: {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+		nodeB: {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 	}
 
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
-		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+		"resource \"pvc-1\" {\n    on \"node-a\" {\n        device minor 1000;\n    }\n}\n",
 	), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 		}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -461,10 +461,10 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 		t.Fatal("expected at least one server-side apply of status")
 	}
 	for i, st := range applies {
-		if _, ok := st.PerNode[nodeKharkiv]; !ok {
+		if _, ok := st.PerNode[nodeA]; !ok {
 			t.Errorf("apply %d omits this node's slot: %+v", i, st.PerNode)
 		}
-		if _, ok := st.PerNode[nodeParis]; ok {
+		if _, ok := st.PerNode[nodeB]; ok {
 			t.Errorf("apply %d names the peer's slot (would force-own it): %+v", i, st.PerNode)
 		}
 		if st.Formatted != nil {
@@ -476,17 +476,17 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, "paris")
+	v := vol(volPvc1, nodeA, "node-b")
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
-		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+		"resource \"pvc-1\" {\n    on \"node-a\" {\n        device minor 1000;\n    }\n}\n",
 	), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -501,7 +501,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -511,7 +511,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	}
 	base := got.DeepCopy()
 	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		"paris": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+		"node-b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 	}
 	if err := c.Status().Patch(t.Context(), got, client.MergeFrom(base)); err != nil {
 		t.Fatal(err)
@@ -525,8 +525,8 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.PerNode[nodeKharkiv].SizeBytes != 0 {
-		t.Fatalf("size must be withheld while resyncing, got %d", got.Status.PerNode[nodeKharkiv].SizeBytes)
+	if got.Status.PerNode[nodeA].SizeBytes != 0 {
+		t.Fatalf("size must be withheld while resyncing, got %d", got.Status.PerNode[nodeA].SizeBytes)
 	}
 
 	// Resync completes: the next pass grows DRBD and publishes the size.
@@ -541,25 +541,25 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.PerNode[nodeKharkiv].SizeBytes != 1<<30 {
-		t.Fatalf("size must publish once the resync clears, got %d", got.Status.PerNode[nodeKharkiv].SizeBytes)
+	if got.Status.PerNode[nodeA].SizeBytes != 1<<30 {
+		t.Fatalf("size must publish once the resync clears, got %d", got.Status.PerNode[nodeA].SizeBytes)
 	}
 }
 
 func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, "paris")
+	v := vol(volPvc1, nodeA, "node-b")
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
-		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+		"resource \"pvc-1\" {\n    on \"node-a\" {\n        device minor 1000;\n    }\n}\n",
 	), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +579,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -589,7 +589,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	}
 	base := got.DeepCopy()
 	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		"paris": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+		"node-b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 	}
 	if err := c.Status().Patch(t.Context(), got, client.MergeFrom(base)); err != nil {
 		t.Fatal(err)
@@ -607,8 +607,8 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.PerNode[nodeKharkiv].SizeBytes != 0 {
-		t.Fatalf("size must be withheld until the resize succeeds, got %d", got.Status.PerNode[nodeKharkiv].SizeBytes)
+	if got.Status.PerNode[nodeA].SizeBytes != 0 {
+		t.Fatalf("size must be withheld until the resize succeeds, got %d", got.Status.PerNode[nodeA].SizeBytes)
 	}
 }
 
@@ -676,14 +676,14 @@ func (f *fakeDRBDExec) notCalledWith(t *testing.T, substr string) {
 func TestReconcileForeignAgentLeavesFinalizerOnDelete(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, "paris") // replica on paris...
+	v := vol(volPvc1, "node-b") // replica on node-b...
 	now := metav1.NewTime(time.Now())
 	v.DeletionTimestamp = &now
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb} // ...agent on kharkiv
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb} // ...agent on node-a
 
 	reconcile(t, r, volPvc1)
 
@@ -699,14 +699,14 @@ func TestReconcileForeignAgentLeavesFinalizerOnDelete(t *testing.T) {
 func TestReconcileTeardownOnDelete(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv)
+	v := vol(volPvc1, nodeA)
 	now := metav1.NewTime(time.Now())
 	v.DeletionTimestamp = &now
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	// Pre-create the device so teardown has something to remove.
 	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
@@ -733,17 +733,17 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv)
+	v := vol(volPvc1, nodeA)
 	now := metav1.NewTime(time.Now())
 	v.DeletionTimestamp = &now
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateDiskless},
+		nodeA: {DeviceCreated: true, DiskState: diskStateDiskless},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
 		t.Fatal(err)
@@ -762,12 +762,12 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 func TestReconcileTeardownWipesMetadata(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	now := metav1.NewTime(time.Now())
 	v.DeletionTimestamp = &now
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DRBDMinor: 1000},
+		nodeA: {DeviceCreated: true, DRBDMinor: 1000},
 	}
 	stateDir := t.TempDir()
 	// A .res must exist or Down short-circuits as never-configured.
@@ -778,7 +778,7 @@ func TestReconcileTeardownWipesMetadata(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fe := &fakeDRBDExec{}
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
@@ -798,12 +798,12 @@ func TestReconcileTeardownWipesMetadata(t *testing.T) {
 func TestReconcileTeardownDisklessSkipsWipe(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	now := metav1.NewTime(time.Now())
 	v.DeletionTimestamp = &now
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {Diskless: true},
+		nodeA: {Diskless: true},
 	}
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
@@ -813,7 +813,7 @@ func TestReconcileTeardownDisklessSkipsWipe(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fe := &fakeDRBDExec{}
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -829,7 +829,7 @@ func TestReconcileTeardownDisklessSkipsWipe(t *testing.T) {
 func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	now := metav1.NewTime(time.Now())
 	v.DeletionTimestamp = &now
@@ -844,7 +844,7 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 		"drbdsetup down pvc-1": errors.New("pvc-1: State change failed: Device is held open by someone"),
 	}}
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeKharkiv, Backend: fb,
+		Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -868,13 +868,13 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 // Degraded, not hard-Failed.
 func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	// The leg was UpToDate before the disk errored.
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
 	}
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
@@ -884,7 +884,7 @@ func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Diskless"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -893,7 +893,7 @@ func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	st := got.Status.PerNode[nodeKharkiv]
+	st := got.Status.PerNode[nodeA]
 	if !strings.Contains(st.Message, "detached") {
 		t.Fatalf("detached leg must carry an actionable message: %q", st.Message)
 	}
@@ -916,13 +916,13 @@ func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
 // Diskless, and clears only on a replica re-add.
 func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	// Already latched by a prior reconcile: Diskless and DiskFailed.
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateDiskless, DiskFailed: true, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, DiskState: diskStateDiskless, DiskFailed: true, SizeBytes: 1 << 30},
 	}
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
@@ -931,7 +931,7 @@ func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Diskless"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -943,7 +943,7 @@ func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if st := got.Status.PerNode[nodeKharkiv]; !st.DiskFailed {
+	if st := got.Status.PerNode[nodeA]; !st.DiskFailed {
 		t.Fatalf("latch must stay set while the leg is Diskless: %+v", st)
 	}
 	// The latch is the actionable hardware-failure alert signal.
@@ -957,16 +957,16 @@ func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 // reconcile error-loops on a resize the diskless node can never do.
 func TestReconcileLatchedCoordinatorSkipsResize(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.SizeBytes = 2 << 30 // grown; the coordinator is behind
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
-	// kharkiv is replicas[0] (coordinator), latched failed and still at the
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
+	// node-a is replicas[0] (coordinator), latched failed and still at the
 	// old size.
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateDiskless, DiskFailed: true, SizeBytes: 1 << 30},
-		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 2 << 30},
+		nodeA: {DeviceCreated: true, DiskState: diskStateDiskless, DiskFailed: true, SizeBytes: 1 << 30},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 2 << 30},
 	}
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
@@ -975,7 +975,7 @@ func TestReconcileLatchedCoordinatorSkipsResize(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Diskless"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -987,12 +987,12 @@ func TestReconcileLatchedCoordinatorSkipsResize(t *testing.T) {
 // workloads hanging" from a benign peer outage. The gauge must go 0.
 func TestReconcileQuorumLostExportsGauge(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
 	}
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
@@ -1001,7 +1001,7 @@ func TestReconcileQuorumLostExportsGauge(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"UpToDate","quorum":false}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1019,14 +1019,14 @@ func TestReconcileQuorumLostExportsGauge(t *testing.T) {
 // size already matches the spec — the steady state, every poll.
 func TestReconcileResizeCoordinatorSkipsWhenAtSize(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
-	// kharkiv is replicas[0] (the coordinator) and already at spec size.
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
+	// node-a is replicas[0] (the coordinator) and already at spec size.
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
-		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
 	}
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
@@ -1035,7 +1035,7 @@ func TestReconcileResizeCoordinatorSkipsWhenAtSize(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1048,13 +1048,13 @@ func TestReconcileResizeCoordinatorSkipsWhenAtSize(t *testing.T) {
 // never-written and auto-discard a leg.
 func TestReconcilePrimaryLatchesActivated(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
-		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
 	}
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
@@ -1064,7 +1064,7 @@ func TestReconcilePrimaryLatchesActivated(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
 		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1082,10 +1082,10 @@ func TestReconcilePrimaryLatchesActivated(t *testing.T) {
 // split-brain auto-recovery.
 func TestReconcileSecondaryDoesNotLatchActivated(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
@@ -1094,7 +1094,7 @@ func TestReconcileSecondaryDoesNotLatchActivated(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
 		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1115,12 +1115,12 @@ func TestReconcileSecondaryDoesNotLatchActivated(t *testing.T) {
 // be gone entirely), and DRBD full-syncs its content anyway.
 func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-gone"}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fb := newFakeBackend()
-	r := &VolumeReconciler{Client: c, NodeName: nodeParis, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeB, Backend: fb}
 
 	if _, err := r.realizeBacking(t.Context(), v, true); err != nil {
 		t.Fatal(err)
@@ -1139,15 +1139,15 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 // first handshake instead of posing as the peers' identical twin.
 func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
 	v.Spec.Replicas[1].Address = "192.168.1.42"
 	// The pre-wipe agent had realized the backing and said so in status.
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DevicePath: "/dev/mapper/x"},
+		nodeA: {DeviceCreated: true, DevicePath: "/dev/mapper/x"},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -1163,7 +1163,7 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 	fb := newFakeBackend() // Exists() == false: the wipe took the device
 	r := &VolumeReconciler{
 		Client:   c,
-		NodeName: nodeKharkiv,
+		NodeName: nodeA,
 		Backend:  fb,
 		DRBD:     &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
@@ -1176,16 +1176,16 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 func TestReconcileDisklessTieBreaker(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
+		Node: nodeC, NodeID: 2, Address: addrC, Diskless: true,
 	})
-	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeOslo)
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeC)
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
@@ -1195,7 +1195,7 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeOslo, Backend: fb,
+		Client: c, NodeName: nodeC, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -1217,7 +1217,7 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	st := got.Status.PerNode[nodeOslo]
+	st := got.Status.PerNode[nodeC]
 	if st.DeviceCreated {
 		t.Fatal("tie-breaker must not report DeviceCreated (blocks CSI staging)")
 	}
@@ -1229,22 +1229,22 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 // Status.Connected scopes to diskful peers: a downed tie-breaker link
 // must not read as degraded replication, while a downed data leg must.
 func TestDiskfulPeersConnected(t *testing.T) {
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-		Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
+		Node: nodeC, NodeID: 2, Address: addrC, Diskless: true,
 	})
 
 	tieBreakerDown := drbd.Status{PeerConnected: map[int32]bool{1: true, 2: false}}
-	if !diskfulPeersConnected(tieBreakerDown, v, nodeKharkiv) {
+	if !diskfulPeersConnected(tieBreakerDown, v, nodeA) {
 		t.Fatal("a downed tie-breaker link must not count as disconnected")
 	}
 	dataLegDown := drbd.Status{PeerConnected: map[int32]bool{1: false, 2: true}}
-	if diskfulPeersConnected(dataLegDown, v, nodeKharkiv) {
+	if diskfulPeersConnected(dataLegDown, v, nodeA) {
 		t.Fatal("a downed data leg must count as disconnected")
 	}
 }
@@ -1254,25 +1254,25 @@ func TestDiskfulPeersConnected(t *testing.T) {
 // status marker decides — the entry is already gone from spec.
 func TestRemovalSnapshotGateSkipsTieBreaker(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis) // oslo already removed from spec
+	v := vol(volPvc1, nodeA, nodeB) // node-c already removed from spec
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, Connected: true},
-		nodeParis:   {DeviceCreated: true, DiskState: diskStateUpToDate, Connected: true},
-		nodeOslo:    {DiskState: diskStateDiskless, Diskless: true},
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, Connected: true},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate, Connected: true},
+		nodeC: {DiskState: diskStateDiskless, Diskless: true},
 	}
-	snap := snapObj(snapSnap1, volPvc1, nodeKharkiv, nodeParis)
+	snap := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snap).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
 		Build()
 
-	rO := &VolumeReconciler{Client: c, NodeName: nodeOslo, Backend: newFakeBackend()}
+	rO := &VolumeReconciler{Client: c, NodeName: nodeC, Backend: newFakeBackend()}
 	if reason := rO.removalBlocked(t.Context(), v); reason != "" {
 		t.Fatalf("tie-breaker removal must not be pinned by snapshots: %s", reason)
 	}
 	// A removed diskful replica (no Diskless marker) stays pinned.
-	rK := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: newFakeBackend()}
+	rK := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: newFakeBackend()}
 	if reason := rK.removalBlocked(t.Context(), v); !strings.Contains(reason, "snapshot") {
 		t.Fatalf("diskful removal must stay pinned by snapshots, got %q", reason)
 	}
@@ -1406,14 +1406,14 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(vol(volPvc1, nodeKharkiv)).
+		WithObjects(vol(volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 	if err := c.Status().Patch(t.Context(), &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 	}, client.RawPatch(types.MergePatchType, []byte(`{
-		"status": {"perNode": {"`+nodeKharkiv+`": {
+		"status": {"perNode": {"`+nodeA+`": {
 			"deviceCreated": true, "sizeBytes": 1073741824, "connected": true
 		}}}
 	}`))); err != nil {
@@ -1429,7 +1429,7 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	st := got.Status.PerNode[nodeKharkiv]
+	st := got.Status.PerNode[nodeA]
 	if !st.DeviceCreated || st.SizeBytes != 1<<30 || !st.Connected {
 		t.Fatalf("reportError wiped observed state: %+v", st)
 	}
@@ -1438,11 +1438,11 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 	}
 }
 
-// removedReplicaVol builds a 2-replica volume on paris+oslo whose kharkiv
+// removedReplicaVol builds a 2-replica volume on node-b+node-c whose node-a
 // leg was just removed from spec.replicas (finalizer still held).
 func removedReplicaVol() *miroirv1alpha1.MiroirVolume {
-	v := vol(volPvc1, "paris", nodeOslo)
-	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeKharkiv)
+	v := vol(volPvc1, "node-b", nodeC)
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeA)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	for i := range v.Spec.Replicas {
 		v.Spec.Replicas[i].NodeID = int32(i)
@@ -1457,9 +1457,9 @@ func patchPeersUpToDate(t *testing.T, c client.Client, diskState string) {
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {
-			"paris": {"deviceCreated": true, "diskState": "`+diskState+`", "connected": true},
-			"`+nodeOslo+`": {"deviceCreated": true, "diskState": "`+diskStateUpToDate+`", "connected": true},
-			"`+nodeKharkiv+`": {"deviceCreated": true, "diskState": "`+diskStateUpToDate+`", "connected": true}
+			"node-b": {"deviceCreated": true, "diskState": "`+diskState+`", "connected": true},
+			"`+nodeC+`": {"deviceCreated": true, "diskState": "`+diskStateUpToDate+`", "connected": true},
+			"`+nodeA+`": {"deviceCreated": true, "diskState": "`+diskStateUpToDate+`", "connected": true}
 		}}
 	}`)))
 	if err != nil {
@@ -1481,7 +1481,7 @@ func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, diskStateUpToDate)
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run}}
 
 	reconcile(t, r, volPvc1)
@@ -1495,11 +1495,11 @@ func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range got.Finalizers {
-		if f == constants.FinalizerPrefix+nodeKharkiv {
+		if f == constants.FinalizerPrefix+nodeA {
 			t.Fatal("finalizer not released after removal teardown")
 		}
 	}
-	if _, ok := got.Status.PerNode[nodeKharkiv]; ok {
+	if _, ok := got.Status.PerNode[nodeA]; ok {
 		t.Fatal("removed replica's status slot not cleared")
 	}
 }
@@ -1516,7 +1516,7 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, diskStateUpToDate)
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -1533,8 +1533,8 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got.Status.PerNode[nodeKharkiv].Message, "snapshot") {
-		t.Fatalf("blocked reason not surfaced: %+v", got.Status.PerNode[nodeKharkiv])
+	if !strings.Contains(got.Status.PerNode[nodeA].Message, "snapshot") {
+		t.Fatalf("blocked reason not surfaced: %+v", got.Status.PerNode[nodeA])
 	}
 }
 
@@ -1546,8 +1546,8 @@ func TestReconcileRemovalBlockedByDegradedPeer(t *testing.T) {
 		WithObjects(removedReplicaVol()).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	patchPeersUpToDate(t, c, diskStateInconsistent) // paris still syncing
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	patchPeersUpToDate(t, c, diskStateInconsistent) // node-b still syncing
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -1565,16 +1565,16 @@ func TestReconcileRemovalBlockedByDegradedPeer(t *testing.T) {
 func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, "paris")
+	v := vol(volPvc1, nodeA, "node-b")
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
-	// kharkiv's entry was just added by an operator: no address yet.
+	v.Spec.Replicas[1].Address = addrB
+	// node-a's entry was just added by an operator: no address yet.
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -1593,10 +1593,10 @@ func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 // thin backend; loopfile never probes (loop devices mishandle the option).
 func TestReconcileRendersDiscardGranularity(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
@@ -1607,7 +1607,7 @@ func TestReconcileRendersDiscardGranularity(t *testing.T) {
 		responses: map[string]string{"lsblk": "65536\n"},
 	}
 	stateDir := t.TempDir()
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		BackendType: miroirv1alpha1.BackendLVMThin,
 		DRBD:        &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
@@ -1625,10 +1625,10 @@ func TestReconcileRendersDiscardGranularity(t *testing.T) {
 
 func TestReconcileLoopfileSkipsDiscardProbe(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	fb := newFakeBackend()
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
@@ -1636,7 +1636,7 @@ func TestReconcileLoopfileSkipsDiscardProbe(t *testing.T) {
 		"devices":[{"disk-state":"UpToDate"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
 		responses: map[string]string{"lsblk": "65536\n"}}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		BackendType: miroirv1alpha1.BackendLoopfile,
 		DRBD:        &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
@@ -1660,12 +1660,12 @@ func countCalls(fe *fakeDRBDExec, substr string) int {
 func steadyVolume(t *testing.T) (*miroirv1alpha1.MiroirVolume, *fakeDRBDExec, *VolumeReconciler) {
 	t.Helper()
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30},
 	}
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
@@ -1674,7 +1674,7 @@ func steadyVolume(t *testing.T) (*miroirv1alpha1.MiroirVolume, *fakeDRBDExec, *V
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `","quorum":true}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		BackendType: miroirv1alpha1.BackendLVMThin,
 		DRBD:        &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 	return v, fe, r
@@ -1781,25 +1781,25 @@ func TestReconcileFastPathDeepCheckExpiry(t *testing.T) {
 	}
 }
 
-// splitBrainSetup builds a 2-replica DRBD volume (kharkiv node id 0 = seed
-// winner, paris node id 1) whose kernel status reports a connState
+// splitBrainSetup builds a 2-replica DRBD volume (node-a node id 0 = seed
+// winner, node-b node id 1) whose kernel status reports a connState
 // connection to peerNodeID, plus a reconciler running on nodeName. activated
 // latches Status.Activated (the auto-recovery gate).
 func splitBrainSetup(t *testing.T, nodeName, peerNodeID, connState string, activated bool) (*VolumeReconciler, *fakeDRBDExec) {
 	t.Helper()
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 	v.Status.Activated = activated
 
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
-		"resource \"pvc-1\" {\n    on \"kharkiv\" {\n        device minor 1000;\n    }\n}\n",
+		"resource \"pvc-1\" {\n    on \"node-a\" {\n        device minor 1000;\n    }\n}\n",
 	), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -1818,20 +1818,20 @@ func splitBrainSetup(t *testing.T, nodeName, peerNodeID, connState string, activ
 }
 
 // A never-activated volume that comes up split-brain self-heals: the seed
-// winner (kharkiv, node id 0) reconnects as the sync source and never
+// winner (node-a, node id 0) reconnects as the sync source and never
 // discards data (issue #139).
 func TestReconcileSplitBrainWinnerReconnectsWhenNeverActivated(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeKharkiv, "1", "StandAlone", false)
+	r, fe := splitBrainSetup(t, nodeA, "1", "StandAlone", false)
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect pvc-1")
 	fe.notCalledWith(t, "discard-my-data")
 }
 
-// The losing leg (paris, node id 1) discards its own generation so it
+// The losing leg (node-b, node id 1) discards its own generation so it
 // full-syncs from the winner.
 func TestReconcileSplitBrainLoserDiscardsWhenNeverActivated(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", "StandAlone", false)
+	r, fe := splitBrainSetup(t, nodeB, "0", "StandAlone", false)
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
@@ -1840,7 +1840,7 @@ func TestReconcileSplitBrainLoserDiscardsWhenNeverActivated(t *testing.T) {
 // An activated volume may hold data: split-brain is never auto-resolved, it
 // is left for an operator.
 func TestReconcileSplitBrainNoAutoRecoveryWhenActivated(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", "StandAlone", true)
+	r, fe := splitBrainSetup(t, nodeB, "0", "StandAlone", true)
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "discard-my-data")
 	fe.notCalledWith(t, "drbdadm disconnect")
@@ -1850,7 +1850,7 @@ func TestReconcileSplitBrainNoAutoRecoveryWhenActivated(t *testing.T) {
 // grow-to-fill after mkfs/mount) carries data and must not be auto-discarded,
 // even though Activated is still false.
 func TestReconcileSplitBrainNoAutoRecoveryWhenFormatted(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", "StandAlone", false)
+	r, fe := splitBrainSetup(t, nodeB, "0", "StandAlone", false)
 	var v miroirv1alpha1.MiroirVolume
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
 		t.Fatal(err)
@@ -1887,8 +1887,8 @@ func reportPeerSplitBrain(t *testing.T, r *VolumeReconciler, node string) {
 // sits Connecting while the survivor refuses the handshake — so it must take
 // the winner's reported split-brain as its trigger and discard (issue #144).
 func TestReconcileSplitBrainLoserDiscardsOnPeerReport(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", "Connecting", false)
-	reportPeerSplitBrain(t, r, nodeKharkiv)
+	r, fe := splitBrainSetup(t, nodeB, "0", "Connecting", false)
+	reportPeerSplitBrain(t, r, nodeA)
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdadm disconnect pvc-1")
 	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
@@ -1897,8 +1897,8 @@ func TestReconcileSplitBrainLoserDiscardsOnPeerReport(t *testing.T) {
 // A stale peer split-brain report on a healthy, fully connected leg (the
 // survivor's status patch lags its recovery) must not churn the volume.
 func TestReconcileSplitBrainPeerReportIgnoredWhenConnected(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", "Connected", false)
-	reportPeerSplitBrain(t, r, nodeKharkiv)
+	r, fe := splitBrainSetup(t, nodeB, "0", "Connected", false)
+	reportPeerSplitBrain(t, r, nodeA)
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "discard-my-data")
 	fe.notCalledWith(t, "drbdadm disconnect")
@@ -1908,7 +1908,7 @@ func TestReconcileSplitBrainPeerReportIgnoredWhenConnected(t *testing.T) {
 // the volume — attempts must be floored to one per poll interval or the
 // agent thrashes several times per second (issue #144).
 func TestReconcileSplitBrainRecoveryDebounced(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeKharkiv, "1", "StandAlone", false)
+	r, fe := splitBrainSetup(t, nodeA, "1", "StandAlone", false)
 	reconcile(t, r, volPvc1)
 	attempts := countCalls(fe, "drbdadm connect pvc-1")
 	if attempts != 1 {
@@ -1924,7 +1924,7 @@ func TestReconcileSplitBrainRecoveryDebounced(t *testing.T) {
 // kernel state is a steady Connecting that never invalidates the fingerprint,
 // so only the peers' status can route it into recovery (issue #144).
 func TestFastPathMissesOnPeerReportedSplitBrain(t *testing.T) {
-	r, fe := splitBrainSetup(t, nodeParis, "0", "Connecting", false)
+	r, fe := splitBrainSetup(t, nodeB, "0", "Connecting", false)
 	var v miroirv1alpha1.MiroirVolume
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
 		t.Fatal(err)
@@ -1932,8 +1932,8 @@ func TestFastPathMissesOnPeerReportedSplitBrain(t *testing.T) {
 	// Prime the fast path: settled size in this node's slot, the winner's
 	// split-brain report, and a fingerprint matching the live kernel state.
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeParis:   {DeviceCreated: true, SizeBytes: 1 << 30},
-		nodeKharkiv: {DeviceCreated: true, SplitBrain: true},
+		nodeB: {DeviceCreated: true, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, SplitBrain: true},
 	}
 	if err := r.Status().Update(t.Context(), &v); err != nil {
 		t.Fatal(err)
@@ -1961,19 +1961,19 @@ const (
 			"peer_devices":[{"peer-disk-state":"UpToDate"}]}]}]`
 )
 
-// birthSetup builds a fresh 2-diskful volume (kharkiv node id 0 = winner,
-// paris node id 1) and a reconciler on nodeName whose kernel answers the
+// birthSetup builds a fresh 2-diskful volume (node-a node id 0 = winner,
+// node-b node id 1) and a reconciler on nodeName whose kernel answers the
 // queued --json statuses (peerNodeID fills the connection entries).
 func birthSetup(t *testing.T, nodeName string, peerNodeID int, statusSeq ...string) (*VolumeReconciler, *fakeDRBDExec, *miroirv1alpha1.MiroirVolume) {
 	t.Helper()
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	v.Spec.Replicas[0].NodeID = 0
-	v.Spec.Replicas[0].Address = addrKharkiv
+	v.Spec.Replicas[0].Address = addrA
 	v.Spec.Replicas[1].NodeID = 1
-	v.Spec.Replicas[1].Address = addrParis
+	v.Spec.Replicas[1].Address = addrB
 
 	stateDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
@@ -2008,7 +2008,7 @@ func birthSetup(t *testing.T, nodeName string, peerNodeID int, statusSeq ...stri
 // Inconsistent over established connections, and the same pass proceeds
 // against the resulting UpToDate state.
 func TestReconcileBirthWinnerMintsInitialUUID(t *testing.T) {
-	r, fe, _ := birthSetup(t, nodeKharkiv, 1, birthReadyJSON, birthDoneJSON)
+	r, fe, _ := birthSetup(t, nodeA, 1, birthReadyJSON, birthDoneJSON)
 	reconcile(t, r, volPvc1)
 	// The full fresh path: metadata created and left just-created, then the
 	// one replicated generation minted over the live connections.
@@ -2020,14 +2020,14 @@ func TestReconcileBirthWinnerMintsInitialUUID(t *testing.T) {
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if st := got.Status.PerNode[nodeKharkiv]; st.DiskState != diskStateUpToDate {
+	if st := got.Status.PerNode[nodeA]; st.DiskState != diskStateUpToDate {
 		t.Fatalf("winner must report the post-birth state, got %+v", st)
 	}
 }
 
 // The loser waits: only the winner may mint, or two generations could race.
 func TestReconcileBirthLoserWaits(t *testing.T) {
-	r, fe, _ := birthSetup(t, nodeParis, 0, birthReadyJSON)
+	r, fe, _ := birthSetup(t, nodeB, 0, birthReadyJSON)
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "new-current-uuid")
 }
@@ -2045,7 +2045,7 @@ func TestReconcileBirthWaitsForPeers(t *testing.T) {
 			"connections":[{"peer-node-id":%d,"connection-state":"Connected",
 				"peer_devices":[{"peer-disk-state":"DUnknown"}]}]}]`,
 	} {
-		r, fe, _ := birthSetup(t, nodeKharkiv, 1, status)
+		r, fe, _ := birthSetup(t, nodeA, 1, status)
 		reconcile(t, r, volPvc1)
 		if n := countCalls(fe, "new-current-uuid"); n != 0 {
 			t.Fatalf("%s: must not mint, got %d calls", name, n)
@@ -2056,7 +2056,7 @@ func TestReconcileBirthWaitsForPeers(t *testing.T) {
 // A FullSync joiner means the volume already has a generation elsewhere:
 // never mint over it.
 func TestReconcileBirthSkipsFullSyncJoiner(t *testing.T) {
-	r, fe, v := birthSetup(t, nodeKharkiv, 1, birthReadyJSON)
+	r, fe, v := birthSetup(t, nodeA, 1, birthReadyJSON)
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(t.Context(), types.NamespacedName{Name: v.Name}, got); err != nil {
 		t.Fatal(err)
@@ -2072,7 +2072,7 @@ func TestReconcileBirthSkipsFullSyncJoiner(t *testing.T) {
 // An Activated volume held data: an all-Inconsistent state is then a real
 // incident, never something to paper over with a fresh generation.
 func TestReconcileBirthSkipsActivatedVolume(t *testing.T) {
-	r, fe, _ := birthSetup(t, nodeKharkiv, 1, birthReadyJSON)
+	r, fe, _ := birthSetup(t, nodeA, 1, birthReadyJSON)
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
@@ -2089,7 +2089,7 @@ func TestReconcileBirthSkipsActivatedVolume(t *testing.T) {
 // keeps DeviceCreated so the phase never reads as a hard provisioning
 // failure.
 func TestReconcileBirthMintErrorRetries(t *testing.T) {
-	r, fe, _ := birthSetup(t, nodeKharkiv, 1, birthReadyJSON)
+	r, fe, _ := birthSetup(t, nodeA, 1, birthReadyJSON)
 	fe.errOn = map[string]error{"new-current-uuid": errors.New("exit status 1")}
 	if _, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err == nil {
@@ -2099,7 +2099,7 @@ func TestReconcileBirthMintErrorRetries(t *testing.T) {
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if !got.Status.PerNode[nodeKharkiv].DeviceCreated {
+	if !got.Status.PerNode[nodeA].DeviceCreated {
 		t.Fatal("DeviceCreated must survive a failed mint")
 	}
 }
@@ -2109,7 +2109,7 @@ func TestReconcileBirthMintErrorRetries(t *testing.T) {
 // miss on it, or the winner never re-enters the pipeline and the volume
 // parks Creating forever.
 func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
-	r, fe, v := birthSetup(t, nodeKharkiv, 1)
+	r, fe, v := birthSetup(t, nodeA, 1)
 	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
 		"devices":[{"disk-state":"Inconsistent"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
@@ -2124,7 +2124,7 @@ func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	got.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DeviceCreated: true, SizeBytes: 1 << 30},
+		nodeA: {DeviceCreated: true, SizeBytes: 1 << 30},
 	}
 	if err := r.Status().Update(t.Context(), got); err != nil {
 		t.Fatal(err)
@@ -2143,9 +2143,9 @@ func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
 // The spec's bitmap granularity reaches the render input; create-md picks
 // it up from there (drbd.TestApplyBitmapGranularity pins the argv).
 func TestDrbdResourceBitmapGranularity(t *testing.T) {
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000, BitmapGranularityBytes: 65536}
-	r := drbdResource(v, nodeKharkiv, "/dev/vg/pvc-1", 1000, false, 0)
+	r := drbdResource(v, nodeA, "/dev/vg/pvc-1", 1000, false, 0)
 	if r.BitmapGranularityBytes != 65536 {
 		t.Fatalf("granularity = %d, want 65536", r.BitmapGranularityBytes)
 	}
@@ -2155,18 +2155,18 @@ func TestDrbdResourceBitmapGranularity(t *testing.T) {
 // granularities (mixed backends: aligned for the coarsest works on all);
 // replicas and tie-breakers advertise nothing.
 func TestDrbdResourceClientDiscardGranularity(t *testing.T) {
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeOslo, NodeID: 2, Address: addrOslo}}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC, NodeID: 2, Address: addrC}}
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DiscardGranularityBytes: 262144}, // lvmthin chunk
-		nodeParis:   {DiscardGranularityBytes: 16384},  // zvol block
+		nodeA: {DiscardGranularityBytes: 262144}, // lvmthin chunk
+		nodeB: {DiscardGranularityBytes: 16384},  // zvol block
 	}
 
-	if r := drbdResource(v, nodeOslo, "", 1000, true, 0); r.ClientDiscardGranularityBytes != 262144 {
+	if r := drbdResource(v, nodeC, "", 1000, true, 0); r.ClientDiscardGranularityBytes != 262144 {
 		t.Fatalf("client granularity = %d, want max(peers) 262144", r.ClientDiscardGranularityBytes)
 	}
-	if r := drbdResource(v, nodeKharkiv, "/dev/vg/pvc-1", 1000, false, 262144); r.ClientDiscardGranularityBytes != 0 {
+	if r := drbdResource(v, nodeA, "/dev/vg/pvc-1", 1000, false, 262144); r.ClientDiscardGranularityBytes != 0 {
 		t.Fatalf("a replica must not advertise a client granularity, got %d", r.ClientDiscardGranularityBytes)
 	}
 }
@@ -2177,16 +2177,16 @@ func TestDrbdResourceClientDiscardGranularity(t *testing.T) {
 func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeOslo, NodeID: 2, Address: addrOslo}}
-	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeOslo)
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC, NodeID: 2, Address: addrC}}
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeC)
 	// A diskful peer has published its backing's discard granularity; the
 	// client's device must advertise it (see the .res assertion below).
 	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeKharkiv: {DiscardGranularityBytes: 262144},
+		nodeA: {DiscardGranularityBytes: 262144},
 	}
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
@@ -2197,7 +2197,7 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeOslo, Backend: fb,
+		Client: c, NodeName: nodeC, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -2212,7 +2212,7 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	// The rendered config must exclude the client from quorum voting —
 	// exactly once, on the client's own entry, never on the replicas —
 	// and advertise the diskful peers' discard granularity (the status
-	// fixture publishes kharkiv's 262144) on the local device.
+	// fixture publishes node-a's 262144) on the local device.
 	res, err := os.ReadFile(filepath.Join(r.DRBD.StateDir, volPvc1+".res"))
 	if err != nil {
 		t.Fatal(err)
@@ -2228,7 +2228,7 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	st := got.Status.PerNode[nodeOslo]
+	st := got.Status.PerNode[nodeC]
 	if st.DeviceCreated || !st.Diskless {
 		t.Fatalf("client slot must be diskless without a device: %+v", st)
 	}
@@ -2256,11 +2256,11 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 func TestReconcileClientLegWaitsForMembership(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
-	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeOslo}}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC}}
 
 	fe := &fakeDRBDExec{}
 	c := fake.NewClientBuilder().WithScheme(s).
@@ -2268,7 +2268,7 @@ func TestReconcileClientLegWaitsForMembership(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeOslo, Backend: fb,
+		Client: c, NodeName: nodeC, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -2287,10 +2287,10 @@ func TestReconcileClientLegWaitsForMembership(t *testing.T) {
 // passes, and clears on demotion — the auto-diskful tie-breaker signal.
 func TestReconcilePrimarySinceLifecycle(t *testing.T) {
 	s := newScheme(t)
-	v := vol(volPvc1, nodeKharkiv, nodeParis)
+	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrKharkiv
-	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrParis
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
 	fb := newFakeBackend()
 	fb.existing[volPvc1] = true
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
@@ -2300,7 +2300,7 @@ func TestReconcilePrimarySinceLifecycle(t *testing.T) {
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
 		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`
 	fe := &fakeDRBDExec{statusJSON: primary}
-	r := &VolumeReconciler{Client: c, NodeName: nodeKharkiv, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -2308,7 +2308,7 @@ func TestReconcilePrimarySinceLifecycle(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	stamped := got.Status.PerNode[nodeKharkiv].PrimarySince
+	stamped := got.Status.PerNode[nodeA].PrimarySince
 	if stamped == nil {
 		t.Fatal("Primary leg must stamp PrimarySince")
 	}
@@ -2318,7 +2318,7 @@ func TestReconcilePrimarySinceLifecycle(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if since := got.Status.PerNode[nodeKharkiv].PrimarySince; since == nil || !since.Equal(stamped) {
+	if since := got.Status.PerNode[nodeA].PrimarySince; since == nil || !since.Equal(stamped) {
 		t.Fatalf("PrimarySince must be stable while Primary: %v vs %v", since, stamped)
 	}
 
@@ -2331,7 +2331,7 @@ func TestReconcilePrimarySinceLifecycle(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.PerNode[nodeKharkiv].PrimarySince != nil {
+	if got.Status.PerNode[nodeA].PrimarySince != nil {
 		t.Fatal("PrimarySince must clear on demotion")
 	}
 }

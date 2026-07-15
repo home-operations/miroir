@@ -31,23 +31,23 @@ import (
 )
 
 const (
-	nodeKharkiv = "kharkiv"
-	nodeParis   = "paris"
-	nodeBergen  = "bergen"
-	addrBergen  = "192.168.1.44"
-	addrOslo    = "192.168.1.43"
-	volTB       = "pvc-tb"
+	nodeA      = "node-a"
+	nodeB      = "node-b"
+	nodeBergen = "bergen"
+	addrBergen = "192.168.1.44"
+	addrC      = "192.168.1.43"
+	volTB      = "pvc-tb"
 )
 
-// freezeVol is a complete 2-replica freeze volume on kharkiv+paris — the
+// freezeVol is a complete 2-replica freeze volume on node-a+node-b — the
 // shape the tie-breaker reconciler retrofits.
 func freezeVol() *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: volTB,
 			Finalizers: []string{
-				constants.FinalizerPrefix + nodeKharkiv,
-				constants.FinalizerPrefix + nodeParis,
+				constants.FinalizerPrefix + nodeA,
+				constants.FinalizerPrefix + nodeB,
 			},
 		},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
@@ -55,8 +55,8 @@ func freezeVol() *miroirv1alpha1.MiroirVolume {
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
 			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeKharkiv, Backend: miroirv1alpha1.BackendZFS, NodeID: 0, Address: "192.168.1.41"},
-				{Node: nodeParis, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "192.168.1.42"},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendZFS, NodeID: 0, Address: "192.168.1.41"},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "192.168.1.42"},
 			},
 		},
 	}
@@ -74,12 +74,12 @@ func tbReconcile(t *testing.T, r *TieBreakerReconciler) {
 // Reconciler completes it exactly like an operator-added replica.
 func TestTieBreakerRetrofitsAndMembershipCompletes(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(freezeVol(), node(nodeOslo, addrOslo)).
+		WithObjects(freezeVol(), node(nodeC, addrC)).
 		Build()
 	nodes := nodemap.Map{
-		nodeKharkiv: {Backend: miroirv1alpha1.BackendZFS},
-		nodeParis:   {Backend: miroirv1alpha1.BackendZFS},
-		nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeA: {Backend: miroirv1alpha1.BackendZFS},
+		nodeB: {Backend: miroirv1alpha1.BackendZFS},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}
 	tb := &TieBreakerReconciler{Client: c, Nodes: nodes}
 
@@ -90,20 +90,20 @@ func TestTieBreakerRetrofitsAndMembershipCompletes(t *testing.T) {
 	if len(got.Spec.Replicas) != 3 {
 		t.Fatalf("tie-breaker not added: %+v", got.Spec.Replicas)
 	}
-	if rep := got.Spec.Replicas[2]; rep.Node != nodeOslo || !rep.Diskless || rep.Address != "" {
-		t.Fatalf("want a bare diskless oslo entry, got %+v", rep)
+	if rep := got.Spec.Replicas[2]; rep.Node != nodeC || !rep.Diskless || rep.Address != "" {
+		t.Fatalf("want a bare diskless node-c entry, got %+v", rep)
 	}
 
 	reconcile(t, mr, volTB)
 	got = get(t, mr, volTB)
 	rep := got.Spec.Replicas[2]
-	if rep.NodeID != 2 || rep.Address != addrOslo || !rep.Diskless {
+	if rep.NodeID != 2 || rep.Address != addrC || !rep.Diskless {
 		t.Fatalf("membership must complete the tie-breaker: %+v", rep)
 	}
 	if rep.FullSync || rep.Backend != "" {
 		t.Fatalf("diskless entry must carry no backend or FullSync: %+v", rep)
 	}
-	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeOslo) {
+	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeC) {
 		t.Fatalf("tie-breaker node needs a teardown finalizer: %v", got.Finalizers)
 	}
 
@@ -120,15 +120,15 @@ func TestTieBreakerRetrofitsAndMembershipCompletes(t *testing.T) {
 // later diskful re-add would adopt (partial resync missing writes).
 func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
 	vol := freezeVol()
-	// oslo was just removed from spec.replicas; its agent still holds the
+	// node-c was just removed from spec.replicas; its agent still holds the
 	// teardown finalizer while it waits for the remaining legs to be safe.
-	vol.Finalizers = append(vol.Finalizers, constants.FinalizerPrefix+nodeOslo)
+	vol.Finalizers = append(vol.Finalizers, constants.FinalizerPrefix+nodeC)
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(vol, node(nodeOslo, addrOslo)).Build()
+		WithObjects(vol, node(nodeC, addrC)).Build()
 	tb := &TieBreakerReconciler{Client: c, Nodes: nodemap.Map{
-		nodeKharkiv: {Backend: miroirv1alpha1.BackendZFS},
-		nodeParis:   {Backend: miroirv1alpha1.BackendZFS},
-		nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeA: {Backend: miroirv1alpha1.BackendZFS},
+		nodeB: {Backend: miroirv1alpha1.BackendZFS},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}}
 
 	res, err := tb.Reconcile(t.Context(),
@@ -147,9 +147,9 @@ func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
 
 func TestTieBreakerSkips(t *testing.T) {
 	spare := nodemap.Map{
-		nodeKharkiv: {Backend: miroirv1alpha1.BackendZFS},
-		nodeParis:   {Backend: miroirv1alpha1.BackendZFS},
-		nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeA: {Backend: miroirv1alpha1.BackendZFS},
+		nodeB: {Backend: miroirv1alpha1.BackendZFS},
+		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
 	}
 	cases := map[string]struct {
 		mutate func(*miroirv1alpha1.MiroirVolume)
@@ -164,7 +164,7 @@ func TestTieBreakerSkips(t *testing.T) {
 		"tie-breaker already present": {
 			mutate: func(v *miroirv1alpha1.MiroirVolume) {
 				v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
-					Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true,
+					Node: nodeC, NodeID: 2, Address: addrC, Diskless: true,
 				})
 			},
 			nodes: spare,
@@ -178,8 +178,8 @@ func TestTieBreakerSkips(t *testing.T) {
 		"no spare node": {
 			mutate: func(*miroirv1alpha1.MiroirVolume) {},
 			nodes: nodemap.Map{
-				nodeKharkiv: {Backend: miroirv1alpha1.BackendZFS},
-				nodeParis:   {Backend: miroirv1alpha1.BackendZFS},
+				nodeA: {Backend: miroirv1alpha1.BackendZFS},
+				nodeB: {Backend: miroirv1alpha1.BackendZFS},
 			},
 		},
 		"unreplicated volume": {
@@ -193,7 +193,7 @@ func TestTieBreakerSkips(t *testing.T) {
 			tc.mutate(vol)
 			want := len(vol.Spec.Replicas)
 			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-				WithObjects(vol, node(nodeOslo, addrOslo)).Build()
+				WithObjects(vol, node(nodeC, addrC)).Build()
 			tb := &TieBreakerReconciler{Client: c, Nodes: tc.nodes}
 
 			tbReconcile(t, tb)

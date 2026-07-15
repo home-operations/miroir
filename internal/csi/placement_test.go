@@ -85,8 +85,8 @@ func TestPlaceWeightsByFreeSpace(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 100*gib, 90*gib), // 10 GiB free
-			miroirNodeObj(nodeParis, 100*gib, 10*gib),   // 90 GiB free
+			miroirNodeObj(nodeA, 100*gib, 90*gib), // 10 GiB free
+			miroirNodeObj(nodeB, 100*gib, 10*gib), // 90 GiB free
 		),
 		Nodes: testNodes,
 	}
@@ -95,8 +95,8 @@ func TestPlaceWeightsByFreeSpace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Node != nodeParis {
-		t.Fatalf("expected placement on paris (most free), got %+v", got)
+	if len(got) != 1 || got[0].Node != nodeB {
+		t.Fatalf("expected placement on node-b (most free), got %+v", got)
 	}
 }
 
@@ -104,10 +104,10 @@ func TestPlaceRefusesOvercommit(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0),
-			miroirNodeObj(nodeParis, 10*gib, 0),
-			volOn("existing-k", nodeKharkiv, 15*gib),
-			volOn("existing-p", nodeParis, 15*gib),
+			miroirNodeObj(nodeA, 10*gib, 0),
+			miroirNodeObj(nodeB, 10*gib, 0),
+			volOn("existing-k", nodeA, 15*gib),
+			volOn("existing-p", nodeB, 15*gib),
 		),
 		Nodes: testNodes,
 	}
@@ -123,14 +123,14 @@ func TestPlaceTopologyPinnedRefusedWhenOvercommitted(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0),
-			miroirNodeObj(nodeParis, 100*gib, 0), // roomy, but not the pod's node
-			volOn("existing-k", nodeKharkiv, 15*gib),
+			miroirNodeObj(nodeA, 10*gib, 0),
+			miroirNodeObj(nodeB, 100*gib, 0), // roomy, but not the pod's node
+			volOn("existing-k", nodeA, 15*gib),
 		),
 		Nodes: testNodes,
 	}
 
-	_, err := c.place(t.Context(), topologyPref(nodeKharkiv), 1, 10*gib, volNew, placementVols(t, c.Client), false)
+	_, err := c.place(t.Context(), topologyPref(nodeA), 1, 10*gib, volNew, placementVols(t, c.Client), false)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("pinned overcommitted node must be ResourceExhausted, got %v", err)
 	}
@@ -144,8 +144,8 @@ func TestPlaceFallsBackWithoutStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Node != nodeKharkiv {
-		t.Fatalf("expected by-name fallback to kharkiv, got %+v", got)
+	if len(got) != 1 || got[0].Node != nodeA {
+		t.Fatalf("expected by-name fallback to node-a, got %+v", got)
 	}
 }
 
@@ -153,8 +153,8 @@ func TestPlaceHonoursConfiguredRatio(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0),
-			miroirNodeObj(nodeParis, 10*gib, 0),
+			miroirNodeObj(nodeA, 10*gib, 0),
+			miroirNodeObj(nodeB, 10*gib, 0),
 		),
 		Nodes:           testNodes,
 		OvercommitRatio: 1, // no overcommit allowed
@@ -218,24 +218,24 @@ func TestSpreadByZone(t *testing.T) {
 	}
 }
 
-// kharkiv and paris share zone a with the most free space; oslo is alone in
-// zone b with the least. Free-space ranking alone picks kharkiv+paris — zone
+// node-a and node-b share zone a with the most free space; node-c is alone in
+// zone b with the least. Free-space ranking alone picks node-a+node-b — zone
 // spread must instead reach into zone b so the replicas span failure domains.
 func TestPlaceSpreadsAcrossZones(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib), // 90 free, zone a
-			miroirNodeObj(nodeParis, 100*gib, 20*gib),   // 80 free, zone a
-			miroirNodeObj(nodeOslo, 100*gib, 90*gib),    // 10 free, zone b
-			nodeObj(nodeKharkiv, addrKharkiv),
-			nodeObj(nodeParis, "192.168.1.42"),
-			nodeObj(nodeOslo, "192.168.1.43"),
+			miroirNodeObj(nodeA, 100*gib, 10*gib), // 90 free, zone a
+			miroirNodeObj(nodeB, 100*gib, 20*gib), // 80 free, zone a
+			miroirNodeObj(nodeC, 100*gib, 90*gib), // 10 free, zone b
+			nodeObj(nodeA, addrA),
+			nodeObj(nodeB, "192.168.1.42"),
+			nodeObj(nodeC, "192.168.1.43"),
 		),
 		Nodes: nodemap.Map{
-			nodeKharkiv: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "a", Device: "/dev/x"},
-			nodeParis:   {Backend: miroirv1alpha1.BackendZFS, Zone: "a", ZFSDataset: "p/m"},
-			nodeOslo:    {Backend: miroirv1alpha1.BackendLVMThin, Zone: "b", Device: "/dev/y"},
+			nodeA: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "a", Device: "/dev/x"},
+			nodeB: {Backend: miroirv1alpha1.BackendZFS, Zone: "a", ZFSDataset: "p/m"},
+			nodeC: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "b", Device: "/dev/y"},
 		},
 	}
 
@@ -245,8 +245,8 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 	}
 	nodes := []string{got[0].Node, got[1].Node}
 	slices.Sort(nodes)
-	if !slices.Equal(nodes, []string{nodeKharkiv, nodeOslo}) {
-		t.Fatalf("replicas must span zones a and b (kharkiv+oslo), got %v", nodes)
+	if !slices.Equal(nodes, []string{nodeA, nodeC}) {
+		t.Fatalf("replicas must span zones a and b (node-a+node-c), got %v", nodes)
 	}
 }
 
@@ -266,10 +266,10 @@ func TestPlaceRemoteAccessIgnoresNonStorageTopology(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib),
-			miroirNodeObj(nodeParis, 100*gib, 10*gib),
-			nodeObj(nodeKharkiv, addrKharkiv),
-			nodeObj(nodeParis, addrParis),
+			miroirNodeObj(nodeA, 100*gib, 10*gib),
+			miroirNodeObj(nodeB, 100*gib, 10*gib),
+			nodeObj(nodeA, addrA),
+			nodeObj(nodeB, addrB),
 		),
 		Nodes: testNodes,
 	}
@@ -294,8 +294,8 @@ func TestPlaceStrictRefusesNonStorageTopology(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 100*gib, 10*gib),
-			miroirNodeObj(nodeParis, 100*gib, 10*gib),
+			miroirNodeObj(nodeA, 100*gib, 10*gib),
+			miroirNodeObj(nodeB, 100*gib, 10*gib),
 		),
 		Nodes: testNodes,
 	}
@@ -319,26 +319,26 @@ func TestGetCapacityPerNode(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0),
-			miroirNodeObj(nodeParis, 10*gib, 0),
-			volOn("existing-p", nodeParis, 5*gib),
+			miroirNodeObj(nodeA, 10*gib, 0),
+			miroirNodeObj(nodeB, 10*gib, 0),
+			volOn("existing-p", nodeB, 5*gib),
 		),
 		Nodes: testNodes,
 	}
-	// Default 2× ratio: kharkiv headroom = 20 - 0 = 20 GiB; paris = 20 - 5 = 15 GiB.
-	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeKharkiv))
+	// Default 2× ratio: node-a headroom = 20 - 0 = 20 GiB; node-b = 20 - 5 = 15 GiB.
+	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeA))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.GetAvailableCapacity() != 20*gib {
-		t.Fatalf("kharkiv capacity = %d, want %d", resp.GetAvailableCapacity(), 20*gib)
+		t.Fatalf("node-a capacity = %d, want %d", resp.GetAvailableCapacity(), 20*gib)
 	}
-	resp, err = c.GetCapacity(t.Context(), topologySegment(nodeParis))
+	resp, err = c.GetCapacity(t.Context(), topologySegment(nodeB))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.GetAvailableCapacity() != 15*gib {
-		t.Fatalf("paris capacity = %d, want %d", resp.GetAvailableCapacity(), 15*gib)
+		t.Fatalf("node-b capacity = %d, want %d", resp.GetAvailableCapacity(), 15*gib)
 	}
 }
 
@@ -348,12 +348,12 @@ func TestGetCapacityOvercommittedIsZero(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0),
-			volOn("existing-k", nodeKharkiv, 25*gib), // 25 > 2×10
+			miroirNodeObj(nodeA, 10*gib, 0),
+			volOn("existing-k", nodeA, 25*gib), // 25 > 2×10
 		),
 		Nodes: testNodes,
 	}
-	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeKharkiv))
+	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeA))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,15 +367,15 @@ func TestGetCapacityOvercommittedIsZero(t *testing.T) {
 func TestGetCapacityUnknownIsZero(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
-		Client: placementClient(s, miroirNodeObj(nodeKharkiv, 10*gib, 0)),
+		Client: placementClient(s, miroirNodeObj(nodeA, 10*gib, 0)),
 		Nodes:  testNodes,
 	}
-	// paris is a storage node but has published no stats yet.
-	if resp, _ := c.GetCapacity(t.Context(), topologySegment(nodeParis)); resp.GetAvailableCapacity() != 0 {
+	// node-b is a storage node but has published no stats yet.
+	if resp, _ := c.GetCapacity(t.Context(), topologySegment(nodeB)); resp.GetAvailableCapacity() != 0 {
 		t.Fatalf("statless node must report 0, got %d", resp.GetAvailableCapacity())
 	}
-	// oslo is not in the storage map at all.
-	if resp, _ := c.GetCapacity(t.Context(), topologySegment(nodeOslo)); resp.GetAvailableCapacity() != 0 {
+	// node-c is not in the storage map at all.
+	if resp, _ := c.GetCapacity(t.Context(), topologySegment(nodeC)); resp.GetAvailableCapacity() != 0 {
 		t.Fatalf("non-storage node must report 0, got %d", resp.GetAvailableCapacity())
 	}
 }
@@ -386,8 +386,8 @@ func TestGetCapacityNoTopologyReportsBestNode(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0), // 20 GiB headroom
-			miroirNodeObj(nodeParis, 100*gib, 0),  // 200 GiB headroom
+			miroirNodeObj(nodeA, 10*gib, 0),  // 20 GiB headroom
+			miroirNodeObj(nodeB, 100*gib, 0), // 200 GiB headroom
 		),
 		Nodes: testNodes,
 	}
@@ -412,14 +412,14 @@ func TestGetCapacityRemoteAccessSegments(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0), // 20 GiB headroom
-			miroirNodeObj(nodeParis, 100*gib, 0),  // 200 GiB headroom
+			miroirNodeObj(nodeA, 10*gib, 0),  // 20 GiB headroom
+			miroirNodeObj(nodeB, 100*gib, 0), // 200 GiB headroom
 		),
 		Nodes: testNodes,
 	}
 	remoteParams := map[string]string{constants.ParamReplicas: "2"}
 
-	req := topologySegment(nodeOslo) // not a storage node
+	req := topologySegment(nodeC) // not a storage node
 	req.Parameters = remoteParams
 	resp, err := c.GetCapacity(t.Context(), req)
 	if err != nil {
@@ -430,13 +430,13 @@ func TestGetCapacityRemoteAccessSegments(t *testing.T) {
 			resp.GetAvailableCapacity(), 20*gib)
 	}
 
-	req = topologySegment(nodeParis)
+	req = topologySegment(nodeB)
 	req.Parameters = remoteParams
 	resp, err = c.GetCapacity(t.Context(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// paris pinned (200 GiB) + one peer leg on kharkiv (20 GiB) → 20 GiB.
+	// node-b pinned (200 GiB) + one peer leg on node-a (20 GiB) → 20 GiB.
 	if resp.GetAvailableCapacity() != 20*gib {
 		t.Fatalf("storage segment = %d, want min(own, peer) %d",
 			resp.GetAvailableCapacity(), 20*gib)
@@ -450,13 +450,13 @@ func TestGetCapacityReplicatedNeedsAllLegs(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
 		Client: placementClient(s,
-			miroirNodeObj(nodeKharkiv, 10*gib, 0),  // 20 GiB headroom
-			miroirNodeObj(nodeParis, 10*gib, 0),    // full below
-			volOn("existing-p", nodeParis, 25*gib), // 25 > 2×10 — overcommitted
+			miroirNodeObj(nodeA, 10*gib, 0),    // 20 GiB headroom
+			miroirNodeObj(nodeB, 10*gib, 0),    // full below
+			volOn("existing-p", nodeB, 25*gib), // 25 > 2×10 — overcommitted
 		),
 		Nodes: testNodes,
 	}
-	req := topologySegment(nodeKharkiv)
+	req := topologySegment(nodeA)
 	req.Parameters = map[string]string{constants.ParamReplicas: "2"}
 	resp, err := c.GetCapacity(t.Context(), req)
 	if err != nil {

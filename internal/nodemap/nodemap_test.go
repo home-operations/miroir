@@ -32,10 +32,10 @@ import (
 )
 
 const (
-	nodeKharkiv = "kharkiv"
-	nodeParis   = "paris"
-	nodeOslo    = "oslo"
-	nodeBergen  = "bergen"
+	nodeA      = "node-a"
+	nodeB      = "node-b"
+	nodeC      = "node-c"
+	nodeBergen = "bergen"
 )
 
 func writeMap(t *testing.T, body string) string {
@@ -49,17 +49,17 @@ func writeMap(t *testing.T, body string) string {
 
 func TestLoadValid(t *testing.T) {
 	m, err := Load(writeMap(t, `
-kharkiv:
+node-a:
   backend: lvmthin
   device: /dev/disk/by-partlabel/r-miroir
   thinPoolSize: 400g
   zone: rack-1
   address: 10.0.100.1
-paris:
+node-b:
   backend: zfs
   zfsDataset: tank/miroir
   address: "fd00:1::2"
-oslo:
+node-c:
   backend: loopfile
   baseDir: /var/lib/miroir
 `))
@@ -69,34 +69,34 @@ oslo:
 	if len(m) != 3 {
 		t.Fatalf("want 3 nodes, got %d", len(m))
 	}
-	if m["kharkiv"].Backend != miroirv1alpha1.BackendLVMThin || m["kharkiv"].ThinPoolSize != "400g" {
-		t.Fatalf("kharkiv parsed wrong: %+v", m["kharkiv"])
+	if m["node-a"].Backend != miroirv1alpha1.BackendLVMThin || m["node-a"].ThinPoolSize != "400g" {
+		t.Fatalf("node-a parsed wrong: %+v", m["node-a"])
 	}
-	if m["kharkiv"].Zone != "rack-1" {
-		t.Fatalf("kharkiv zone not parsed: %+v", m["kharkiv"])
+	if m["node-a"].Zone != "rack-1" {
+		t.Fatalf("node-a zone not parsed: %+v", m["node-a"])
 	}
-	if m["paris"].ZFSDataset != "tank/miroir" {
-		t.Fatalf("paris dataset wrong: %+v", m["paris"])
+	if m["node-b"].ZFSDataset != "tank/miroir" {
+		t.Fatalf("node-b dataset wrong: %+v", m["node-b"])
 	}
-	if m["oslo"].BaseDir != "/var/lib/miroir" {
-		t.Fatalf("oslo baseDir wrong: %+v", m["oslo"])
+	if m["node-c"].BaseDir != "/var/lib/miroir" {
+		t.Fatalf("node-c baseDir wrong: %+v", m["node-c"])
 	}
-	if m["kharkiv"].Address != "10.0.100.1" || m["paris"].Address != "fd00:1::2" {
-		t.Fatalf("addresses parsed wrong: %q %q", m["kharkiv"].Address, m["paris"].Address)
+	if m["node-a"].Address != "10.0.100.1" || m["node-b"].Address != "fd00:1::2" {
+		t.Fatalf("addresses parsed wrong: %q %q", m["node-a"].Address, m["node-b"].Address)
 	}
 }
 
 func TestLoadErrors(t *testing.T) {
 	cases := map[string]string{
-		"unknown backend":          "kharkiv:\n  backend: btrfs\n",
-		"zfs without dataset":      "paris:\n  backend: zfs\n",
-		"loopfile without baseDir": "oslo:\n  backend: loopfile\n",
-		"unknown field":            "kharkiv:\n  backend: lvmthin\n  bogus: x\n",
-		"malformed yaml":           "kharkiv: : :\n",
-		"invalid address":          "kharkiv:\n  backend: lvmthin\n  address: not-an-ip\n",
-		"address is a CIDR":        "kharkiv:\n  backend: lvmthin\n  address: 10.0.0.0/24\n",
-		"duplicate address":        "kharkiv:\n  backend: lvmthin\n  address: 10.0.100.1\nparis:\n  backend: lvmthin\n  address: 10.0.100.1\n",
-		"duplicate address ipv6":   "kharkiv:\n  backend: lvmthin\n  address: fd00:1::2\nparis:\n  backend: lvmthin\n  address: fd00:0001:0:0::2\n",
+		"unknown backend":          "node-a:\n  backend: btrfs\n",
+		"zfs without dataset":      "node-b:\n  backend: zfs\n",
+		"loopfile without baseDir": "node-c:\n  backend: loopfile\n",
+		"unknown field":            "node-a:\n  backend: lvmthin\n  bogus: x\n",
+		"malformed yaml":           "node-a: : :\n",
+		"invalid address":          "node-a:\n  backend: lvmthin\n  address: not-an-ip\n",
+		"address is a CIDR":        "node-a:\n  backend: lvmthin\n  address: 10.0.0.0/24\n",
+		"duplicate address":        "node-a:\n  backend: lvmthin\n  address: 10.0.100.1\nnode-b:\n  backend: lvmthin\n  address: 10.0.100.1\n",
+		"duplicate address ipv6":   "node-a:\n  backend: lvmthin\n  address: fd00:1::2\nnode-b:\n  backend: lvmthin\n  address: fd00:0001:0:0::2\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -114,32 +114,32 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 func TestTieBreakerNode(t *testing.T) {
-	replicas := []miroirv1alpha1.Replica{{Node: nodeKharkiv}, {Node: nodeParis}}
+	replicas := []miroirv1alpha1.Replica{{Node: nodeA}, {Node: nodeB}}
 	cases := map[string]struct {
 		m    Map
 		want string
 	}{
 		"prefers a zone no replica occupies": {
 			m: Map{
-				nodeKharkiv: {Zone: "a"}, nodeParis: {Zone: "b"},
-				nodeOslo: {Zone: "a"}, nodeBergen: {Zone: "c"},
+				nodeA: {Zone: "a"}, nodeB: {Zone: "b"},
+				nodeC: {Zone: "a"}, nodeBergen: {Zone: "c"},
 			},
 			want: nodeBergen,
 		},
 		"zoneless spare is unconstrained": {
-			m:    Map{nodeKharkiv: {Zone: "a"}, nodeParis: {Zone: "b"}, nodeOslo: {}},
-			want: nodeOslo,
+			m:    Map{nodeA: {Zone: "a"}, nodeB: {Zone: "b"}, nodeC: {}},
+			want: nodeC,
 		},
 		"falls back to an occupied zone when none is free": {
-			m:    Map{nodeKharkiv: {Zone: "a"}, nodeParis: {Zone: "b"}, nodeOslo: {Zone: "a"}},
-			want: nodeOslo,
+			m:    Map{nodeA: {Zone: "a"}, nodeB: {Zone: "b"}, nodeC: {Zone: "a"}},
+			want: nodeC,
 		},
 		"name order breaks ties": {
-			m:    Map{nodeKharkiv: {}, nodeParis: {}, nodeOslo: {}, nodeBergen: {}},
+			m:    Map{nodeA: {}, nodeB: {}, nodeC: {}, nodeBergen: {}},
 			want: nodeBergen,
 		},
 		"no spare node": {
-			m:    Map{nodeKharkiv: {}, nodeParis: {}},
+			m:    Map{nodeA: {}, nodeB: {}},
 			want: "",
 		},
 	}
@@ -175,29 +175,29 @@ func TestReplicationAddress(t *testing.T) {
 		wantErr bool
 	}{
 		"override skips the node lookup": {
-			m:      Map{nodeKharkiv: {Address: "10.0.100.5"}},
+			m:      Map{nodeA: {Address: "10.0.100.5"}},
 			client: withNode(), // no Node object registered
 			want:   "10.0.100.5",
 		},
 		"falls back to InternalIP": {
-			m:      Map{nodeKharkiv: {}},
-			client: withNode(internalIP(nodeKharkiv, "192.168.1.41")),
+			m:      Map{nodeA: {}},
+			client: withNode(internalIP(nodeA, "192.168.1.41")),
 			want:   "192.168.1.41",
 		},
 		"node without InternalIP errors": {
-			m:       Map{nodeKharkiv: {}},
-			client:  withNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeKharkiv}}),
+			m:       Map{nodeA: {}},
+			client:  withNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeA}}),
 			wantErr: true,
 		},
 		"absent node errors": {
-			m:       Map{nodeKharkiv: {}},
+			m:       Map{nodeA: {}},
 			client:  withNode(),
 			wantErr: true,
 		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := tc.m.ReplicationAddress(t.Context(), tc.client, nodeKharkiv)
+			got, err := tc.m.ReplicationAddress(t.Context(), tc.client, nodeA)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected an error")

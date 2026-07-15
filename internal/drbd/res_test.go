@@ -24,9 +24,9 @@ import (
 )
 
 const (
-	nodeKharkiv = "kharkiv"
-	nodeParis   = "paris"
-	nodeOslo    = "oslo"
+	nodeA = "node-a"
+	nodeB = "node-b"
+	nodeC = "node-c"
 )
 
 func tieBreakerResource(localNode string) Resource {
@@ -38,9 +38,9 @@ func tieBreakerResource(localNode string) Resource {
 		LocalNode: localNode,
 		LocalDisk: "/dev/vg-miroir/pvc-1",
 		Peers: []Peer{
-			{Node: nodeKharkiv, NodeID: 0, Address: addrKharkiv},
-			{Node: nodeParis, NodeID: 1, Address: addrParis},
-			{Node: nodeOslo, NodeID: 2, Address: addrOslo, Diskless: true},
+			{Node: nodeA, NodeID: 0, Address: addrA},
+			{Node: nodeB, NodeID: 1, Address: addrB},
+			{Node: nodeC, NodeID: 2, Address: addrC, Diskless: true},
 		},
 	}
 }
@@ -49,7 +49,7 @@ func tieBreakerResource(localNode string) Resource {
 // (each node renders its own .res, so per-leg granularity), and only when
 // probed non-zero — the resource-level option overrides the common{} knob.
 func TestRenderDiscardGranularityLocalOnly(t *testing.T) {
-	r := tieBreakerResource(nodeKharkiv)
+	r := tieBreakerResource(nodeA)
 	r.DiscardGranularityBytes = 65536
 	out := Render(r)
 	if !strings.Contains(out, "rs-discard-granularity 65536;") {
@@ -69,15 +69,15 @@ func TestRenderDiscardGranularityLocalOnly(t *testing.T) {
 // A diskless tie-breaker peer renders "disk none" with no meta-disk; the
 // diskful peers keep the placeholder/local-disk + internal metadata.
 func TestRenderDisklessTieBreaker(t *testing.T) {
-	out := Render(tieBreakerResource(nodeKharkiv))
+	out := Render(tieBreakerResource(nodeA))
 
-	oslo := out[strings.Index(out, "on \""+nodeOslo+"\""):]
-	oslo = oslo[:strings.Index(oslo, "}\n    }")]
-	if !strings.Contains(oslo, "disk none;") {
-		t.Fatalf("tie-breaker peer must render disk none:\n%s", oslo)
+	tieBreaker := out[strings.Index(out, "on \""+nodeC+"\""):]
+	tieBreaker = tieBreaker[:strings.Index(tieBreaker, "}\n    }")]
+	if !strings.Contains(tieBreaker, "disk none;") {
+		t.Fatalf("tie-breaker peer must render disk none:\n%s", tieBreaker)
 	}
-	if strings.Contains(oslo, "meta-disk") {
-		t.Fatalf("tie-breaker peer must not render a meta-disk:\n%s", oslo)
+	if strings.Contains(tieBreaker, "meta-disk") {
+		t.Fatalf("tie-breaker peer must not render a meta-disk:\n%s", tieBreaker)
 	}
 	if !strings.Contains(out, `disk "/dev/vg-miroir/pvc-1";`) {
 		t.Fatal("local diskful peer must render the real backing path")
@@ -85,7 +85,7 @@ func TestRenderDisklessTieBreaker(t *testing.T) {
 	if !strings.Contains(out, `disk "`+peerDiskPlaceholder+`";`) {
 		t.Fatal("remote diskful peer must render the placeholder")
 	}
-	if !strings.Contains(out, "hosts \""+nodeKharkiv+"\" \""+nodeParis+"\" \""+nodeOslo+"\";") {
+	if !strings.Contains(out, "hosts \""+nodeA+"\" \""+nodeB+"\" \""+nodeC+"\";") {
 		t.Fatal("the tie-breaker must be in the connection mesh")
 	}
 }
@@ -95,7 +95,7 @@ func TestRenderDisklessTieBreaker(t *testing.T) {
 // on-no-quorum suspend-io, and keying off the suspended state would
 // entangle it with the snapshot barrier's suspend-io.
 func TestRenderFreezeQuorumOptions(t *testing.T) {
-	out := Render(tieBreakerResource(nodeKharkiv))
+	out := Render(tieBreakerResource(nodeA))
 	if !strings.Contains(out, "quorum majority;") || !strings.Contains(out, "on-no-quorum io-error;") {
 		t.Fatal("freeze must render quorum majority + on-no-quorum io-error")
 	}
@@ -109,17 +109,17 @@ func TestRenderFreezeQuorumOptions(t *testing.T) {
 // UpToDate and the first handshake would deadlock all-Inconsistent.
 func TestWinnerSkipsDiskless(t *testing.T) {
 	r := Resource{
-		LocalNode: nodeKharkiv,
+		LocalNode: nodeA,
 		Peers: []Peer{
-			{Node: nodeOslo, NodeID: 0, Diskless: true},
-			{Node: nodeKharkiv, NodeID: 1},
-			{Node: nodeParis, NodeID: 2},
+			{Node: nodeC, NodeID: 0, Diskless: true},
+			{Node: nodeA, NodeID: 1},
+			{Node: nodeB, NodeID: 2},
 		},
 	}
 	if !IsWinner(r) {
-		t.Fatal("kharkiv (lowest diskful id) must win, not the diskless tie-breaker")
+		t.Fatal("node-a (lowest diskful id) must win, not the diskless tie-breaker")
 	}
-	r.LocalNode = nodeOslo
+	r.LocalNode = nodeC
 	if IsWinner(r) {
 		t.Fatal("a diskless tie-breaker must never be the winner")
 	}
@@ -130,17 +130,17 @@ func TestRenderIPv6Address(t *testing.T) {
 		Name:      "pvc-1",
 		Minor:     1000,
 		Port:      7000,
-		LocalNode: nodeKharkiv,
+		LocalNode: nodeA,
 		LocalDisk: "/dev/mapper/x",
 		Peers: []Peer{
-			{Node: nodeKharkiv, NodeID: 0, Address: "fd00::41"},
-			{Node: nodeOslo, NodeID: 1, Address: addrOslo},
+			{Node: nodeA, NodeID: 0, Address: "fd00::41"},
+			{Node: nodeC, NodeID: 1, Address: addrC},
 		},
 	})
 	if !strings.Contains(out, "address ipv6 [fd00::41]:7000;") {
 		t.Fatalf("IPv6 peer must render family + brackets:\n%s", out)
 	}
-	if !strings.Contains(out, "address ipv4 "+addrOslo+":7000;") {
+	if !strings.Contains(out, "address ipv4 "+addrC+":7000;") {
 		t.Fatalf("IPv4 peer must stay ipv4:\n%s", out)
 	}
 }

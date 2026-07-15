@@ -3,6 +3,7 @@ module github.com/home-operations/miroir
 go 1.26.3
 
 require (
+	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/container-storage-interface/spec v1.12.0
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.32.0
@@ -23,7 +24,6 @@ require (
 )
 
 require (
-	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
