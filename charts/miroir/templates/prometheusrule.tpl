@@ -44,8 +44,9 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
 
-        # A freeze volume without quorum suspends IO: pods using it are
-        # hanging right now, even though the local disk is healthy.
+        # A freeze volume without quorum refuses writes (on-no-quorum
+        # io-error): pods using it are seeing I/O errors right now, even
+        # though the local disk is healthy.
         - alert: MiroirVolumeQuorumLost
           expr: miroir_volume_quorum == 0
           for: 2m
@@ -54,12 +55,13 @@ spec:
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }} lost quorum on
-              {{ "{{" }} $labels.node {{ "}}" }} — IO is suspended
+              {{ "{{" }} $labels.node {{ "}}" }} — writes are failing
             description: >-
               The replica partition no longer holds a quorum majority and
-              DRBD is freezing writes; workloads on this volume are hanging.
-              Restore connectivity to the peers (or the tie-breaker) to
-              resume IO.
+              DRBD is returning I/O errors for this volume's writes; the
+              filesystem on top has likely gone read-only. Restore
+              connectivity to the peers (or the tie-breaker), then restart
+              affected pods.
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

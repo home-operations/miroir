@@ -50,7 +50,7 @@ var (
 	}, []string{volumeLabel})
 	metricQuorum = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_quorum",
-		Help: "1 when this node's replica sees DRBD quorum; 0 while a freeze-policy volume has lost quorum and its IO is suspended (always 1 under last-man-standing, and for unreplicated volumes).",
+		Help: "1 when this node's replica sees DRBD quorum; 0 while a freeze-policy volume has lost quorum and refuses writes with I/O errors (on-no-quorum io-error; always 1 under last-man-standing, and for unreplicated volumes).",
 	}, []string{volumeLabel})
 	metricDiskFailed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_disk_failed",
