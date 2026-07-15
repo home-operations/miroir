@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/home-operations/miroir/compare/0.10.0...0.10.1) (2026-07-15)
+
+
+### Features
+
+* **observability:** pool label on per-volume metrics, dashboard pool filter ([#212](https://github.com/home-operations/miroir/issues/212)) ([e90de8b](https://github.com/home-operations/miroir/commit/e90de8b1516c7b5da07bc2f597271b06a5477a3a))
+
 ## [0.10.0](https://github.com/home-operations/miroir/compare/0.9.0...0.10.0) (2026-07-15)
 
 
