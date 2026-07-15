@@ -449,7 +449,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (volume) ((1 - miroir_volume_up_to_date{volume=~\"$volume\"}) OR (1 - miroir_volume_connected{volume=~\"$volume\"}))",
+          "expr": "sum by (volume) ((1 - miroir_volume_up_to_date{volume=~\"$volume\", pool=~\"$pool\"}) OR (1 - miroir_volume_connected{volume=~\"$volume\", pool=~\"$pool\"}))",
           "refId": "A",
           "legendFormat": "{{volume}}"
         }
@@ -512,7 +512,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "min by (volume) (miroir_volume_resync_ratio{volume=~\"$volume\"})",
+          "expr": "min by (volume) (miroir_volume_resync_ratio{volume=~\"$volume\", pool=~\"$pool\"})",
           "refId": "A",
           "legendFormat": "{{volume}}"
         }
@@ -573,7 +573,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (volume) (miroir_volume_out_of_sync_bytes{volume=~\"$volume\"})",
+          "expr": "max by (volume) (miroir_volume_out_of_sync_bytes{volume=~\"$volume\", pool=~\"$pool\"})",
           "refId": "A",
           "legendFormat": "{{volume}}"
         }
@@ -634,7 +634,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_volume_quorum{volume=~\"$volume\"} == 0",
+          "expr": "miroir_volume_quorum{volume=~\"$volume\", pool=~\"$pool\"} == 0",
           "refId": "A",
           "legendFormat": "quorum lost: {{volume}} on {{node}}"
         },
@@ -643,7 +643,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_volume_disk_failed{volume=~\"$volume\"} == 1",
+          "expr": "miroir_volume_disk_failed{volume=~\"$volume\", pool=~\"$pool\"} == 1",
           "refId": "B",
           "legendFormat": "disk failed: {{volume}} on {{node}}"
         }
@@ -839,7 +839,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "time() - max by (volume) (miroir_volume_verify_last_timestamp_seconds{volume=~\"$volume\"})",
+          "expr": "time() - max by (volume) (miroir_volume_verify_last_timestamp_seconds{volume=~\"$volume\", pool=~\"$pool\"})",
           "refId": "A",
           "legendFormat": "{{volume}}"
         }
@@ -900,7 +900,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (volume) (miroir_volume_verify_out_of_sync_bytes{volume=~\"$volume\"})",
+          "expr": "max by (volume) (miroir_volume_verify_out_of_sync_bytes{volume=~\"$volume\", pool=~\"$pool\"})",
           "refId": "A",
           "legendFormat": "{{volume}}"
         }
@@ -1168,7 +1168,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_pool_capacity_bytes",
+          "expr": "miroir_pool_capacity_bytes{pool=~\"$pool\"}",
           "refId": "A",
           "legendFormat": "capacity: {{node}}/{{pool}}"
         },
@@ -1177,7 +1177,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_pool_allocated_bytes",
+          "expr": "miroir_pool_allocated_bytes{pool=~\"$pool\"}",
           "refId": "B",
           "legendFormat": "allocated: {{node}}/{{pool}}"
         }
@@ -1240,7 +1240,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_pool_allocated_bytes / miroir_pool_capacity_bytes",
+          "expr": "miroir_pool_allocated_bytes{pool=~\"$pool\"} / miroir_pool_capacity_bytes{pool=~\"$pool\"}",
           "refId": "A",
           "legendFormat": "{{node}}/{{pool}}"
         }
@@ -1303,7 +1303,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_pool_meta_used_ratio",
+          "expr": "miroir_pool_meta_used_ratio{pool=~\"$pool\"}",
           "refId": "A",
           "legendFormat": "{{node}}/{{pool}}"
         }
@@ -1618,6 +1618,33 @@
         "skipUrlSync": false
       },
       {
+        "name": "pool",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(miroir_pool_capacity_bytes, pool)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "current": {
+          "selected": true,
+          "text": ["All"],
+          "value": ["$__all"]
+        },
+        "allValue": ".*",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "options": [],
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1
+      },
+      {
         "name": "volume",
         "type": "query",
         "datasource": {
@@ -1626,7 +1653,7 @@
         },
         "query": {
           "qryType": 1,
-          "query": "label_values(miroir_volume_up_to_date, volume)",
+          "query": "label_values(miroir_volume_up_to_date{pool=~\"$pool\"}, volume)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "current": {},

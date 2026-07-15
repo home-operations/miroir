@@ -10,7 +10,13 @@ health).
 PodMonitor scraping the controller **and every agent** on their
 `metrics` ports (the per-volume gauges are exported by the agent on
 each storage node; a `node` label is added to every series). The
-agent exports, per volume on that node:
+diskful per-volume gauges also carry a `pool` label naming the pool
+backing that node's leg — pools are per-node, so two legs of one
+volume can report different pools — which lets you scope volume
+health to a pool (the shipped dashboard's `pool` variable does
+exactly that). `miroir_volume_diskless_primary` is the exception: a
+diskless leg holds no backing device in any pool, so it stays
+volume-only. The agent exports, per volume on that node:
 
 | Metric                                        | Meaning                                                                                                                                   |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -69,3 +75,8 @@ for it; the kernel-floor refusal to start looks exactly like this),
 and `monitoring.dashboards.enabled: true` installs a Grafana
 dashboard, either a sidecar-labelled ConfigMap or a grafana-operator
 `GrafanaDashboard` CR via `monitoring.dashboards.grafanaOperator`.
+
+The per-volume alerts inherit the `pool` label and name the pool in
+their summaries, so Alertmanager routes and silences can target a
+single pool. The dashboard's `pool` variable defaults to **All**;
+narrowing it filters the volume-health and pool panels together.
