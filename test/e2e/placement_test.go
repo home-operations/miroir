@@ -25,8 +25,11 @@ var _ = Describe("capacity-aware placement", func() {
 			g.Expect(k8s.List(ctx, &nodes)).To(Succeed())
 			g.Expect(nodes.Items).NotTo(BeEmpty(), "no MiroirNodes published")
 			for _, n := range nodes.Items {
-				g.Expect(n.Status.CapacityBytes).To(BeNumerically(">", 0), "node %s has no capacity", n.Name)
-				g.Expect(n.Status.AllocatedBytes).To(BeNumerically(">=", 0))
+				g.Expect(n.Status.Pools).NotTo(BeEmpty(), "node %s published no pools", n.Name)
+				for _, p := range n.Status.Pools {
+					g.Expect(p.CapacityBytes).To(BeNumerically(">", 0), "node %s pool %s has no capacity", n.Name, p.Name)
+					g.Expect(p.AllocatedBytes).To(BeNumerically(">=", 0))
+				}
 				g.Expect(n.Status.ObservedAt).NotTo(BeNil(), "node %s never sampled", n.Name)
 				g.Expect(time.Since(n.Status.ObservedAt.Time)).To(BeNumerically("<", 5*time.Minute),
 					"node %s stats are stale", n.Name)

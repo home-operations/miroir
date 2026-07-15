@@ -5,10 +5,11 @@ node shutdown), then:
 
 ## 1. Pick a storage layout
 
-`nodes` declares which nodes hold storage and how; `storageClasses`
-declares the classes to create (`replicas: 1` is node-local,
-`replicas: 2` is DRBD-replicated). Pods can mount miroir volumes from
-any schedulable node; only nodes in the map hold data.
+`nodes` declares which nodes hold storage and how — each node lists
+named storage `pools` (one is enough; call it `default`);
+`storageClasses` declares the classes to create (`replicas: 1` is
+node-local, `replicas: 2` is DRBD-replicated). Pods can mount miroir
+volumes from any schedulable node; only nodes in the map hold data.
 
 **Two nodes, a spare partition each.** The common pair: one local and
 one replicated class. Add a third storage node later and existing
@@ -18,11 +19,15 @@ replicated volumes pick it up as a quorum tie-breaker automatically.
 # values.yaml
 nodes:
     node-a:
-        backend: lvmthin
-        device: /dev/disk/by-partlabel/r-miroir
+        pools:
+            default:
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
     node-b:
-        backend: lvmthin
-        device: /dev/disk/by-partlabel/r-miroir
+        pools:
+            default:
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
 storageClasses:
     - name: miroir-local
       replicas: 1
@@ -42,22 +47,59 @@ applies to volumes created afterwards).
 ```yaml
 nodes:
     kharkiv:
-        backend: lvmthin
-        device: /dev/disk/by-partlabel/r-miroir
         zone: rack-a
         address: 10.0.100.11
+        pools:
+            default:
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
     paris:
-        backend: zfs
-        zfsDataset: data-pool/miroir
         zone: rack-b
+        pools:
+            default:
+                backend: zfs
+                zfsDataset: data-pool/miroir
     le-havre:
-        backend: loopfile
-        baseDir: /var/lib/miroir
         zone: rack-c
+        pools:
+            default:
+                backend: loopfile
+                baseDir: /var/lib/miroir
 storageClasses:
     - name: miroir-replicated
       replicas: 2
       quorum: freeze
+```
+
+**Two tiers per node.** A pool name identifies the same tier across
+nodes, and a StorageClass selects one with `pool` (classes that name
+none use `default`). Volumes never span pools — every replica of a
+volume lands in the class's pool on its node.
+
+```yaml
+nodes:
+    node-a:
+        pools:
+            default: # bulk tier
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
+            fast: # NVMe tier for latency-sensitive workloads
+                backend: lvmthin
+                device: /dev/disk/by-id/nvme-Micron_7450_XXXX
+    node-b: # identical
+        pools:
+            default:
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
+            fast:
+                backend: lvmthin
+                device: /dev/disk/by-id/nvme-Micron_7450_YYYY
+storageClasses:
+    - name: miroir-replicated
+      replicas: 2
+    - name: miroir-replicated-fast
+      replicas: 2
+      pool: fast
 ```
 
 **One node, no dedicated disk.** Dev clusters: loopfile backs volumes
@@ -66,8 +108,10 @@ with sparse files on an existing filesystem.
 ```yaml
 nodes:
     solo:
-        backend: loopfile
-        baseDir: /var/lib/miroir
+        pools:
+            default:
+                backend: loopfile
+                baseDir: /var/lib/miroir
 storageClasses:
     - name: miroir-local
       replicas: 1

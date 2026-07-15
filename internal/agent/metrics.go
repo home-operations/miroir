@@ -25,7 +25,10 @@ import (
 
 // Exposed on the agent's metrics endpoint; the split-brain gauge is the
 // alerting hook for the last-man-standing failure mode.
-const volumeLabel = "volume"
+const (
+	volumeLabel = "volume"
+	poolLabel   = "pool"
+)
 
 var (
 	metricUpToDate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -77,20 +80,20 @@ var (
 		Help: "1 while this node's diskless leg (client or tie-breaker) is DRBD Primary: a consumer runs here and every read and write crosses the replication network. Sustained 1 means the workload pays network I/O — auto-diskful (autoDiskfulAfter) converts the leg to a local replica when the node has storage capacity.",
 	}, []string{volumeLabel})
 
-	// Pool gauges are unlabelled: each node runs exactly one backend pool,
-	// and the PodMonitor stamps a node label on every series.
-	metricPoolCapacity = prometheus.NewGauge(prometheus.GaugeOpts{
+	// Pool gauges carry the pool name; the PodMonitor stamps a node label
+	// on every series, so (node, pool) identifies one pool.
+	metricPoolCapacity = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_pool_capacity_bytes",
-		Help: "Total capacity of this node's backend pool.",
-	})
-	metricPoolAllocated = prometheus.NewGauge(prometheus.GaugeOpts{
+		Help: "Total capacity of this node's named storage pool.",
+	}, []string{poolLabel})
+	metricPoolAllocated = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_pool_allocated_bytes",
-		Help: "Bytes allocated from this node's backend pool.",
-	})
-	metricPoolMetaUsedRatio = prometheus.NewGauge(prometheus.GaugeOpts{
+		Help: "Bytes allocated from this node's named storage pool.",
+	}, []string{poolLabel})
+	metricPoolMetaUsedRatio = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_pool_meta_used_ratio",
 		Help: "Fraction (0-1) of dm-thin metadata used; 0 for backends without a metadata pool.",
-	})
+	}, []string{poolLabel})
 
 	// Info-style: constant 1, the payload is the version label. Exported
 	// from client-only nodes too — unlike MiroirNode status, which only
@@ -123,12 +126,13 @@ func recordVolumeMetrics(volume string, st miroirReplicaView) {
 	metricPrimary.WithLabelValues(volume).Set(boolGauge(st.primary))
 }
 
-// recordPoolMetrics publishes the node pool sample; one pool per node, so
-// the gauges carry no labels and are never deleted.
-func recordPoolMetrics(capacityBytes, allocatedBytes int64, metaUsedRatio float64) {
-	metricPoolCapacity.Set(float64(capacityBytes))
-	metricPoolAllocated.Set(float64(allocatedBytes))
-	metricPoolMetaUsedRatio.Set(metaUsedRatio)
+// recordPoolMetrics publishes one pool's sample. The pool set is fixed per
+// agent process (a node-map change is a Helm upgrade, hence a restart), so
+// series are never deleted.
+func recordPoolMetrics(pool string, capacityBytes, allocatedBytes int64, metaUsedRatio float64) {
+	metricPoolCapacity.WithLabelValues(pool).Set(float64(capacityBytes))
+	metricPoolAllocated.WithLabelValues(pool).Set(float64(allocatedBytes))
+	metricPoolMetaUsedRatio.WithLabelValues(pool).Set(metaUsedRatio)
 }
 
 func dropVolumeMetrics(volume string) {

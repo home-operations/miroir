@@ -19,12 +19,17 @@ Snapshot classes:
 {{- end }}
 {{- end }}
 
-Before provisioning volumes, every storage node needs:
-  1. Label    miroir.home-operations.com/storage=true
-  2. Backend  miroir.home-operations.com/backend=lvmthin | zfs | loopfile
-  3. For lvmthin:   miroir.home-operations.com/device=/dev/disk/by-partlabel/r-miroir
-  4. For zfs:       miroir.home-operations.com/zfs-dataset=pool/miroir
-  5. For loopfile:  defined under nodes[].baseDir in values.yaml (reflink-capable FS required)
+Before provisioning volumes, every storage node needs an entry under
+`nodes` in values.yaml declaring its storage pools, e.g.:
+  nodes:
+    <node-name>:
+      pools:
+        default:
+          backend: lvmthin | zfs | loopfile
+          device: /dev/disk/by-partlabel/r-miroir   # lvmthin
+          # zfsDataset: pool/miroir                 # zfs
+          # baseDir: /var/lib/miroir                # loopfile (reflink-capable FS)
+StorageClasses select a pool with their `pool` knob (absent = "default").
 
 Verify the rollout:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "miroir.name" . }}

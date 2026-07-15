@@ -28,16 +28,24 @@ import (
 //
 // MiroirNodeStatus is the pool capacity this node's agent publishes for
 // capacity-aware placement and overcommit guardrails.
-// On a shared pool (e.g. ZFS shared with OpenEBS) the figures are
-// pool-level, so a co-tenant's growth correctly shrinks miroir's headroom.
 type MiroirNodeStatusApplyConfiguration struct {
-	// CapacityBytes is the total size of the node-local pool.
+	// Pools carries one capacity entry per storage pool on this node.
+	Pools []MiroirNodePoolStatusApplyConfiguration `json:"pools,omitempty"`
+	// CapacityBytes is the pre-multi-pool single-pool figure. Kept in the
+	// schema so a mixed-version rollout (new controller, old agent) does
+	// not prune the old agent's stats into "fresh but empty" — Pool()
+	// folds these into the default pool entry. Never written by current
+	// agents; drop after one release.
+	//
+	// Deprecated: superseded by Pools.
 	CapacityBytes *int64 `json:"capacityBytes,omitempty"`
-	// AllocatedBytes is the pool capacity currently used (all tenants).
+	// AllocatedBytes is the pre-multi-pool twin of CapacityBytes.
+	//
+	// Deprecated: superseded by Pools.
 	AllocatedBytes *int64 `json:"allocatedBytes,omitempty"`
-	// MetaUsedPercent is the dm-thin metadata usage (lvmthin only; 0
-	// otherwise), rounded — exhausting metadata wedges the pool
-	// independently of data space.
+	// MetaUsedPercent is the pre-multi-pool twin of CapacityBytes.
+	//
+	// Deprecated: superseded by Pools.
 	MetaUsedPercent *int32 `json:"metaUsedPercent,omitempty"`
 	// DRBDVersion is the DRBD kernel module version the agent probed at
 	// startup (e.g. "9.3.2"); absent on nodes without the module. The
@@ -48,7 +56,7 @@ type MiroirNodeStatusApplyConfiguration struct {
 	// ignores stats older than a few poll intervals as unknown.
 	ObservedAt *v1.Time `json:"observedAt,omitempty"`
 	// Conditions follow the standard Kubernetes condition conventions;
-	// PoolUsageHigh fires at the 80% data/metadata warn line.
+	// PoolUsageHigh fires at the 80% data/metadata warn line (any pool).
 	Conditions []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
@@ -56,6 +64,19 @@ type MiroirNodeStatusApplyConfiguration struct {
 // apply.
 func MiroirNodeStatus() *MiroirNodeStatusApplyConfiguration {
 	return &MiroirNodeStatusApplyConfiguration{}
+}
+
+// WithPools adds the given value to the Pools field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Pools field.
+func (b *MiroirNodeStatusApplyConfiguration) WithPools(values ...*MiroirNodePoolStatusApplyConfiguration) *MiroirNodeStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithPools")
+		}
+		b.Pools = append(b.Pools, *values[i])
+	}
+	return b
 }
 
 // WithCapacityBytes sets the CapacityBytes field in the declarative configuration to the given value

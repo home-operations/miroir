@@ -54,6 +54,11 @@ type ReplicaStatusApplyConfiguration struct {
 	// tie-breaker. Self-reported by the agent so removal handling still
 	// knows after the entry has left spec.replicas.
 	Diskless *bool `json:"diskless,omitempty"`
+	// Pool records which storage pool holds this leg's backing device.
+	// Self-reported by the agent like Diskless, so teardown after the
+	// entry has left spec.replicas still targets the right pool. Empty
+	// means the default pool.
+	Pool *string `json:"pool,omitempty"`
 	// DiscardGranularityBytes is the discard granularity this diskful
 	// leg probed from its backing device (0: unsupported or unprobed).
 	// Client legs advertise the max over the diskful legs' values, so
@@ -152,6 +157,14 @@ func (b *ReplicaStatusApplyConfiguration) WithSplitBrain(value bool) *ReplicaSta
 // If called multiple times, the Diskless field is set to the value of the last call.
 func (b *ReplicaStatusApplyConfiguration) WithDiskless(value bool) *ReplicaStatusApplyConfiguration {
 	b.Diskless = &value
+	return b
+}
+
+// WithPool sets the Pool field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Pool field is set to the value of the last call.
+func (b *ReplicaStatusApplyConfiguration) WithPool(value string) *ReplicaStatusApplyConfiguration {
+	b.Pool = &value
 	return b
 }
 

@@ -27,7 +27,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -154,30 +156,66 @@ func cacheOptions(mode, namespace string) cache.Options {
 	return opts
 }
 
-// backendFor resolves this node's storage entry from the node map and
-// builds its backend — shared by setup and agent mode so the two can
+// volumeGroupFor names the LVM VG backing a pool. The default pool keeps
+// the pre-multi-pool name so existing VGs keep working across the upgrade;
+// every other pool gets its own suffixed VG.
+func volumeGroupFor(pool string) string {
+	if pool == miroirv1alpha1.DefaultPoolName {
+		return "vg-miroir"
+	}
+	return "vg-miroir-" + pool
+}
+
+// poolBackendsFor resolves this node's pools from the node map and builds
+// one backend per pool — shared by setup and agent mode so the two can
 // never wire Config differently.
-func backendFor(nodeName, nodesConfig, vg, thinPool string) (backend.Backend, miroirv1alpha1.BackendType, error) {
+func poolBackendsFor(nodeName, nodesConfig string) (agent.Pools, error) {
 	nodes, err := nodemap.Load(nodesConfig)
 	if err != nil {
-		return nil, "", fmt.Errorf("load node map: %w", err)
+		return nil, fmt.Errorf("load node map: %w", err)
 	}
 	entry, ok := nodes[nodeName]
 	if !ok {
-		return nil, "", errNodeUnmapped
+		return nil, errNodeUnmapped
 	}
-	be, err := backend.New(entry.Backend, backend.Config{
-		VolumeGroup: vg,
-		ThinPool:    thinPool,
-		Device:      entry.Device,
-		Dataset:     entry.ZFSDataset,
-		PoolSize:    entry.ThinPoolSize,
-		BaseDir:     entry.BaseDir,
-	}, backend.RealExec)
-	if err != nil {
-		return nil, "", fmt.Errorf("backend for node %s: %w", nodeName, err)
+	pools := agent.Pools{}
+	for name, p := range entry.Pools {
+		be, err := backend.New(p.Backend, backend.Config{
+			VolumeGroup: volumeGroupFor(name),
+			ThinPool:    "thinpool",
+			Device:      p.Device,
+			Dataset:     p.ZFSDataset,
+			PoolSize:    p.ThinPoolSize,
+			BaseDir:     p.BaseDir,
+		}, backend.RealExec)
+		if err != nil {
+			return nil, fmt.Errorf("backend for node %s pool %s: %w", nodeName, name, err)
+		}
+		pools[name] = agent.PoolBackend{Backend: be, Type: p.Backend}
 	}
-	return be, entry.Backend, nil
+	return pools, nil
+}
+
+// setupAgentPools bootstraps the node-local pools before the agent serves
+// anything: first start on a fresh node creates PV/VG/thin-pool (lvmthin)
+// or the parent dataset (zfs). One bad pool must not take the good ones
+// down — its volumes fail their reconciles with real errors while the
+// rest of the node keeps serving. All pools failing means the node is
+// misconfigured wholesale; exit like the single-pool agent always did so
+// the CrashLoopBackOff is impossible to miss.
+func setupAgentPools(pools agent.Pools) {
+	failed := 0
+	for _, name := range slices.Sorted(maps.Keys(pools)) {
+		if err := pools[name].Backend.Setup(context.Background()); err != nil {
+			setupLog.Error(err, "backend pool setup failed; volumes in this pool will fail until it is fixed",
+				"pool", name)
+			failed++
+		}
+	}
+	if failed == len(pools) {
+		setupLog.Error(nil, "every pool failed setup", "pools", len(pools))
+		os.Exit(1)
+	}
 }
 
 // validateDRBDPortBase exits on an out-of-range base: the allocator hands
@@ -214,23 +252,33 @@ func addVerifyScheduler(mgr manager.Manager, nodeName string, drbdReady bool, sc
 	}
 }
 
-// runSetup provisions the node-local pool and returns. It reads the node
+// runSetup provisions the node-local pools and returns. It reads the node
 // map from a file and drives lvm/zfs directly, needing no API connection.
-func runSetup(nodeName, nodesConfig, vg, thinPool string) {
+// Any pool failing setup fails the run (it backs a Job whose failure is
+// the operator's signal); every pool is still attempted so one bad pool
+// does not hide the others' state.
+func runSetup(nodeName, nodesConfig string) {
 	if nodeName == "" {
 		setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
 		os.Exit(1)
 	}
-	be, _, err := backendFor(nodeName, nodesConfig, vg, thinPool)
+	pools, err := poolBackendsFor(nodeName, nodesConfig)
 	if err != nil {
-		setupLog.Error(err, "unable to build the node's backend")
+		setupLog.Error(err, "unable to build the node's backends")
 		os.Exit(1)
 	}
-	if err := be.Setup(context.Background()); err != nil {
-		setupLog.Error(err, "backend pool setup failed", "node", nodeName)
+	failed := false
+	for _, name := range slices.Sorted(maps.Keys(pools)) {
+		if err := pools[name].Backend.Setup(context.Background()); err != nil {
+			setupLog.Error(err, "pool setup failed", "node", nodeName, "pool", name)
+			failed = true
+			continue
+		}
+		setupLog.Info("pool ready", "node", nodeName, "pool", name)
+	}
+	if failed {
 		os.Exit(1)
 	}
-	setupLog.Info("pool ready", "node", nodeName)
 }
 
 // runGateway serves one RWX volume over NFS and blocks until the process
@@ -284,8 +332,6 @@ func main() {
 
 		// agent mode
 		nodeName          string
-		vg                string
-		thinPool          string
 		drbdStateDir      string
 		poolStatsInterval time.Duration
 		volumeWorkers     int
@@ -334,8 +380,6 @@ func main() {
 	flag.StringVar(&verifySchedule, "verify-schedule", "",
 		"cron spec (5-field, agent-local time) for scheduled online verify of the volumes this "+
 			"node coordinates (agent; empty disables; requires verify-alg in the DRBD common config)")
-	flag.StringVar(&vg, "lvm-vg", "vg-miroir", "LVM volume group (agent, lvmthin)")
-	flag.StringVar(&thinPool, "lvm-thinpool", "thinpool", "LVM thin pool LV (agent, lvmthin)")
 	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
 		"rendered DRBD config dir (agent; hostPath-backed)")
 	flag.StringVar(&volumeName, "volume", "", "MiroirVolume to export over NFS (gateway)")
@@ -356,7 +400,7 @@ func main() {
 	// controller-runtime manager nor (for setup) an API connection, so they
 	// build neither and exit before the manager is constructed.
 	if mode == "setup" {
-		runSetup(nodeName, nodesConfig, vg, thinPool)
+		runSetup(nodeName, nodesConfig)
 		return
 	}
 	if mode == "gateway" {
@@ -455,10 +499,10 @@ func main() {
 			os.Exit(1)
 		}
 		// The DaemonSet's chart-side scope is every schedulable node, but
-		// only storage nodes run an agent-backed backend. A node absent from
+		// only storage nodes run agent-backed backends. A node absent from
 		// the map holds no volumes and runs a client-only node service so
 		// pods there can still mount RWX (NFS) volumes.
-		be, backendType, err := backendFor(nodeName, nodesConfig, vg, thinPool)
+		pools, err := poolBackendsFor(nodeName, nodesConfig)
 		if errors.Is(err, errNodeUnmapped) {
 			setupLog.Info("node not in the storage map; running client-only node service", "node", nodeName)
 			// Client legs get DRBD configs rendered here too, so the
@@ -470,16 +514,10 @@ func main() {
 			break
 		}
 		if err != nil {
-			setupLog.Error(err, "unable to build the node's backend")
+			setupLog.Error(err, "unable to build the node's backends")
 			os.Exit(1)
 		}
-		// Bootstrap the node-local pool before serving anything: first
-		// start on a fresh node creates
-		// PV/VG/thin-pool (lvmthin) or the parent dataset (zfs).
-		if err := be.Setup(context.Background()); err != nil {
-			setupLog.Error(err, "backend pool setup failed")
-			os.Exit(1)
-		}
+		setupAgentPools(pools)
 		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
 		// The binary is always in the image; what a local-only node lacks
 		// is the kernel module. Probe once (the modprobe inside also loads
@@ -532,13 +570,12 @@ func main() {
 			}
 		}
 		reconciler := &agent.VolumeReconciler{
-			Client:      mgr.GetClient(),
-			NodeName:    nodeName,
-			Backend:     be,
-			BackendType: backendType,
-			DRBD:        drbdDriver,
-			DRBDEvents:  drbdEvents,
-			Workers:     volumeWorkers,
+			Client:     mgr.GetClient(),
+			NodeName:   nodeName,
+			Pools:      pools,
+			DRBD:       drbdDriver,
+			DRBDEvents: drbdEvents,
+			Workers:    volumeWorkers,
 		}
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")
@@ -547,19 +584,18 @@ func main() {
 		snapReconciler := &agent.SnapshotReconciler{
 			Client:   mgr.GetClient(),
 			NodeName: nodeName,
-			Backend:  be,
+			Pools:    pools,
 			DRBD:     drbdDriver,
 		}
 		if err := snapReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up snapshot reconciler")
 			os.Exit(1)
 		}
-		// Publishes this node's pool capacity for capacity-aware placement.
+		// Publishes this node's pool capacities for capacity-aware placement.
 		if err := mgr.Add(&agent.PoolStatsPublisher{
 			Client:      mgr.GetClient(),
 			NodeName:    nodeName,
-			Backend:     be,
-			BackendType: backendType,
+			Pools:       pools,
 			Interval:    poolStatsInterval,
 			Recorder:    mgr.GetEventRecorder("miroir-agent"),
 			DRBDVersion: drbdKernel,

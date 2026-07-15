@@ -83,12 +83,44 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: status
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeStatus
-- name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeSpec
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodePool
   map:
     fields:
     - name: backend
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.BackendType
+    - name: name
+      type:
+        scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodePoolStatus
+  map:
+    fields:
+    - name: allocatedBytes
+      type:
+        scalar: numeric
+    - name: capacityBytes
+      type:
+        scalar: numeric
+    - name: message
+      type:
+        scalar: string
+    - name: metaUsedPercent
+      type:
+        scalar: numeric
+    - name: name
+      type:
+        scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeSpec
+  map:
+    fields:
+    - name: pools
+      type:
+        list:
+          elementType:
+            namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirNodePool
+          elementRelationship: associative
+          keys:
+          - name
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeStatus
   map:
     fields:
@@ -113,6 +145,14 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: observedAt
       type:
         namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: pools
+      type:
+        list:
+          elementType:
+            namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirNodePoolStatus
+          elementRelationship: associative
+          keys:
+          - name
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshot
   map:
     fields:
@@ -266,6 +306,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: nodeID
       type:
         scalar: numeric
+    - name: pool
+      type:
+        scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.ReplicaStatus
   map:
     fields:
@@ -300,6 +343,9 @@ var schemaYAML = typed.YAMLObject(`types:
       type:
         namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: message
+      type:
+        scalar: string
+    - name: pool
       type:
         scalar: string
     - name: primarySince

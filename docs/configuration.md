@@ -6,14 +6,15 @@ Every chart value is documented value-by-value in the generated
 stale). This page is the orientation layer: which groups of values
 exist and where their behavior is explained.
 
-- **`nodes`** — the per-node storage topology: backend (`lvmthin` /
-  `zfs` / `loopfile`), device or dataset, optional `zone` and
-  replication `address`, `thinPoolSize` for shared VGs. See the
-  [Quickstart](quickstart.md) layouts.
+- **`nodes`** — the per-node storage topology: named `pools`, each
+  with a backend (`lvmthin` / `zfs` / `loopfile`), device or dataset,
+  and optional `thinPoolSize`; node-level `zone` and replication
+  `address`. See the [Quickstart](quickstart.md) layouts.
 - **`storageClasses`** — the classes to create: `replicas`, `quorum`
-  policy ([Replication and quorum](replication.md)), `fsType`,
-  `reclaimPolicy`, `allowRemoteVolumeAccess`
-  ([Remote consumers](remote-consumers.md)), `isDefault`.
+  policy ([Replication and quorum](replication.md)), `pool` (which
+  named pool the class provisions from), `fsType`, `reclaimPolicy`,
+  `allowRemoteVolumeAccess` ([Remote consumers](remote-consumers.md)),
+  `isDefault`.
 - **`volumeSnapshotClasses`** — snapshot classes
   ([Quickstart](quickstart.md#4-snapshot-and-restore)).
 - **`drbd`** — replication tuning: `portBase`

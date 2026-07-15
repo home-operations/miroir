@@ -17,7 +17,7 @@ limitations under the License.
 // Package nodemap loads the per-node storage topology from a config file
 // (a ConfigMap rendered from the Helm release's `nodes` values). It is the
 // single source of truth for which nodes hold storage and how: the
-// controller places replicas from it, agents pick their backend from it.
+// controller places replicas from it, agents pick their backends from it.
 package nodemap
 
 import (
@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"slices"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,22 +36,14 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
-// Node describes one storage node's backend. Replication endpoints default
-// to the node's InternalIP, resolved from its Node object at volume
-// creation and persisted in the CRD; `address` overrides that for a
-// dedicated replication NIC.
-type Node struct {
+// Pool describes one named storage pool on a node: the backend
+// implementation and its backing location. Pool names are cluster-wide
+// identities — a StorageClass selects a pool by name and the controller
+// places each replica on a node carrying that pool.
+type Pool struct {
 	// Backend selects the storage implementation: "lvmthin" | "zfs" |
 	// "loopfile".
 	Backend miroirv1alpha1.BackendType `json:"backend"`
-	// Zone is an optional failure domain (rack, host group, AZ). When set,
-	// the controller spreads a volume's replicas across distinct zones;
-	// empty means unconstrained.
-	Zone string `json:"zone,omitempty"`
-	// Address optionally pins the node's DRBD replication endpoint to a
-	// dedicated storage NIC/VLAN IP (IPv4 or IPv6); empty falls back to
-	// the node's InternalIP.
-	Address string `json:"address,omitempty"`
 	// Device is the block device backing the LVM VG (lvmthin).
 	Device string `json:"device,omitempty"`
 	// ZFSDataset is the parent dataset for zvols (zfs).
@@ -63,13 +56,53 @@ type Node struct {
 	BaseDir string `json:"baseDir,omitempty"`
 }
 
+// Node describes one storage node: its named pools plus node-level
+// replication settings. Replication endpoints default to the node's
+// InternalIP, resolved from its Node object at volume creation and
+// persisted in the CRD; `address` overrides that for a dedicated
+// replication NIC.
+type Node struct {
+	// Zone is an optional failure domain (rack, host group, AZ). When set,
+	// the controller spreads a volume's replicas across distinct zones;
+	// empty means unconstrained.
+	Zone string `json:"zone,omitempty"`
+	// Address optionally pins the node's DRBD replication endpoint to a
+	// dedicated storage NIC/VLAN IP (IPv4 or IPv6); empty falls back to
+	// the node's InternalIP.
+	Address string `json:"address,omitempty"`
+	// Pools maps pool name → pool config. The pre-multi-pool single pool
+	// is the pool named "default" — volumes and classes that name no pool
+	// resolve there.
+	Pools map[string]Pool `json:"pools"`
+}
+
 // Map is node name → storage config. Nodes absent from the map hold no
 // replicas.
 type Map map[string]Node
 
+// Pool resolves a named pool on a node; the second return mirrors map
+// lookup. Empty name means the default pool, matching CRD adoption
+// (replicas persisted before pools carry no pool field).
+func (m Map) Pool(node, pool string) (Pool, bool) {
+	p, ok := m[node].Pools[PoolOrDefault(pool)]
+	return p, ok
+}
+
+// PoolOrDefault maps the empty pool name to the default pool. Replicas
+// and StorageClasses created before named pools carry no pool reference;
+// they all mean the pool now called "default".
+func PoolOrDefault(pool string) string {
+	if pool == "" {
+		return miroirv1alpha1.DefaultPoolName
+	}
+	return pool
+}
+
 // TieBreakerNode picks a storage node to host a diskless tie-breaker for
 // the given replicas: one not already holding a replica, preferring a zone
-// none of them occupy, ties by name. Empty when no spare node exists.
+// none of them occupy, ties by name. Any storage node qualifies — a
+// tie-breaker holds no data, so it needs no particular pool. Empty when no
+// spare node exists.
 func (m Map) TieBreakerNode(replicas []miroirv1alpha1.Replica) string {
 	usedNode := make(map[string]bool, len(replicas))
 	usedZone := make(map[string]bool, len(replicas))
@@ -97,6 +130,11 @@ func (m Map) TieBreakerNode(replicas []miroirv1alpha1.Replica) string {
 	return ""
 }
 
+// poolNameRe bounds pool names: they become LVM VG names
+// (vg-miroir-<pool>), metric label values, and StorageClass parameters, so
+// keep them short lowercase DNS-label-style identifiers.
+var poolNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
+
 // Load reads and validates the node map from a YAML file.
 func Load(path string) (Map, error) {
 	raw, err := os.ReadFile(path)
@@ -105,22 +143,23 @@ func Load(path string) (Map, error) {
 	}
 	m := Map{}
 	if err := yaml.UnmarshalStrict(raw, &m); err != nil {
+		if legacy := legacyFlatNode(raw); legacy != "" {
+			return nil, fmt.Errorf("node %s uses the pre-0.10 flat single-pool shape; "+
+				"move backend/device/zfsDataset/baseDir/thinPoolSize under `pools: {%s: {...}}` "+
+				"(zone and address stay node-level)", legacy, miroirv1alpha1.DefaultPoolName)
+		}
 		return nil, fmt.Errorf("parse node map %s: %w", path, err)
 	}
 	// Keyed by the parsed form so differently written but equal IPs
 	// (IPv6 zero-compression) still collide.
 	addrOwner := map[string]string{}
 	for name, n := range m {
-		switch n.Backend {
-		case miroirv1alpha1.BackendLVMThin, miroirv1alpha1.BackendZFS, miroirv1alpha1.BackendLoopfile:
-		default:
-			return nil, fmt.Errorf("node %s: invalid backend %q", name, n.Backend)
+		if len(n.Pools) == 0 {
+			return nil, fmt.Errorf("node %s: no pools defined (declare at least pools.%s)",
+				name, miroirv1alpha1.DefaultPoolName)
 		}
-		if n.Backend == miroirv1alpha1.BackendZFS && n.ZFSDataset == "" {
-			return nil, fmt.Errorf("node %s: zfs backend requires zfsDataset", name)
-		}
-		if n.Backend == miroirv1alpha1.BackendLoopfile && n.BaseDir == "" {
-			return nil, fmt.Errorf("node %s: loopfile backend requires baseDir", name)
+		if err := validatePools(name, n.Pools); err != nil {
+			return nil, err
 		}
 		if n.Address != "" {
 			ip := net.ParseIP(n.Address)
@@ -137,6 +176,68 @@ func Load(path string) (Map, error) {
 		}
 	}
 	return m, nil
+}
+
+// validatePools checks one node's pools: valid names and backends, the
+// per-backend required field, and no two pools sharing a backing location
+// (one device/dataset/dir belongs to exactly one pool).
+func validatePools(node string, pools map[string]Pool) error {
+	backingOwner := map[string]string{}
+	for poolName, p := range pools {
+		if !poolNameRe.MatchString(poolName) {
+			return fmt.Errorf("node %s: invalid pool name %q (lowercase alphanumerics and dashes, max 32 chars)",
+				node, poolName)
+		}
+		var backing string
+		switch p.Backend {
+		case miroirv1alpha1.BackendLVMThin:
+			backing = p.Device
+		case miroirv1alpha1.BackendZFS:
+			if p.ZFSDataset == "" {
+				return fmt.Errorf("node %s pool %s: zfs backend requires zfsDataset", node, poolName)
+			}
+			backing = p.ZFSDataset
+		case miroirv1alpha1.BackendLoopfile:
+			if p.BaseDir == "" {
+				return fmt.Errorf("node %s pool %s: loopfile backend requires baseDir", node, poolName)
+			}
+			backing = p.BaseDir
+		default:
+			return fmt.Errorf("node %s pool %s: invalid backend %q", node, poolName, p.Backend)
+		}
+		if backing == "" {
+			continue
+		}
+		if other, dup := backingOwner[backing]; dup {
+			return fmt.Errorf("node %s: pools %s and %s share backing %s",
+				node, min(poolName, other), max(poolName, other), backing)
+		}
+		backingOwner[backing] = poolName
+	}
+	return nil
+}
+
+// legacyFlatNode reports the first node still written in the pre-0.10
+// flat single-pool shape (backend at the node level), or "" — so the load
+// error names the actual migration instead of a strict-unmarshal field
+// complaint.
+func legacyFlatNode(raw []byte) string {
+	probe := map[string]struct {
+		Backend string `json:"backend"`
+	}{}
+	if yaml.Unmarshal(raw, &probe) != nil {
+		return ""
+	}
+	names := make([]string, 0, len(probe))
+	for name, n := range probe {
+		if n.Backend != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return slices.Min(names)
 }
 
 // ReplicationAddress resolves a node's DRBD replication endpoint: the node

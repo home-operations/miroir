@@ -45,13 +45,17 @@ func clientVol(age time.Duration) *miroirv1alpha1.MiroirVolume {
 	return v
 }
 
-// freshStats is an node-c MiroirNode with room for the volume.
+// freshStats is an node-c MiroirNode with room for the volume in its
+// default pool.
 func freshStats(free int64) *miroirv1alpha1.MiroirNode {
 	now := metav1.Now()
 	return &miroirv1alpha1.MiroirNode{
 		ObjectMeta: metav1.ObjectMeta{Name: nodeC},
 		Status: miroirv1alpha1.MiroirNodeStatus{
-			CapacityBytes: 100 << 30, AllocatedBytes: 100<<30 - free, ObservedAt: &now,
+			Pools: []miroirv1alpha1.MiroirNodePoolStatus{{
+				Name: poolDefault, CapacityBytes: 100 << 30, AllocatedBytes: 100<<30 - free,
+			}},
+			ObservedAt: &now,
 		},
 	}
 }
@@ -76,7 +80,7 @@ func TestAutoDiskfulConvertsAgedClient(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
 	reconcileAD(t, r, "pvc-1")
@@ -118,7 +122,7 @@ func TestAutoDiskfulReplacesTieBreaker(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
 	reconcileAD(t, r, "pvc-1")
@@ -136,7 +140,7 @@ func TestAutoDiskfulWaitsForThreshold(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
 	res := reconcileAD(t, r, "pvc-1")
@@ -163,16 +167,16 @@ func TestAutoDiskfulBlocks(t *testing.T) {
 		},
 		"degraded volume": {
 			mutate: func(v *miroirv1alpha1.MiroirVolume) { v.Status.Phase = miroirv1alpha1.VolumeDegraded },
-			nodes:  nodemap.Map{nodeC: {Backend: miroirv1alpha1.BackendLVMThin}},
+			nodes:  nodemap.Map{nodeC: storageNode(miroirv1alpha1.BackendLVMThin)},
 			stats:  freshStats(10 << 30),
 		},
 		"no pool stats": {
 			mutate: func(*miroirv1alpha1.MiroirVolume) {},
-			nodes:  nodemap.Map{nodeC: {Backend: miroirv1alpha1.BackendLVMThin}},
+			nodes:  nodemap.Map{nodeC: storageNode(miroirv1alpha1.BackendLVMThin)},
 		},
 		"insufficient space": {
 			mutate: func(*miroirv1alpha1.MiroirVolume) {},
-			nodes:  nodemap.Map{nodeC: {Backend: miroirv1alpha1.BackendLVMThin}},
+			nodes:  nodemap.Map{nodeC: storageNode(miroirv1alpha1.BackendLVMThin)},
 			stats:  freshStats(1 << 20),
 		},
 	}
@@ -223,7 +227,7 @@ func TestAutoDiskfulConvertsTieBreaker(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
 	reconcileAD(t, r, "pvc-1")
@@ -253,7 +257,7 @@ func TestAutoDiskfulTieBreakerWaits(t *testing.T) {
 				WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 				WithObjects(v, freshStats(10<<30)).Build()
 			r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-				nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+				nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 			}}
 			reconcileAD(t, r, "pvc-1")
 			if got := get(t, &Reconciler{Client: c}, "pvc-1"); !got.Spec.Replicas[2].Diskless {
@@ -292,7 +296,7 @@ func TestAutoDiskfulPermanentBlockSkipsRequeue(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(v, freshStats(10<<30)).Build()
 	r := &AutoDiskfulReconciler{Client: c, After: 10 * time.Minute, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
 	res := reconcileAD(t, r, "pvc-1")

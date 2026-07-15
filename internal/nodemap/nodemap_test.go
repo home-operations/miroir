@@ -19,6 +19,7 @@ package nodemap
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -50,18 +51,27 @@ func writeMap(t *testing.T, body string) string {
 func TestLoadValid(t *testing.T) {
 	m, err := Load(writeMap(t, `
 node-a:
-  backend: lvmthin
-  device: /dev/disk/by-partlabel/r-miroir
-  thinPoolSize: 400g
   zone: rack-1
   address: 10.0.100.1
+  pools:
+    default:
+      backend: lvmthin
+      device: /dev/disk/by-partlabel/r-miroir
+      thinPoolSize: 400g
+    fast:
+      backend: lvmthin
+      device: /dev/disk/by-id/nvme-fast
 node-b:
-  backend: zfs
-  zfsDataset: tank/miroir
   address: "fd00:1::2"
+  pools:
+    default:
+      backend: zfs
+      zfsDataset: tank/miroir
 node-c:
-  backend: loopfile
-  baseDir: /var/lib/miroir
+  pools:
+    default:
+      backend: loopfile
+      baseDir: /var/lib/miroir
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -69,16 +79,20 @@ node-c:
 	if len(m) != 3 {
 		t.Fatalf("want 3 nodes, got %d", len(m))
 	}
-	if m["node-a"].Backend != miroirv1alpha1.BackendLVMThin || m["node-a"].ThinPoolSize != "400g" {
-		t.Fatalf("node-a parsed wrong: %+v", m["node-a"])
+	def := m["node-a"].Pools["default"]
+	if def.Backend != miroirv1alpha1.BackendLVMThin || def.ThinPoolSize != "400g" {
+		t.Fatalf("node-a default pool parsed wrong: %+v", def)
+	}
+	if fast := m["node-a"].Pools["fast"]; fast.Device != "/dev/disk/by-id/nvme-fast" {
+		t.Fatalf("node-a fast pool parsed wrong: %+v", fast)
 	}
 	if m["node-a"].Zone != "rack-1" {
 		t.Fatalf("node-a zone not parsed: %+v", m["node-a"])
 	}
-	if m["node-b"].ZFSDataset != "tank/miroir" {
+	if m["node-b"].Pools["default"].ZFSDataset != "tank/miroir" {
 		t.Fatalf("node-b dataset wrong: %+v", m["node-b"])
 	}
-	if m["node-c"].BaseDir != "/var/lib/miroir" {
+	if m["node-c"].Pools["default"].BaseDir != "/var/lib/miroir" {
 		t.Fatalf("node-c baseDir wrong: %+v", m["node-c"])
 	}
 	if m["node-a"].Address != "10.0.100.1" || m["node-b"].Address != "fd00:1::2" {
@@ -86,17 +100,48 @@ node-c:
 	}
 }
 
+func TestPoolLookup(t *testing.T) {
+	m := Map{nodeA: {Pools: map[string]Pool{
+		"default": {Backend: miroirv1alpha1.BackendLVMThin},
+		"fast":    {Backend: miroirv1alpha1.BackendZFS},
+	}}}
+	if p, ok := m.Pool(nodeA, ""); !ok || p.Backend != miroirv1alpha1.BackendLVMThin {
+		t.Fatalf("empty pool name should resolve the default pool, got %+v %t", p, ok)
+	}
+	if p, ok := m.Pool(nodeA, "fast"); !ok || p.Backend != miroirv1alpha1.BackendZFS {
+		t.Fatalf("named pool lookup wrong: %+v %t", p, ok)
+	}
+	if _, ok := m.Pool(nodeA, "absent"); ok {
+		t.Fatal("absent pool should not resolve")
+	}
+	if _, ok := m.Pool(nodeB, "default"); ok {
+		t.Fatal("absent node should not resolve")
+	}
+}
+
 func TestLoadErrors(t *testing.T) {
+	pool := func(body string) string {
+		return "node-a:\n  pools:\n    default:\n" + body
+	}
 	cases := map[string]string{
-		"unknown backend":          "node-a:\n  backend: btrfs\n",
-		"zfs without dataset":      "node-b:\n  backend: zfs\n",
-		"loopfile without baseDir": "node-c:\n  backend: loopfile\n",
-		"unknown field":            "node-a:\n  backend: lvmthin\n  bogus: x\n",
+		"unknown backend":          pool("      backend: btrfs\n"),
+		"zfs without dataset":      pool("      backend: zfs\n"),
+		"loopfile without baseDir": pool("      backend: loopfile\n"),
+		"unknown field":            pool("      backend: lvmthin\n      bogus: x\n"),
 		"malformed yaml":           "node-a: : :\n",
-		"invalid address":          "node-a:\n  backend: lvmthin\n  address: not-an-ip\n",
-		"address is a CIDR":        "node-a:\n  backend: lvmthin\n  address: 10.0.0.0/24\n",
-		"duplicate address":        "node-a:\n  backend: lvmthin\n  address: 10.0.100.1\nnode-b:\n  backend: lvmthin\n  address: 10.0.100.1\n",
-		"duplicate address ipv6":   "node-a:\n  backend: lvmthin\n  address: fd00:1::2\nnode-b:\n  backend: lvmthin\n  address: fd00:0001:0:0::2\n",
+		"no pools":                 "node-a:\n  zone: rack-1\n",
+		"empty pools":              "node-a:\n  pools: {}\n",
+		"invalid pool name": "node-a:\n  pools:\n    Fast_NVMe:\n" +
+			"      backend: lvmthin\n",
+		"pools sharing a device": "node-a:\n  pools:\n" +
+			"    a:\n      backend: lvmthin\n      device: /dev/sda\n" +
+			"    b:\n      backend: lvmthin\n      device: /dev/sda\n",
+		"invalid address":   pool("      backend: lvmthin\n") + "  address: not-an-ip\n",
+		"address is a CIDR": pool("      backend: lvmthin\n") + "  address: 10.0.0.0/24\n",
+		"duplicate address": pool("      backend: lvmthin\n") + "  address: 10.0.100.1\n" +
+			"node-b:\n  address: 10.0.100.1\n  pools:\n    default:\n      backend: lvmthin\n",
+		"duplicate address ipv6": pool("      backend: lvmthin\n") + "  address: fd00:1::2\n" +
+			"node-b:\n  address: fd00:0001:0:0::2\n  pools:\n    default:\n      backend: lvmthin\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -104,6 +149,20 @@ func TestLoadErrors(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 		})
+	}
+}
+
+func TestLoadLegacyFlatShape(t *testing.T) {
+	_, err := Load(writeMap(t, `
+node-a:
+  backend: lvmthin
+  device: /dev/disk/by-partlabel/r-miroir
+`))
+	if err == nil {
+		t.Fatal("expected an error for the pre-0.10 flat shape")
+	}
+	if !strings.Contains(err.Error(), "pools") {
+		t.Fatalf("error should point at the pools migration, got: %v", err)
 	}
 }
 

@@ -24,6 +24,10 @@ spec:
       name: Replicas
       priority: 1
       type: string
+    - jsonPath: .spec.replicas[*].pool
+      name: Pools
+      priority: 1
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -229,6 +233,13 @@ spec:
                         and stable for the volume's lifetime. Only set on replicated volumes.
                       format: int32
                       type: integer
+                    pool:
+                      description: |-
+                        Pool names the node-map storage pool holding this replica's backing
+                        device. Persisted like Backend so the volume survives later topology
+                        edits. Empty means the default pool (pre-multi-pool volumes are
+                        adopted this way). Unused for diskless replicas.
+                      type: string
                   required:
                   - node
                   type: object
@@ -282,6 +293,19 @@ spec:
                 agent attaches a disk to the live leg)'
               rule: self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
                 || (has(o.diskless) && o.diskless) || !(has(r.diskless) && r.diskless)))
+            - message: 'a completed replica''s pool is immutable: the agent would
+                realize a fresh device in the new pool and abandon the old one; remove
+                the replica and re-add it in the target pool instead'
+              rule: 'self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
+                || (has(o.diskless) && o.diskless) || !has(o.address) || (has(o.pool)
+                ? o.pool : ''default'') == (has(r.pool) ? r.pool : ''default'')))'
+            - message: 'all diskful replicas must live in one pool: snapshots and
+                restores are pool-local, so a mixed-pool volume''s snapshots would
+                be unrestorable'
+              rule: 'self.replicas.all(r, (has(r.diskless) && r.diskless) || !has(r.address)
+                || self.replicas.all(o, (has(o.diskless) && o.diskless) || !has(o.address)
+                || (has(r.pool) ? r.pool : ''default'') == (has(o.pool) ? o.pool :
+                ''default'')))'
             - message: a volume cannot gain or lose its replication layer in place
               rule: has(self.drbd) == has(oldSelf.drbd)
             - message: client legs are only valid on replicated volumes
@@ -477,6 +501,13 @@ spec:
                       type: string
                     message:
                       description: Message carries the last reconcile error, if any.
+                      type: string
+                    pool:
+                      description: |-
+                        Pool records which storage pool holds this leg's backing device.
+                        Self-reported by the agent like Diskless, so teardown after the
+                        entry has left spec.replicas still targets the right pool. Empty
+                        means the default pool.
                       type: string
                     primarySince:
                       description: |-

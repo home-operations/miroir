@@ -112,30 +112,51 @@ type candidate struct {
 // (their attach time is the age signal) and diskless tie-breaker legs a
 // consumer stages through (the agent's PrimarySince stamp — on a
 // fully-mapped cluster the volume's non-replica node IS its tie-breaker,
-// so no client leg ever exists). Only legs on storage nodes qualify.
+// so no client leg ever exists). Conversion targets the volume's pool —
+// the one its diskful replicas live in — so only nodes carrying that pool
+// qualify.
 func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate {
+	pool := volumePool(vol)
 	var out []candidate
 	for i, cl := range vol.Spec.Clients {
-		entry, storage := nodes[cl.Node]
-		if !storage || cl.Address == "" || cl.AddedAt == nil {
+		entry, ok := nodes.Pool(cl.Node, pool)
+		if !ok || cl.Address == "" || cl.AddedAt == nil {
 			continue
 		}
 		out = append(out, candidate{node: cl.Node, kind: "client", since: cl.AddedAt.Time,
-			apply: func(v *miroirv1alpha1.MiroirVolume) { convertClient(v, i, entry.Backend) }})
+			apply: func(v *miroirv1alpha1.MiroirVolume) { convertClient(v, i, entry.Backend, pool) }})
 	}
 	for i, rep := range vol.Spec.Replicas {
 		if !rep.Diskless {
 			continue
 		}
-		entry, storage := nodes[rep.Node]
+		entry, ok := nodes.Pool(rep.Node, pool)
 		since := vol.Status.PerNode[rep.Node].PrimarySince
-		if !storage || since == nil {
+		if !ok || since == nil {
 			continue
 		}
 		out = append(out, candidate{node: rep.Node, kind: "tiebreaker", since: since.Time,
-			apply: func(v *miroirv1alpha1.MiroirVolume) { convertTieBreaker(v, i, entry.Backend) }})
+			apply: func(v *miroirv1alpha1.MiroirVolume) { convertTieBreaker(v, i, entry.Backend, pool) }})
 	}
 	return out
+}
+
+// volumePool is the pool a volume's diskful legs live in — they are
+// uniform by construction (placement, the CRD uniformity rule, and
+// complete()'s inheritance all enforce it), so the first diskful replica
+// carries it; empty (pre-multi-pool volumes) means the default pool.
+// Completed legs are preferred so a just-added entry's typo cannot pose
+// as the volume's pool while completion is in flight.
+func volumePool(vol *miroirv1alpha1.MiroirVolume) string {
+	for _, rep := range vol.Spec.Replicas {
+		if !rep.Diskless && rep.Address != "" {
+			return nodemap.PoolOrDefault(rep.Pool)
+		}
+	}
+	if first := vol.Spec.FirstDiskfulReplica(); first != nil {
+		return nodemap.PoolOrDefault(first.Pool)
+	}
+	return nodemap.PoolOrDefault("")
 }
 
 // convertClient replaces the client leg with a diskful replica carrying
@@ -145,7 +166,7 @@ func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate
 // update: three diskful replicas carry three votes, and MaxItems=3 leaves
 // no room for both. FullSync is set here because the entry stays complete
 // (address kept), so the membership reconciler never touches it.
-func convertClient(vol *miroirv1alpha1.MiroirVolume, clientIdx int, backend miroirv1alpha1.BackendType) {
+func convertClient(vol *miroirv1alpha1.MiroirVolume, clientIdx int, backend miroirv1alpha1.BackendType, pool string) {
 	cl := vol.Spec.Clients[clientIdx]
 	replicas := make([]miroirv1alpha1.Replica, 0, len(vol.Spec.Replicas)+1)
 	for _, rep := range vol.Spec.Replicas {
@@ -157,6 +178,7 @@ func convertClient(vol *miroirv1alpha1.MiroirVolume, clientIdx int, backend miro
 	replicas = append(replicas, miroirv1alpha1.Replica{
 		Node:     cl.Node,
 		Backend:  backend,
+		Pool:     pool,
 		NodeID:   cl.NodeID,
 		Address:  cl.Address,
 		FullSync: true,
@@ -169,10 +191,11 @@ func convertClient(vol *miroirv1alpha1.MiroirVolume, clientIdx int, backend miro
 // rules allow exactly this direction): node-id and address are kept, so
 // the agent attaches a fresh backing device to the live resource and DRBD
 // full-syncs it under the running consumer — LINSTOR's toggle-disk.
-func convertTieBreaker(vol *miroirv1alpha1.MiroirVolume, idx int, backend miroirv1alpha1.BackendType) {
+func convertTieBreaker(vol *miroirv1alpha1.MiroirVolume, idx int, backend miroirv1alpha1.BackendType, pool string) {
 	rep := &vol.Spec.Replicas[idx]
 	rep.Diskless = false
 	rep.Backend = backend
+	rep.Pool = pool
 	// FullSync: the fresh backing must join as a full SyncTarget, never
 	// pose as a data-bearing twin.
 	rep.FullSync = true
@@ -199,8 +222,10 @@ func (r *AutoDiskfulReconciler) conversionBlocked(ctx context.Context, vol *miro
 			return "a replica change is already in flight", true
 		}
 	}
-	// Capacity: the node must fit the full virtual size per its own fresh
-	// stats. Missing or stale stats block — the sync would land blind.
+	// Capacity: the volume's pool on the node must fit the full virtual
+	// size per its own fresh stats. Missing or stale stats block — the
+	// sync would land blind.
+	pool := volumePool(vol)
 	mn := &miroirv1alpha1.MiroirNode{}
 	if err := r.Get(ctx, types.NamespacedName{Name: node}, mn); err != nil {
 		return "no pool stats for " + node, true
@@ -208,8 +233,12 @@ func (r *AutoDiskfulReconciler) conversionBlocked(ctx context.Context, vol *miro
 	if mn.Status.ObservedAt == nil || time.Since(mn.Status.ObservedAt.Time) > constants.StatsStaleAfter {
 		return "pool stats for " + node + " are stale", true
 	}
-	if mn.Status.CapacityBytes-mn.Status.AllocatedBytes < vol.Spec.SizeBytes {
-		return "insufficient free space on " + node, true
+	st := mn.Status.Pool(pool)
+	if st == nil {
+		return "no stats for pool " + pool + " on " + node, true
+	}
+	if st.CapacityBytes-st.AllocatedBytes < vol.Spec.SizeBytes {
+		return "insufficient free space in pool " + pool + " on " + node, true
 	}
 	return "", false
 }

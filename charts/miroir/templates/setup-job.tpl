@@ -1,4 +1,11 @@
 {{- range $name, $node := .Values.nodes }}
+{{- $loopDirs := list }}
+{{- range $poolName, $pool := $node.pools }}
+{{- if eq (toString $pool.backend) "loopfile" }}
+{{- $loopDirs = append $loopDirs $pool.baseDir }}
+{{- end }}
+{{- end }}
+{{- $loopDirs = $loopDirs | uniq }}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -47,9 +54,9 @@ spec:
             - name: modules
               mountPath: /lib/modules
               readOnly: true
-{{- if eq (toString $node.backend) "loopfile" }}
-            - name: loopfile-base
-              mountPath: {{ $node.baseDir }}
+{{- range $i, $dir := $loopDirs }}
+            - name: loopfile-base-{{ $i }}
+              mountPath: {{ $dir }}
 {{- end }}
       volumes:
         - name: nodes
@@ -70,10 +77,10 @@ spec:
         - name: modules
           hostPath:
             path: /lib/modules
-{{- if eq (toString $node.backend) "loopfile" }}
-        - name: loopfile-base
+{{- range $i, $dir := $loopDirs }}
+        - name: loopfile-base-{{ $i }}
           hostPath:
-            path: {{ $node.baseDir }}
+            path: {{ $dir }}
             type: DirectoryOrCreate
 {{- end }}
 {{- end }}

@@ -33,6 +33,11 @@ type ReplicaApplyConfiguration struct {
 	// Backend selects how the backing device is provisioned on this node.
 	// Unused for diskless tie-breaker replicas (they have no backing device).
 	Backend *apiv1alpha1.BackendType `json:"backend,omitempty"`
+	// Pool names the node-map storage pool holding this replica's backing
+	// device. Persisted like Backend so the volume survives later topology
+	// edits. Empty means the default pool (pre-multi-pool volumes are
+	// adopted this way). Unused for diskless replicas.
+	Pool *string `json:"pool,omitempty"`
 	// NodeID is the DRBD node id, assigned by the controller at creation
 	// and stable for the volume's lifetime. Only set on replicated volumes.
 	NodeID *int32 `json:"nodeID,omitempty"`
@@ -70,6 +75,14 @@ func (b *ReplicaApplyConfiguration) WithNode(value string) *ReplicaApplyConfigur
 // If called multiple times, the Backend field is set to the value of the last call.
 func (b *ReplicaApplyConfiguration) WithBackend(value apiv1alpha1.BackendType) *ReplicaApplyConfiguration {
 	b.Backend = &value
+	return b
+}
+
+// WithPool sets the Pool field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Pool field is set to the value of the last call.
+func (b *ReplicaApplyConfiguration) WithPool(value string) *ReplicaApplyConfiguration {
+	b.Pool = &value
 	return b
 }
 

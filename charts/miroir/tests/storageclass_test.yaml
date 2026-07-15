@@ -54,6 +54,30 @@ tests:
       - notExists:
           path: parameters["miroir.home-operations.com/quorum"]
 
+  - it: a pool entry renders the pool parameter; absent omits it
+    set:
+      storageClasses:
+        - name: miroir-fast
+          replicas: 2
+          pool: fast
+        - name: miroir-numeric
+          replicas: 1
+          pool: "123"
+        - name: miroir-default
+          replicas: 1
+    asserts:
+      - documentSelector: { path: metadata.name, value: miroir-fast }
+        equal:
+          path: parameters["miroir.home-operations.com/pool"]
+          value: fast
+      - documentSelector: { path: metadata.name, value: miroir-numeric }
+        equal:
+          path: parameters["miroir.home-operations.com/pool"]
+          value: "123"
+      - documentSelector: { path: metadata.name, value: miroir-default }
+        notExists:
+          path: parameters["miroir.home-operations.com/pool"]
+
   - it: a replicas>1 entry is replicated — quorum defaults to freeze
     set:
       storageClasses:

@@ -154,13 +154,9 @@ agent:
     # The release pipeline fills this with the published image's digest.
     digest: ""
     pullPolicy: IfNotPresent
-  # Per-node backend selection comes from node annotations:
-  #   miroir.home-operations.com/backend: lvmthin | zfs
-  #   miroir.home-operations.com/device: /dev/disk/by-partlabel/r-miroir   (lvmthin)
-  #   miroir.home-operations.com/zfs-dataset: data-pool/miroir              (zfs)
-  # Nodes also need the label miroir.home-operations.com/storage: "true" to receive replicas.
+  # Per-node backend selection comes from the `nodes` topology below.
   #
-  # How often each agent republishes its pool capacity to its MiroirNode
+  # How often each agent republishes its pool capacities to its MiroirNode
   # (read by the controller for capacity-aware placement).
   poolStatsInterval: 60s
   # -- Concurrent volume reconciles per agent. Per-volume work is
@@ -218,6 +214,12 @@ gateway:
 # Per-node storage topology — the single source of truth for which nodes
 # hold volumes and how. Rendered into the miroir-nodes ConfigMap, read by
 # the controller (placement) and each agent (backend selection).
+# Each node declares named storage `pools` (StorageClasses select one via
+# their `pool` knob; classes that name none use the pool called "default").
+# A pool name identifies the same tier across nodes — a 2-replica volume in
+# pool `fast` needs a `fast` pool on 2 nodes. Per pool: `backend` (lvmthin /
+# zfs / loopfile) plus its location (`device`, `zfsDataset`, or `baseDir`)
+# and optional `thinPoolSize`.
 # Optional per-node `zone` (rack, host group, AZ): when set, the controller
 # spreads a volume's replicas across distinct zones; empty is unconstrained.
 # Optional per-node `address` (IPv4 or IPv6) pins DRBD replication to a
@@ -226,23 +228,32 @@ gateway:
 # persisted at creation.
 # nodes:
 #   kharkiv:
-#     backend: lvmthin
-#     device: /dev/disk/by-partlabel/r-miroir
-#     # thinPoolSize: 400g   # bound the pool when sharing the VG
 #     # zone: rack-1         # spread replicas across failure domains
 #     # address: 10.0.100.11 # replicate over a dedicated storage NIC
+#     pools:
+#       default:
+#         backend: lvmthin
+#         device: /dev/disk/by-partlabel/r-miroir
+#         # thinPoolSize: 400g   # bound the pool when sharing the VG
+#       fast:                    # a second tier on another disk
+#         backend: lvmthin
+#         device: /dev/disk/by-id/nvme-Micron_7450_XXXX
 #   paris:
-#     backend: zfs
-#     zfsDataset: data-pool/miroir
 #     # zone: rack-2
+#     pools:
+#       default:
+#         backend: zfs
+#         zfsDataset: data-pool/miroir
 #   le-havre:
-#     # loopfile: sparse files on the node's existing filesystem — no
-#     # dedicated disk or pool. baseDir must be reflink-capable (XFS
-#     # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the agent
-#     # refuses to start otherwise. The dir is hostPath-mounted into the
-#     # agent at the same path.
-#     backend: loopfile
-#     baseDir: /var/lib/miroir
+#     pools:
+#       default:
+#         # loopfile: sparse files on the node's existing filesystem — no
+#         # dedicated disk or pool. baseDir must be reflink-capable (XFS
+#         # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the
+#         # agent refuses to start otherwise. The dir is hostPath-mounted
+#         # into the agent at the same path.
+#         backend: loopfile
+#         baseDir: /var/lib/miroir
 nodes: {}
 
 # =============================================================================
@@ -259,6 +270,10 @@ nodes: {}
 #                 writable at the risk of split-brain. See the root README,
 #                 "Replication and quorum".
 #   fsType        ext4 | xfs, default ext4
+#   pool          named storage pool the class provisions from, default
+#                 "default". Every replica of a volume lands in this pool
+#                 on its node, so the pool must exist (under nodes.<name>
+#                 .pools) on at least `replicas` nodes.
 #   allowRemoteVolumeAccess
 #                 true | false (replicated only; the controller defaults
 #                 absent to true, matching LINSTOR): pods on nodes without

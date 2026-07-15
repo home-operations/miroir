@@ -26,7 +26,10 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
-const nodeA = "node-a"
+const (
+	nodeA    = "node-a"
+	poolFast = "fast"
+)
 
 // unreplicatedVolume is the minimal valid single-replica volume.
 func unreplicatedVolume(name string) *miroirv1alpha1.MiroirVolume {
@@ -132,6 +135,59 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 		err := k8sClient.Update(ctx, vol)
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "fsType change must be rejected, got: %v", err)
 		Expect(err.Error()).To(ContainSubstring("fsType is immutable"))
+	})
+
+	It("rejects retargeting a completed replica's pool", func() {
+		vol := replicatedVolume("pvc-pool-pin")
+		for i := range vol.Spec.Replicas {
+			vol.Spec.Replicas[i].Address = "10.0.0." + string(rune('1'+i))
+			vol.Spec.Replicas[i].Pool = poolFast
+		}
+		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
+
+		vol.Spec.Replicas[2].Pool = "slow"
+		err := k8sClient.Update(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "pool retarget must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("pool is immutable"))
+	})
+
+	It("rejects mixed-pool diskful replicas", func() {
+		vol := replicatedVolume("pvc-pool-mixed")
+		for i := range vol.Spec.Replicas {
+			vol.Spec.Replicas[i].Address = "10.0.1." + string(rune('1'+i))
+			vol.Spec.Replicas[i].Pool = poolFast
+		}
+		vol.Spec.Replicas[2].Pool = "slow"
+		err := k8sClient.Create(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "mixed-pool replicas must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("one pool"))
+	})
+
+	// The membership completion flow must stay admissible: an
+	// operator-added bare entry (no address, no pool) joins a named-pool
+	// volume, and its later completion sets pool+address in one update.
+	It("allows adding and completing a replica on a named-pool volume", func() {
+		vol := replicatedVolume("pvc-pool-add")
+		vol.Spec.Replicas = vol.Spec.Replicas[:2]
+		for i := range vol.Spec.Replicas {
+			vol.Spec.Replicas[i].Address = "10.0.2." + string(rune('1'+i))
+			vol.Spec.Replicas[i].Pool = poolFast
+		}
+		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
+
+		vol.Spec.Replicas = append(vol.Spec.Replicas, miroirv1alpha1.Replica{Node: "node-c"})
+		Expect(k8sClient.Update(ctx, vol)).To(Succeed(),
+			"an incomplete add must pass the uniformity rule")
+
+		vol.Spec.Replicas[2].Pool = poolFast
+		vol.Spec.Replicas[2].Backend = miroirv1alpha1.BackendLVMThin
+		vol.Spec.Replicas[2].NodeID = 2
+		vol.Spec.Replicas[2].Address = "10.0.2.3"
+		vol.Spec.Replicas[2].FullSync = true
+		Expect(k8sClient.Update(ctx, vol)).To(Succeed(),
+			"completing the entry must pass both pool rules")
 	})
 
 	// Canary for the pre-existing transition rule the agents rely on: a

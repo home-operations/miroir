@@ -30,7 +30,7 @@ import (
 // MiroirNodeApplyConfiguration represents a declarative configuration of the MiroirNode type for use
 // with apply.
 //
-// MiroirNode publishes one storage node's pool capacity. Named after the
+// MiroirNode publishes one storage node's pool capacities. Named after the
 // node; written by that node's agent, read by the controller at placement.
 type MiroirNodeApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`

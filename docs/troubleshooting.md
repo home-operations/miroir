@@ -3,10 +3,14 @@
 - **Agent pod `CrashLoopBackOff` on lvmthin**: partition or disk
   missing, or `dm_thin_pool` not loaded. Check
   `kubectl logs -n miroir-system -l app.kubernetes.io/component=agent`
-  and `lsmod | grep dm_thin` on the node.
+  and `lsmod | grep dm_thin` on the node. On a multi-pool node the
+  agent only exits when every pool fails setup; a single bad pool is
+  logged and quarantined (its volumes error, the other pools keep
+  serving) and shows up in the MiroirNode status as a per-pool
+  `message`.
 - **Agent pod `CrashLoopBackOff` on loopfile**: `baseDir` isn't
-  reflink-capable. The agent refuses to start so the failure shows
-  up immediately.
+  reflink-capable. The agent refuses to start (single-pool node) so
+  the failure shows up immediately.
 - **Agent pod `CrashLoopBackOff` after a node change**: the DRBD
   kernel module may be below the agent's floor
   (see [Requirements](requirements.md)); the agent refuses to start

@@ -27,11 +27,12 @@ agent exports, per volume on that node:
 | `miroir_volume_verify_last_timestamp_seconds` | unix time of the last completed scheduled verify; alert on staleness to catch a schedule that stopped firing                              |
 | `miroir_volume_verify_out_of_sync_bytes`      | out-of-sync bytes the last scheduled verify found (0 = clean)                                                                             |
 
-Each agent additionally exports its pool capacity
+Each agent additionally exports its pool capacities
 (`miroir_pool_capacity_bytes` / `miroir_pool_allocated_bytes` /
-`miroir_pool_meta_used_ratio`), the same sample that feeds
-capacity-aware placement and the `PoolUsageHigh` condition, so pool
-exhaustion is alertable, not just an Event. It also exports
+`miroir_pool_meta_used_ratio`, one series per named pool via the
+`pool` label), the same sample that feeds capacity-aware placement
+and the `PoolUsageHigh` condition, so pool exhaustion is alertable —
+and two pools on one node stay distinguishable — not just an Event. It also exports
 `miroir_node_drbd_kernel_info` (always 1, `version` label): the DRBD
 kernel module version probed at startup, from client-only nodes too
 (which have no `MiroirNode` status). Query it for fleet version skew

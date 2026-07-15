@@ -15,9 +15,10 @@ limitations under the License.
 */
 
 // Package membership reconciles replica-set edits on live volumes. An
-// operator adds a replica by appending {node, backend} to spec.replicas
-// (kubectl edit); this reconciler completes the entry — DRBD node id,
-// replication address, teardown finalizer, FullSync marker — after which
+// operator adds a replica by appending {node} (plus a pool when not the
+// default) to spec.replicas (kubectl edit); this reconciler completes the
+// entry — backend, DRBD node id, replication address, teardown finalizer,
+// FullSync marker — after which
 // the node's agent realizes it and DRBD full-syncs the new leg. Removal
 // needs no spec-side work: the removed node's agent notices its held
 // finalizer and tears down once the remaining replicas are safe.
@@ -131,9 +132,24 @@ var errBadPlacement = errors.New("replica placement is invalid")
 // just-created metadata forces a full sync either way, so a stale bitmap
 // slot on the peers cannot leak as data.
 func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, rep *miroirv1alpha1.Replica) error {
-	entry, ok := r.Nodes[rep.Node]
-	if !ok {
+	if _, ok := r.Nodes[rep.Node]; !ok {
 		return fmt.Errorf("%w: node %s is not in the storage node map", errBadPlacement, rep.Node)
+	}
+	// A volume's diskful legs all live in one pool: snapshots and restores
+	// are pool-local, so a cross-pool leg would make every snapshot of the
+	// volume unrestorable (the CRD's uniformity rule also rejects it once
+	// completed — refuse here with the reason instead of conflicting
+	// forever). An entry naming no pool inherits the volume's.
+	targetPool := volumePool(vol)
+	if !rep.Diskless {
+		if rep.Pool != "" && nodemap.PoolOrDefault(rep.Pool) != targetPool {
+			return fmt.Errorf("%w: the volume's replicas live in pool %q; a replica in pool %q would make its snapshots unrestorable (restores are pool-local)",
+				errBadPlacement, targetPool, nodemap.PoolOrDefault(rep.Pool))
+		}
+		if _, ok := r.Nodes.Pool(rep.Node, targetPool); !ok {
+			return fmt.Errorf("%w: node %s has no storage pool %q",
+				errBadPlacement, rep.Node, targetPool)
+		}
 	}
 	dup := 0
 	for _, other := range vol.Spec.Replicas {
@@ -151,11 +167,15 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 	id := nextNodeID(vol, rep.Node)
 
 	if rep.Diskless {
-		// Quorum-only entry: a backend is meaningless, and the node map
-		// (not the operator's edit) decides backends — clear any typo.
+		// Quorum-only entry: a backend or pool is meaningless, and the
+		// node map (not the operator's edit) decides backends — clear any
+		// typo.
 		rep.Backend = ""
+		rep.Pool = ""
 	} else {
-		rep.Backend = entry.Backend
+		pool, _ := r.Nodes.Pool(rep.Node, targetPool)
+		rep.Backend = pool.Backend
+		rep.Pool = targetPool
 		rep.FullSync = true
 	}
 	rep.NodeID = id
