@@ -134,7 +134,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(ctx, req.NamespacedName, vol); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		return ctrl.Result{}, r.volumeGone(req.Name, err)
 	}
 
 	idx, localDiskless, present, incomplete := legState(vol, r.NodeName)
@@ -421,6 +421,21 @@ func (r *VolumeReconciler) dropRealized(name string) {
 	delete(r.realized, name)
 }
 
+// volumeGone handles a reconcile whose volume no longer exists in the
+// API. A CR can vanish without a final successful teardown here — an
+// operator strips the finalizers by hand (the wedge recovery, issue
+// #195) — and per-volume state left behind would page forever
+// (miroir_volume_wedged is critical) and leak.
+func (r *VolumeReconciler) volumeGone(name string, err error) error {
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+	dropVolumeMetrics(name)
+	r.dropRealized(name)
+	r.dropRecovery(name)
+	return nil
+}
+
 // dropRecovery forgets a torn-down volume's split-brain debounce stamp so a
 // later volume under the same name starts with a clean slate.
 func (r *VolumeReconciler) dropRecovery(name string) {
@@ -443,6 +458,10 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 		if errors.Is(err, drbd.ErrWedged) {
 			return r.reportWedged(ctx, vol, err)
 		}
+		// Any other outcome means a previously reported wedge is gone —
+		// e.g. the reboot happened and the device is now merely held
+		// open — so the critical alert must stop paging for it.
+		metricWedged.DeleteLabelValues(vol.Name)
 		if errors.Is(err, backend.ErrBusy) {
 			// A force-deleted pod can leave the device open past
 			// NodeUnstage; retry until the mount goes away.
@@ -747,6 +766,9 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		if errors.Is(err, drbd.ErrWedged) {
 			return r.reportWedged(ctx, vol, err)
 		}
+		// A non-wedged outcome retires a previously reported wedge (see
+		// reconcileDeletion); the critical alert must stop paging for it.
+		metricWedged.DeleteLabelValues(vol.Name)
 		if errors.Is(err, backend.ErrBusy) {
 			// A pod still staged here holds the device open; it has to
 			// move off this node before the leg can go.
@@ -880,8 +902,8 @@ const wedgedRequeue = 5 * time.Minute
 // reportWedged surfaces a teardown the kernel can no longer finish
 // (drbd.ErrWedged) — Warning Event, status message, and the wedged gauge
 // the shipped alerts page on — then parks the retry at wedgedRequeue.
-// The gauge and message clear when a post-reboot retry finishes the
-// teardown (dropVolumeMetrics / slot removal).
+// The gauge clears on any non-wedged teardown outcome, on teardown
+// success (dropVolumeMetrics), and when the CR vanishes (volumeGone).
 func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
 	ctrl.LoggerFrom(ctx).Error(cause, "teardown wedged in kernel", "volume", vol.Name)
 	if r.Recorder != nil {

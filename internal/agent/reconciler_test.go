@@ -1022,9 +1022,10 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 }
 
 // A kernel-wedged resource (stuck Detaching with the connections gone,
-// LINBIT/drbd#137) must leave the fast busy-retry: no further down
-// attempt, park at wedgedRequeue, TeardownWedged warning, wedged gauge,
-// actionable Message, finalizer retained.
+// LINBIT/drbd#137) must leave the fast busy-retry without ever spawning
+// another down: the first sighting defers on the busy cadence, the second
+// parks at wedgedRequeue with the TeardownWedged warning, wedged gauge,
+// actionable Message, and the finalizer retained.
 func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
@@ -1046,9 +1047,15 @@ func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 	t.Cleanup(func() { dropVolumeMetrics(volPvc1) })
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
 
-	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+	// First sighting: the detach may still be draining — busy retry.
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != 10*time.Second {
+		t.Fatalf("first sighting must defer on the busy cadence, got %v / %v", res.RequeueAfter, err)
+	}
+	// Second sighting: escalate.
+	res, err = r.Reconcile(t.Context(), req)
 	if err != nil {
 		t.Fatalf("a wedge must park the retry, not error: %v", err)
 	}
@@ -1073,6 +1080,41 @@ func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 	}
 	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, "reboot") {
 		t.Fatalf("Message must say a reboot is required, got %q", msg)
+	}
+
+	// The wedge clears (reboot happened) but the device is now merely held
+	// open: the gauge — and with it the critical alert — must retire.
+	fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[]}]`
+	fe.errOn = map[string]error{
+		"drbdsetup down pvc-1": errors.New("pvc-1: State change failed: Device is held open by someone"),
+	}
+	res, err = r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != 10*time.Second {
+		t.Fatalf("held-open after the wedge must take the busy retry, got %v / %v", res.RequeueAfter, err)
+	}
+	if n := testutil.CollectAndCount(metricWedged); n != 0 {
+		t.Fatalf("wedged gauge must clear on a non-wedged outcome, still %d series", n)
+	}
+}
+
+// A volume whose CR vanished without a final successful teardown here —
+// finalizers stripped by hand, the documented wedge recovery — must not
+// leave its per-volume metrics behind (miroir_volume_wedged is critical
+// and would page forever).
+func TestReconcileVolumeGoneDropsMetrics(t *testing.T) {
+	s := newScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend())}
+	metricWedged.WithLabelValues(volPvc1).Set(1)
+	t.Cleanup(func() { dropVolumeMetrics(volPvc1) })
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := testutil.CollectAndCount(metricWedged); n != 0 {
+		t.Fatalf("metrics must drop when the CR is gone, still %d series", n)
 	}
 }
 
