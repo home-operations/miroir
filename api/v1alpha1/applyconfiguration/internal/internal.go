@@ -278,6 +278,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: devicePath
       type:
         scalar: string
+    - name: discardGranularityBytes
+      type:
+        scalar: numeric
     - name: diskFailed
       type:
         scalar: boolean

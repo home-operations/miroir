@@ -54,6 +54,12 @@ type ReplicaStatusApplyConfiguration struct {
 	// tie-breaker. Self-reported by the agent so removal handling still
 	// knows after the entry has left spec.replicas.
 	Diskless *bool `json:"diskless,omitempty"`
+	// DiscardGranularityBytes is the discard granularity this diskful
+	// leg probed from its backing device (0: unsupported or unprobed).
+	// Client legs advertise the max over the diskful legs' values, so
+	// trims from remote consumers align with the real backings instead
+	// of the 512-byte default DRBD assumes for diskless devices.
+	DiscardGranularityBytes *int64 `json:"discardGranularityBytes,omitempty"`
 	// DiskFailed latches a diskful leg DRBD detached after a backing I/O
 	// error (on-io-error detach): the agent renders `adjust --skip-disk`
 	// so the next reconcile does not re-attach the failing disk and
@@ -146,6 +152,14 @@ func (b *ReplicaStatusApplyConfiguration) WithSplitBrain(value bool) *ReplicaSta
 // If called multiple times, the Diskless field is set to the value of the last call.
 func (b *ReplicaStatusApplyConfiguration) WithDiskless(value bool) *ReplicaStatusApplyConfiguration {
 	b.Diskless = &value
+	return b
+}
+
+// WithDiscardGranularityBytes sets the DiscardGranularityBytes field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DiscardGranularityBytes field is set to the value of the last call.
+func (b *ReplicaStatusApplyConfiguration) WithDiscardGranularityBytes(value int64) *ReplicaStatusApplyConfiguration {
+	b.DiscardGranularityBytes = &value
 	return b
 }
 

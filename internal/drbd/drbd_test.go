@@ -36,6 +36,7 @@ const (
 	addrKharkiv        = "192.168.1.41"
 	addrParis          = "192.168.1.42"
 	addrOslo           = "192.168.1.43"
+	nodeWorker1        = "worker-1"
 )
 
 func testResource(local string) Resource {
@@ -120,7 +121,7 @@ func TestRenderClientLegNoTiebreaker(t *testing.T) {
 	r := testResource(nodeKharkiv)
 	r.Peers = append(r.Peers,
 		Peer{Node: "tiebreak-1", NodeID: 2, Address: addrOslo, Diskless: true},
-		Peer{Node: "worker-1", NodeID: 3, Address: "192.168.1.44", Diskless: true, Client: true},
+		Peer{Node: nodeWorker1, NodeID: 3, Address: "192.168.1.44", Diskless: true, Client: true},
 	)
 	out := Render(r)
 	if n := strings.Count(out, "tiebreaker no;"); n != 1 {
@@ -129,6 +130,41 @@ func TestRenderClientLegNoTiebreaker(t *testing.T) {
 	client := out[strings.Index(out, `on "worker-1"`):]
 	if !strings.Contains(client[:strings.Index(client, "}")+1], "tiebreaker no;") {
 		t.Fatalf("tiebreaker no must sit in the client's volume block:\n%s", out)
+	}
+}
+
+// A client leg rendered on its own node advertises the diskful legs'
+// discard granularity; rendered anywhere else (or unset) it must not.
+func TestRenderClientDiscardGranularity(t *testing.T) {
+	r := testResource(nodeKharkiv)
+	r.Peers = append(r.Peers,
+		Peer{Node: nodeWorker1, NodeID: 2, Address: addrOslo, Diskless: true, Client: true},
+	)
+	r.ClientDiscardGranularityBytes = 65536
+
+	// Rendered on a replica node: the option belongs to the client's
+	// device, not this one — nothing renders even with the value set.
+	if out := Render(r); strings.Contains(out, "discard-granularity") {
+		t.Fatalf("non-client local must not render discard-granularity:\n%s", out)
+	}
+
+	r.LocalNode = nodeWorker1
+	r.LocalDiskless = true
+	r.LocalDisk = ""
+	// The resync knob must stay diskful-only even when its value is set.
+	r.DiscardGranularityBytes = 4096
+	out := Render(r)
+	if !strings.Contains(out, "discard-granularity 65536;") {
+		t.Fatalf("client local must advertise the peers' granularity:\n%s", out)
+	}
+	if strings.Contains(out, "rs-discard-granularity") {
+		t.Fatalf("diskless local must not render the resync knob:\n%s", out)
+	}
+	r.DiscardGranularityBytes = 0
+
+	r.ClientDiscardGranularityBytes = 0
+	if out := Render(r); strings.Contains(out, "discard-granularity") {
+		t.Fatalf("zero must render nothing (keep the kernel heuristic):\n%s", out)
 	}
 }
 
