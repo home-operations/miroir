@@ -457,7 +457,11 @@ func main() {
 		be, backendType, err := backendFor(nodeName, nodesConfig, vg, thinPool)
 		if errors.Is(err, errNodeUnmapped) {
 			setupLog.Info("node not in the storage map; running client-only node service", "node", nodeName)
-			node := csi.NewNode(mgr.GetClient(), nodeName, &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec})
+			// Client legs get DRBD configs rendered here too, so the
+			// kernel floor binds on client-only nodes as well.
+			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
+			probeDRBD(clientDRBD)
+			node := csi.NewNode(mgr.GetClient(), nodeName, clientDRBD)
 			serveCSI(mgr, csiSocket, identity, nil, node)
 			break
 		}
@@ -478,7 +482,7 @@ func main() {
 		// it proactively on nodes that ship it) and run without the DRBD
 		// machinery when the kernel side is absent — otherwise the events
 		// watcher hot-loops "exit status 20" every 5s forever.
-		drbdReady := drbdDriver.KernelAvailable(context.Background())
+		drbdKernel, drbdReady := probeDRBD(drbdDriver)
 		if !drbdReady {
 			setupLog.Info("DRBD kernel module unavailable; running local-only " +
 				"(no events watcher, no orphan/barrier/shutdown sweeps)")
@@ -554,6 +558,7 @@ func main() {
 			BackendType: backendType,
 			Interval:    poolStatsInterval,
 			Recorder:    mgr.GetEventRecorder("miroir-agent"),
+			DRBDVersion: drbdKernel,
 		}); err != nil {
 			setupLog.Error(err, "unable to add pool stats publisher")
 			os.Exit(1)
@@ -728,6 +733,30 @@ func resumeStaleBarriers(driver *drbd.Driver, apiBudget time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// probeDRBD reports whether the DRBD kernel side is usable and, when it
+// is, the module version — exiting below drbd.KernelFloor: a 9.3.1-era
+// option rendered against an older module errors drbdadm for every
+// resource on the node, so failing fast here beats poisoning them all
+// later. Talos ≥ 1.13.0 ships a module at the floor.
+func probeDRBD(driver *drbd.Driver) (version string, ready bool) {
+	if !driver.KernelAvailable(context.Background()) {
+		return "", false
+	}
+	v, err := driver.KernelVersion(context.Background())
+	if err != nil {
+		// The module answered but the version read flaked; running
+		// unchecked beats refusing a working node.
+		setupLog.Error(err, "cannot read DRBD kernel module version; skipping floor check")
+		return "", true
+	}
+	if drbd.BelowKernelFloor(v) {
+		setupLog.Error(nil, "DRBD kernel module is below the supported floor; upgrade the node (Talos >= 1.13.0)",
+			"version", v, "floor", drbd.KernelFloor)
+		os.Exit(1)
+	}
+	return v, true
 }
 
 // csiRunnable marks the CSI server as running on every replica rather than

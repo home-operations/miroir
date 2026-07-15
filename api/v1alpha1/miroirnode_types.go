@@ -28,6 +28,12 @@ type MiroirNodeStatus struct {
 	// independently of data space.
 	// +optional
 	MetaUsedPercent int32 `json:"metaUsedPercent,omitempty"`
+	// DRBDVersion is the DRBD kernel module version the agent probed at
+	// startup (e.g. "9.3.2"); absent on nodes without the module. The
+	// module ships with the host, not the agent image, so this is the
+	// per-node view that makes mixed clusters visible mid-upgrade.
+	// +optional
+	DRBDVersion string `json:"drbdVersion,omitempty"`
 	// ObservedAt is when these figures were last sampled; the controller
 	// ignores stats older than a few poll intervals as unknown.
 	// +optional
@@ -44,6 +50,7 @@ type MiroirNodeStatus struct {
 // +kubebuilder:printcolumn:name="Backend",type=string,JSONPath=`.spec.backend`
 // +kubebuilder:printcolumn:name="Capacity",type=integer,JSONPath=`.status.capacityBytes`
 // +kubebuilder:printcolumn:name="Allocated",type=integer,JSONPath=`.status.allocatedBytes`
+// +kubebuilder:printcolumn:name="DRBD",type=string,JSONPath=`.status.drbdVersion`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MiroirNode publishes one storage node's pool capacity. Named after the

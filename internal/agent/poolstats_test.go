@@ -60,6 +60,7 @@ func TestPoolStatsPublisherPublishes(t *testing.T) {
 	fb := newFakeBackend()
 	fb.stats = backend.PoolStats{SizeBytes: 100 * poolGiB, UsedBytes: 50 * poolGiB}
 	p, get := newPublisher(t, fb, nil)
+	p.DRBDVersion = "9.3.2"
 
 	if err := p.publish(t.Context()); err != nil {
 		t.Fatal(err)
@@ -70,6 +71,9 @@ func TestPoolStatsPublisherPublishes(t *testing.T) {
 	}
 	if n.Status.CapacityBytes != 100*poolGiB || n.Status.AllocatedBytes != 50*poolGiB {
 		t.Fatalf("unexpected capacity figures: %+v", n.Status)
+	}
+	if n.Status.DRBDVersion != "9.3.2" {
+		t.Fatalf("drbdVersion = %q, want 9.3.2", n.Status.DRBDVersion)
 	}
 	if n.Status.ObservedAt == nil {
 		t.Fatal("ObservedAt must be set")

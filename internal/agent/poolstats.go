@@ -60,6 +60,10 @@ type PoolStatsPublisher struct {
 	Interval time.Duration
 	// Recorder emits the PoolUsageHigh event; optional.
 	Recorder events.EventRecorder
+	// DRBDVersion is the kernel module version probed at agent startup;
+	// empty on nodes without the module. A module change means a node
+	// reboot and thus an agent restart, so startup is current enough.
+	DRBDVersion string
 }
 
 // Start publishes once promptly, then on the interval until ctx is done.
@@ -112,6 +116,7 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 		cur.Status.CapacityBytes = stats.SizeBytes
 		cur.Status.AllocatedBytes = stats.UsedBytes
 		cur.Status.MetaUsedPercent = int32(math.Round(stats.MetaUsedPercent))
+		cur.Status.DRBDVersion = p.DRBDVersion
 		now := metav1.Now()
 		cur.Status.ObservedAt = &now
 

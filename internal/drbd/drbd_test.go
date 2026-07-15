@@ -30,6 +30,7 @@ import (
 const (
 	volPvc1            = "pvc-1"
 	cmdDrbdsetupStatus = "drbdsetup status"
+	cmdAdmVersion      = "drbdadm --version"
 	cmdDumpMD          = "dump-md"
 	mockCurrentUUID    = "current-uuid 0xDEADBEEF00000001;"
 	addrKharkiv        = "192.168.1.41"
@@ -290,6 +291,62 @@ func TestKernelAvailable(t *testing.T) {
 	d = &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	if d.KernelAvailable(t.Context()) {
 		t.Fatal("module-less node must read as unavailable")
+	}
+}
+
+// KernelVersion pulls DRBD_KERNEL_VERSION out of drbdadm --version; the
+// other lines (utils version, api codes) must not be mistaken for it.
+func TestKernelVersion(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdAdmVersion: "DRBDADM_BUILDTAG=GIT-hash\n" +
+			"DRBDADM_API_VERSION=2\n" +
+			"DRBD_KERNEL_VERSION_CODE=0x090302\n" +
+			"DRBD_KERNEL_VERSION=9.3.2\n" +
+			"DRBDADM_VERSION_CODE=0x092203\n" +
+			"DRBDADM_VERSION=9.34.3\n",
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	v, err := d.KernelVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != "9.3.2" {
+		t.Fatalf("version = %q, want 9.3.2", v)
+	}
+
+	fe = &fakeExec{responses: map[string]string{cmdAdmVersion: "DRBDADM_VERSION=9.34.3\n"}}
+	d = &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if _, err := d.KernelVersion(t.Context()); err == nil {
+		t.Fatal("missing DRBD_KERNEL_VERSION line must error, not match DRBDADM_VERSION")
+	}
+
+	fe = &fakeExec{errOn: map[string]error{cmdAdmVersion: errors.New("exit status 1")}}
+	d = &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if _, err := d.KernelVersion(t.Context()); err == nil {
+		t.Fatal("exec failure must surface as an error")
+	}
+}
+
+// The floor compare is numeric per dotted component — "9.10" is newer
+// than "9.3" — and anything unparseable reads as below the floor.
+func TestBelowKernelFloor(t *testing.T) {
+	cases := map[string]bool{
+		"9.3.1":   false, // the floor itself
+		"9.3.2":   false,
+		"9.4.0":   false,
+		"9.10.0":  false, // numeric, not lexicographic
+		"10.0.0":  false,
+		"9.3.0":   true,
+		"9.2.18":  true,
+		"8.4.11":  true,
+		"9.3":     true, // shorter than the floor
+		"":        true,
+		"unknown": true,
+	}
+	for version, want := range cases {
+		if got := BelowKernelFloor(version); got != want {
+			t.Errorf("BelowKernelFloor(%q) = %v, want %v", version, got, want)
+		}
 	}
 }
 
