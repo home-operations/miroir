@@ -18,17 +18,14 @@ package membership
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
@@ -40,10 +37,16 @@ import (
 // node (LINSTOR's auto-evict): once a node's MiroirNode heartbeat
 // (Status.ObservedAt, refreshed ~60s by its pool-stats publisher) has
 // been stale for After, each volume with a leg there gets one atomic
-// spec update — dead entry out, replacement in — and the dead node's
-// teardown finalizer is force-released (its agent cannot run). A status
-// marker records the force-release so the node, if it ever returns,
-// scrubs its leftover local state instead of leaking it.
+// spec update — dead entry out, replacement in.
+//
+// The dead node's teardown finalizer is deliberately left in place: it
+// is the durable record that the leg was never torn down there. When
+// the node returns, its agent runs the ordinary removal flow
+// (reconcileRemoval) against it — safety-gated, wiping metadata and
+// reclaiming the backing device — exactly as if an operator had removed
+// the entry. Until then the finalizer also keeps the volume deletable
+// only once that cleanup can actually happen, and keeps the tie-breaker
+// retrofit from treating the dead node as a free spare.
 //
 // Deliberately conservative: it evicts only when the remaining legs are
 // clean, stands down entirely when more than one node looks dead (an
@@ -69,6 +72,17 @@ type AutoEvictReconciler struct {
 // blockers live in volume status, snapshots, or other nodes' heartbeats.
 const evictRecheckInterval = 5 * time.Minute
 
+// evictPass is the cluster state gathered once per reconcile pass and
+// shared by every per-volume decision — listing snapshots or re-reading
+// node stats per volume would multiply two collection sizes for answers
+// that cannot change mid-pass.
+type evictPass struct {
+	// pinned holds the names of volumes referenced by any snapshot.
+	pinned map[string]bool
+	// nodes indexes the listed MiroirNodes by name.
+	nodes map[string]*miroirv1alpha1.MiroirNode
+}
+
 // Reconcile checks one node's heartbeat and, once it has been stale for
 // After, evicts that node's legs volume by volume.
 func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -91,7 +105,7 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
-	stale, err := r.staleNodes(ctx)
+	pass, stale, err := r.gather(ctx)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -108,13 +122,13 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.List(ctx, vols); err != nil {
 		return ctrl.Result{}, err
 	}
-	remaining := false
+	blocked := false
 	for i := range vols.Items {
 		vol := &vols.Items[i]
 		if !hasLegOn(vol, req.Name) {
 			continue
 		}
-		outcome, err := r.evictVolume(ctx, vol, req.Name)
+		outcome, err := r.evictVolume(ctx, vol, req.Name, pass)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -130,25 +144,31 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				"node", req.Name, "volume", vol.Name)
 			return ctrl.Result{RequeueAfter: evictRecheckInterval}, nil
 		default:
-			remaining = true
+			blocked = true
 		}
 	}
-	if remaining {
+	if blocked {
 		return ctrl.Result{RequeueAfter: evictRecheckInterval}, nil
 	}
 	return ctrl.Result{}, nil
 }
 
-// staleNodes lists map nodes whose heartbeat is older than After —
-// the safety-valve census.
-func (r *AutoEvictReconciler) staleNodes(ctx context.Context) ([]string, error) {
+// gather lists the cluster state one eviction pass needs — MiroirNodes
+// (the safety-valve census and the capacity views) and snapshots (the
+// pin set) — exactly once.
+func (r *AutoEvictReconciler) gather(ctx context.Context) (*evictPass, []string, error) {
 	nodes := &miroirv1alpha1.MiroirNodeList{}
 	if err := r.List(ctx, nodes); err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	pass := &evictPass{
+		pinned: map[string]bool{},
+		nodes:  make(map[string]*miroirv1alpha1.MiroirNode, len(nodes.Items)),
 	}
 	var stale []string
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
+		pass.nodes[n.Name] = n
 		if _, ok := r.Nodes[n.Name]; !ok {
 			continue
 		}
@@ -157,7 +177,14 @@ func (r *AutoEvictReconciler) staleNodes(ctx context.Context) ([]string, error) 
 		}
 	}
 	slices.Sort(stale)
-	return stale, nil
+	snaps := &miroirv1alpha1.MiroirSnapshotList{}
+	if err := r.List(ctx, snaps); err != nil {
+		return nil, nil, err
+	}
+	for i := range snaps.Items {
+		pass.pinned[snaps.Items[i].Spec.VolumeName] = true
+	}
+	return pass, stale, nil
 }
 
 // evictOutcome classifies one volume's eviction attempt.
@@ -174,12 +201,16 @@ const (
 )
 
 // evictVolume applies one volume's eviction: gate checks, replacement
-// choice, the eviction marker, then the atomic spec swap plus finalizer
-// force-release.
-func (r *AutoEvictReconciler) evictVolume(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, dead string) (evictOutcome, error) {
+// choice, then the atomic spec swap. The dead node's finalizer stays.
+func (r *AutoEvictReconciler) evictVolume(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, dead string, pass *evictPass) (evictOutcome, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	reason, outcome := r.evictBlocked(ctx, vol, dead)
+	// -1 when the dead leg is a client leg, not a replica.
+	deadIdx := slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == dead
+	})
+
+	reason, outcome := evictBlocked(vol, dead, deadIdx, pass)
 	if reason != "" {
 		if outcome == blockedOutcome {
 			log.Info("auto-evict blocked", "volume", vol.Name, "node", dead, "reason", reason)
@@ -187,23 +218,14 @@ func (r *AutoEvictReconciler) evictVolume(ctx context.Context, vol *miroirv1alph
 		return outcome, nil
 	}
 
-	kind, apply := r.plan(ctx, vol, dead)
+	kind, apply := r.plan(vol, dead, deadIdx, pass)
 	if apply == nil {
 		log.Info("auto-evict blocked", "volume", vol.Name, "node", dead,
 			"reason", "no spare node qualifies for the replacement leg")
 		return blockedOutcome, nil
 	}
 
-	// Stamp the marker before the swap: if the node ever returns, the
-	// marker is its agent's only permission to scrub the abandoned leg
-	// (reconcileRemoval skips nodes holding no finalizer). A marker
-	// without a completed swap is harmless — the agent ignores it while
-	// the node is still placed, and a later pass re-stamps.
-	if err := r.stampEvicted(ctx, vol, dead); err != nil {
-		return blockedOutcome, err
-	}
 	apply(vol)
-	controllerutil.RemoveFinalizer(vol, constants.FinalizerPrefix+dead)
 	if err := r.Update(ctx, vol); err != nil {
 		if apierrors.IsConflict(err) {
 			return blockedOutcome, nil
@@ -213,7 +235,7 @@ func (r *AutoEvictReconciler) evictVolume(ctx context.Context, vol *miroirv1alph
 	metricEvictions.WithLabelValues(kind).Inc()
 	if r.Recorder != nil {
 		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "AutoEvict", "Evict",
-			"node %s has been unreachable past the eviction threshold; re-placed its %s leg and force-released its teardown finalizer", dead, kind)
+			"node %s has been unreachable past the eviction threshold; re-placed its %s leg (its teardown finalizer stays until the node returns and cleans up)", dead, kind)
 	}
 	log.Info("auto-evict: re-placed a dead node's leg",
 		"volume", vol.Name, "node", dead, "kind", kind)
@@ -222,29 +244,19 @@ func (r *AutoEvictReconciler) evictVolume(ctx context.Context, vol *miroirv1alph
 
 // evictBlocked reports why the volume must not be evicted right now (""
 // when it may proceed) and the outcome class for a non-empty reason.
-func (r *AutoEvictReconciler) evictBlocked(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, dead string) (string, evictOutcome) {
+func evictBlocked(vol *miroirv1alpha1.MiroirVolume, dead string, deadIdx int, pass *evictPass) (string, evictOutcome) {
 	if !vol.DeletionTimestamp.IsZero() {
-		// Deletion has its own teardown flow; force-releasing here would
-		// let the object vanish before the returning node could scrub.
+		// Deletion has its own teardown flow; re-placing legs under it
+		// only adds sync work the deletion immediately undoes.
 		return "volume is being deleted", blockedOutcome
 	}
 	if vol.Spec.DRBD == nil {
 		// The dead node holds the only copy; re-placing is data loss.
 		return "volume is unreplicated", blockedOutcome
 	}
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Address == "" {
-			return "a replica change is already in flight", blockedOutcome
-		}
+	if incompleteChange(vol) {
+		return "a membership change is already in flight", blockedOutcome
 	}
-	for _, cl := range vol.Spec.Clients {
-		if cl.Address == "" {
-			return "a client-leg change is already in flight", blockedOutcome
-		}
-	}
-	deadIdx := slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
-		return rep.Node == dead
-	})
 	deadDiskful := deadIdx >= 0 && !vol.Spec.Replicas[deadIdx].Diskless
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == dead || rep.Diskless {
@@ -264,27 +276,37 @@ func (r *AutoEvictReconciler) evictBlocked(ctx context.Context, vol *miroirv1alp
 			return "survivor " + rep.Node + " still sees the node's DRBD links up", peerConnectedOutcome
 		}
 	}
-	if deadDiskful {
-		snaps := &miroirv1alpha1.MiroirSnapshotList{}
-		if err := r.List(ctx, snaps); err != nil {
-			return "cannot list snapshots: " + err.Error(), blockedOutcome
-		}
-		for _, s := range snaps.Items {
-			if s.Spec.VolumeName == vol.Name {
-				// Snapshots are per-replica CoW state; a replacement leg
-				// would not carry them, leaving restores dependent on
-				// which leg serves them.
-				return "snapshot " + s.Name + " pins the volume's replicas", blockedOutcome
-			}
-		}
+	if deadDiskful && pass.pinned[vol.Name] {
+		// Snapshots are per-replica CoW state; a replacement leg would
+		// not carry them, leaving restores dependent on which leg serves
+		// them.
+		return "snapshots pin the volume's replicas", blockedOutcome
 	}
 	return "", evictedOutcome
 }
 
+// incompleteChange reports whether a membership edit is mid-completion:
+// any replica or client leg still lacking its address. One spec edit at
+// a time — acting on a half-completed spec races the membership
+// reconciler's completion update.
+func incompleteChange(vol *miroirv1alpha1.MiroirVolume) bool {
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Address == "" {
+			return true
+		}
+	}
+	for _, cl := range vol.Spec.Clients {
+		if cl.Address == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // plan picks the replacement and returns the leg kind plus a mutation
 // applying the swap, or a nil mutation when no replacement exists.
-func (r *AutoEvictReconciler) plan(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, dead string) (string, func(*miroirv1alpha1.MiroirVolume)) {
-	if cl := vol.Spec.ClientForNode(dead); cl != nil {
+func (r *AutoEvictReconciler) plan(vol *miroirv1alpha1.MiroirVolume, dead string, deadIdx int, pass *evictPass) (string, func(*miroirv1alpha1.MiroirVolume)) {
+	if deadIdx < 0 {
 		// A dead consumer needs no replacement: the pod is gone; drop the leg.
 		return kindClient, func(v *miroirv1alpha1.MiroirVolume) {
 			v.Spec.Clients = slices.DeleteFunc(v.Spec.Clients, func(c miroirv1alpha1.VolumeClient) bool {
@@ -292,9 +314,6 @@ func (r *AutoEvictReconciler) plan(ctx context.Context, vol *miroirv1alpha1.Miro
 			})
 		}
 	}
-	deadIdx := slices.IndexFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
-		return rep.Node == dead
-	})
 	if vol.Spec.Replicas[deadIdx].Diskless {
 		// TieBreakerNode sees the dead entry as used, so it can never hand
 		// the dead node back. Client-leg nodes count as used too: a
@@ -311,7 +330,14 @@ func (r *AutoEvictReconciler) plan(ctx context.Context, vol *miroirv1alpha1.Miro
 			swapReplica(v, dead, miroirv1alpha1.Replica{Node: tb, Diskless: true})
 		}
 	}
-	if repl := r.replacementNode(ctx, vol, dead); repl != "" {
+	poolName := volumePool(vol)
+	fits := func(node string) bool {
+		if _, ok := r.Nodes.Pool(node, poolName); !ok {
+			return false
+		}
+		return poolRoom(pass.nodes[node], poolName, vol.Spec.SizeBytes) == ""
+	}
+	if repl := replacementNode(r.Nodes, vol, dead, fits); repl != "" {
 		return kindReplica, func(v *miroirv1alpha1.MiroirVolume) {
 			swapReplica(v, dead, miroirv1alpha1.Replica{Node: repl})
 		}
@@ -319,12 +345,8 @@ func (r *AutoEvictReconciler) plan(ctx context.Context, vol *miroirv1alpha1.Miro
 	// No spare node: flipping a live tie-breaker diskful (auto-diskful's
 	// toggle-disk) restores 2 data copies at the cost of the quorum leg —
 	// strictly better than staying at 1 clean copy.
-	poolName := volumePool(vol)
 	for i, rep := range vol.Spec.Replicas {
-		if !rep.Diskless || rep.Node == dead {
-			continue
-		}
-		if !r.nodeFits(ctx, rep.Node, poolName, vol.Spec.SizeBytes) {
+		if !rep.Diskless || rep.Node == dead || !fits(rep.Node) {
 			continue
 		}
 		pool, ok := r.Nodes.Pool(rep.Node, poolName)
@@ -368,72 +390,49 @@ func swapReplica(vol *miroirv1alpha1.MiroirVolume, dead string, replacement miro
 	vol.Spec.Replicas = out
 }
 
-// replacementNode picks the node for a re-placed diskful leg: carries
-// the volume's pool, holds no leg of the volume, has fresh stats with
-// room for the full virtual size; zones not already covered by the
-// surviving legs win, ties by name. Empty when no node qualifies.
-func (r *AutoEvictReconciler) replacementNode(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, dead string) string {
-	pool := volumePool(vol)
+// replacementNode picks the node for a re-placed diskful leg: one
+// passing fits (pool present, fresh stats, room), holding no leg of the
+// volume; zones not already covered by the surviving legs win, ties by
+// name. Empty when no node qualifies. The zone preference and tie-break
+// are nodemap.PickSpare — the same policy tie-breaker placement uses.
+func replacementNode(nodes nodemap.Map, vol *miroirv1alpha1.MiroirVolume, dead string, fits func(string) bool) string {
 	used := make(map[string]bool, len(vol.Spec.Replicas)+len(vol.Spec.Clients))
 	usedZone := map[string]bool{}
 	for _, rep := range vol.Spec.Replicas {
 		used[rep.Node] = true
 		if rep.Node == dead {
+			// The dead node's zone is genuinely free again.
 			continue
 		}
-		if z := r.Nodes[rep.Node].Zone; z != "" {
+		if z := nodes[rep.Node].Zone; z != "" {
 			usedZone[z] = true
 		}
 	}
 	for _, cl := range vol.Spec.Clients {
 		used[cl.Node] = true
 	}
-	var candidates []string
-	for name := range r.Nodes {
-		if used[name] {
-			continue
-		}
-		if _, ok := r.Nodes.Pool(name, pool); !ok {
-			continue
-		}
-		if !r.nodeFits(ctx, name, pool, vol.Spec.SizeBytes) {
-			continue
-		}
-		candidates = append(candidates, name)
-	}
-	slices.Sort(candidates)
-	for _, name := range candidates {
-		if z := r.Nodes[name].Zone; z == "" || !usedZone[z] {
-			return name
-		}
-	}
-	if len(candidates) > 0 {
-		return candidates[0]
-	}
-	return ""
+	return nodes.PickSpare(used, usedZone, fits)
 }
 
-// nodeFits reports whether the node's pool has fresh stats and room for
-// the volume's full virtual size — the same bar auto-diskful sets: a
-// full sync must never land blind.
-func (r *AutoEvictReconciler) nodeFits(ctx context.Context, node, pool string, sizeBytes int64) bool {
-	mn := &miroirv1alpha1.MiroirNode{}
-	if err := r.Get(ctx, types.NamespacedName{Name: node}, mn); err != nil {
-		return false
+// poolRoom reports why the node's pool cannot take a full-size sync (""
+// when it can): stats missing or stale, pool absent, or not enough free
+// space. The one bar auto-diskful and auto-evict share — a full sync
+// must never land blind.
+func poolRoom(mn *miroirv1alpha1.MiroirNode, pool string, sizeBytes int64) string {
+	if mn == nil {
+		return "no pool stats"
 	}
 	if mn.Status.ObservedAt == nil || time.Since(mn.Status.ObservedAt.Time) > constants.StatsStaleAfter {
-		return false
+		return "pool stats are stale"
 	}
 	st := mn.Status.Pool(pool)
-	return st != nil && st.CapacityBytes-st.AllocatedBytes >= sizeBytes
-}
-
-// stampEvicted records the force-release in status before it happens —
-// the returning node's permission slip to scrub its abandoned leg.
-func (r *AutoEvictReconciler) stampEvicted(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, dead string) error {
-	patch := fmt.Appendf(nil, `{"status":{"evicted":{%q:%q}}}`,
-		dead, time.Now().UTC().Format(time.RFC3339))
-	return r.Status().Patch(ctx, vol, client.RawPatch(types.MergePatchType, patch))
+	if st == nil {
+		return "no stats for pool " + pool
+	}
+	if st.CapacityBytes-st.AllocatedBytes < sizeBytes {
+		return "insufficient free space in pool " + pool
+	}
+	return ""
 }
 
 // hasLegOn reports whether any replica or client leg of the volume lives

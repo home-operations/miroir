@@ -98,8 +98,8 @@ func newAE(t *testing.T, nodes nodemap.Map, objs ...client.Object) *AutoEvictRec
 
 // A node stale past the threshold gets its diskful leg swapped in one
 // update: dead entry out, a bare replacement in for the membership
-// reconciler to complete, dead finalizer force-released, eviction marker
-// stamped.
+// reconciler to complete. The dead node's teardown finalizer stays — it
+// is the record that the leg was never cleaned up there.
 func TestAutoEvictSwapsDeadDiskful(t *testing.T) {
 	r := newAE(t, evictMap(), evictVol(),
 		minAt(nodeA, time.Minute, 50<<30),
@@ -127,11 +127,8 @@ func TestAutoEvictSwapsDeadDiskful(t *testing.T) {
 	if got.Spec.Replicas[0].Node != nodeA {
 		t.Fatalf("surviving diskful leg must stay first: %+v", got.Spec.Replicas)
 	}
-	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeB) {
-		t.Fatalf("dead node's finalizer must be force-released: %v", got.Finalizers)
-	}
-	if _, ok := got.Status.Evicted[nodeB]; !ok {
-		t.Fatalf("eviction marker must be stamped: %+v", got.Status.Evicted)
+	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeB) {
+		t.Fatalf("dead node's teardown finalizer must stay for its return: %v", got.Finalizers)
 	}
 	if v := testutil.ToFloat64(metricEvictions.WithLabelValues("replica")); v < 1 {
 		t.Fatalf("eviction counter must increment, got %v", v)
@@ -165,7 +162,7 @@ func TestAutoEvictValveMultipleStale(t *testing.T) {
 	reconcileAE(t, r, nodeB)
 
 	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
-	if len(got.Spec.Replicas) != 2 || len(got.Status.Evicted) != 0 {
+	if len(got.Spec.Replicas) != 2 {
 		t.Fatalf("valve must block all evictions: %+v", got.Spec)
 	}
 	if v := testutil.ToFloat64(metricEvictStanddown.WithLabelValues("multiple_stale")); v < 1 {
@@ -187,7 +184,7 @@ func TestAutoEvictOptOut(t *testing.T) {
 	reconcileAE(t, r, nodeB)
 
 	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
-	if len(got.Spec.Replicas) != 2 || len(got.Status.Evicted) != 0 {
+	if len(got.Spec.Replicas) != 2 {
 		t.Fatalf("opted-out node must never be evicted: %+v", got.Spec)
 	}
 }
@@ -204,7 +201,7 @@ func TestAutoEvictBlocksOnDirtySurvivor(t *testing.T) {
 	reconcileAE(t, r, nodeB)
 
 	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
-	if len(got.Spec.Replicas) != 2 || len(got.Status.Evicted) != 0 {
+	if len(got.Spec.Replicas) != 2 {
 		t.Fatalf("dirty survivor must block eviction: %+v", got.Spec)
 	}
 }
@@ -224,7 +221,7 @@ func TestAutoEvictStandsDownWhenPeerConnected(t *testing.T) {
 	reconcileAE(t, r, nodeB)
 
 	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
-	if len(got.Spec.Replicas) != 2 || len(got.Status.Evicted) != 0 {
+	if len(got.Spec.Replicas) != 2 {
 		t.Fatalf("established links to the dead node must block eviction: %+v", got.Spec)
 	}
 	if v := testutil.ToFloat64(metricEvictStanddown.WithLabelValues("peer_connected")); v < 1 {
@@ -246,7 +243,7 @@ func TestAutoEvictBlocksOnSnapshot(t *testing.T) {
 	reconcileAE(t, r, nodeB)
 
 	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
-	if len(got.Spec.Replicas) != 2 || len(got.Status.Evicted) != 0 {
+	if len(got.Spec.Replicas) != 2 {
 		t.Fatalf("snapshot must block eviction: %+v", got.Spec)
 	}
 }
@@ -284,11 +281,8 @@ func TestAutoEvictSwapsDeadTieBreaker(t *testing.T) {
 	}) {
 		t.Fatalf("dead tie-breaker must be removed: %+v", got.Spec.Replicas)
 	}
-	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeC) {
-		t.Fatalf("dead node's finalizer must be force-released: %v", got.Finalizers)
-	}
-	if _, ok := got.Status.Evicted[nodeC]; !ok {
-		t.Fatalf("eviction marker must be stamped: %+v", got.Status.Evicted)
+	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeC) {
+		t.Fatalf("dead node's teardown finalizer must stay for its return: %v", got.Finalizers)
 	}
 }
 
@@ -315,11 +309,8 @@ func TestAutoEvictDropsDeadClient(t *testing.T) {
 	if len(got.Spec.Clients) != 0 {
 		t.Fatalf("dead client leg must be dropped: %+v", got.Spec.Clients)
 	}
-	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeC) {
-		t.Fatalf("dead node's finalizer must be force-released: %v", got.Finalizers)
-	}
-	if _, ok := got.Status.Evicted[nodeC]; !ok {
-		t.Fatalf("eviction marker must be stamped: %+v", got.Status.Evicted)
+	if !slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeC) {
+		t.Fatalf("dead node's teardown finalizer must stay for its return: %v", got.Finalizers)
 	}
 }
 

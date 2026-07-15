@@ -68,8 +68,10 @@ autoDiskfulAfter: ""
 # status, refreshed ~60s) has been stale this long (LINSTOR's auto-evict;
 # Go duration, e.g. "60m" — keep it well above any reboot or upgrade
 # window). Each affected volume gets one atomic swap: the dead entry out,
-# a fresh replica in (full sync follows), and the dead node's teardown
-# finalizer is force-released; a returning node scrubs its leftover leg.
+# a fresh replica in (full sync follows). The dead node keeps its teardown
+# finalizer as the record of its never-cleaned leg: deleting an evicted
+# volume still waits for that node, and when the node returns its agent
+# tears the leftover leg down through the normal removal flow.
 # It never acts when more than one node looks dead, when a survivor still
 # sees the node's DRBD links up, when the remaining legs are not clean,
 # or when snapshots pin the volume. Needs a spare storage node carrying

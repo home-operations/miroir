@@ -123,15 +123,25 @@ func (m Map) TieBreakerNode(replicas []miroirv1alpha1.Replica) string {
 			usedZone[z] = true
 		}
 	}
+	return m.PickSpare(usedNode, usedZone, nil)
+}
+
+// PickSpare is the one spare-picking policy: the lowest-named node not
+// in usedNodes that passes keep (nil accepts all), preferring a node
+// whose zone is not in usedZones; the first candidate when every zone is
+// taken; "" when none qualifies. Tie-breaker placement and auto-evict
+// re-placement both resolve through it so their spread rules cannot
+// drift apart.
+func (m Map) PickSpare(usedNodes, usedZones map[string]bool, keep func(node string) bool) string {
 	spare := make([]string, 0, len(m))
 	for n := range m {
-		if !usedNode[n] {
+		if !usedNodes[n] && (keep == nil || keep(n)) {
 			spare = append(spare, n)
 		}
 	}
 	slices.Sort(spare)
 	for _, n := range spare {
-		if z := m[n].Zone; z == "" || !usedZone[z] {
+		if z := m[n].Zone; z == "" || !usedZones[z] {
 			return n
 		}
 	}

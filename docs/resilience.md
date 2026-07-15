@@ -30,10 +30,19 @@ automates that: once the node's heartbeat — the `MiroirNode` status its
 agent refreshes about every minute — has been stale that long, the
 controller swaps the dead entry out of each affected volume in one
 atomic edit and adds a fresh replica, which full-syncs from the
-survivors. The dead node's teardown finalizer is force-released (its
-agent cannot run), and the volume's status records the eviction; if the
-node ever returns, its agent uses that record to clean up the abandoned
-backing device and DRBD metadata instead of leaking them.
+survivors.
+
+The dead node keeps its teardown finalizer on the volume. That
+finalizer is the durable record that the node still holds a leg it
+never got to clean up: if the node ever returns, its agent tears the
+leftover leg down through the normal removal flow (safety-gated,
+metadata wiped, backing device reclaimed) and releases the finalizer
+itself. Until then, deleting an evicted volume waits for that node —
+the same behavior as deleting any volume whose replica node is down.
+If the node is gone for good, decommission it: remove it from the
+`nodes` map and strip its `miroir.home-operations.com/teardown-<node>`
+finalizers by hand, accepting that any leftover state on that hardware
+is yours to erase.
 
 Auto-evict is deliberately timid. It stands down when more than one
 node's heartbeat is stale (that pattern points at the network or API
@@ -47,6 +56,15 @@ cluster with no spare node it does nothing. A node with known long
 outages can opt out with `nodes.<name>.autoEvict: false`. Keep the
 threshold well above your longest planned reboot or upgrade window:
 eviction discards the dead node's copy of the data.
+
+One scheduling limitation to know about: a PersistentVolume's node
+affinity is fixed by Kubernetes at creation and cannot be updated, so
+on volumes without `allowRemoteVolumeAccess` the pod can only ever
+schedule onto the volume's _original_ replica nodes. After an eviction
+the workload keeps running on the survivors, and the replacement
+replica protects the data — but the scheduler cannot place the pod on
+the replacement node. Remote-access volumes (the default for
+replicated classes) carry no such pin and are unaffected.
 
 **Verification** is the only cross-leg integrity check (a ZFS scrub
 validates one leg against itself). `drbd.verify.algorithm` (default

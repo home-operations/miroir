@@ -128,41 +128,6 @@ func legState(vol *miroirv1alpha1.MiroirVolume, node string) (idx int, localDisk
 	return idx, localDiskless, present, incomplete
 }
 
-// preRealize handles the flows that preempt realizing this node's leg —
-// volume deletion, a leg no longer placed here (teardown via finalizer,
-// or the eviction scrub), an entry awaiting membership completion, and
-// a leftover eviction marker. done=false means realization proceeds.
-func (r *VolumeReconciler) preRealize(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, idx int, present, incomplete bool) (ctrl.Result, bool, error) {
-	if !vol.DeletionTimestamp.IsZero() {
-		res, err := r.reconcileDeletion(ctx, vol, present)
-		return res, true, err
-	}
-	if !present {
-		// Not placed here, but a held finalizer means this replica (or
-		// client leg) was removed from the spec: tear down the local leg
-		// once it is safe.
-		res, err := r.reconcileRemoval(ctx, vol)
-		return res, true, err
-	}
-	if vol.Spec.DRBD != nil && incomplete {
-		// A just-added entry the membership reconciler has not completed
-		// yet (no NodeID/address): nothing can be realized safely. Logged
-		// so a volume stuck waiting is visible — this wait is normally a
-		// single pass, never a steady state.
-		ctrl.LoggerFrom(ctx).Info("replica entry incomplete; waiting for membership completion", "volume", vol.Name)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, true, nil
-	}
-	if _, evicted := vol.Status.Evicted[r.NodeName]; evicted {
-		// This node is placed but still wears an eviction marker: either
-		// the leg was re-added before the returning node ever scrubbed, or
-		// an eviction aborted between the marker stamp and the spec swap.
-		// Settle the marker before realizing anything.
-		res, err := r.reconcileEvictedMarker(ctx, vol, idx)
-		return res, true, err
-	}
-	return ctrl.Result{}, false, nil
-}
-
 // Reconcile realizes (or tears down) this node's replica of one volume.
 func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -174,8 +139,22 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	idx, localDiskless, present, incomplete := legState(vol, r.NodeName)
 
-	if res, done, err := r.preRealize(ctx, vol, idx, present, incomplete); done {
-		return res, err
+	if !vol.DeletionTimestamp.IsZero() {
+		return r.reconcileDeletion(ctx, vol, present)
+	}
+	if !present {
+		// Not placed here, but a held finalizer means this replica (or
+		// client leg) was removed from the spec: tear down the local leg
+		// once it is safe.
+		return r.reconcileRemoval(ctx, vol)
+	}
+	if vol.Spec.DRBD != nil && incomplete {
+		// A just-added entry the membership reconciler has not completed
+		// yet (no NodeID/address): nothing can be realized safely. Logged
+		// so a volume stuck waiting is visible — this wait is normally a
+		// single pass, never a steady state.
+		log.Info("replica entry incomplete; waiting for membership completion", "volume", vol.Name)
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 	}
 
 	// Steady state: when nothing changed since the last full pass, one
@@ -772,13 +751,6 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 	log := ctrl.LoggerFrom(ctx)
 	finalizer := constants.FinalizerPrefix + r.NodeName
 	if !controllerutil.ContainsFinalizer(vol, finalizer) {
-		if _, evicted := vol.Status.Evicted[r.NodeName]; evicted {
-			// Auto-evict force-released this node's finalizer while it was
-			// dead: the leg was never torn down here. The marker — not the
-			// mere absence from spec.replicas — is the permission to
-			// destroy the leftover local state.
-			return r.scrubEvicted(ctx, vol)
-		}
 		return ctrl.Result{}, nil
 	}
 	if reason := r.removalBlocked(ctx, vol); reason != "" {
@@ -818,57 +790,6 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 	}
 	log.Info("replica removed", "volume", vol.Name)
 	return ctrl.Result{}, r.removeFinalizer(ctx, vol)
-}
-
-// scrubEvicted destroys this node's leftover leg after auto-evict
-// force-released its finalizer while the node was dead: resource down,
-// metadata wiped, backing deleted, then the perNode slot and the marker
-// go together. No removalBlocked-style gate applies — the cluster
-// already re-placed this leg (healthy survivors were the eviction's own
-// precondition), so whatever it holds is abandoned by definition.
-func (r *VolumeReconciler) scrubEvicted(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
-	log := ctrl.LoggerFrom(ctx)
-	if err := r.teardown(ctx, vol); err != nil {
-		if errors.Is(err, backend.ErrBusy) {
-			// A consumer still holds the stale device open; it drains as
-			// the workload converges on the replacement leg.
-			log.Info("device busy during eviction scrub, retrying", "volume", vol.Name)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-		}
-		return ctrl.Result{}, err
-	}
-	dropVolumeMetrics(vol.Name)
-	r.dropRealized(vol.Name)
-	r.dropRecovery(vol.Name)
-	patch := fmt.Appendf(nil, `{"status":{"perNode":{%q:null},"evicted":{%q:null}}}`,
-		r.NodeName, r.NodeName)
-	if err := r.Status().Patch(ctx, vol, client.RawPatch(types.MergePatchType, patch)); err != nil &&
-		!apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-	log.Info("scrubbed leg abandoned by auto-evict", "volume", vol.Name)
-	return ctrl.Result{}, nil
-}
-
-// reconcileEvictedMarker settles an eviction marker on a node the volume
-// currently places. A FullSync joiner gets the scrub first: its local
-// state predates the eviction, and ensureMetadata would adopt the stale
-// generation instead of the just-created metadata the full-sync contract
-// assumes. Everything else — an eviction that aborted between marker and
-// swap (live leg, no FullSync), or a diskless leg with no metadata to
-// adopt — just sheds the stale marker; the status patch re-triggers the
-// reconcile and the normal pipeline proceeds.
-func (r *VolumeReconciler) reconcileEvictedMarker(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, idx int) (ctrl.Result, error) {
-	if idx >= 0 && !vol.Spec.Replicas[idx].Diskless && vol.Spec.Replicas[idx].FullSync {
-		return r.scrubEvicted(ctx, vol)
-	}
-	ctrl.LoggerFrom(ctx).Info("clearing stale eviction marker", "volume", vol.Name)
-	patch := fmt.Appendf(nil, `{"status":{"evicted":{%q:null}}}`, r.NodeName)
-	if err := r.Status().Patch(ctx, vol, client.RawPatch(types.MergePatchType, patch)); err != nil &&
-		!apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
 }
 
 // removalBlocked reports why this replica must not be torn down yet, or ""

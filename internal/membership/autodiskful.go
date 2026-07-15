@@ -31,7 +31,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
-	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/nodemap"
 )
 
@@ -216,29 +215,19 @@ func (r *AutoDiskfulReconciler) conversionBlocked(ctx context.Context, vol *miro
 		// replica — a policy decision left to the operator.
 		return "volume already has 3 diskful replicas", false
 	}
-	for _, rep := range vol.Spec.Replicas {
-		if rep.Address == "" {
-			// Membership completion is in flight; one spec edit at a time.
-			return "a replica change is already in flight", true
-		}
+	if incompleteChange(vol) {
+		// Membership completion is in flight; one spec edit at a time.
+		return "a membership change is already in flight", true
 	}
 	// Capacity: the volume's pool on the node must fit the full virtual
 	// size per its own fresh stats. Missing or stale stats block — the
 	// sync would land blind.
-	pool := volumePool(vol)
 	mn := &miroirv1alpha1.MiroirNode{}
 	if err := r.Get(ctx, types.NamespacedName{Name: node}, mn); err != nil {
-		return "no pool stats for " + node, true
+		mn = nil
 	}
-	if mn.Status.ObservedAt == nil || time.Since(mn.Status.ObservedAt.Time) > constants.StatsStaleAfter {
-		return "pool stats for " + node + " are stale", true
-	}
-	st := mn.Status.Pool(pool)
-	if st == nil {
-		return "no stats for pool " + pool + " on " + node, true
-	}
-	if st.CapacityBytes-st.AllocatedBytes < vol.Spec.SizeBytes {
-		return "insufficient free space in pool " + pool + " on " + node, true
+	if reason := poolRoom(mn, volumePool(vol), vol.Spec.SizeBytes); reason != "" {
+		return reason + " on " + node, true
 	}
 	return "", false
 }

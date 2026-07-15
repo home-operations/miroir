@@ -371,14 +371,6 @@ type MiroirVolumeStatus struct {
 	// Conditions follow the standard Kubernetes condition conventions.
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	// Evicted maps a node name to when auto-evict removed that node's leg
-	// and force-released its teardown finalizer (the node was dead, so its
-	// agent could not tear down). The marker is the returning agent's
-	// permission to scrub the leftover local state — leg absence from
-	// spec.replicas alone is never a destruction signal; the agent clears
-	// its entry once the scrub is done.
-	// +optional
-	Evicted map[string]metav1.Time `json:"evicted,omitempty"`
 }
 
 // +kubebuilder:object:root=true
