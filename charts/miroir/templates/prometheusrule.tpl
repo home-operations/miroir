@@ -275,4 +275,34 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+
+    - name: miroir.agents
+      rules:
+        # A down agent takes every miroir_* series on its node with it, so
+        # the per-volume alerts above go silent instead of firing — and the
+        # agent exits at startup on a below-floor DRBD kernel module, so a
+        # missed node upgrade looks exactly like this. Matched on the
+        # container/namespace target labels rather than job (whose value
+        # depends on PodMonitor naming and user relabelings). A pod that
+        # never became a scrape target (agent unschedulable) has no up
+        # series and is not caught here.
+        - alert: MiroirAgentDown
+          expr: up{container="agent", namespace="{{ .Release.Namespace }}"} == 0
+          for: 10m
+          labels:
+            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+          annotations:
+            summary: >-
+              miroir agent on {{ "{{" }} $labels.node {{ "}}" }} is down —
+              its volumes are unmonitored
+            description: >-
+              The agent pod has not answered scrapes for 10 minutes: every
+              miroir_volume_* series from this node is absent (no alert on
+              them can fire) and CSI mount/unmount on the node is stalled.
+              A crash-loop right after a node change usually means the DRBD
+              kernel module is below the agent's floor or the backend is
+              misconfigured — check the agent logs.
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
 {{- end }}

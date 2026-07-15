@@ -23,13 +23,13 @@ tests:
           path: metadata.namespace
           value: miroir-system
 
-  - it: should have the volume, pool and export rule groups
+  - it: should have the volume, pool, export and agent rule groups
     set:
       monitoring.prometheusRule.enabled: true
     asserts:
       - lengthEqual:
           path: spec.groups
-          count: 3
+          count: 4
       - equal:
           path: spec.groups[0].name
           value: miroir.volumes
@@ -51,6 +51,18 @@ tests:
       - equal:
           path: spec.groups[2].rules[0].labels.severity
           value: critical
+      - equal:
+          path: spec.groups[3].name
+          value: miroir.agents
+      - equal:
+          path: spec.groups[3].rules[0].alert
+          value: MiroirAgentDown
+      - equal:
+          path: spec.groups[3].rules[0].labels.severity
+          value: critical
+      - equal:
+          path: spec.groups[3].rules[0].expr
+          value: up{container="agent", namespace="miroir-system"} == 0
 
   - it: should render the verify staleness rule only with a verify schedule
     set:
