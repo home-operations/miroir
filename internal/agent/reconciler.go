@@ -84,6 +84,13 @@ type VolumeReconciler struct {
 	// several times per second. See recoverSplitBrain.
 	recoveryMu   sync.Mutex
 	lastRecovery map[string]time.Time
+
+	// busyFails counts consecutive ErrBusy teardown outcomes per volume.
+	// Past busyFailLimit the loop escalates — Warning Event, status
+	// Message, parked cadence — instead of silently retrying every 10s
+	// forever with the cause swallowed (issue #195). See reportBusy.
+	busyMu    sync.Mutex
+	busyFails map[string]int
 }
 
 // realizedState is the fingerprint of a completed full pass: repeating
@@ -108,6 +115,11 @@ const drbdPollInterval = 30 * time.Second
 
 // errSplitBrain gives the split-brain transition log a real error value.
 var errSplitBrain = errors.New("DRBD split-brain detected")
+
+// errRestoreSourceGone marks a restore whose source snapshot was deleted
+// before this leg cloned it: the backing can never be created here, so the
+// retry parks instead of riding the workqueue backoff forever (issue #195).
+var errRestoreSourceGone = errors.New("restore source snapshot no longer exists")
 
 // legState classifies this node's part in the volume: the replica index
 // (-1 when not a replica), whether the local leg is diskless — a
@@ -183,7 +195,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// volume restores from a snapshot.
 		dev, err = r.realizeBacking(ctx, pool.Backend, vol, vol.Spec.Replicas[idx].FullSync)
 		if err != nil {
-			return ctrl.Result{}, r.reportError(ctx, vol, err)
+			return r.reportRealizeError(ctx, vol, err)
 		}
 		// Record the device before growing it: computePhase treats errors
 		// with DeviceCreated=false as hard provisioning failures, and a
@@ -433,6 +445,7 @@ func (r *VolumeReconciler) volumeGone(name string, err error) error {
 	dropVolumeMetrics(name)
 	r.dropRealized(name)
 	r.dropRecovery(name)
+	r.clearBusyFails(name)
 	return nil
 }
 
@@ -456,6 +469,7 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 	}
 	if err := r.teardown(ctx, vol); err != nil {
 		if errors.Is(err, drbd.ErrWedged) {
+			r.clearBusyFails(vol.Name)
 			return r.reportWedged(ctx, vol, err)
 		}
 		// Any other outcome means a previously reported wedge is gone —
@@ -465,9 +479,9 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 		if errors.Is(err, backend.ErrBusy) {
 			// A force-deleted pod can leave the device open past
 			// NodeUnstage; retry until the mount goes away.
-			ctrl.LoggerFrom(ctx).Info("device busy during teardown, retrying", "volume", vol.Name)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			return r.reportBusy(ctx, vol, err)
 		}
+		r.clearBusyFails(vol.Name)
 		return ctrl.Result{}, err
 	}
 	// Drop metrics only once the device is gone: a retrying teardown
@@ -475,6 +489,7 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 	dropVolumeMetrics(vol.Name)
 	r.dropRealized(vol.Name)
 	r.dropRecovery(vol.Name)
+	r.clearBusyFails(vol.Name)
 	return ctrl.Result{}, r.removeFinalizer(ctx, vol)
 }
 
@@ -534,6 +549,9 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 	}
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", fmt.Errorf("snapshot %q: %w", vol.Spec.Source.SnapshotName, errRestoreSourceGone)
+		}
 		return "", err
 	}
 	return be.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
@@ -764,6 +782,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 	}
 	if err := r.teardown(ctx, vol); err != nil {
 		if errors.Is(err, drbd.ErrWedged) {
+			r.clearBusyFails(vol.Name)
 			return r.reportWedged(ctx, vol, err)
 		}
 		// A non-wedged outcome retires a previously reported wedge (see
@@ -772,14 +791,15 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		if errors.Is(err, backend.ErrBusy) {
 			// A pod still staged here holds the device open; it has to
 			// move off this node before the leg can go.
-			log.Info("device busy during replica removal, retrying", "volume", vol.Name)
-			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			return r.reportBusy(ctx, vol, err)
 		}
+		r.clearBusyFails(vol.Name)
 		return ctrl.Result{}, err
 	}
 	dropVolumeMetrics(vol.Name)
 	r.dropRealized(vol.Name)
 	r.dropRecovery(vol.Name)
+	r.clearBusyFails(vol.Name)
 	// Drop this node's status slot — merge-patch null deletes the key.
 	// Best-effort ordering: a crash here leaves a stale slot, which
 	// nothing reads (phase and growth iterate spec.replicas only).
@@ -918,6 +938,89 @@ func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: wedgedRequeue}, nil
+}
+
+// busyFailLimit is how many consecutive ErrBusy teardown outcomes ride the
+// fast 10s retry — NodeUnstage normally releases the device within a few
+// cycles — before the loop escalates; busyRetryAfter is the parked cadence.
+// The finalizer is never released on busy: the hold may be a live mount,
+// and force-releasing would leak the backing device or destroy it under a
+// consumer (issue #195).
+const (
+	busyFailLimit  = 30 // ~5 minutes at the 10s cadence
+	busyRetryAfter = time.Minute
+)
+
+// reportBusy paces one ErrBusy teardown outcome: the fast 10s retry below
+// busyFailLimit, then a Warning Event, a status Message naming the cause,
+// and the parked cadence. The cause is always logged — an ErrBusy from the
+// backend sweep looks identical to a held-open device without it.
+func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
+	r.busyMu.Lock()
+	if r.busyFails == nil {
+		r.busyFails = map[string]int{}
+	}
+	r.busyFails[vol.Name]++
+	fails := r.busyFails[vol.Name]
+	r.busyMu.Unlock()
+	if fails < busyFailLimit {
+		ctrl.LoggerFrom(ctx).Info("device busy during teardown, retrying",
+			"volume", vol.Name, "attempts", fails, "error", cause)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+	ctrl.LoggerFrom(ctx).Error(cause, "teardown still busy; parking the retry",
+		"volume", vol.Name, "attempts", fails)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownBusy", "Teardown",
+			"cannot tear down %s on node %s after %d attempts: %v; something still holds the device (or its backing) open",
+			vol.Name, r.NodeName, fails, cause)
+	}
+	st := vol.Status.PerNode[r.NodeName]
+	st.Message = cause.Error()
+	if err := r.patchStatus(ctx, vol, st); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: busyRetryAfter}, nil
+}
+
+// clearBusyFails resets the volume's consecutive busy-teardown count.
+func (r *VolumeReconciler) clearBusyFails(name string) {
+	r.busyMu.Lock()
+	delete(r.busyFails, name)
+	r.busyMu.Unlock()
+}
+
+// reportRealizeError routes a realizeBacking failure: an impossible
+// restore parks (reportRestoreOrphan), anything else takes the normal
+// status-and-backoff path.
+func (r *VolumeReconciler) reportRealizeError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
+	if errors.Is(cause, errRestoreSourceGone) {
+		return r.reportRestoreOrphan(ctx, vol, cause)
+	}
+	return ctrl.Result{}, r.reportError(ctx, vol, cause)
+}
+
+// restoreOrphanRequeue spaces retries of a restore whose source snapshot
+// is gone. Only deleting the volume (or recreating the snapshot under the
+// same name) unsticks it, so the retry only needs to notice that happened.
+const restoreOrphanRequeue = 5 * time.Minute
+
+// reportRestoreOrphan surfaces a restore that can never complete on this
+// node (errRestoreSourceGone) — Warning Event and a status Message naming
+// the operator's options — then parks the retry at restoreOrphanRequeue.
+func (r *VolumeReconciler) reportRestoreOrphan(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
+	ctrl.LoggerFrom(ctx).Error(cause, "restore source snapshot is gone; parking the volume", "volume", vol.Name)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "RestoreSourceMissing", "Realize",
+			"cannot restore %s on node %s: source snapshot %s no longer exists; delete the volume or recreate the snapshot",
+			vol.Name, r.NodeName, vol.Spec.Source.SnapshotName)
+	}
+	st := vol.Status.PerNode[r.NodeName]
+	st.Message = cause.Error()
+	if err := r.patchStatus(ctx, vol, st); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: restoreOrphanRequeue}, nil
 }
 
 func (r *VolumeReconciler) reportError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) error {

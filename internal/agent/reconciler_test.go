@@ -62,6 +62,8 @@ const (
 	diskStateDiskless     = "Diskless"
 	nodeC                 = "node-c"
 	addrC                 = "192.168.1.43"
+	// cmdDownPvc1 keys fakeDRBDExec.errOn for `drbdsetup down pvc-1`.
+	cmdDownPvc1 = "drbdsetup down pvc-1"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -371,9 +373,12 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 	}
 }
 
-// TestReconcileSourceSnapshotGoneAndDeviceMissingFails: no snapshot and no
-// device — the restore can't complete, so fail loud rather than seed empty.
-func TestReconcileSourceSnapshotGoneAndDeviceMissingFails(t *testing.T) {
+// TestReconcileSourceSnapshotGoneAndDeviceMissingParks: no snapshot and no
+// device — the restore can never complete, so fail loud (Failed phase,
+// RestoreSourceMissing warning, Message) and park the retry rather than
+// hot-loop the NotFound through the workqueue backoff (issue #195). Never
+// seed an empty device.
+func TestReconcileSourceSnapshotGoneAndDeviceMissingParks(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend() // no existing device
 	v := vol(volPvc1, nodeA)
@@ -382,16 +387,38 @@ func TestReconcileSourceSnapshotGoneAndDeviceMissingFails(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+	rec := events.NewFakeRecorder(4)
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec}
 
-	_, err := r.Reconcile(t.Context(),
+	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
-	if err == nil {
-		t.Fatal("expected error: restore source is gone and device was never created")
+	if err != nil {
+		t.Fatalf("an impossible restore must park, not error: %v", err)
+	}
+	if res.RequeueAfter != restoreOrphanRequeue {
+		t.Fatalf("want %v parked retry, got %v", restoreOrphanRequeue, res.RequeueAfter)
 	}
 	if len(fb.createVol) != 0 || len(fb.fromSnapVol) != 0 {
 		t.Fatalf("must not create or clone an empty device: create=%v fromSnap=%v",
 			fb.createVol, fb.fromSnapVol)
+	}
+	select {
+	case e := <-rec.Events:
+		if !strings.Contains(e, "RestoreSourceMissing") {
+			t.Fatalf("want a RestoreSourceMissing warning, got %q", e)
+		}
+	default:
+		t.Fatal("want a RestoreSourceMissing warning event")
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeFailed {
+		t.Fatalf("phase = %s, want Failed", got.Status.Phase)
+	}
+	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, "no longer exists") {
+		t.Fatalf("Message must name the missing snapshot, got %q", msg)
 	}
 }
 
@@ -1000,7 +1027,7 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fe := &fakeDRBDExec{errOn: map[string]error{
-		"drbdsetup down pvc-1": errors.New("pvc-1: State change failed: Device is held open by someone"),
+		cmdDownPvc1: errors.New("pvc-1: State change failed: Device is held open by someone"),
 	}}
 	r := &VolumeReconciler{
 		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
@@ -1018,6 +1045,83 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal("finalizer must be retained while the device is held open")
+	}
+}
+
+// The 10s busy retry is not unbounded: past busyFailLimit consecutive
+// ErrBusy outcomes teardown escalates — TeardownBusy warning, a status
+// Message naming the actual cause, parked cadence — while the finalizer
+// stays put, and a later successful teardown resets the streak (issue
+// #195: a busy loop ran silently for 2+ hours with the cause swallowed).
+func TestReconcileTeardownBusyEscalates(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{errOn: map[string]error{
+		cmdDownPvc1: errors.New("pvc-1: State change failed: Device is held open by someone"),
+	}}
+	rec := events.NewFakeRecorder(4)
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+
+	for i := 1; i < busyFailLimit; i++ {
+		res, err := r.Reconcile(t.Context(), req)
+		if err != nil || res.RequeueAfter != 10*time.Second {
+			t.Fatalf("attempt %d must ride the 10s busy retry, got %v / %v", i, res.RequeueAfter, err)
+		}
+	}
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil {
+		t.Fatalf("the escalation must park, not error: %v", err)
+	}
+	if res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("want %v parked retry, got %v", busyRetryAfter, res.RequeueAfter)
+	}
+	select {
+	case e := <-rec.Events:
+		if !strings.Contains(e, "TeardownBusy") {
+			t.Fatalf("want a TeardownBusy warning, got %q", e)
+		}
+	default:
+		t.Fatal("want a TeardownBusy warning event")
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal("finalizer must be retained while the device is held open")
+	}
+	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, "held open") {
+		t.Fatalf("Message must carry the swallowed cause, got %q", msg)
+	}
+
+	// The hold clears: teardown completes, this node's finalizer releases,
+	// and the failure streak resets.
+	fe.errOn = nil
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatalf("teardown after the hold cleared: %v", err)
+	}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeA) {
+		t.Fatalf("this node's finalizer must release once teardown succeeds: %v", got.Finalizers)
+	}
+	r.busyMu.Lock()
+	streak := len(r.busyFails)
+	r.busyMu.Unlock()
+	if streak != 0 {
+		t.Fatalf("busy streak must clear on success, still %d entries", streak)
 	}
 }
 
@@ -1087,7 +1191,7 @@ func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 	fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[]}]`
 	fe.errOn = map[string]error{
-		"drbdsetup down pvc-1": errors.New("pvc-1: State change failed: Device is held open by someone"),
+		cmdDownPvc1: errors.New("pvc-1: State change failed: Device is held open by someone"),
 	}
 	res, err = r.Reconcile(t.Context(), req)
 	if err != nil || res.RequeueAfter != 10*time.Second {
@@ -1745,7 +1849,7 @@ func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
 	if _, ok := fb.created[volPvc1]; ok {
 		t.Fatal("backing device not deleted")
 	}
-	fe.calledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, cmdDownPvc1)
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
