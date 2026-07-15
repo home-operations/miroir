@@ -756,6 +756,7 @@ func probeDRBD(driver *drbd.Driver) (version string, ready bool) {
 			"version", v, "floor", drbd.KernelFloor)
 		os.Exit(1)
 	}
+	agent.RecordDRBDKernelVersion(v)
 	return v, true
 }
 

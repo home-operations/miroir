@@ -87,6 +87,14 @@ var (
 		Name: "miroir_pool_meta_used_ratio",
 		Help: "Fraction (0-1) of dm-thin metadata used; 0 for backends without a metadata pool.",
 	})
+
+	// Info-style: constant 1, the payload is the version label. Exported
+	// from client-only nodes too — unlike MiroirNode status, which only
+	// the pool stats publisher (storage nodes) updates.
+	metricDRBDKernelInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "miroir_node_drbd_kernel_info",
+		Help: "Always 1, labelled with the DRBD kernel module version probed at agent startup; absent on nodes without the module. Query it for fleet version skew before a kernel floor raise.",
+	}, []string{"version"})
 )
 
 func init() {
@@ -95,6 +103,7 @@ func init() {
 		metricResyncRatio, metricQuorum, metricDiskFailed, metricOutOfSyncBytes,
 		metricVerifyTimestamp, metricVerifyOutOfSyncBytes, metricDisklessPrimary,
 		metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
+		metricDRBDKernelInfo,
 	)
 }
 
@@ -136,6 +145,14 @@ func dropVolumeMetrics(volume string) {
 // quorum would fire the data-leg alerts for a leg that holds no data.
 func recordDisklessMetrics(volume string, primary bool) {
 	metricDisklessPrimary.WithLabelValues(volume).Set(boolGauge(primary))
+}
+
+// RecordDRBDKernelVersion publishes the module version probed at agent
+// startup. Set once per process: a module change means a node reboot and
+// thus a fresh agent, so startup is current enough (same contract as
+// PoolStatsPublisher.DRBDVersion).
+func RecordDRBDKernelVersion(version string) {
+	metricDRBDKernelInfo.WithLabelValues(version).Set(1)
 }
 
 // recordVerifyMetrics publishes the outcome of a completed verify pass. The

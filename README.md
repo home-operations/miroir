@@ -595,7 +595,11 @@ Each agent additionally exports its pool capacity
 (`miroir_pool_capacity_bytes` / `miroir_pool_allocated_bytes` /
 `miroir_pool_meta_used_ratio`), the same sample that feeds
 capacity-aware placement and the `PoolUsageHigh` condition, so pool
-exhaustion is alertable, not just an Event.
+exhaustion is alertable, not just an Event. It also exports
+`miroir_node_drbd_kernel_info` (always 1, `version` label): the DRBD
+kernel module version probed at startup, from client-only nodes too
+(which have no `MiroirNode` status). Query it for fleet version skew
+before a release raises the kernel floor.
 
 For RWX volumes the **controller** exports `miroir_export_ready`: 1
 while the volume's NFS gateway is serving (gateway pod available,
@@ -611,7 +615,10 @@ on their PVCs (`kubectl describe pvc`).
 `monitoring.prometheusRule.enabled: true` ships starter alerts for
 all of the above (split-brain, quorum lost, stranded barrier, disk
 failed, degraded replication, sustained out-of-sync, an unavailable
-RWX export, a stale verify schedule, pool and thin-metadata usage),
+RWX export, a stale verify schedule, pool and thin-metadata usage,
+and a down agent — a node whose agent stops answering scrapes loses
+every `miroir_*` series, so none of the per-volume alerts can fire
+for it; the kernel-floor refusal to start looks exactly like this),
 and `monitoring.dashboards.enabled: true` installs a Grafana
 dashboard, either a sidecar-labelled ConfigMap or a grafana-operator
 `GrafanaDashboard` CR via `monitoring.dashboards.grafanaOperator`.

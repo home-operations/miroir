@@ -105,3 +105,13 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 		}
 	}
 }
+
+// The kernel info gauge must expose the probed version as a label with a
+// constant 1 — the shape "up{version=...}"-style queries and the fleet
+// skew table depend on.
+func TestRecordDRBDKernelVersion(t *testing.T) {
+	RecordDRBDKernelVersion("9.3.2")
+	if got := testutil.ToFloat64(metricDRBDKernelInfo.WithLabelValues("9.3.2")); got != 1 {
+		t.Fatalf("drbd_kernel_info{version=9.3.2} = %v, want 1", got)
+	}
+}
