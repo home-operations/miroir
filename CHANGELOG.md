@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.2](https://github.com/home-operations/miroir/compare/0.10.1...0.10.2) (2026-07-15)
+
+
+### Bug Fixes
+
+* **agent:** contain kernel-wedged DRBD resources (issue [#195](https://github.com/home-operations/miroir/issues/195)) ([#214](https://github.com/home-operations/miroir/issues/214)) ([0ded53a](https://github.com/home-operations/miroir/commit/0ded53abf9255181406aa6f94ce02799cdc59ead))
+
 ## [0.10.1](https://github.com/home-operations/miroir/compare/0.10.0...0.10.1) (2026-07-15)
 
 
