@@ -2,19 +2,20 @@
 
 ![Version: 0.0.1](https://img.shields.io/badge/Version-0.0.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.0.1](https://img.shields.io/badge/AppVersion-0.0.1-informational?style=flat-square)
 
-Low-resource replicated block storage CSI driver for small Talos clusters
+Replicated block storage for small Kubernetes clusters — CSI on LVM thin, ZFS, or loopfile backends with synchronous DRBD9 replication
 
 **Homepage:** <https://github.com/home-operations/miroir>
 
 ## Usage
 
-Low-resource replicated block storage CSI driver for small Talos Linux
-clusters. Control plane in Go; data path delegated to in-kernel primitives
-(dm-thin / ZFS today, DRBD9 replication planned).
+Replicated block storage for small Kubernetes clusters. Control plane in
+Go; data path delegated to in-kernel primitives (dm-thin, ZFS, or loop
+devices, with synchronous DRBD9 replication). Full documentation at
+<https://miroir.home-operations.com/>.
 
 ```sh
 helm install miroir oci://ghcr.io/home-operations/charts/miroir \
-  --namespace miroir --create-namespace
+  --namespace miroir-system --create-namespace -f values.yaml
 ```
 
 ## Maintainers

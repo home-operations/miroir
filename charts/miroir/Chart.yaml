@@ -1,6 +1,6 @@
 apiVersion: v2
 name: miroir
-description: Low-resource replicated block storage CSI driver for small Talos clusters
+description: Replicated block storage for small Kubernetes clusters — CSI on LVM thin, ZFS, or loopfile backends with synchronous DRBD9 replication
 type: application
 # Placeholder — CI overrides both at publish time (helm package
 # --version/--app-version from the release tag).
