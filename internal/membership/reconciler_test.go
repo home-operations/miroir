@@ -34,7 +34,26 @@ import (
 	"github.com/home-operations/miroir/internal/nodemap"
 )
 
+// Pool names used across this package's tests.
+const (
+	poolDefault = "default"
+	poolFast    = "fast"
+)
+
 const nodeC = "node-c"
+
+// storageNode is a node-map entry with one default pool of the given
+// backend — the pre-multi-pool shape most tests exercise.
+func storageNode(backend miroirv1alpha1.BackendType) nodemap.Node {
+	return storageNodeAt(backend, "")
+}
+
+func storageNodeAt(backend miroirv1alpha1.BackendType, address string) nodemap.Node {
+	return nodemap.Node{
+		Address: address,
+		Pools:   map[string]nodemap.Pool{poolDefault: {Backend: backend}},
+	}
+}
 
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -100,12 +119,54 @@ func get(t *testing.T, r *Reconciler, name string) *miroirv1alpha1.MiroirVolume 
 	return got
 }
 
+// An added entry naming a pool resolves its backend from that pool; the
+// pool name is normalized and persisted.
+func TestCompletesAddedReplicaInNamedPool(t *testing.T) {
+	v := replicatedVol()
+	v.Spec.Replicas[2].Pool = poolFast
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeC, addrC)).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+		nodeC: {Pools: map[string]nodemap.Pool{
+			poolDefault: {Backend: miroirv1alpha1.BackendLVMThin},
+			poolFast:    {Backend: miroirv1alpha1.BackendZFS},
+		}},
+	}}
+
+	reconcile(t, r, "pvc-1")
+
+	rep := get(t, r, "pvc-1").Spec.Replicas[2]
+	if rep.Pool != poolFast || rep.Backend != miroirv1alpha1.BackendZFS {
+		t.Fatalf("entry must resolve the named pool's backend: %+v", rep)
+	}
+}
+
+// An added entry naming a pool the node does not carry is a permanent
+// placement error: the entry stays incomplete.
+func TestCompleteRejectsUnknownPool(t *testing.T) {
+	v := replicatedVol()
+	v.Spec.Replicas[2].Pool = "nvme"
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeC, addrC)).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
+	}}
+
+	reconcile(t, r, "pvc-1")
+
+	if rep := get(t, r, "pvc-1").Spec.Replicas[2]; rep.Address != "" {
+		t.Fatalf("entry with an unknown pool must stay incomplete: %+v", rep)
+	}
+}
+
 func TestCompletesAddedReplica(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(replicatedVol(), node(nodeC, addrC)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
 	reconcile(t, r, "pvc-1")
@@ -135,7 +196,7 @@ func TestCompletesAddedReplicaWithAddressOverride(t *testing.T) {
 		WithObjects(replicatedVol()). // no node-c Node object
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin, Address: "10.0.100.43"},
+		nodeC: storageNodeAt(miroirv1alpha1.BackendLVMThin, "10.0.100.43"),
 	}}
 
 	reconcile(t, r, "pvc-1")
@@ -152,7 +213,7 @@ func TestReusesLowestFreeNodeID(t *testing.T) {
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendZFS},
+		nodeC: storageNode(miroirv1alpha1.BackendZFS),
 	}}
 
 	reconcile(t, r, "pvc-1")
@@ -171,7 +232,7 @@ func TestCompletesDisklessReplica(t *testing.T) {
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendZFS},
+		nodeC: storageNode(miroirv1alpha1.BackendZFS),
 	}}
 
 	reconcile(t, r, "pvc-1")
@@ -220,7 +281,7 @@ func TestRequeuesWhenNodeNotReady(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 				WithObjects(objs...).Build()
 			r := &Reconciler{Client: c, Nodes: nodemap.Map{
-				nodeC: {Backend: miroirv1alpha1.BackendZFS},
+				nodeC: storageNode(miroirv1alpha1.BackendZFS),
 			}}
 
 			if _, err := r.Reconcile(t.Context(),
@@ -241,7 +302,7 @@ func TestIgnoresUnreplicatedVolume(t *testing.T) {
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		nodeC: {Backend: miroirv1alpha1.BackendZFS},
+		nodeC: storageNode(miroirv1alpha1.BackendZFS),
 	}}
 
 	reconcile(t, r, "pvc-1")

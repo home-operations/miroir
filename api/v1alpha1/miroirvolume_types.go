@@ -44,6 +44,12 @@ type Replica struct {
 	// Unused for diskless tie-breaker replicas (they have no backing device).
 	// +optional
 	Backend BackendType `json:"backend,omitempty"`
+	// Pool names the node-map storage pool holding this replica's backing
+	// device. Persisted like Backend so the volume survives later topology
+	// edits. Empty means the default pool (pre-multi-pool volumes are
+	// adopted this way). Unused for diskless replicas.
+	// +optional
+	Pool string `json:"pool,omitempty"`
 	// NodeID is the DRBD node id, assigned by the controller at creation
 	// and stable for the volume's lifetime. Only set on replicated volumes.
 	// +optional
@@ -276,6 +282,12 @@ type ReplicaStatus struct {
 	// knows after the entry has left spec.replicas.
 	// +optional
 	Diskless bool `json:"diskless,omitempty"`
+	// Pool records which storage pool holds this leg's backing device.
+	// Self-reported by the agent like Diskless, so teardown after the
+	// entry has left spec.replicas still targets the right pool. Empty
+	// means the default pool.
+	// +optional
+	Pool string `json:"pool,omitempty"`
 	// DiscardGranularityBytes is the discard granularity this diskful
 	// leg probed from its backing device (0: unsupported or unprobed).
 	// Client legs advertise the max over the diskful legs' values, so
@@ -358,6 +370,7 @@ type MiroirVolumeStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Size",type=integer,JSONPath=`.spec.sizeBytes`
 // +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.spec.replicas[*].node`,priority=1
+// +kubebuilder:printcolumn:name="Pools",type=string,JSONPath=`.spec.replicas[*].pool`,priority=1
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

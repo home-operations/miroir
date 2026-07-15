@@ -71,8 +71,21 @@ const suspendRetryBackoff = 30 * time.Second
 type SnapshotReconciler struct {
 	client.Client
 	NodeName string
-	Backend  backend.Backend
-	DRBD     *drbd.Driver
+	// Pools holds this node's storage pools; snapshot legs are cut in the
+	// pool holding the volume's local replica.
+	Pools Pools
+	DRBD  *drbd.Driver
+}
+
+// backendFor resolves the backend holding the volume's local leg — the
+// spec entry, or the self-reported status slot for a leg pending removal
+// (snapshots block replica removal, so the slot is still there).
+func (r *SnapshotReconciler) backendFor(vol *miroirv1alpha1.MiroirVolume) (backend.Backend, error) {
+	pb, err := r.Pools.Get(volumePoolOn(vol, r.NodeName))
+	if err != nil {
+		return nil, err
+	}
+	return pb.Backend, nil
 }
 
 // Reconcile drives one snapshot's state machine from this node's view.
@@ -116,7 +129,11 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if r.disklessOn(vol) {
 			return ctrl.Result{}, r.removeFinalizer(ctx, snap)
 		}
-		if err := r.Backend.DeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
+		be, err := r.backendFor(vol)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := be.DeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
 			if errors.Is(err, backend.ErrBusy) {
 				// The snapshot device is still open (e.g. a restore in
 				// progress); retry until it is released.
@@ -157,10 +174,14 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	if vol.Spec.DRBD == nil {
 		// Single replica: no barrier needed, but queued writes must land.
-		if err := r.Backend.Sync(ctx, vol.Name); err != nil {
+		be, err := r.backendFor(vol)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
+		if err := be.Sync(ctx, vol.Name); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := be.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
@@ -285,6 +306,10 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 // keep cutting, so dropping it would let writes into some legs and not
 // others. The deadline bounds the freeze instead.
 func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
+	be, err := r.backendFor(vol)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	// Re-assert the local barrier first (idempotent) — a crash or manual
 	// resume-io between phases must not let a leg be cut unprotected.
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
@@ -292,15 +317,15 @@ func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.Mi
 	}
 	// suspend-io quiesces new writes only; queued writeback must be
 	// drained or the snapshot captures stale content.
-	if err := r.Backend.Sync(ctx, vol.Name); err != nil {
+	if err := be.Sync(ctx, vol.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 	// Delete-then-cut: the backends treat an existing snapshot as
 	// success, which would silently keep a leg from a failed round.
-	if err := r.Backend.DeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
+	if err := be.DeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.Backend.Snapshot(ctx, vol.Name, snap.Name); err != nil {
+	if err := be.Snapshot(ctx, vol.Name, snap.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Second}, r.patchOwnState(ctx, snap, miroirv1alpha1.SnapshotDone)

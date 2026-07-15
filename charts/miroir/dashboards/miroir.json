@@ -1170,7 +1170,7 @@
           },
           "expr": "miroir_pool_capacity_bytes",
           "refId": "A",
-          "legendFormat": "capacity: {{node}}"
+          "legendFormat": "capacity: {{node}}/{{pool}}"
         },
         {
           "datasource": {
@@ -1179,7 +1179,7 @@
           },
           "expr": "miroir_pool_allocated_bytes",
           "refId": "B",
-          "legendFormat": "allocated: {{node}}"
+          "legendFormat": "allocated: {{node}}/{{pool}}"
         }
       ],
       "title": "Pool capacity and allocation",
@@ -1242,7 +1242,7 @@
           },
           "expr": "miroir_pool_allocated_bytes / miroir_pool_capacity_bytes",
           "refId": "A",
-          "legendFormat": "{{node}}"
+          "legendFormat": "{{node}}/{{pool}}"
         }
       ],
       "title": "Pool used ratio",
@@ -1305,7 +1305,7 @@
           },
           "expr": "miroir_pool_meta_used_ratio",
           "refId": "A",
-          "legendFormat": "{{node}}"
+          "legendFormat": "{{node}}/{{pool}}"
         }
       ],
       "title": "Thin-pool metadata used",

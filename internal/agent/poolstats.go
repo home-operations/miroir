@@ -19,7 +19,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -40,22 +43,25 @@ const (
 	// DefaultPoolStatsInterval is how often the agent republishes pool
 	// capacity (every ~60s).
 	DefaultPoolStatsInterval = 60 * time.Second
-	// ConditionPoolUsageHigh fires on a MiroirNode once data or metadata
-	// usage crosses poolUsageWarnPercent.
+	// ConditionPoolUsageHigh fires on a MiroirNode once any pool's data or
+	// metadata usage crosses poolUsageWarnPercent.
 	ConditionPoolUsageHigh = "PoolUsageHigh"
 	// poolUsageWarnPercent is the warn line for both data and dm-thin
 	// metadata; ZFS also degrades badly past ~85% full.
 	poolUsageWarnPercent = 80
+	// reasonUsageNormal is the condition reason while every pool sits
+	// below the warn line.
+	reasonUsageNormal = "UsageNormal"
 )
 
-// PoolStatsPublisher samples this node's backend pool capacity on an
-// interval and publishes it to the node's MiroirNode object, where the
-// controller reads it for capacity-aware placement.
+// PoolStatsPublisher samples this node's pool capacities on an interval
+// and publishes them to the node's MiroirNode object, where the controller
+// reads them for capacity-aware placement.
 type PoolStatsPublisher struct {
-	Client      client.Client
-	NodeName    string
-	Backend     backend.Backend
-	BackendType miroirv1alpha1.BackendType
+	Client   client.Client
+	NodeName string
+	// Pools holds this node's storage pools; every tick samples each.
+	Pools Pools
 	// Interval between samples; DefaultPoolStatsInterval when zero.
 	Interval time.Duration
 	// Recorder emits the PoolUsageHigh event; optional.
@@ -91,18 +97,38 @@ func (p *PoolStatsPublisher) Start(ctx context.Context) error {
 	}
 }
 
+// sample is one pool's tick result: the stats, or the read error that
+// keeps the pool visible in status instead of silently dropping out.
+type sample struct {
+	name  string
+	stats backend.PoolStats
+	err   error
+}
+
 func (p *PoolStatsPublisher) publish(ctx context.Context) error {
-	stats, err := p.Backend.Stats(ctx)
-	if err != nil {
-		return fmt.Errorf("read pool stats: %w", err)
+	// Sample every pool even when one errors: a bad pool must not take
+	// the good one's figures down with it.
+	names := slices.Sorted(maps.Keys(p.Pools))
+	samples := make([]sample, 0, len(names))
+	for _, name := range names {
+		st, err := p.Pools[name].Backend.Stats(ctx)
+		samples = append(samples, sample{name: name, stats: st, err: err})
+		if err != nil {
+			continue
+		}
+		// Publish the sample even when the CRD update below conflicts: the
+		// gauges describe the pool, not the API object.
+		recordPoolMetrics(name, st.SizeBytes, st.UsedBytes, st.MetaUsedPercent/100)
 	}
-	// Publish the sample even when the CRD update below conflicts: the
-	// gauges describe the pool, not the API object.
-	recordPoolMetrics(stats.SizeBytes, stats.UsedBytes, stats.MetaUsedPercent/100)
 
 	node := &miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: p.NodeName}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, p.Client, node, func() error {
-		node.Spec.Backend = p.BackendType
+		node.Spec.Pools = node.Spec.Pools[:0]
+		for _, name := range names {
+			node.Spec.Pools = append(node.Spec.Pools, miroirv1alpha1.MiroirNodePool{
+				Name: name, Backend: p.Pools[name].Type,
+			})
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("upsert MiroirNode %s: %w", p.NodeName, err)
@@ -113,14 +139,23 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 		if err := p.Client.Get(ctx, types.NamespacedName{Name: p.NodeName}, cur); err != nil {
 			return err
 		}
-		cur.Status.CapacityBytes = stats.SizeBytes
-		cur.Status.AllocatedBytes = stats.UsedBytes
-		cur.Status.MetaUsedPercent = int32(math.Round(stats.MetaUsedPercent))
+		cur.Status.Pools = cur.Status.Pools[:0]
+		for _, s := range samples {
+			entry := miroirv1alpha1.MiroirNodePoolStatus{Name: s.name}
+			if s.err != nil {
+				entry.Message = s.err.Error()
+			} else {
+				entry.CapacityBytes = s.stats.SizeBytes
+				entry.AllocatedBytes = s.stats.UsedBytes
+				entry.MetaUsedPercent = int32(math.Round(s.stats.MetaUsedPercent))
+			}
+			cur.Status.Pools = append(cur.Status.Pools, entry)
+		}
 		cur.Status.DRBDVersion = p.DRBDVersion
 		now := metav1.Now()
 		cur.Status.ObservedAt = &now
 
-		high, reason, msg := poolUsageHigh(stats)
+		high, reason, msg := poolsUsageHigh(samples)
 		condStatus := metav1.ConditionFalse
 		if high {
 			condStatus = metav1.ConditionTrue
@@ -147,8 +182,32 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 	})
 }
 
-// poolUsageHigh reports whether data or dm-thin metadata usage has crossed
-// the warn line, with a condition reason and human message.
+// poolsUsageHigh folds the per-pool warn lines into the node's single
+// PoolUsageHigh condition: True when any pool crossed 80% data or dm-thin
+// metadata usage, with a message naming each offender.
+func poolsUsageHigh(samples []sample) (high bool, reason, msg string) {
+	var parts []string
+	worstReason := reasonUsageNormal
+	for _, s := range samples {
+		if s.err != nil {
+			continue
+		}
+		h, r, m := poolUsageHigh(s.stats)
+		if !h {
+			continue
+		}
+		high = true
+		worstReason = r
+		parts = append(parts, "pool "+s.name+": "+m)
+	}
+	if high {
+		return true, worstReason, strings.Join(parts, "; ")
+	}
+	return false, reasonUsageNormal, "all pools below the usage warn line"
+}
+
+// poolUsageHigh reports whether one pool's data or dm-thin metadata usage
+// has crossed the warn line, with a condition reason and human message.
 func poolUsageHigh(stats backend.PoolStats) (high bool, reason, msg string) {
 	var dataPct float64
 	if stats.SizeBytes > 0 {
@@ -162,7 +221,7 @@ func poolUsageHigh(stats backend.PoolStats) (high bool, reason, msg string) {
 		return true, "MetadataUsageHigh",
 			fmt.Sprintf("dm-thin metadata %.0f%% full (warn at %d%%)", stats.MetaUsedPercent, poolUsageWarnPercent)
 	default:
-		return false, "UsageNormal",
+		return false, reasonUsageNormal,
 			fmt.Sprintf("pool %.0f%% full", dataPct)
 	}
 }

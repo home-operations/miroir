@@ -28,17 +28,9 @@ import (
 //
 // MiroirNodeStatus is the pool capacity this node's agent publishes for
 // capacity-aware placement and overcommit guardrails.
-// On a shared pool (e.g. ZFS shared with OpenEBS) the figures are
-// pool-level, so a co-tenant's growth correctly shrinks miroir's headroom.
 type MiroirNodeStatusApplyConfiguration struct {
-	// CapacityBytes is the total size of the node-local pool.
-	CapacityBytes *int64 `json:"capacityBytes,omitempty"`
-	// AllocatedBytes is the pool capacity currently used (all tenants).
-	AllocatedBytes *int64 `json:"allocatedBytes,omitempty"`
-	// MetaUsedPercent is the dm-thin metadata usage (lvmthin only; 0
-	// otherwise), rounded — exhausting metadata wedges the pool
-	// independently of data space.
-	MetaUsedPercent *int32 `json:"metaUsedPercent,omitempty"`
+	// Pools carries one capacity entry per storage pool on this node.
+	Pools []MiroirNodePoolStatusApplyConfiguration `json:"pools,omitempty"`
 	// DRBDVersion is the DRBD kernel module version the agent probed at
 	// startup (e.g. "9.3.2"); absent on nodes without the module. The
 	// module ships with the host, not the agent image, so this is the
@@ -48,7 +40,7 @@ type MiroirNodeStatusApplyConfiguration struct {
 	// ignores stats older than a few poll intervals as unknown.
 	ObservedAt *v1.Time `json:"observedAt,omitempty"`
 	// Conditions follow the standard Kubernetes condition conventions;
-	// PoolUsageHigh fires at the 80% data/metadata warn line.
+	// PoolUsageHigh fires at the 80% data/metadata warn line (any pool).
 	Conditions []metav1.ConditionApplyConfiguration `json:"conditions,omitempty"`
 }
 
@@ -58,27 +50,16 @@ func MiroirNodeStatus() *MiroirNodeStatusApplyConfiguration {
 	return &MiroirNodeStatusApplyConfiguration{}
 }
 
-// WithCapacityBytes sets the CapacityBytes field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the CapacityBytes field is set to the value of the last call.
-func (b *MiroirNodeStatusApplyConfiguration) WithCapacityBytes(value int64) *MiroirNodeStatusApplyConfiguration {
-	b.CapacityBytes = &value
-	return b
-}
-
-// WithAllocatedBytes sets the AllocatedBytes field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the AllocatedBytes field is set to the value of the last call.
-func (b *MiroirNodeStatusApplyConfiguration) WithAllocatedBytes(value int64) *MiroirNodeStatusApplyConfiguration {
-	b.AllocatedBytes = &value
-	return b
-}
-
-// WithMetaUsedPercent sets the MetaUsedPercent field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MetaUsedPercent field is set to the value of the last call.
-func (b *MiroirNodeStatusApplyConfiguration) WithMetaUsedPercent(value int32) *MiroirNodeStatusApplyConfiguration {
-	b.MetaUsedPercent = &value
+// WithPools adds the given value to the Pools field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Pools field.
+func (b *MiroirNodeStatusApplyConfiguration) WithPools(values ...*MiroirNodePoolStatusApplyConfiguration) *MiroirNodeStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithPools")
+		}
+		b.Pools = append(b.Pools, *values[i])
+	}
 	return b
 }
 

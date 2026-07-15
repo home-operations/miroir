@@ -53,4 +53,15 @@ const (
 	// bitmap block size in bytes (power of two, 4096–1048576), applied at
 	// metadata creation. Replicated classes only.
 	ParamBitmapGranularity = "miroir.home-operations.com/bitmapGranularity"
+
+	// ParamPool is the StorageClass parameter naming the storage pool the
+	// class provisions from (matches LINSTOR's storagePool concept). Every
+	// replica of a volume lands in this pool on its node. Absent means the
+	// default pool.
+	ParamPool = "miroir.home-operations.com/pool"
+
+	// DefaultPoolName is the pool a replica, class, or node entry means
+	// when it names none — the identity every pre-multi-pool object is
+	// adopted under.
+	DefaultPoolName = "default"
 )

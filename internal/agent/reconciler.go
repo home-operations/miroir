@@ -52,10 +52,9 @@ import (
 type VolumeReconciler struct {
 	client.Client
 	NodeName string
-	Backend  backend.Backend
-	// BackendType gates behavior that depends on the backing implementation
-	// (auto rs-discard-granularity is skipped for loopfile).
-	BackendType miroirv1alpha1.BackendType
+	// Pools holds this node's storage pools; each volume's leg resolves
+	// its backend through its replica's pool reference.
+	Pools Pools
 	// DRBD drives the replication layer for multi-replica volumes.
 	DRBD *drbd.Driver
 	// DRBDEvents delivers kernel state changes (drbdsetup events2) as
@@ -168,10 +167,17 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	var dev string
 	var err error
+	var pool PoolBackend
+	poolName := volumePoolOn(vol, r.NodeName)
 	if !localDiskless {
+		// Resolve the leg's pool first: a replica referencing a pool this
+		// node no longer carries is a hard failure, not a wrong-pool guess.
+		if pool, err = r.Pools.Get(poolName); err != nil {
+			return ctrl.Result{}, r.reportError(ctx, vol, err)
+		}
 		// Realize: create (or grow) the backing device — a CoW clone when the
 		// volume restores from a snapshot.
-		dev, err = r.realizeBacking(ctx, vol, vol.Spec.Replicas[idx].FullSync)
+		dev, err = r.realizeBacking(ctx, pool.Backend, vol, vol.Spec.Replicas[idx].FullSync)
 		if err != nil {
 			return ctrl.Result{}, r.reportError(ctx, vol, err)
 		}
@@ -182,14 +188,15 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 				DeviceCreated: true,
 				DevicePath:    dev,
+				Pool:          poolName,
 			}); err != nil {
 				return ctrl.Result{}, err
 			}
 			vol.Status.PerNode[r.NodeName] = miroirv1alpha1.ReplicaStatus{
-				DeviceCreated: true, DevicePath: dev,
+				DeviceCreated: true, DevicePath: dev, Pool: poolName,
 			}
 		}
-		if err := r.Backend.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
+		if err := pool.Backend.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
 			return ctrl.Result{}, r.reportError(ctx, vol, err)
 		}
 		if vol.Spec.DRBD == nil {
@@ -205,6 +212,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				DevicePath:    dev,
 				SizeBytes:     vol.Spec.SizeBytes,
 				Connected:     true,
+				Pool:          poolName,
 			}); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -230,7 +238,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// FullSync-joining thin leg stays thin. Never loopfile (loop devices
 	// mishandle it) and never worth failing the reconcile over.
 	var discardGranularity int64
-	if !localDiskless && r.BackendType != miroirv1alpha1.BackendLoopfile {
+	if !localDiskless && pool.Type != miroirv1alpha1.BackendLoopfile {
 		if discardGranularity, err = r.DRBD.DiscardGranularity(ctx, dev); err != nil {
 			log.V(1).Info("discard granularity probe failed; rendering without it",
 				"volume", vol.Name, "error", err)
@@ -285,6 +293,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	} else {
 		recordDisklessMetrics(vol.Name, st.Primary)
 	}
+	statusPool := poolName
+	if localDiskless {
+		// A diskless leg holds no backing device in any pool.
+		statusPool = ""
+	}
 	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated:           !localDiskless,
 		DevicePath:              drbd.DevicePath(minor),
@@ -296,6 +309,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Diskless:                localDiskless,
 		DiskFailed:              diskFailed,
 		DiscardGranularityBytes: discardGranularity,
+		Pool:                    statusPool,
 		Message:                 detachedDiskMessage(diskFailed),
 		PrimarySince:            primarySince(vol, r.NodeName, st.Primary),
 	}); err != nil {
@@ -478,25 +492,25 @@ func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
 // identical inherited generations and skip the resync. A wiped node's
 // recreated device gets fresh just-created metadata and full-syncs at the
 // first handshake — no special-casing needed.
-func (r *VolumeReconciler) realizeBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, fullSync bool) (dev string, err error) {
+func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backend, vol *miroirv1alpha1.MiroirVolume, fullSync bool) (dev string, err error) {
 	if vol.Spec.Source == nil || fullSync {
 		// A FullSync joiner never clones, even on a restored volume: its
 		// node holds no source snapshot, and its content arrives over the
 		// wire as a full SyncTarget regardless of what the backing holds.
-		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		return be.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 	}
 	// The backing is cloned once and survives reboots; the source snapshot
 	// may be gone by then, so recover an existing device without it.
-	if exists, err := r.Backend.Exists(ctx, vol.Name); err != nil {
+	if exists, err := be.Exists(ctx, vol.Name); err != nil {
 		return "", err
 	} else if exists {
-		return r.Backend.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		return be.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 	}
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
 		return "", err
 	}
-	return r.Backend.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
+	return be.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
 }
 
 // drbdResource maps the CRD desired state to a render input. Entries the
@@ -786,6 +800,22 @@ func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *miroirv1alph
 }
 
 func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+	// The self-reported status slot marks legs that never created a
+	// backing device (tie-breakers, client legs): they resolve no pool —
+	// a diskless leg may sit on a node that does not even carry the
+	// volume's pool. Never key this on the kernel DiskState: a diskful
+	// replica reads "Diskless" after an I/O-error detach, and skipping
+	// its delete would leak the backing device.
+	slot := vol.Status.PerNode[r.NodeName]
+	_, localDiskless, present, _ := legState(vol, r.NodeName)
+	diskless := slot.Diskless || (present && localDiskless)
+	var pool PoolBackend
+	if !diskless {
+		var err error
+		if pool, err = r.Pools.Get(volumePoolOn(vol, r.NodeName)); err != nil {
+			return err
+		}
+	}
 	if vol.Spec.DRBD != nil {
 		if err := r.DRBD.Down(ctx, vol.Name); err != nil {
 			// A still-staged device answers "held open"; classify it as
@@ -798,19 +828,18 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 		// identifier into a reuse (issue #139). Best-effort: Backend.Delete
 		// destroys the whole device anyway, so a wipe failure must not block
 		// the deletion.
-		if slot := vol.Status.PerNode[r.NodeName]; slot.DeviceCreated && !slot.Diskless {
-			if err := r.DRBD.WipeMetadata(ctx, vol.Name, r.Backend.DevicePath(vol.Name), slot.DRBDMinor); err != nil {
+		if !diskless && slot.DeviceCreated && !slot.Diskless {
+			if err := r.DRBD.WipeMetadata(ctx, vol.Name, pool.Backend.DevicePath(vol.Name), slot.DRBDMinor); err != nil {
 				ctrl.LoggerFrom(ctx).V(1).Info("wipe-md failed during teardown; backing delete will destroy metadata",
 					"volume", vol.Name, "error", err)
 			}
 		}
 	}
-	// Backend.Delete succeeds when the device is already absent, so a
-	// diskless tie-breaker (which never created one) needs no special
-	// case. Never key this on the kernel DiskState: a diskful replica
-	// reads "Diskless" after an I/O-error detach, and skipping its
-	// delete would leak the backing device.
-	return r.Backend.Delete(ctx, vol.Name)
+	if diskless {
+		return nil
+	}
+	// Backend.Delete succeeds when the device is already absent.
+	return pool.Backend.Delete(ctx, vol.Name)
 }
 
 // removeFinalizer releases this node's own finalizer once local teardown
@@ -923,6 +952,9 @@ func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusA
 	}
 	if st.Diskless {
 		ac = ac.WithDiskless(true)
+	}
+	if st.Pool != "" {
+		ac = ac.WithPool(st.Pool)
 	}
 	if st.PrimarySince != nil {
 		ac = ac.WithPrimarySince(*st.PrimarySince)

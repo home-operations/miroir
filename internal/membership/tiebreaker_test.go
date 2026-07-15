@@ -77,9 +77,9 @@ func TestTieBreakerRetrofitsAndMembershipCompletes(t *testing.T) {
 		WithObjects(freezeVol(), node(nodeC, addrC)).
 		Build()
 	nodes := nodemap.Map{
-		nodeA: {Backend: miroirv1alpha1.BackendZFS},
-		nodeB: {Backend: miroirv1alpha1.BackendZFS},
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeA: storageNode(miroirv1alpha1.BackendZFS),
+		nodeB: storageNode(miroirv1alpha1.BackendZFS),
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}
 	tb := &TieBreakerReconciler{Client: c, Nodes: nodes}
 
@@ -126,9 +126,9 @@ func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(vol, node(nodeC, addrC)).Build()
 	tb := &TieBreakerReconciler{Client: c, Nodes: nodemap.Map{
-		nodeA: {Backend: miroirv1alpha1.BackendZFS},
-		nodeB: {Backend: miroirv1alpha1.BackendZFS},
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeA: storageNode(miroirv1alpha1.BackendZFS),
+		nodeB: storageNode(miroirv1alpha1.BackendZFS),
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
 	res, err := tb.Reconcile(t.Context(),
@@ -147,9 +147,9 @@ func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
 
 func TestTieBreakerSkips(t *testing.T) {
 	spare := nodemap.Map{
-		nodeA: {Backend: miroirv1alpha1.BackendZFS},
-		nodeB: {Backend: miroirv1alpha1.BackendZFS},
-		nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+		nodeA: storageNode(miroirv1alpha1.BackendZFS),
+		nodeB: storageNode(miroirv1alpha1.BackendZFS),
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}
 	cases := map[string]struct {
 		mutate func(*miroirv1alpha1.MiroirVolume)
@@ -178,8 +178,8 @@ func TestTieBreakerSkips(t *testing.T) {
 		"no spare node": {
 			mutate: func(*miroirv1alpha1.MiroirVolume) {},
 			nodes: nodemap.Map{
-				nodeA: {Backend: miroirv1alpha1.BackendZFS},
-				nodeB: {Backend: miroirv1alpha1.BackendZFS},
+				nodeA: storageNode(miroirv1alpha1.BackendZFS),
+				nodeB: storageNode(miroirv1alpha1.BackendZFS),
 			},
 		},
 		"unreplicated volume": {

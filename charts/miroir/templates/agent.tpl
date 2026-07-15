@@ -4,8 +4,10 @@
        nodes that don't use the loopfile backend. */ -}}
 {{- $loopDirs := list }}
 {{- range $name, $node := .Values.nodes }}
-{{-   if eq (toString $node.backend) "loopfile" }}
-{{-     $loopDirs = append $loopDirs $node.baseDir }}
+{{-   range $poolName, $pool := $node.pools }}
+{{-     if eq (toString $pool.backend) "loopfile" }}
+{{-       $loopDirs = append $loopDirs $pool.baseDir }}
+{{-     end }}
 {{-   end }}
 {{- end }}
 {{- $loopDirs = $loopDirs | uniq }}

@@ -73,7 +73,7 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 		WithObjects(vol(volPvc1, nodeA), snapObj(snapSnap1, volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	reconcileSnap(t, r, snapSnap1)
 
@@ -117,7 +117,7 @@ func TestSnapshotCoordinatorFailsOverFromDeadReplica0(t *testing.T) {
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":0,"connection-state":"Connecting"}]}]`}
-	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: newFakeBackend(),
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
 	reconcileSnap(t, rP, snapSnap1)
 
@@ -149,7 +149,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fbK := newFakeBackend()
-	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: fbK,
+	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fbK),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
 	reconcileSnap(t, rK, snapSnap1)
 	feK.calledWith(t, "drbdadm suspend-io pvc-1")
@@ -168,7 +168,7 @@ func TestSnapshotReplicatedBarrier(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fbP := newFakeBackend()
-	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: fbP,
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fbP),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
 	reconcileSnap(t, rP, snapSnap1)
 	feP.calledWith(t, "drbdadm suspend-io pvc-1")
@@ -224,18 +224,18 @@ func TestSnapshotBarrierWithTieBreaker(t *testing.T) {
 	feK := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
-	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: newFakeBackend(),
+	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
-	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: newFakeBackend(),
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
 	fbO := newFakeBackend()
 	feO := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
 		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
-	rO := &SnapshotReconciler{Client: c, NodeName: nodeC, Backend: fbO,
+	rO := &SnapshotReconciler{Client: c, NodeName: nodeC, Pools: poolsOf(fbO),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feO.run}}
 
 	// Round: coordinator raises, peer raises, both cut, coordinator
@@ -311,13 +311,13 @@ func TestSnapshotProceedsWithTieBreakerDown(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"},
 			{"peer-node-id":2,"connection-state":"Connecting"}]}]`}
-	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: newFakeBackend(),
+	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":0,"connection-state":"Connected"},
 			{"peer-node-id":2,"connection-state":"Connecting"}]}]`}
-	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: newFakeBackend(),
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
 
 	reconcileSnap(t, rK, snapSnap1)
@@ -376,7 +376,7 @@ func TestSnapshotPeerRecordsOnlyOwnSlot(t *testing.T) {
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
-	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: newFakeBackend(),
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
 
 	reconcileSnap(t, rP, snapSnap1)
@@ -431,7 +431,7 @@ func TestSnapshotSecondaryDefersToPeerPrimary(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected","peer-role":"Primary"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, snapSnap1)
 
@@ -465,7 +465,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 
 	// Expiry: resume, void every leg, mark the coordinator Error.
@@ -512,7 +512,7 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
-	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: newFakeBackend(),
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
 	reconcileSnap(t, rP, snapSnap1)
 	reconcileSnap(t, r, snapSnap1)
@@ -549,7 +549,7 @@ func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, snapSnap1)
 
@@ -578,7 +578,7 @@ func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","suspended-user":true,
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
@@ -621,7 +621,7 @@ func TestSnapshotDeleteToleratesDownedResource(t *testing.T) {
 		Build()
 
 	fe := &fakeDRBDExec{errOn: map[string]error{"status": errors.New("no such resource")}}
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: newFakeBackend(),
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
@@ -645,7 +645,7 @@ func TestSnapshotDeleteReleasesDepartedNode(t *testing.T) {
 		Build()
 
 	fe := &fakeDRBDExec{errOn: map[string]error{"status": errors.New("no such resource")}}
-	r := &SnapshotReconciler{Client: c, NodeName: nodeC, Backend: newFakeBackend(),
+	r := &SnapshotReconciler{Client: c, NodeName: nodeC, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
@@ -671,7 +671,7 @@ func TestSnapshotDeleteSkipsSiblingRoundBarrier(t *testing.T) {
 
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","suspended-user":true,
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}]}]`}
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: newFakeBackend(),
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
@@ -700,7 +700,7 @@ func TestSnapshotRoundWaitsForSibling(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Backend: newFakeBackend(),
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	res := reconcileSnap(t, r, "snap-b")
 
@@ -732,7 +732,7 @@ func TestSnapshotVoidedResumeDefersToSiblingRound(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
-	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: newFakeBackend(),
+	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-a")
 
@@ -757,7 +757,7 @@ func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`}
 	fb := newFakeBackend()
-	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Backend: fb,
+	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, snapSnap1)
 

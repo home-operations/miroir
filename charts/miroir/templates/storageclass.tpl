@@ -16,6 +16,9 @@ allowVolumeExpansion: true
 reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
 parameters:
   miroir.home-operations.com/replicas: {{ $replicas | quote }}
+  {{- if $sc.pool }}
+  miroir.home-operations.com/pool: {{ $sc.pool }}
+  {{- end }}
   {{- if gt (int $replicas) 1 }}
   miroir.home-operations.com/quorum: {{ $sc.quorum | default "freeze" }}
   {{- if hasKey $sc "allowRemoteVolumeAccess" }}

@@ -12,15 +12,38 @@ tests:
       - failedTemplate:
           errorMessage: "Helm values must define `nodes` — the per-node storage topology (see values.yaml)"
 
-  - it: renders the nodes ConfigMap and the drbd ConfigMap
+  - it: fails fast on the pre-0.10 flat single-pool node shape
     set:
       nodes:
         node-a:
           backend: lvmthin
           device: /dev/disk/by-partlabel/r-miroir
+    asserts:
+      - failedTemplate:
+          errorMessagePattern: "nodes.node-a uses the pre-0.10 flat single-pool shape"
+
+  - it: fails fast when a node declares no pools
+    set:
+      nodes:
+        node-a:
+          zone: rack-1
+    asserts:
+      - failedTemplate:
+          errorMessagePattern: "nodes.node-a declares no pools"
+
+  - it: renders the nodes ConfigMap and the drbd ConfigMap
+    set:
+      nodes:
+        node-a:
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
         node-b:
-          backend: zfs
-          zfsDataset: data-pool/miroir
+          pools:
+            default:
+              backend: zfs
+              zfsDataset: data-pool/miroir
     asserts:
       - hasDocuments:
           count: 2
@@ -53,11 +76,15 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
         node-b:
-          backend: zfs
-          zfsDataset: data-pool/miroir
+          pools:
+            default:
+              backend: zfs
+              zfsDataset: data-pool/miroir
     documentIndex: 0
     asserts:
       - matchRegex:
@@ -77,8 +104,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 1
     asserts:
       - matchRegex:
@@ -114,8 +143,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
       drbd:
         onIoError: pass_on
         resync:
@@ -146,8 +177,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           algorithm: crc32c
@@ -166,8 +199,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 1
     asserts:
       - notMatchRegex:
@@ -181,8 +216,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     asserts:
       - documentIndex: 0
         equal:
@@ -197,8 +234,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verifyAlg: crc32c
     asserts:

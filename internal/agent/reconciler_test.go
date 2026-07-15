@@ -43,6 +43,12 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
+// Pool names used across this package's tests.
+const (
+	poolDefault = "default"
+	poolFast    = "fast"
+)
+
 const (
 	nodeA                 = "node-a"
 	nodeB                 = "node-b"
@@ -66,6 +72,20 @@ type fakeBackend struct {
 	fromSnapVol []string
 	createVol   []string
 	stats       backend.PoolStats
+	statsErr    error
+}
+
+// errBoom is the generic injected failure for fake backends.
+var errBoom = errors.New("boom")
+
+// poolsOf wraps a fake backend as this node's single default lvmthin pool —
+// the pre-multi-pool shape most tests exercise.
+func poolsOf(fb *fakeBackend) Pools {
+	return poolsOfType(fb, miroirv1alpha1.BackendLVMThin)
+}
+
+func poolsOfType(fb *fakeBackend, typ miroirv1alpha1.BackendType) Pools {
+	return Pools{poolDefault: {Backend: fb, Type: typ}}
 }
 
 func newFakeBackend() *fakeBackend {
@@ -128,6 +148,9 @@ func (f *fakeBackend) DeleteSnapshot(_ context.Context, vol, snap string) error 
 func (f *fakeBackend) DevicePath(vol string) string { return "/dev/fake/" + vol }
 
 func (f *fakeBackend) Stats(context.Context) (backend.PoolStats, error) {
+	if f.statsErr != nil {
+		return backend.PoolStats{}, f.statsErr
+	}
 	return f.stats, nil
 }
 
@@ -182,7 +205,7 @@ func TestReconcileRealizesReplica(t *testing.T) {
 		WithObjects(vol(volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	reconcile(t, r, volPvc1)
 
@@ -206,6 +229,68 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	}
 }
 
+// A replica placed in a named pool realizes through that pool's backend
+// and self-reports the pool in its status slot.
+func TestReconcileUsesReplicaPool(t *testing.T) {
+	s := newScheme(t)
+	def, fast := newFakeBackend(), newFakeBackend()
+	v := vol(volPvc1, nodeA)
+	v.Spec.Replicas[0].Pool = poolFast
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: Pools{
+		poolDefault: {Backend: def, Type: miroirv1alpha1.BackendLVMThin},
+		poolFast:    {Backend: fast, Type: miroirv1alpha1.BackendLVMThin},
+	}}
+
+	reconcile(t, r, volPvc1)
+
+	if len(def.created) != 0 {
+		t.Fatalf("default pool must stay untouched: %+v", def.created)
+	}
+	if fast.created[volPvc1] != 1<<30 {
+		t.Fatalf("device must land in the fast pool: %+v", fast.created)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.PerNode[nodeA].Pool != poolFast {
+		t.Fatalf("status slot must self-report the pool: %+v", got.Status.PerNode[nodeA])
+	}
+}
+
+// A replica referencing a pool this node no longer carries is a hard
+// failure with a pointed message — never a wrong-pool guess.
+func TestReconcileUnknownPoolFails(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA)
+	v.Spec.Replicas[0].Pool = "gone"
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err == nil {
+		t.Fatal("unknown pool must error the reconcile")
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, `"gone"`) {
+		t.Fatalf("status must name the missing pool, got %q", msg)
+	}
+	if len(fb.created) != 0 {
+		t.Fatalf("no device may be created in another pool: %+v", fb.created)
+	}
+}
+
 func TestReconcileIgnoresForeignVolume(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
@@ -213,7 +298,7 @@ func TestReconcileIgnoresForeignVolume(t *testing.T) {
 		WithObjects(vol(volPvc1, "node-b")).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	reconcile(t, r, volPvc1)
 
@@ -230,7 +315,7 @@ func TestReconcileReportsBackendError(t *testing.T) {
 		WithObjects(vol(volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	_, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -263,7 +348,7 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	reconcile(t, r, volPvc1)
 
@@ -296,7 +381,7 @@ func TestReconcileSourceSnapshotGoneAndDeviceMissingFails(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	_, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -340,7 +425,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Backend: fb,
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -448,7 +533,7 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 		}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Backend: fb,
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -501,7 +586,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Backend: fb,
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -579,7 +664,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Backend: fb,
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -683,7 +768,7 @@ func TestReconcileForeignAgentLeavesFinalizerOnDelete(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb} // ...agent on node-a
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)} // ...agent on node-a
 
 	reconcile(t, r, volPvc1)
 
@@ -706,7 +791,7 @@ func TestReconcileTeardownOnDelete(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	// Pre-create the device so teardown has something to remove.
 	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
@@ -743,7 +828,7 @@ func TestReconcileTeardownDeletesDespiteDetachedDiskState(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
 		t.Fatal(err)
@@ -778,7 +863,7 @@ func TestReconcileTeardownWipesMetadata(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fe := &fakeDRBDExec{}
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Backend: fb,
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
@@ -813,7 +898,7 @@ func TestReconcileTeardownDisklessSkipsWipe(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fe := &fakeDRBDExec{}
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Backend: fb,
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -844,7 +929,7 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 		"drbdsetup down pvc-1": errors.New("pvc-1: State change failed: Device is held open by someone"),
 	}}
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Backend: fb,
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -884,7 +969,7 @@ func TestReconcileDetachedDiskGetsActionableMessage(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Diskless"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -931,7 +1016,7 @@ func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Diskless"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -975,7 +1060,7 @@ func TestReconcileLatchedCoordinatorSkipsResize(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Diskless"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1001,7 +1086,7 @@ func TestReconcileQuorumLostExportsGauge(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"UpToDate","quorum":false}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1035,7 +1120,7 @@ func TestReconcileResizeCoordinatorSkipsWhenAtSize(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1064,7 +1149,7 @@ func TestReconcilePrimaryLatchesActivated(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
 		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1094,7 +1179,7 @@ func TestReconcileSecondaryDoesNotLatchActivated(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
 		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
@@ -1120,9 +1205,9 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fb := newFakeBackend()
-	r := &VolumeReconciler{Client: c, NodeName: nodeB, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fb)}
 
-	if _, err := r.realizeBacking(t.Context(), v, true); err != nil {
+	if _, err := r.realizeBacking(t.Context(), fb, v, true); err != nil {
 		t.Fatal(err)
 	}
 	if len(fb.fromSnapVol) != 0 {
@@ -1164,7 +1249,7 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 	r := &VolumeReconciler{
 		Client:   c,
 		NodeName: nodeA,
-		Backend:  fb,
+		Pools:    poolsOf(fb),
 		DRBD:     &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 	reconcile(t, r, volPvc1)
@@ -1195,7 +1280,7 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeC, Backend: fb,
+		Client: c, NodeName: nodeC, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -1267,12 +1352,12 @@ func TestRemovalSnapshotGateSkipsTieBreaker(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
 		Build()
 
-	rO := &VolumeReconciler{Client: c, NodeName: nodeC, Backend: newFakeBackend()}
+	rO := &VolumeReconciler{Client: c, NodeName: nodeC, Pools: poolsOf(newFakeBackend())}
 	if reason := rO.removalBlocked(t.Context(), v); reason != "" {
 		t.Fatalf("tie-breaker removal must not be pinned by snapshots: %s", reason)
 	}
 	// A removed diskful replica (no Diskless marker) stays pinned.
-	rK := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: newFakeBackend()}
+	rK := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend())}
 	if reason := rK.removalBlocked(t.Context(), v); !strings.Contains(reason, "snapshot") {
 		t.Fatalf("diskful removal must stay pinned by snapshots, got %q", reason)
 	}
@@ -1409,7 +1494,7 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 		WithObjects(vol(volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 	if err := c.Status().Patch(t.Context(), &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 	}, client.RawPatch(types.MergePatchType, []byte(`{
@@ -1481,7 +1566,7 @@ func TestReconcileRemovedReplicaTearsDown(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, diskStateUpToDate)
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run}}
 
 	reconcile(t, r, volPvc1)
@@ -1516,7 +1601,7 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, diskStateUpToDate)
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -1547,7 +1632,7 @@ func TestReconcileRemovalBlockedByDegradedPeer(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	patchPeersUpToDate(t, c, diskStateInconsistent) // node-b still syncing
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -1574,7 +1659,7 @@ func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -1607,9 +1692,8 @@ func TestReconcileRendersDiscardGranularity(t *testing.T) {
 		responses: map[string]string{"lsblk": "65536\n"},
 	}
 	stateDir := t.TempDir()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
-		BackendType: miroirv1alpha1.BackendLVMThin,
-		DRBD:        &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
 
@@ -1636,9 +1720,8 @@ func TestReconcileLoopfileSkipsDiscardProbe(t *testing.T) {
 		"devices":[{"disk-state":"UpToDate"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
 		responses: map[string]string{"lsblk": "65536\n"}}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
-		BackendType: miroirv1alpha1.BackendLoopfile,
-		DRBD:        &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOfType(fb, miroirv1alpha1.BackendLoopfile),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
 	fe.notCalledWith(t, "lsblk")
@@ -1674,9 +1757,8 @@ func steadyVolume(t *testing.T) (*miroirv1alpha1.MiroirVolume, *fakeDRBDExec, *V
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `","quorum":true}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
-		BackendType: miroirv1alpha1.BackendLVMThin,
-		DRBD:        &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 	return v, fe, r
 }
 
@@ -1811,7 +1893,7 @@ func splitBrainSetup(t *testing.T, nodeName, peerNodeID, connState string, activ
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeName, Backend: newFakeBackend(),
+		Client: c, NodeName: nodeName, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 	return r, fe
@@ -1998,7 +2080,7 @@ func birthSetup(t *testing.T, nodeName string, peerNodeID int, statusSeq ...stri
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeName, Backend: newFakeBackend(),
+		Client: c, NodeName: nodeName, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 	return r, fe, v
@@ -2197,7 +2279,7 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeC, Backend: fb,
+		Client: c, NodeName: nodeC, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -2268,7 +2350,7 @@ func TestReconcileClientLegWaitsForMembership(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &VolumeReconciler{
-		Client: c, NodeName: nodeC, Backend: fb,
+		Client: c, NodeName: nodeC, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 
@@ -2300,7 +2382,7 @@ func TestReconcilePrimarySinceLifecycle(t *testing.T) {
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
 		"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`
 	fe := &fakeDRBDExec{statusJSON: primary}
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Backend: fb,
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)

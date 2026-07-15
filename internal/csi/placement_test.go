@@ -18,6 +18,7 @@ package csi
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -42,9 +43,10 @@ func miroirNodeObj(name string, capacity, allocated int64) *miroirv1alpha1.Miroi
 	return &miroirv1alpha1.MiroirNode{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Status: miroirv1alpha1.MiroirNodeStatus{
-			CapacityBytes:  capacity,
-			AllocatedBytes: allocated,
-			ObservedAt:     &now,
+			Pools: []miroirv1alpha1.MiroirNodePoolStatus{{
+				Name: poolDefault, CapacityBytes: capacity, AllocatedBytes: allocated,
+			}},
+			ObservedAt: &now,
 		},
 	}
 }
@@ -91,7 +93,7 @@ func TestPlaceWeightsByFreeSpace(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false)
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +115,7 @@ func TestPlaceRefusesOvercommit(t *testing.T) {
 	}
 
 	// Default 2× ratio: 15 + 10 = 25 GiB provisioned > 20 GiB cap on both.
-	_, err := c.place(t.Context(), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false)
+	_, err := c.place(t.Context(), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false, poolDefault)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("overcommit must be ResourceExhausted, got %v", err)
 	}
@@ -130,7 +132,7 @@ func TestPlaceTopologyPinnedRefusedWhenOvercommitted(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	_, err := c.place(t.Context(), topologyPref(nodeA), 1, 10*gib, volNew, placementVols(t, c.Client), false)
+	_, err := c.place(t.Context(), topologyPref(nodeA), 1, 10*gib, volNew, placementVols(t, c.Client), false, poolDefault)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("pinned overcommitted node must be ResourceExhausted, got %v", err)
 	}
@@ -140,7 +142,7 @@ func TestPlaceFallsBackWithoutStats(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: placementClient(s), Nodes: testNodes}
 
-	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false)
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +163,7 @@ func TestPlaceHonoursConfiguredRatio(t *testing.T) {
 	}
 
 	// 11 GiB on a 10 GiB pool breaches a 1× ratio on every node.
-	_, err := c.place(t.Context(), nil, 1, 11*gib, volNew, placementVols(t, c.Client), false)
+	_, err := c.place(t.Context(), nil, 1, 11*gib, volNew, placementVols(t, c.Client), false, poolDefault)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("1x ratio must refuse an over-capacity volume, got %v", err)
 	}
@@ -233,13 +235,13 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 			nodeObj(nodeC, "192.168.1.43"),
 		),
 		Nodes: nodemap.Map{
-			nodeA: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "a", Device: "/dev/x"},
-			nodeB: {Backend: miroirv1alpha1.BackendZFS, Zone: "a", ZFSDataset: "p/m"},
-			nodeC: {Backend: miroirv1alpha1.BackendLVMThin, Zone: "b", Device: "/dev/y"},
+			nodeA: {Zone: "a", Pools: map[string]nodemap.Pool{poolDefault: {Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/x"}}},
+			nodeB: {Zone: "a", Pools: map[string]nodemap.Pool{poolDefault: {Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "p/m"}}},
+			nodeC: {Zone: "b", Pools: map[string]nodemap.Pool{poolDefault: {Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/y"}}},
 		},
 	}
 
-	got, err := c.place(t.Context(), nil, 2, 5*gib, volNew, placementVols(t, c.Client), false)
+	got, err := c.place(t.Context(), nil, 2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,6 +249,150 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 	slices.Sort(nodes)
 	if !slices.Equal(nodes, []string{nodeA, nodeC}) {
 		t.Fatalf("replicas must span zones a and b (node-a+node-c), got %v", nodes)
+	}
+}
+
+// multiPoolNodes is a 3-node map where only node-a and node-b carry the
+// poolFast pool; every node carries the default pool.
+func multiPoolNodes() nodemap.Map {
+	withFast := func() nodemap.Node {
+		return nodemap.Node{Pools: map[string]nodemap.Pool{
+			poolDefault: {Backend: miroirv1alpha1.BackendLVMThin},
+			poolFast:    {Backend: miroirv1alpha1.BackendLVMThin},
+		}}
+	}
+	return nodemap.Map{
+		nodeA: withFast(),
+		nodeB: withFast(),
+		nodeC: {Pools: map[string]nodemap.Pool{poolDefault: {Backend: miroirv1alpha1.BackendLVMThin}}},
+	}
+}
+
+// miroirNodePools builds a freshly-observed MiroirNode with one capacity
+// entry per named pool.
+func miroirNodePools(name string, pools ...miroirv1alpha1.MiroirNodePoolStatus) *miroirv1alpha1.MiroirNode {
+	now := metav1.Now()
+	return &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status:     miroirv1alpha1.MiroirNodeStatus{Pools: pools, ObservedAt: &now},
+	}
+}
+
+// A class naming a pool only some nodes carry places onto exactly those
+// nodes, ranked by that pool's own headroom.
+func TestPlaceFiltersAndRanksByPool(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodePools(nodeA,
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolDefault, CapacityBytes: 100 * gib, AllocatedBytes: 10 * gib},
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolFast, CapacityBytes: 50 * gib, AllocatedBytes: 40 * gib}),
+			miroirNodePools(nodeB,
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolDefault, CapacityBytes: 100 * gib, AllocatedBytes: 90 * gib},
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolFast, CapacityBytes: 50 * gib, AllocatedBytes: 5 * gib}),
+			miroirNodePools(nodeC,
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolDefault, CapacityBytes: 500 * gib}),
+		),
+		Nodes: multiPoolNodes(),
+	}
+
+	// node-c has the roomiest default pool but no fast pool at all; node-b's
+	// fast pool has more headroom than node-a's.
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolFast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Node != nodeB {
+		t.Fatalf("expected the fast pool to rank node-b first, got %+v", got)
+	}
+	if got[0].Pool != poolFast {
+		t.Fatalf("placed replica must persist its pool, got %+v", got[0])
+	}
+}
+
+// A class naming a pool that exists on too few nodes for its replica count
+// fails with an explicit message, not a generic placement refusal.
+func TestPlaceRefusesPoolOnTooFewNodes(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: placementClient(s), Nodes: multiPoolNodes()}
+
+	_, err := c.place(t.Context(), nil, 3, 5*gib, volNew, placementVols(t, c.Client), false, poolFast)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("want ResourceExhausted, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `pool "fast" exists on 2 of 3 storage nodes`) {
+		t.Fatalf("error must name the pool and its node count: %v", err)
+	}
+}
+
+// Overcommit accounting is (node, pool)-scoped: volumes provisioned from
+// the default pool must not consume the fast pool's headroom.
+func TestPlaceOvercommitIsPoolScoped(t *testing.T) {
+	s := newScheme(t)
+	defaultVol := volOn("existing-default", nodeA, 15*gib) // default pool (empty = default)
+	fastVol := volOn("existing-fast", nodeA, 15*gib)
+	fastVol.Spec.Replicas[0].Pool = poolFast
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodePools(nodeA,
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolDefault, CapacityBytes: 10 * gib},
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolFast, CapacityBytes: 10 * gib}),
+			defaultVol, fastVol,
+		),
+		Nodes: nodemap.Map{nodeA: {Pools: map[string]nodemap.Pool{
+			poolDefault: {Backend: miroirv1alpha1.BackendLVMThin},
+			poolFast:    {Backend: miroirv1alpha1.BackendLVMThin},
+		}}},
+	}
+
+	// Each pool holds 15 GiB provisioned of its 2×10 GiB budget: another
+	// 10 GiB breaches either pool alone (25 > 20), so per-pool accounting
+	// refuses — but 5 GiB still fits (20 > 15+5 is false; 20 >= 20 passes).
+	if _, err := c.place(t.Context(), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false, poolFast); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("fast pool at 15/20 GiB must refuse 10 GiB more, got %v", err)
+	}
+	got, err := c.place(t.Context(), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolFast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Pool != poolFast {
+		t.Fatalf("5 GiB must still fit the fast pool, got %+v", got)
+	}
+}
+
+// GetCapacity answers per (segment, class): the same node reports each
+// pool's own headroom, and a node without the class's pool reports zero.
+func TestGetCapacityPerPool(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodePools(nodeA,
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolDefault, CapacityBytes: 10 * gib},
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolFast, CapacityBytes: 5 * gib}),
+			miroirNodePools(nodeC,
+				miroirv1alpha1.MiroirNodePoolStatus{Name: poolDefault, CapacityBytes: 10 * gib}),
+		),
+		Nodes: multiPoolNodes(),
+	}
+	fastParams := map[string]string{constants.ParamPool: poolFast}
+
+	req := topologySegment(nodeA)
+	req.Parameters = fastParams
+	if resp, _ := c.GetCapacity(t.Context(), req); resp.GetAvailableCapacity() != 10*gib {
+		t.Fatalf("fast pool headroom = %d, want %d", resp.GetAvailableCapacity(), 10*gib)
+	}
+	if resp, _ := c.GetCapacity(t.Context(), topologySegment(nodeA)); resp.GetAvailableCapacity() != 20*gib {
+		t.Fatalf("default pool headroom = %d, want %d", resp.GetAvailableCapacity(), 20*gib)
+	}
+	// node-c carries no fast pool: a fast-class RWO segment reports zero.
+	req = topologySegment(nodeC)
+	req.Parameters = map[string]string{
+		constants.ParamPool:              poolFast,
+		constants.ParamAllowRemoteAccess: "false",
+		constants.ParamReplicas:          "2",
+	}
+	if resp, _ := c.GetCapacity(t.Context(), req); resp.GetAvailableCapacity() != 0 {
+		t.Fatalf("segment without the class's pool must report 0, got %d", resp.GetAvailableCapacity())
 	}
 }
 
@@ -274,7 +420,7 @@ func TestPlaceRemoteAccessIgnoresNonStorageTopology(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	got, err := c.place(t.Context(), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), true)
+	got, err := c.place(t.Context(), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), true, poolDefault)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +446,7 @@ func TestPlaceStrictRefusesNonStorageTopology(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	if _, err := c.place(t.Context(), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), false); status.Code(err) != codes.ResourceExhausted {
+	if _, err := c.place(t.Context(), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("non-storage topology without remote access must refuse, got %v", err)
 	}
 }

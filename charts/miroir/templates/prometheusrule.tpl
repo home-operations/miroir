@@ -198,7 +198,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
           annotations:
             summary: >-
-              Storage pool on {{ "{{" }} $labels.node {{ "}}" }} is
+              Storage pool {{ "{{" }} $labels.pool {{ "}}" }} on
+              {{ "{{" }} $labels.node {{ "}}" }} is
               {{ "{{" }} $value | humanizePercentage {{ "}}" }} full
             description: >-
               Pool usage crossed 80%. Thin-provisioned pools fail writes when
@@ -215,7 +216,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
           annotations:
             summary: >-
-              Thin-pool metadata on {{ "{{" }} $labels.node {{ "}}" }} is
+              Thin-pool metadata of pool {{ "{{" }} $labels.pool {{ "}}" }} on
+              {{ "{{" }} $labels.node {{ "}}" }} is
               {{ "{{" }} $value | humanizePercentage {{ "}}" }} used
             description: >-
               dm-thin metadata usage crossed 80%; exhausting it corrupts the

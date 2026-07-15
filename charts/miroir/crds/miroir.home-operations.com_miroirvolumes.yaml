@@ -24,6 +24,10 @@ spec:
       name: Replicas
       priority: 1
       type: string
+    - jsonPath: .spec.replicas[*].pool
+      name: Pools
+      priority: 1
+      type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
@@ -229,6 +233,13 @@ spec:
                         and stable for the volume's lifetime. Only set on replicated volumes.
                       format: int32
                       type: integer
+                    pool:
+                      description: |-
+                        Pool names the node-map storage pool holding this replica's backing
+                        device. Persisted like Backend so the volume survives later topology
+                        edits. Empty means the default pool (pre-multi-pool volumes are
+                        adopted this way). Unused for diskless replicas.
+                      type: string
                   required:
                   - node
                   type: object
@@ -477,6 +488,13 @@ spec:
                       type: string
                     message:
                       description: Message carries the last reconcile error, if any.
+                      type: string
+                    pool:
+                      description: |-
+                        Pool records which storage pool holds this leg's backing device.
+                        Self-reported by the agent like Diskless, so teardown after the
+                        entry has left spec.replicas still targets the right pool. Empty
+                        means the default pool.
                       type: string
                     primarySince:
                       description: |-

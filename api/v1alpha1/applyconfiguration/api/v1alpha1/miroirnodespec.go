@@ -18,18 +18,13 @@ limitations under the License.
 
 package v1alpha1
 
-import (
-	apiv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
-)
-
 // MiroirNodeSpecApplyConfiguration represents a declarative configuration of the MiroirNodeSpec type for use
 // with apply.
 //
-// MiroirNodeSpec records which backend a storage node runs, mirrored from
-// the node map so `kubectl get miroirnodes` reads without the ConfigMap.
+// MiroirNodeSpec records which pools a storage node runs.
 type MiroirNodeSpecApplyConfiguration struct {
-	// Backend is the storage implementation backing this node's pool.
-	Backend *apiv1alpha1.BackendType `json:"backend,omitempty"`
+	// Pools lists this node's storage pools, one entry per pool.
+	Pools []MiroirNodePoolApplyConfiguration `json:"pools,omitempty"`
 }
 
 // MiroirNodeSpecApplyConfiguration constructs a declarative configuration of the MiroirNodeSpec type for use with
@@ -38,10 +33,15 @@ func MiroirNodeSpec() *MiroirNodeSpecApplyConfiguration {
 	return &MiroirNodeSpecApplyConfiguration{}
 }
 
-// WithBackend sets the Backend field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Backend field is set to the value of the last call.
-func (b *MiroirNodeSpecApplyConfiguration) WithBackend(value apiv1alpha1.BackendType) *MiroirNodeSpecApplyConfiguration {
-	b.Backend = &value
+// WithPools adds the given value to the Pools field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the Pools field.
+func (b *MiroirNodeSpecApplyConfiguration) WithPools(values ...*MiroirNodePoolApplyConfiguration) *MiroirNodeSpecApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithPools")
+		}
+		b.Pools = append(b.Pools, *values[i])
+	}
 	return b
 }

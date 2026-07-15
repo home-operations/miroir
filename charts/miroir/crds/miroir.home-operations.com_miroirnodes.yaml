@@ -17,15 +17,15 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.backend
-      name: Backend
+    - jsonPath: .spec.pools[*].name
+      name: Pools
       type: string
-    - jsonPath: .status.capacityBytes
+    - jsonPath: .status.pools[*].capacityBytes
       name: Capacity
-      type: integer
-    - jsonPath: .status.allocatedBytes
+      type: string
+    - jsonPath: .status.pools[*].allocatedBytes
       name: Allocated
-      type: integer
+      type: string
     - jsonPath: .status.drbdVersion
       name: DRBD
       type: string
@@ -36,7 +36,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          MiroirNode publishes one storage node's pool capacity. Named after the
+          MiroirNode publishes one storage node's pool capacities. Named after the
           node; written by that node's agent, read by the controller at placement.
         properties:
           apiVersion:
@@ -57,39 +57,47 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              MiroirNodeSpec records which backend a storage node runs, mirrored from
-              the node map so `kubectl get miroirnodes` reads without the ConfigMap.
+            description: MiroirNodeSpec records which pools a storage node runs.
             properties:
-              backend:
-                description: Backend is the storage implementation backing this node's
+              pools:
+                description: Pools lists this node's storage pools, one entry per
                   pool.
-                enum:
-                - lvmthin
-                - zfs
-                - loopfile
-                type: string
+                items:
+                  description: |-
+                    MiroirNodePool is the per-pool slice of a node's spec: which backend
+                    implementation the named pool runs, mirrored from the node map so
+                    `kubectl get miroirnodes` reads without the ConfigMap.
+                  properties:
+                    backend:
+                      description: Backend is the storage implementation backing this
+                        pool.
+                      enum:
+                      - lvmthin
+                      - zfs
+                      - loopfile
+                      type: string
+                    name:
+                      description: |-
+                        Name is the pool name from the node map ("default" for the
+                        pre-multi-pool single pool).
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
           status:
             description: |-
               MiroirNodeStatus is the pool capacity this node's agent publishes for
               capacity-aware placement and overcommit guardrails.
-              On a shared pool (e.g. ZFS shared with OpenEBS) the figures are
-              pool-level, so a co-tenant's growth correctly shrinks miroir's headroom.
             properties:
-              allocatedBytes:
-                description: AllocatedBytes is the pool capacity currently used (all
-                  tenants).
-                format: int64
-                type: integer
-              capacityBytes:
-                description: CapacityBytes is the total size of the node-local pool.
-                format: int64
-                type: integer
               conditions:
                 description: |-
                   Conditions follow the standard Kubernetes condition conventions;
-                  PoolUsageHigh fires at the 80% data/metadata warn line.
+                  PoolUsageHigh fires at the 80% data/metadata warn line (any pool).
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -152,19 +160,54 @@ spec:
                   module ships with the host, not the agent image, so this is the
                   per-node view that makes mixed clusters visible mid-upgrade.
                 type: string
-              metaUsedPercent:
-                description: |-
-                  MetaUsedPercent is the dm-thin metadata usage (lvmthin only; 0
-                  otherwise), rounded — exhausting metadata wedges the pool
-                  independently of data space.
-                format: int32
-                type: integer
               observedAt:
                 description: |-
                   ObservedAt is when these figures were last sampled; the controller
                   ignores stats older than a few poll intervals as unknown.
                 format: date-time
                 type: string
+              pools:
+                description: Pools carries one capacity entry per storage pool on
+                  this node.
+                items:
+                  description: |-
+                    MiroirNodePoolStatus is one pool's capacity figures.
+                    On a shared pool (e.g. ZFS shared with OpenEBS) the figures are
+                    pool-level, so a co-tenant's growth correctly shrinks miroir's headroom.
+                  properties:
+                    allocatedBytes:
+                      description: AllocatedBytes is the pool capacity currently used
+                        (all tenants).
+                      format: int64
+                      type: integer
+                    capacityBytes:
+                      description: CapacityBytes is the total size of this node-local
+                        pool.
+                      format: int64
+                      type: integer
+                    message:
+                      description: |-
+                        Message carries the last stats-sampling error for this pool, if
+                        any — a pool whose backend cannot be read stays visible instead of
+                        silently dropping out of the list.
+                      type: string
+                    metaUsedPercent:
+                      description: |-
+                        MetaUsedPercent is the dm-thin metadata usage (lvmthin only; 0
+                        otherwise), rounded — exhausting metadata wedges the pool
+                        independently of data space.
+                      format: int32
+                      type: integer
+                    name:
+                      description: Name is the pool name from the node map.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             type: object
         type: object
     served: true

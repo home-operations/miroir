@@ -12,8 +12,10 @@ tests:
       nameOverride: alt
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: csidriver.tpl
     documentIndex: 0
     asserts:
@@ -26,8 +28,10 @@ tests:
       nameOverride: alt
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -40,8 +44,10 @@ tests:
       nameOverride: alt
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
     documentIndex: 0
     asserts:
@@ -54,8 +60,10 @@ tests:
       fullnameOverride: storage
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -68,8 +76,10 @@ tests:
       fullnameOverride: storage
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
     documentIndex: 0
     asserts:
@@ -94,8 +104,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -110,8 +122,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
     documentIndex: 0
     asserts:
@@ -123,8 +137,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -148,8 +164,10 @@ tests:
     set:
       nodes:
         node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:

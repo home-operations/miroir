@@ -15,9 +15,10 @@ limitations under the License.
 */
 
 // Package membership reconciles replica-set edits on live volumes. An
-// operator adds a replica by appending {node, backend} to spec.replicas
-// (kubectl edit); this reconciler completes the entry — DRBD node id,
-// replication address, teardown finalizer, FullSync marker — after which
+// operator adds a replica by appending {node} (plus a pool when not the
+// default) to spec.replicas (kubectl edit); this reconciler completes the
+// entry — backend, DRBD node id, replication address, teardown finalizer,
+// FullSync marker — after which
 // the node's agent realizes it and DRBD full-syncs the new leg. Removal
 // needs no spec-side work: the removed node's agent notices its held
 // finalizer and tears down once the remaining replicas are safe.
@@ -131,9 +132,13 @@ var errBadPlacement = errors.New("replica placement is invalid")
 // just-created metadata forces a full sync either way, so a stale bitmap
 // slot on the peers cannot leak as data.
 func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, rep *miroirv1alpha1.Replica) error {
-	entry, ok := r.Nodes[rep.Node]
-	if !ok {
+	if _, ok := r.Nodes[rep.Node]; !ok {
 		return fmt.Errorf("%w: node %s is not in the storage node map", errBadPlacement, rep.Node)
+	}
+	pool, poolOK := r.Nodes.Pool(rep.Node, rep.Pool)
+	if !poolOK && !rep.Diskless {
+		return fmt.Errorf("%w: node %s has no storage pool %q",
+			errBadPlacement, rep.Node, nodemap.PoolOrDefault(rep.Pool))
 	}
 	dup := 0
 	for _, other := range vol.Spec.Replicas {
@@ -151,11 +156,14 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 	id := nextNodeID(vol, rep.Node)
 
 	if rep.Diskless {
-		// Quorum-only entry: a backend is meaningless, and the node map
-		// (not the operator's edit) decides backends — clear any typo.
+		// Quorum-only entry: a backend or pool is meaningless, and the
+		// node map (not the operator's edit) decides backends — clear any
+		// typo.
 		rep.Backend = ""
+		rep.Pool = ""
 	} else {
-		rep.Backend = entry.Backend
+		rep.Backend = pool.Backend
+		rep.Pool = nodemap.PoolOrDefault(rep.Pool)
 		rep.FullSync = true
 	}
 	rep.NodeID = id

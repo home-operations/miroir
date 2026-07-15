@@ -19,6 +19,7 @@ package csi
 import (
 	"context"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,12 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/nodemap"
+)
+
+// Pool names used across this package's tests.
+const (
+	poolDefault = "default"
+	poolFast    = "fast"
 )
 
 const (
@@ -68,8 +75,14 @@ func newScheme(t *testing.T) *runtime.Scheme {
 }
 
 var testNodes = nodemap.Map{
-	nodeA: nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-miroir"},
-	nodeB: nodemap.Node{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
+	nodeA: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/disk/by-partlabel/r-miroir"}),
+	nodeB: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"}),
+}
+
+// storageNode is a node-map entry with the given config as its single
+// default pool — the pre-multi-pool shape most tests exercise.
+func storageNode(pool nodemap.Pool) nodemap.Node {
+	return nodemap.Node{Pools: map[string]nodemap.Pool{poolDefault: pool}}
 }
 
 // readyOnGet flips a created volume to Ready, simulating the agent.
@@ -518,9 +531,9 @@ func tieBreakerController(t *testing.T, autoTieBreaker bool) *Controller {
 				},
 			}).Build(),
 		Nodes: nodemap.Map{
-			nodeA: {Backend: miroirv1alpha1.BackendLVMThin},
-			nodeB: {Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"},
-			nodeC: {Backend: miroirv1alpha1.BackendLVMThin},
+			nodeA: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+			nodeB: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"}),
+			nodeC: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
 		},
 		ProvisionTimeout: 2 * time.Second,
 		AutoTieBreaker:   autoTieBreaker,
@@ -580,7 +593,9 @@ func TestCreateVolumeAutoTieBreaker(t *testing.T) {
 // a node map override pins its replication address too.
 func TestCreateVolumeAutoTieBreakerAddressOverride(t *testing.T) {
 	c := tieBreakerController(t, true)
-	c.Nodes[nodeC] = nodemap.Node{Backend: miroirv1alpha1.BackendLVMThin, Address: "10.0.100.44"}
+	withAddr := storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin})
+	withAddr.Address = "10.0.100.44"
+	c.Nodes[nodeC] = withAddr
 
 	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-tbo",
@@ -816,6 +831,55 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 	}
 }
 
+// A restore whose class names a different pool than the source's replicas
+// is refused with a pointed message: CoW clones cannot cross pools.
+func TestCreateVolumeFromSnapshotRefusesCrossPool(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, Pool: poolFast},
+			},
+		},
+	}
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
+			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
+	}
+	cl := readyOnGet(s)
+	for _, obj := range []client.Object{srcVol, srcSnap} {
+		if err := cl.Create(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cl.Status().Update(t.Context(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	// The class names no pool → default, but the source lives in poolFast.
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapSnap1},
+			},
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("cross-pool restore must be InvalidArgument, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `pool "fast"`) {
+		t.Fatalf("error must name the source pool: %v", err)
+	}
+}
+
 // A clone re-resolves addresses through the node map, so an override that
 // was configured after the source volume was created supersedes the stale
 // address the source persisted.
@@ -975,7 +1039,7 @@ func TestCreateVolumeAlreadyExistsCacheLagIsUnavailable(t *testing.T) {
 	err := c.handleCreateErr(t.Context(),
 		apierrors.NewAlreadyExists(miroirv1alpha1.GroupVersion.WithResource("miroirvolumes").GroupResource(), volPvc1),
 		&miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: volPvc1}},
-		5<<30, 1, miroirv1alpha1.QuorumLastManStanding, "")
+		5<<30, 1, miroirv1alpha1.QuorumLastManStanding, "", poolDefault)
 	if err != nil {
 		t.Fatalf("APIReader has the volume; compatible retry must succeed: %v", err)
 	}

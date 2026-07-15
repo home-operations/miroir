@@ -156,7 +156,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 
 	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
-	source, srcReplicas, sourceFormatted, err := c.resolveSource(ctx, snapID, sizeBytes, replicas)
+	source, srcReplicas, sourceFormatted, err := c.resolveSource(ctx, snapID, sizeBytes, replicas, params.pool)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +178,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 	placed := srcReplicas
 	if snapID == "" {
-		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess)
+		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess, params.pool)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
@@ -226,7 +226,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if source != nil {
 		sourceSnapshot = source.SnapshotName
 	}
-	if err := c.handleCreateErr(ctx, createErr, vol, sizeBytes, replicas, quorum, sourceSnapshot); err != nil {
+	if err := c.handleCreateErr(ctx, createErr, vol, sizeBytes, replicas, quorum, sourceSnapshot, params.pool); err != nil {
 		return nil, err
 	}
 	// A clone carries the source's filesystem: inherit Formatted before
@@ -306,10 +306,10 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 }
 
 // resolveSource resolves a restore's source: on a clone (snapID set) it
-// validates the snapshot and size, and returns the placement replicas
-// (following the source, FullSyncing post-snapshot legs). Returns zero
-// values for a fresh volume (no content source).
-func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes int64, replicas int) (*miroirv1alpha1.VolumeSource, []miroirv1alpha1.Replica, bool, error) {
+// validates the snapshot, size, and pool, and returns the placement
+// replicas (following the source, FullSyncing post-snapshot legs). Returns
+// zero values for a fresh volume (no content source).
+func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes int64, replicas int, pool string) (*miroirv1alpha1.VolumeSource, []miroirv1alpha1.Replica, bool, error) {
 	if snapID == "" {
 		return nil, nil, false, nil
 	}
@@ -327,6 +327,15 @@ func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes
 		return nil, nil, false, status.Errorf(codes.InvalidArgument,
 			"restore replica count %d must match source diskful replicas %d",
 			replicas, len(srcVol.Spec.DiskfulReplicas()))
+	}
+	// CoW clones cannot cross pools: each leg clones its node-local
+	// snapshot inside the pool that holds it.
+	for _, rep := range srcVol.Spec.DiskfulReplicas() {
+		if src := nodemap.PoolOrDefault(rep.Pool); src != pool {
+			return nil, nil, false, status.Errorf(codes.InvalidArgument,
+				"restore must stay in the source volume's pool %q (CoW clones cannot cross pools); the class requests pool %q",
+				src, pool)
+		}
 	}
 	srcReplicas, err := c.restoreReplicas(ctx, srcVol, snap)
 	if err != nil {
@@ -349,45 +358,55 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 	return list.Items, nil
 }
 
-// place selects count replica nodes: the scheduler's preference first
-// (WaitForFirstConsumer), then the remaining eligible storage nodes by
-// free space — capacity-aware spread. Nodes whose
-// projected provisioned total would breach the overcommit ratio are
-// excluded, and a chosen node breaching it (e.g. a topology-pinned one)
-// fails the request so the scheduler retries elsewhere. Pools without
-// fresh stats are treated as unknown and allowed, so a cold cluster still
-// provisions. For replicated volumes it resolves each node's InternalIP
-// and assigns DRBD node ids by slice position — replicas[0] is the GI-seed
-// winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool) ([]miroirv1alpha1.Replica, error) {
-	if len(c.Nodes) < count {
+// place selects count replica nodes carrying the class's pool: the
+// scheduler's preference first (WaitForFirstConsumer), then the remaining
+// eligible storage nodes by that pool's free space — capacity-aware
+// spread. Nodes whose projected provisioned total for the pool would
+// breach the overcommit ratio are excluded, and a chosen node breaching it
+// (e.g. a topology-pinned one) fails the request so the scheduler retries
+// elsewhere. Pools without fresh stats are treated as unknown and allowed,
+// so a cold cluster still provisions. For replicated volumes it resolves
+// each node's InternalIP and assigns DRBD node ids by slice position —
+// replicas[0] is the GI-seed winner (internal/drbd).
+func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string) ([]miroirv1alpha1.Replica, error) {
+	// Every diskful leg needs the pool on its own node; a class naming a
+	// pool too few nodes carry must say so instead of a generic refusal.
+	candidates := map[string]nodemap.Pool{}
+	for n := range c.Nodes {
+		if p, ok := c.Nodes.Pool(n, pool); ok {
+			candidates[n] = p
+		}
+	}
+	if len(candidates) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
-			"need %d storage nodes, have %d (Helm values: nodes)", count, len(c.Nodes))
+			"storage pool %q exists on %d of %d storage nodes; a %d-replica class needs %d (Helm values: nodes.<name>.pools)",
+			pool, len(candidates), len(c.Nodes), count, count)
 	}
 
 	stats, err := c.poolStats(ctx)
 	if err != nil {
 		return nil, err
 	}
-	provisioned := provisionedPerNode(vols, name)
+	provisioned := provisionedPerPool(vols, name)
 	ratio := c.OvercommitRatio
 	if ratio <= 0 {
 		ratio = defaultOvercommitRatio
 	}
-	// overcommitted reports whether placing sizeBytes on node would push
-	// its provisioned total past capacity×ratio, using fresh stats only.
+	// overcommitted reports whether placing sizeBytes in the pool on node
+	// would push its provisioned total past capacity×ratio, using fresh
+	// stats only.
 	overcommitted := func(node string) bool {
-		st, ok := stats[node]
-		if !ok || st.CapacityBytes <= 0 {
+		st := stats[node].Pool(pool)
+		if st == nil || st.CapacityBytes <= 0 {
 			return false
 		}
-		return float64(provisioned[node]+sizeBytes) > float64(st.CapacityBytes)*ratio
+		return float64(provisioned[nodePool{node, pool}]+sizeBytes) > float64(st.CapacityBytes)*ratio
 	}
 	// freeBytes is the pool headroom used to rank candidates; 0 (sorts
 	// last) when stats are unknown.
 	freeBytes := func(node string) int64 {
-		st, ok := stats[node]
-		if !ok {
+		st := stats[node].Pool(pool)
+		if st == nil {
 			return 0
 		}
 		if free := st.CapacityBytes - st.AllocatedBytes; free > 0 {
@@ -396,13 +415,13 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 		return 0
 	}
 
-	ordered := make([]string, 0, len(c.Nodes))
+	ordered := make([]string, 0, len(candidates))
 	// Scheduler-selected topology first — kept in place even if it later
 	// fails the overcommit guard, so a topology-pinned volume refuses
 	// rather than silently landing on a node the pod can't reach.
 	for _, t := range append(reqs.GetPreferred(), reqs.GetRequisite()...) {
 		if n, ok := t.GetSegments()[constants.TopologyKey]; ok {
-			if _, ok := c.Nodes[n]; ok && !slices.Contains(ordered, n) {
+			if _, ok := candidates[n]; ok && !slices.Contains(ordered, n) {
 				ordered = append(ordered, n)
 			}
 		}
@@ -413,12 +432,12 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 		// fall through to capacity-ranked placement — the pod attaches
 		// through a diskless client leg. Everything else refuses: the pod
 		// could never reach a volume placed off its node.
-		return nil, status.Error(codes.ResourceExhausted,
-			"no storage node satisfies the requested topology")
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"no node carrying storage pool %q satisfies the requested topology", pool)
 	}
 	// Remaining eligible nodes, most free space first (ties by name).
-	rest := make([]string, 0, len(c.Nodes))
-	for n := range c.Nodes {
+	rest := make([]string, 0, len(candidates))
+	for n := range candidates {
 		if slices.Contains(ordered, n) || overcommitted(n) {
 			continue
 		}
@@ -434,20 +453,20 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 	ordered = append(ordered, rest...)
 	if len(ordered) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
-			"only %d of %d storage nodes can host a %d-byte volume within the %gx overcommit ratio",
-			len(ordered), len(c.Nodes), sizeBytes, ratio)
+			"only %d of the %d nodes carrying pool %q can host a %d-byte volume within the %gx overcommit ratio",
+			len(ordered), len(candidates), pool, sizeBytes, ratio)
 	}
 	ordered = spreadByZone(ordered, pinned, count, func(n string) string { return c.Nodes[n].Zone })
 	for _, n := range ordered {
 		if overcommitted(n) {
 			return nil, status.Errorf(codes.ResourceExhausted,
-				"node %s would exceed the %gx overcommit ratio for a %d-byte volume", n, ratio, sizeBytes)
+				"pool %q on node %s would exceed the %gx overcommit ratio for a %d-byte volume", pool, n, ratio, sizeBytes)
 		}
 	}
 
 	replicas := make([]miroirv1alpha1.Replica, 0, count)
 	for i, name := range ordered {
-		r := miroirv1alpha1.Replica{Node: name, Backend: c.Nodes[name].Backend}
+		r := miroirv1alpha1.Replica{Node: name, Backend: candidates[name].Backend, Pool: pool}
 		if count > 1 {
 			addr, err := c.replicationAddress(ctx, name)
 			if err != nil {
@@ -557,12 +576,19 @@ func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.M
 	return out, nil
 }
 
-// provisionedPerNode sums the provisioned (virtual) bytes per node from a
-// pre-fetched volume list, excluding the named volume (the one being
+// nodePool keys per-pool bookkeeping: one pool on one node. Replica pool
+// names are normalized (empty → default) before keying.
+type nodePool struct {
+	node string
+	pool string
+}
+
+// provisionedPerPool sums the provisioned (virtual) bytes per (node, pool)
+// from a pre-fetched volume list, excluding the named volume (the one being
 // (re)created, so an idempotent retry does not count itself). Clones share
 // backing on disk but are counted in full — a conservative overcommit guard.
-func provisionedPerNode(vols []miroirv1alpha1.MiroirVolume, exclude string) map[string]int64 {
-	out := map[string]int64{}
+func provisionedPerPool(vols []miroirv1alpha1.MiroirVolume, exclude string) map[nodePool]int64 {
+	out := map[nodePool]int64{}
 	for _, v := range vols {
 		if v.Name == exclude {
 			continue
@@ -571,7 +597,7 @@ func provisionedPerNode(vols []miroirv1alpha1.MiroirVolume, exclude string) map[
 			if r.Diskless {
 				continue
 			}
-			out[r.Node] += v.Spec.SizeBytes
+			out[nodePool{r.Node, nodemap.PoolOrDefault(r.Pool)}] += v.Spec.SizeBytes
 		}
 	}
 	return out
@@ -609,7 +635,7 @@ func (c *Controller) allocateDRBD(vols []miroirv1alpha1.MiroirVolume) (*miroirv1
 // handleCreateErr resolves Create conflicts: nil for success, nil after a
 // compatible AlreadyExists (mutating vol to the existing object), and a
 // gRPC error otherwise. Idempotency: same name must mean same request.
-func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroirv1alpha1.MiroirVolume, sizeBytes int64, replicas int, quorum miroirv1alpha1.QuorumPolicy, sourceSnapshot string) error {
+func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroirv1alpha1.MiroirVolume, sizeBytes int64, replicas int, quorum miroirv1alpha1.QuorumPolicy, sourceSnapshot, pool string) error {
 	if err == nil {
 		return nil
 	}
@@ -630,14 +656,18 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 		existingSource = existing.Spec.Source.SnapshotName
 	}
 	existingDiskful := len(existing.Spec.DiskfulReplicas())
+	existingPool := pool
+	if first := existing.Spec.FirstDiskfulReplica(); first != nil {
+		existingPool = nodemap.PoolOrDefault(first.Pool)
+	}
 	if existing.Spec.SizeBytes != sizeBytes || existingDiskful != replicas ||
 		(replicas > 1 && existing.Spec.QuorumPolicy != quorum) ||
-		existingSource != sourceSnapshot ||
+		existingSource != sourceSnapshot || existingPool != pool ||
 		(existing.Spec.Export != nil) != (vol.Spec.Export != nil) {
 		return status.Errorf(codes.AlreadyExists,
-			"volume %s exists with size=%d diskful=%d quorum=%s source=%q rwx=%t (requested size=%d replicas=%d quorum=%s source=%q rwx=%t)",
-			vol.Name, existing.Spec.SizeBytes, existingDiskful, existing.Spec.QuorumPolicy, existingSource, existing.Spec.Export != nil,
-			sizeBytes, replicas, quorum, sourceSnapshot, vol.Spec.Export != nil)
+			"volume %s exists with size=%d diskful=%d quorum=%s source=%q pool=%s rwx=%t (requested size=%d replicas=%d quorum=%s source=%q pool=%s rwx=%t)",
+			vol.Name, existing.Spec.SizeBytes, existingDiskful, existing.Spec.QuorumPolicy, existingSource, existingPool, existing.Spec.Export != nil,
+			sizeBytes, replicas, quorum, sourceSnapshot, pool, vol.Spec.Export != nil)
 	}
 	*vol = *existing
 	return nil
@@ -888,6 +918,7 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 	if err != nil {
 		return nil, err
 	}
+	pool := parsePool(req.GetParameters())
 	stats, err := c.poolStats(ctx)
 	if err != nil {
 		return nil, err
@@ -896,29 +927,29 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 	if err := c.reader().List(ctx, list); err != nil {
 		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
 	}
-	provisioned := provisionedPerNode(list.Items, "")
+	provisioned := provisionedPerPool(list.Items, "")
 	ratio := c.OvercommitRatio
 	if ratio <= 0 {
 		ratio = defaultOvercommitRatio
 	}
 	available := func(node string) int64 {
-		if _, ok := c.Nodes[node]; !ok {
-			return 0 // not a storage node — no pool here
+		if _, ok := c.Nodes.Pool(node, pool); !ok {
+			return 0 // the class's pool is not on this node
 		}
-		st, ok := stats[node]
-		if !ok || st.CapacityBytes <= 0 {
+		st := stats[node].Pool(pool)
+		if st == nil || st.CapacityBytes <= 0 {
 			return 0 // no fresh stats yet; excluded until the agent publishes
 		}
-		return max(0, int64(float64(st.CapacityBytes)*ratio)-provisioned[node])
+		return max(0, int64(float64(st.CapacityBytes)*ratio)-provisioned[nodePool{node, pool}])
 	}
 
 	// capacityFor is the largest volume the class can still place: each of
-	// its `replicas` diskful legs needs a distinct node's pool, so the
-	// answer is the replicas-th largest per-node headroom — 0 when fewer
-	// nodes have room, matching place()'s "only N of M storage nodes"
-	// refusal. A pinned scheduler-preferred storage node consumes one leg
-	// slot and bounds the answer with its own headroom (place() honors the
-	// pin unconditionally); empty means unpinned.
+	// its `replicas` diskful legs needs the class's pool on a distinct
+	// node, so the answer is the replicas-th largest per-node headroom — 0
+	// when fewer nodes have room, matching place()'s refusal. A pinned
+	// scheduler-preferred storage node consumes one leg slot and bounds the
+	// answer with its own headroom (place() honors the pin
+	// unconditionally); empty means unpinned.
 	capacityFor := func(pinned string) int64 {
 		need := replicas
 		bound := int64(-1) // no bound yet; always set before returning
@@ -948,13 +979,13 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 	// Topology-aware provisioner: one segment per call.
 	if seg := req.GetAccessibleTopology().GetSegments(); seg != nil {
 		node := seg[constants.TopologyKey]
-		if _, isStorage := c.Nodes[node]; !isStorage {
+		if _, hasPool := c.Nodes.Pool(node, pool); !hasPool {
 			if remoteAccess {
 				// Consumers here attach a diskless client leg; the volume
 				// lands wherever place() ranks best.
 				return &csi.GetCapacityResponse{AvailableCapacity: capacityFor("")}, nil
 			}
-			return &csi.GetCapacityResponse{}, nil // no pool, class pinned to replica nodes
+			return &csi.GetCapacityResponse{}, nil // no pool here, class pinned to replica nodes
 		}
 		return &csi.GetCapacityResponse{AvailableCapacity: capacityFor(node)}, nil
 	}
@@ -1182,6 +1213,7 @@ type classParams struct {
 	quorum            miroirv1alpha1.QuorumPolicy
 	remoteAccess      bool
 	bitmapGranularity int64
+	pool              string
 }
 
 // parseClassParams validates the StorageClass parameters as one unit;
@@ -1199,8 +1231,16 @@ func parseClassParams(raw map[string]string) (classParams, error) {
 	if p.remoteAccess, err = parseAllowRemoteAccess(raw, p.replicas); err != nil {
 		return p, err
 	}
+	p.pool = parsePool(raw)
 	p.bitmapGranularity, err = parseBitmapGranularity(raw, p.replicas)
 	return p, err
+}
+
+// parsePool reads the StorageClass pool parameter; absent means the
+// default pool. Never fails: a pool no node carries surfaces as place()'s
+// explicit "exists on N of M nodes" refusal, which also covers typos.
+func parsePool(params map[string]string) string {
+	return nodemap.PoolOrDefault(params[constants.ParamPool])
 }
 
 // parseBitmapGranularity reads the DRBD bitmap block size in bytes; 0
