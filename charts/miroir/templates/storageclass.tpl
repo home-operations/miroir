@@ -25,6 +25,11 @@ parameters:
   # entry pins it either way.
   miroir.home-operations.com/allowRemoteVolumeAccess: {{ $sc.allowRemoteVolumeAccess | quote }}
   {{- end }}
+  {{- if $sc.bitmapGranularity }}
+  # DRBD bitmap block size in bytes, fixed when a replica's metadata is
+  # created; absent means DRBD's default (4096).
+  miroir.home-operations.com/bitmapGranularity: {{ $sc.bitmapGranularity | quote }}
+  {{- end }}
   {{- end }}
   csi.storage.k8s.io/fstype: {{ $sc.fsType | default "ext4" }}
 {{- end }}

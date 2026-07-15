@@ -1246,6 +1246,44 @@ func TestCreateVolumeRemoteAccessDropsTopology(t *testing.T) {
 	}
 }
 
+func TestParseBitmapGranularity(t *testing.T) {
+	cases := map[string]struct {
+		raw      string
+		replicas int
+		want     int64
+		wantErr  bool
+	}{
+		"absent means default":      {raw: "", replicas: 2, want: 0},
+		"absent ok on unreplicated": {raw: "", replicas: 1, want: 0},
+		"valid 64k":                 {raw: "65536", replicas: 2, want: 65536},
+		"floor 4k":                  {raw: "4096", replicas: 2, want: 4096},
+		"ceiling 1M":                {raw: "1048576", replicas: 2, want: 1048576},
+		"rejected below 4k":         {raw: "2048", replicas: 2, wantErr: true},
+		"rejected above 1M":         {raw: "2097152", replicas: 2, wantErr: true},
+		"rejected non power of two": {raw: "65537", replicas: 2, wantErr: true},
+		"rejected non-numeric":      {raw: "64k", replicas: 2, wantErr: true},
+		"rejected on unreplicated":  {raw: "65536", replicas: 1, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			params := map[string]string{}
+			if tc.raw != "" {
+				params[constants.ParamBitmapGranularity] = tc.raw
+			}
+			got, err := parseBitmapGranularity(params, tc.replicas)
+			if tc.wantErr {
+				if status.Code(err) != codes.InvalidArgument {
+					t.Fatalf("want InvalidArgument, got %v", err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("parseBitmapGranularity = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseAllowRemoteAccess(t *testing.T) {
 	cases := map[string]struct {
 		raw      string

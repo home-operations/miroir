@@ -44,6 +44,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.DRBDSpec
   map:
     fields:
+    - name: bitmapGranularityBytes
+      type:
+        scalar: numeric
     - name: port
       type:
         scalar: numeric

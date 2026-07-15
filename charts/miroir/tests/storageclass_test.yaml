@@ -68,6 +68,29 @@ tests:
           path: parameters["miroir.home-operations.com/quorum"]
           value: freeze
 
+  - it: renders bitmapGranularity only when set on a replicated entry
+    set:
+      storageClasses:
+        - name: coarse
+          replicas: 2
+          bitmapGranularity: 65536
+        - name: plain
+          replicas: 2
+        - name: local
+          replicas: 1
+          bitmapGranularity: 65536 # local: parameter block not rendered
+    asserts:
+      - documentSelector: { path: metadata.name, value: coarse }
+        equal:
+          path: parameters["miroir.home-operations.com/bitmapGranularity"]
+          value: "65536"
+      - documentSelector: { path: metadata.name, value: plain }
+        notExists:
+          path: parameters["miroir.home-operations.com/bitmapGranularity"]
+      - documentSelector: { path: metadata.name, value: local }
+        notExists:
+          path: parameters["miroir.home-operations.com/bitmapGranularity"]
+
   - it: honours per-entry overrides (isDefault, fsType, reclaimPolicy, quorum)
     set:
       storageClasses:

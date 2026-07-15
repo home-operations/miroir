@@ -258,6 +258,14 @@ nodes: {}
 #                 diskless DRBD leg at replication-network speed. Set
 #                 false to pin pods to replica nodes for local reads. See
 #                 the root README, "Remote consumers".
+#   bitmapGranularity
+#                 DRBD bitmap block size in bytes (replicated only): a
+#                 power of two, 4096–1048576, default absent (DRBD's 4096).
+#                 Each dirty bit tracks this many bytes — coarser cuts
+#                 bitmap RAM proportionally (65536 ≈ 1/16th) but resyncs
+#                 more per dirty bit; worth considering for classes holding
+#                 large volumes. Fixed when a replica's metadata is
+#                 created: changing the class affects new volumes only.
 #   reclaimPolicy Delete | Retain, default Delete
 #   isDefault     set the cluster default-class annotation, default false
 # Example (coexisting with OpenEBS, which stays the cluster default):

@@ -284,6 +284,21 @@ func TestApplyFreshResource(t *testing.T) {
 	}
 }
 
+// A bitmap granularity on the resource reaches create-md as
+// --bitmap-block-size; the default (0) must add nothing — TestApplyFresh-
+// Resource above pins the exact default argv.
+func TestApplyBitmapGranularity(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	r := testResource(nodeKharkiv)
+	r.BitmapGranularityBytes = 65536
+
+	if err := d.Apply(t.Context(), r); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 --bitmap-block-size 65536 pvc-1/0")
+}
+
 func TestInitialUUID(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
