@@ -800,22 +800,7 @@ func (r *VolumeReconciler) removalBlocked(ctx context.Context, vol *miroirv1alph
 }
 
 func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
-	// The self-reported status slot marks legs that never created a
-	// backing device (tie-breakers, client legs): they resolve no pool —
-	// a diskless leg may sit on a node that does not even carry the
-	// volume's pool. Never key this on the kernel DiskState: a diskful
-	// replica reads "Diskless" after an I/O-error detach, and skipping
-	// its delete would leak the backing device.
 	slot := vol.Status.PerNode[r.NodeName]
-	_, localDiskless, present, _ := legState(vol, r.NodeName)
-	diskless := slot.Diskless || (present && localDiskless)
-	var pool PoolBackend
-	if !diskless {
-		var err error
-		if pool, err = r.Pools.Get(volumePoolOn(vol, r.NodeName)); err != nil {
-			return err
-		}
-	}
 	if vol.Spec.DRBD != nil {
 		if err := r.DRBD.Down(ctx, vol.Name); err != nil {
 			// A still-staged device answers "held open"; classify it as
@@ -823,23 +808,29 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			// minutes-long backoff (NodeUnstage releases it shortly).
 			return backend.Busy(err)
 		}
-		// With the resource down, wipe the DRBD metadata before Backend.Delete
+		// With the resource down, wipe the DRBD metadata before the sweep
 		// removes the device, so freed blocks cannot carry a stale generation
-		// identifier into a reuse (issue #139). Best-effort: Backend.Delete
-		// destroys the whole device anyway, so a wipe failure must not block
-		// the deletion.
-		if !diskless && slot.DeviceCreated && !slot.Diskless {
-			if err := r.DRBD.WipeMetadata(ctx, vol.Name, pool.Backend.DevicePath(vol.Name), slot.DRBDMinor); err != nil {
+		// identifier into a reuse (issue #139). Best-effort: the sweep
+		// destroys the whole device anyway, so a wipe (or pool-resolution)
+		// failure must not block the deletion. Never key the DeviceCreated
+		// check on the kernel DiskState: a diskful replica reads "Diskless"
+		// after an I/O-error detach, and skipping its wipe+delete would
+		// leak the backing device.
+		if slot.DeviceCreated && !slot.Diskless {
+			if pool, err := r.Pools.Get(volumePoolOn(vol, r.NodeName)); err != nil {
+				ctrl.LoggerFrom(ctx).V(1).Info("cannot resolve the leg's pool for the metadata wipe; sweep delete destroys metadata with the device",
+					"volume", vol.Name, "error", err)
+			} else if err := r.DRBD.WipeMetadata(ctx, vol.Name, pool.Backend.DevicePath(vol.Name), slot.DRBDMinor); err != nil {
 				ctrl.LoggerFrom(ctx).V(1).Info("wipe-md failed during teardown; backing delete will destroy metadata",
 					"volume", vol.Name, "error", err)
 			}
 		}
 	}
-	if diskless {
-		return nil
-	}
-	// Backend.Delete succeeds when the device is already absent.
-	return pool.Backend.Delete(ctx, vol.Name)
+	// Delete from every pool instead of resolving one: the leg's pool can
+	// be unknowable here (crash before the first status patch, a diskless
+	// re-add over a leftover backing), and each backend's Delete succeeds
+	// when its device is absent — see Pools.SweepDelete.
+	return r.Pools.SweepDelete(ctx, vol.Name)
 }
 
 // removeFinalizer releases this node's own finalizer once local teardown

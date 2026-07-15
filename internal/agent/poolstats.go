@@ -151,6 +151,10 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 			}
 			cur.Status.Pools = append(cur.Status.Pools, entry)
 		}
+		// Clear the deprecated pre-multi-pool figures a not-yet-rolled
+		// agent may have written: the pools list supersedes them, and
+		// stale flat values frozen in status would mislead readers.
+		cur.Status.CapacityBytes, cur.Status.AllocatedBytes, cur.Status.MetaUsedPercent = 0, 0, 0 //nolint:staticcheck // deliberately clears the deprecated skew-compat fields
 		cur.Status.DRBDVersion = p.DRBDVersion
 		now := metav1.Now()
 		cur.Status.ObservedAt = &now
@@ -166,12 +170,19 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 		// percent of drift while usage stays high.
 		prev := meta.FindStatusCondition(cur.Status.Conditions, ConditionPoolUsageHigh)
 		wasHigh := prev != nil && prev.Status == metav1.ConditionTrue
-		meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
-			Type:    ConditionPoolUsageHigh,
-			Status:  condStatus,
-			Reason:  reason,
-			Message: msg,
-		})
+		// A pool whose stats read failed is unknown, not healthy: it may
+		// raise the condition (via the pools that did sample) but must
+		// never clear it — a pool that fills up and then breaks its lvs
+		// would otherwise flip its own warning off. The last known
+		// condition is kept until every pool samples clean again.
+		if high || !anySampleErr(samples) {
+			meta.SetStatusCondition(&cur.Status.Conditions, metav1.Condition{
+				Type:    ConditionPoolUsageHigh,
+				Status:  condStatus,
+				Reason:  reason,
+				Message: msg,
+			})
+		}
 		if err := p.Client.Status().Update(ctx, cur); err != nil {
 			return err
 		}
@@ -182,9 +193,16 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 	})
 }
 
+// anySampleErr reports whether any pool's stats read failed this tick.
+func anySampleErr(samples []sample) bool {
+	return slices.ContainsFunc(samples, func(s sample) bool { return s.err != nil })
+}
+
 // poolsUsageHigh folds the per-pool warn lines into the node's single
 // PoolUsageHigh condition: True when any pool crossed 80% data or dm-thin
-// metadata usage, with a message naming each offender.
+// metadata usage, with a message naming each offender. Errored samples
+// are skipped here — the caller keeps the previous condition instead of
+// letting an unreadable pool masquerade as healthy.
 func poolsUsageHigh(samples []sample) (high bool, reason, msg string) {
 	var parts []string
 	worstReason := reasonUsageNormal

@@ -4,6 +4,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// DefaultPoolName is the storage pool a replica, StorageClass, or node
+// entry means when it names none — the identity every pre-multi-pool
+// object is adopted under. Owned here so every layer (nodemap, agents,
+// controller) normalizes against the same constant.
+const DefaultPoolName = "default"
+
 // BackendType selects the node-local storage backend for a replica.
 // +kubebuilder:validation:Enum=lvmthin;zfs;loopfile
 type BackendType string
@@ -182,6 +188,8 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="!has(self.drbd) ? !self.replicas.exists(r, has(r.diskless) && r.diskless) : true",message="diskless replicas are only valid on replicated volumes"
 // +kubebuilder:validation:XValidation:rule="size(self.replicas) > 0 ? !has(self.replicas[0].diskless) || !self.replicas[0].diskless : true",message="the first replica must be diskful (not a diskless tie-breaker)"
 // +kubebuilder:validation:XValidation:rule="self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node || (has(o.diskless) && o.diskless) || !(has(r.diskless) && r.diskless)))",message="a diskful replica cannot become diskless in place; remove the replica and re-add it instead (diskless→diskful is allowed: the agent attaches a disk to the live leg)"
+// +kubebuilder:validation:XValidation:rule="self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node || (has(o.diskless) && o.diskless) || !has(o.address) || (has(o.pool) ? o.pool : 'default') == (has(r.pool) ? r.pool : 'default')))",message="a completed replica's pool is immutable: the agent would realize a fresh device in the new pool and abandon the old one; remove the replica and re-add it in the target pool instead"
+// +kubebuilder:validation:XValidation:rule="self.replicas.all(r, (has(r.diskless) && r.diskless) || !has(r.address) || self.replicas.all(o, (has(o.diskless) && o.diskless) || !has(o.address) || (has(r.pool) ? r.pool : 'default') == (has(o.pool) ? o.pool : 'default')))",message="all diskful replicas must live in one pool: snapshots and restores are pool-local, so a mixed-pool volume's snapshots would be unrestorable"
 // +kubebuilder:validation:XValidation:rule="has(self.drbd) == has(oldSelf.drbd)",message="a volume cannot gain or lose its replication layer in place"
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || has(self.drbd)",message="client legs are only valid on replicated volumes"
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || self.clients.all(c, !self.replicas.exists(r, r.node == c.node))",message="a client leg cannot share a node with a replica"

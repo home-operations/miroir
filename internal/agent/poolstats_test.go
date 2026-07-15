@@ -145,6 +145,35 @@ func TestPoolStatsPublisherIsolatesBadPool(t *testing.T) {
 	}
 }
 
+// Regression (review): a pool whose stats read starts failing is unknown,
+// not healthy — it must never clear a raised PoolUsageHigh condition (a
+// pool that fills up and then wedges its lvs would otherwise flip its own
+// warning off).
+func TestPoolStatsPublisherKeepsConditionWhenSamplingBreaks(t *testing.T) {
+	fb := newFakeBackend()
+	fb.stats = backend.PoolStats{SizeBytes: 100 * poolGiB, UsedBytes: 92 * poolGiB}
+	p, get := newPublisher(t, singlePool(fb), nil)
+
+	if err := p.publish(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if c := meta.FindStatusCondition(get().Status.Conditions, ConditionPoolUsageHigh); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("expected PoolUsageHigh True at 92%%, got %+v", c)
+	}
+
+	fb.statsErr = errBoom
+	if err := p.publish(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	n := get()
+	if c := meta.FindStatusCondition(n.Status.Conditions, ConditionPoolUsageHigh); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("a broken pool must not clear the warn condition, got %+v", c)
+	}
+	if st := n.Status.Pool(poolDefault); st == nil || st.Message == "" {
+		t.Fatalf("the errored pool must stay visible with its error: %+v", st)
+	}
+}
+
 func TestPoolStatsPublisherRaisesHighDataUsage(t *testing.T) {
 	fb := newFakeBackend()
 	fb.stats = backend.PoolStats{SizeBytes: 100 * poolGiB, UsedBytes: 85 * poolGiB}

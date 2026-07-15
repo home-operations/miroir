@@ -60,6 +60,9 @@ tests:
         - name: miroir-fast
           replicas: 2
           pool: fast
+        - name: miroir-numeric
+          replicas: 1
+          pool: "123"
         - name: miroir-default
           replicas: 1
     asserts:
@@ -67,6 +70,10 @@ tests:
         equal:
           path: parameters["miroir.home-operations.com/pool"]
           value: fast
+      - documentSelector: { path: metadata.name, value: miroir-numeric }
+        equal:
+          path: parameters["miroir.home-operations.com/pool"]
+          value: "123"
       - documentSelector: { path: metadata.name, value: miroir-default }
         notExists:
           path: parameters["miroir.home-operations.com/pool"]

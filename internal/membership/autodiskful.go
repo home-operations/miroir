@@ -141,10 +141,18 @@ func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate
 	return out
 }
 
-// volumePool is the pool a converted leg must join: the volume's diskful
-// replicas all live in the pool its StorageClass named, so the first one
-// carries it (empty on pre-multi-pool volumes means the default pool).
+// volumePool is the pool a volume's diskful legs live in — they are
+// uniform by construction (placement, the CRD uniformity rule, and
+// complete()'s inheritance all enforce it), so the first diskful replica
+// carries it; empty (pre-multi-pool volumes) means the default pool.
+// Completed legs are preferred so a just-added entry's typo cannot pose
+// as the volume's pool while completion is in flight.
 func volumePool(vol *miroirv1alpha1.MiroirVolume) string {
+	for _, rep := range vol.Spec.Replicas {
+		if !rep.Diskless && rep.Address != "" {
+			return nodemap.PoolOrDefault(rep.Pool)
+		}
+	}
 	if first := vol.Spec.FirstDiskfulReplica(); first != nil {
 		return nodemap.PoolOrDefault(first.Pool)
 	}

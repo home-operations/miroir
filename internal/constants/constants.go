@@ -57,11 +57,6 @@ const (
 	// ParamPool is the StorageClass parameter naming the storage pool the
 	// class provisions from (matches LINSTOR's storagePool concept). Every
 	// replica of a volume lands in this pool on its node. Absent means the
-	// default pool.
+	// default pool (v1alpha1.DefaultPoolName).
 	ParamPool = "miroir.home-operations.com/pool"
-
-	// DefaultPoolName is the pool a replica, class, or node entry means
-	// when it names none — the identity every pre-multi-pool object is
-	// adopted under.
-	DefaultPoolName = "default"
 )

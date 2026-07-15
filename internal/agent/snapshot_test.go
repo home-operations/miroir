@@ -37,7 +37,11 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
-const snapCallSnapshot = "snapshot " + volPvc1 + "@" + snapSnap1
+const (
+	snapCallSnapshot = "snapshot " + volPvc1 + "@" + snapSnap1
+	// cmdStatus keys fakeDRBDExec.errOn for `drbdsetup status`.
+	cmdStatus = "status"
+)
 
 //nolint:unparam // future tests will vary the volume
 func snapObj(name, volume string, nodes ...string) *miroirv1alpha1.MiroirSnapshot {
@@ -588,7 +592,8 @@ func TestSnapshotDeleteResumesStrandedBarrier(t *testing.T) {
 // assertFinalizerReleased passes when the node's finalizer is gone —
 // including when releasing the last finalizer let the fake client delete
 // the object outright.
-func assertFinalizerReleased(t *testing.T, c client.Client, name, node string) {
+func assertFinalizerReleased(t *testing.T, c client.Client, node string) {
+	const name = "snap-del"
 	t.Helper()
 	got := &miroirv1alpha1.MiroirSnapshot{}
 	err := c.Get(t.Context(), types.NamespacedName{Name: name}, got)
@@ -620,13 +625,13 @@ func TestSnapshotDeleteToleratesDownedResource(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
-	fe := &fakeDRBDExec{errOn: map[string]error{"status": errors.New("no such resource")}}
+	fe := &fakeDRBDExec{errOn: map[string]error{cmdStatus: errors.New("no such resource")}}
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
 	fe.notCalledWith(t, "resume-io")
-	assertFinalizerReleased(t, c, "snap-del", nodeA)
+	assertFinalizerReleased(t, c, nodeA)
 }
 
 // A node that left spec.replicas after the snapshot was cut still holds
@@ -644,12 +649,40 @@ func TestSnapshotDeleteReleasesDepartedNode(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 
-	fe := &fakeDRBDExec{errOn: map[string]error{"status": errors.New("no such resource")}}
+	fe := &fakeDRBDExec{errOn: map[string]error{cmdStatus: errors.New("no such resource")}}
 	r := &SnapshotReconciler{Client: c, NodeName: nodeC, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, "snap-del")
 
-	assertFinalizerReleased(t, c, "snap-del", nodeC)
+	assertFinalizerReleased(t, c, nodeC)
+}
+
+// Regression (review): the departed leg's pool is unknowable (its status
+// slot was deleted at removal), so deletion sweeps every pool — resolving
+// one would guess "default" and wedge forever on a node without one.
+func TestSnapshotDeleteReleasesDepartedNodeWithoutDefaultPool(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB) // node-c already removed
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	snap := snapObj("snap-del", volPvc1, nodeA, nodeB, nodeC)
+	now := metav1.NewTime(time.Now())
+	snap.DeletionTimestamp = &now
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{errOn: map[string]error{cmdStatus: errors.New("no such resource")}}
+	fb := newFakeBackend()
+	r := &SnapshotReconciler{Client: c, NodeName: nodeC,
+		Pools: Pools{"fast": {Backend: fb, Type: miroirv1alpha1.BackendLVMThin}},
+		DRBD:  &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, "snap-del")
+
+	assertFinalizerReleased(t, c, nodeC)
+	if len(fb.snapCalls) == 0 {
+		t.Fatal("the sweep must attempt DeleteSnapshot in the node's pools")
+	}
 }
 
 // The kernel suspend flag is shared per resource: while a sibling
@@ -676,7 +709,7 @@ func TestSnapshotDeleteSkipsSiblingRoundBarrier(t *testing.T) {
 	reconcileSnap(t, r, "snap-del")
 
 	fe.notCalledWith(t, "resume-io")
-	assertFinalizerReleased(t, c, "snap-del", nodeA)
+	assertFinalizerReleased(t, c, nodeA)
 }
 
 // One round per volume: a coordinator must not open a round while a

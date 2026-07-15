@@ -160,7 +160,7 @@ func cacheOptions(mode, namespace string) cache.Options {
 // the pre-multi-pool name so existing VGs keep working across the upgrade;
 // every other pool gets its own suffixed VG.
 func volumeGroupFor(pool string) string {
-	if pool == constants.DefaultPoolName {
+	if pool == miroirv1alpha1.DefaultPoolName {
 		return "vg-miroir"
 	}
 	return "vg-miroir-" + pool

@@ -135,10 +135,21 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 	if _, ok := r.Nodes[rep.Node]; !ok {
 		return fmt.Errorf("%w: node %s is not in the storage node map", errBadPlacement, rep.Node)
 	}
-	pool, poolOK := r.Nodes.Pool(rep.Node, rep.Pool)
-	if !poolOK && !rep.Diskless {
-		return fmt.Errorf("%w: node %s has no storage pool %q",
-			errBadPlacement, rep.Node, nodemap.PoolOrDefault(rep.Pool))
+	// A volume's diskful legs all live in one pool: snapshots and restores
+	// are pool-local, so a cross-pool leg would make every snapshot of the
+	// volume unrestorable (the CRD's uniformity rule also rejects it once
+	// completed — refuse here with the reason instead of conflicting
+	// forever). An entry naming no pool inherits the volume's.
+	targetPool := volumePool(vol)
+	if !rep.Diskless {
+		if rep.Pool != "" && nodemap.PoolOrDefault(rep.Pool) != targetPool {
+			return fmt.Errorf("%w: the volume's replicas live in pool %q; a replica in pool %q would make its snapshots unrestorable (restores are pool-local)",
+				errBadPlacement, targetPool, nodemap.PoolOrDefault(rep.Pool))
+		}
+		if _, ok := r.Nodes.Pool(rep.Node, targetPool); !ok {
+			return fmt.Errorf("%w: node %s has no storage pool %q",
+				errBadPlacement, rep.Node, targetPool)
+		}
 	}
 	dup := 0
 	for _, other := range vol.Spec.Replicas {
@@ -162,8 +173,9 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 		rep.Backend = ""
 		rep.Pool = ""
 	} else {
+		pool, _ := r.Nodes.Pool(rep.Node, targetPool)
 		rep.Backend = pool.Backend
-		rep.Pool = nodemap.PoolOrDefault(rep.Pool)
+		rep.Pool = targetPool
 		rep.FullSync = true
 	}
 	rep.NodeID = id

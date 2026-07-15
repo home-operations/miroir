@@ -508,6 +508,28 @@ func TestGetCapacityOvercommittedIsZero(t *testing.T) {
 	}
 }
 
+// Regression (review): a not-yet-upgraded agent publishes the flat
+// pre-multi-pool figures; the controller folds them into the default pool
+// so a mixed-version rollout does not zero the node's capacity.
+func TestGetCapacityReadsLegacyFlatStatus(t *testing.T) {
+	s := newScheme(t)
+	now := metav1.Now()
+	legacy := &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
+		Status: miroirv1alpha1.MiroirNodeStatus{
+			CapacityBytes: 10 * gib, ObservedAt: &now,
+		},
+	}
+	c := &Controller{Client: placementClient(s, legacy), Nodes: testNodes}
+	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 20*gib {
+		t.Fatalf("legacy flat status must fold into the default pool, got %d", resp.GetAvailableCapacity())
+	}
+}
+
 // A node without fresh stats, an unknown segment, and a non-storage node all
 // report zero so the scheduler steers elsewhere until stats land.
 func TestGetCapacityUnknownIsZero(t *testing.T) {

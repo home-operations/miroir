@@ -124,16 +124,15 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 		}
 		// A diskless replica has no backend snapshot to delete; a
-		// departed node deletes whatever leg it still holds (the
-		// backends succeed when it is already absent).
+		// departed node deletes whatever leg it still holds. The sweep
+		// covers every pool because a departed leg's pool can be
+		// unknowable (its status slot is deleted at removal) and each
+		// backend's DeleteSnapshot succeeds when it is already absent —
+		// guessing one pool could wedge this finalizer forever.
 		if r.disklessOn(vol) {
 			return ctrl.Result{}, r.removeFinalizer(ctx, snap)
 		}
-		be, err := r.backendFor(vol)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := be.DeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
+		if err := r.Pools.SweepDeleteSnapshot(ctx, vol.Name, snap.Name); err != nil {
 			if errors.Is(err, backend.ErrBusy) {
 				// The snapshot device is still open (e.g. a restore in
 				// progress); retry until it is released.
@@ -257,6 +256,13 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 // raiseBarrier is phase one: freeze local writes and record it. The
 // coordinator's barrier opens the round (ioSuspended + deadline clock).
 func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, opensRound bool) (ctrl.Result, error) {
+	// A leg whose pool cannot be resolved could never cut behind the
+	// barrier: fail before the cluster-wide freeze, not after. (A pool
+	// dropped mid-round — an agent restart with new values — is still
+	// bounded by SuspendDeadline via the expiry paths.)
+	if _, err := r.backendFor(vol); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
 		return ctrl.Result{}, err
 	}

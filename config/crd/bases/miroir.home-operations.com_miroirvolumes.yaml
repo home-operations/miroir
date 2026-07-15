@@ -293,6 +293,19 @@ spec:
                 agent attaches a disk to the live leg)'
               rule: self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
                 || (has(o.diskless) && o.diskless) || !(has(r.diskless) && r.diskless)))
+            - message: 'a completed replica''s pool is immutable: the agent would
+                realize a fresh device in the new pool and abandon the old one; remove
+                the replica and re-add it in the target pool instead'
+              rule: 'self.replicas.all(r, oldSelf.replicas.all(o, o.node != r.node
+                || (has(o.diskless) && o.diskless) || !has(o.address) || (has(o.pool)
+                ? o.pool : ''default'') == (has(r.pool) ? r.pool : ''default'')))'
+            - message: 'all diskful replicas must live in one pool: snapshots and
+                restores are pool-local, so a mixed-pool volume''s snapshots would
+                be unrestorable'
+              rule: 'self.replicas.all(r, (has(r.diskless) && r.diskless) || !has(r.address)
+                || self.replicas.all(o, (has(o.diskless) && o.diskless) || !has(o.address)
+                || (has(r.pool) ? r.pool : ''default'') == (has(o.pool) ? o.pool :
+                ''default'')))'
             - message: a volume cannot gain or lose its replication layer in place
               rule: has(self.drbd) == has(oldSelf.drbd)
             - message: client legs are only valid on replicated volumes

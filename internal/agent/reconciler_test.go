@@ -781,6 +781,79 @@ func TestReconcileForeignAgentLeavesFinalizerOnDelete(t *testing.T) {
 	}
 }
 
+// Regression (review): teardown must reclaim the backing even when the
+// leg's pool is unknowable — no spec entry (removed) and no status slot
+// (agent crashed before its first patch). The sweep deletes from every
+// pool instead of guessing "default", which would leak the device or, on
+// a node without a default pool, wedge the finalizer forever.
+func TestReconcileTeardownSweepsAllPools(t *testing.T) {
+	s := newScheme(t)
+	fast := newFakeBackend()
+	v := vol(volPvc1, nodeB) // leg already removed from spec...
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeA)
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: Pools{
+		"fast": {Backend: fast, Type: miroirv1alpha1.BackendLVMThin},
+	}} // ...and no "default" pool on this node
+
+	// The orphaned device sits in the fast pool with no status slot
+	// recording it.
+	if _, err := fast.Create(t.Context(), volPvc1, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, volPvc1)
+
+	if fast.existing[volPvc1] {
+		t.Fatal("sweep must reclaim the orphaned device from the fast pool")
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeA) {
+		t.Fatalf("teardown must release this node's finalizer: %v", got.Finalizers)
+	}
+}
+
+// Regression (review): a leg whose slot reads Diskless can still shadow a
+// leftover backing device (diskful leg removed while blocked, node
+// re-added as a tie-breaker) — deletion must reclaim it, as the old
+// unconditional Backend.Delete did.
+func TestReconcileTeardownReclaimsUnderDisklessSlot(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA)
+	v.Spec.Replicas[0].Diskless = true
+	v.Spec.Replicas[0].Backend = ""
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {Diskless: true},
+	}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+
+	// Leftover backing from the leg's earlier diskful incarnation.
+	if _, err := fb.Create(t.Context(), volPvc1, 1<<30); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, volPvc1)
+
+	if fb.existing[volPvc1] {
+		t.Fatal("deletion must reclaim the leftover backing under a diskless leg")
+	}
+}
+
 func TestReconcileTeardownOnDelete(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()

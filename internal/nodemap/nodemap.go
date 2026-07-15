@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/yaml"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
-	"github.com/home-operations/miroir/internal/constants"
 )
 
 // Pool describes one named storage pool on a node: the backend
@@ -94,7 +93,7 @@ func (m Map) Pool(node, pool string) (Pool, bool) {
 // they all mean the pool now called "default".
 func PoolOrDefault(pool string) string {
 	if pool == "" {
-		return constants.DefaultPoolName
+		return miroirv1alpha1.DefaultPoolName
 	}
 	return pool
 }
@@ -147,7 +146,7 @@ func Load(path string) (Map, error) {
 		if legacy := legacyFlatNode(raw); legacy != "" {
 			return nil, fmt.Errorf("node %s uses the pre-0.10 flat single-pool shape; "+
 				"move backend/device/zfsDataset/baseDir/thinPoolSize under `pools: {%s: {...}}` "+
-				"(zone and address stay node-level)", legacy, constants.DefaultPoolName)
+				"(zone and address stay node-level)", legacy, miroirv1alpha1.DefaultPoolName)
 		}
 		return nil, fmt.Errorf("parse node map %s: %w", path, err)
 	}
@@ -157,7 +156,7 @@ func Load(path string) (Map, error) {
 	for name, n := range m {
 		if len(n.Pools) == 0 {
 			return nil, fmt.Errorf("node %s: no pools defined (declare at least pools.%s)",
-				name, constants.DefaultPoolName)
+				name, miroirv1alpha1.DefaultPoolName)
 		}
 		if err := validatePools(name, n.Pools); err != nil {
 			return nil, err

@@ -119,11 +119,14 @@ func get(t *testing.T, r *Reconciler, name string) *miroirv1alpha1.MiroirVolume 
 	return got
 }
 
-// An added entry naming a pool resolves its backend from that pool; the
-// pool name is normalized and persisted.
-func TestCompletesAddedReplicaInNamedPool(t *testing.T) {
+// An added entry naming no pool inherits the volume's pool — its diskful
+// legs are uniform by construction — and resolves the backend from that
+// pool on its node.
+func TestCompletesAddedReplicaInheritsVolumePool(t *testing.T) {
 	v := replicatedVol()
-	v.Spec.Replicas[2].Pool = poolFast
+	v.Spec.Replicas[0].Pool = poolFast
+	v.Spec.Replicas[1].Pool = poolFast
+	v.Spec.Replicas[2].Backend = "" // bare {node} add
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
@@ -137,21 +140,45 @@ func TestCompletesAddedReplicaInNamedPool(t *testing.T) {
 	reconcile(t, r, "pvc-1")
 
 	rep := get(t, r, "pvc-1").Spec.Replicas[2]
-	if rep.Pool != poolFast || rep.Backend != miroirv1alpha1.BackendZFS {
-		t.Fatalf("entry must resolve the named pool's backend: %+v", rep)
+	if rep.Pool != poolFast || rep.Backend != miroirv1alpha1.BackendZFS || rep.Address != addrC {
+		t.Fatalf("entry must inherit the volume's pool and resolve its backend: %+v", rep)
 	}
 }
 
-// An added entry naming a pool the node does not carry is a permanent
-// placement error: the entry stays incomplete.
-func TestCompleteRejectsUnknownPool(t *testing.T) {
-	v := replicatedVol()
-	v.Spec.Replicas[2].Pool = "nvme"
+// An added entry naming a pool other than the volume's is a permanent
+// placement error (snapshots and restores are pool-local): the entry
+// stays incomplete.
+func TestCompleteRejectsCrossPoolReplica(t *testing.T) {
+	v := replicatedVol() // existing replicas live in the default pool
+	v.Spec.Replicas[2].Pool = poolFast
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
 	r := &Reconciler{Client: c, Nodes: nodemap.Map{
-		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
+		nodeC: {Pools: map[string]nodemap.Pool{
+			poolDefault: {Backend: miroirv1alpha1.BackendLVMThin},
+			poolFast:    {Backend: miroirv1alpha1.BackendZFS},
+		}},
+	}}
+
+	reconcile(t, r, "pvc-1")
+
+	if rep := get(t, r, "pvc-1").Spec.Replicas[2]; rep.Address != "" {
+		t.Fatalf("cross-pool entry must stay incomplete: %+v", rep)
+	}
+}
+
+// An added entry whose (inherited) pool the node does not carry is a
+// permanent placement error: the entry stays incomplete.
+func TestCompleteRejectsUnknownPool(t *testing.T) {
+	v := replicatedVol()
+	v.Spec.Replicas[0].Pool = "nvme"
+	v.Spec.Replicas[1].Pool = "nvme"
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeC, addrC)).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+		nodeC: storageNode(miroirv1alpha1.BackendLVMThin), // default pool only
 	}}
 
 	reconcile(t, r, "pvc-1")

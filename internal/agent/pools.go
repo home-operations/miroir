@@ -17,7 +17,10 @@ limitations under the License.
 package agent
 
 import (
+	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
@@ -51,6 +54,8 @@ func (p Pools) Get(name string) (PoolBackend, error) {
 // on node: the spec entry while the leg is placed here, else the agent's
 // self-reported status slot — a replica removed from spec still needs its
 // teardown to target the right pool. Returns the normalized pool name.
+// Only a hint for delete paths: a leg torn down after a crash may have
+// neither source, so deletions sweep every pool instead of trusting this.
 func volumePoolOn(vol *miroirv1alpha1.MiroirVolume, node string) string {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == node {
@@ -58,4 +63,41 @@ func volumePoolOn(vol *miroirv1alpha1.MiroirVolume, node string) string {
 		}
 	}
 	return nodemap.PoolOrDefault(vol.Status.PerNode[node].Pool)
+}
+
+// sorted returns the pool names in stable order for deterministic sweeps.
+func (p Pools) sorted() []string {
+	return slices.Sorted(maps.Keys(p))
+}
+
+// SweepDelete removes the volume's backing device from every pool on this
+// node. Volume names are cluster-unique and a node holds at most one leg
+// of a volume, so at most one pool has the device and the rest no-op —
+// the same always-safe semantics the pre-multi-pool unconditional delete
+// had. Delete paths use this instead of resolving one pool: the leg's
+// pool can be unknowable (agent crashed before its first status patch, a
+// slot deleted at removal, a leg re-added diskless over a leftover
+// backing), and guessing wrong would leak the device or wedge the
+// finalizer. Every pool is attempted; the first error is returned after
+// the sweep so one bad pool cannot shadow the others' cleanup.
+func (p Pools) SweepDelete(ctx context.Context, vol string) error {
+	var firstErr error
+	for _, name := range p.sorted() {
+		if err := p[name].Backend.Delete(ctx, vol); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// SweepDeleteSnapshot removes a snapshot from every pool on this node,
+// with the same rationale and semantics as SweepDelete.
+func (p Pools) SweepDeleteSnapshot(ctx context.Context, vol, snap string) error {
+	var firstErr error
+	for _, name := range p.sorted() {
+		if err := p[name].Backend.DeleteSnapshot(ctx, vol, snap); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
