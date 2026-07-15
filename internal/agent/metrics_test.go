@@ -18,6 +18,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -53,7 +54,8 @@ func hasSeries(t *testing.T, family, volume string) bool {
 // serving stale health series.
 func TestVolumeMetricsLifecycle(t *testing.T) {
 	const volume = "pvc-metrics-lifecycle"
-	recordVolumeMetrics(volume, miroirReplicaView{
+	const pool = "fast"
+	recordVolumeMetrics(volume, pool, miroirReplicaView{
 		upToDate:       true,
 		connected:      false,
 		splitBrain:     true,
@@ -65,34 +67,48 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 		outOfSyncBytes: 2048 * 1024,
 	})
 
-	if got := testutil.ToFloat64(metricUpToDate.WithLabelValues(volume)); got != 1 {
+	recordVerifyMetrics(volume, pool, time.Unix(1700000000, 0), 512)
+	recordDisklessMetrics(volume, true)
+
+	if got := testutil.ToFloat64(metricUpToDate.WithLabelValues(volume, pool)); got != 1 {
 		t.Fatalf("up_to_date = %v, want 1", got)
 	}
-	if got := testutil.ToFloat64(metricConnected.WithLabelValues(volume)); got != 0 {
+	if got := testutil.ToFloat64(metricConnected.WithLabelValues(volume, pool)); got != 0 {
 		t.Fatalf("connected = %v, want 0", got)
 	}
-	if got := testutil.ToFloat64(metricSplitBrain.WithLabelValues(volume)); got != 1 {
+	if got := testutil.ToFloat64(metricSplitBrain.WithLabelValues(volume, pool)); got != 1 {
 		t.Fatalf("split_brain = %v, want 1", got)
 	}
-	if got := testutil.ToFloat64(metricSuspended.WithLabelValues(volume)); got != 0 {
+	if got := testutil.ToFloat64(metricSuspended.WithLabelValues(volume, pool)); got != 0 {
 		t.Fatalf("suspended = %v, want 0", got)
 	}
-	if got := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volume)); got != 0.425 {
+	if got := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volume, pool)); got != 0.425 {
 		t.Fatalf("resync_ratio = %v, want 0.425", got)
 	}
-	if got := testutil.ToFloat64(metricQuorum.WithLabelValues(volume)); got != 1 {
+	if got := testutil.ToFloat64(metricQuorum.WithLabelValues(volume, pool)); got != 1 {
 		t.Fatalf("quorum = %v, want 1", got)
 	}
-	if got := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volume)); got != 1 {
+	if got := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volume, pool)); got != 1 {
 		t.Fatalf("disk_failed = %v, want 1", got)
 	}
-	if got := testutil.ToFloat64(metricOutOfSyncBytes.WithLabelValues(volume)); got != 2048*1024 {
+	if got := testutil.ToFloat64(metricOutOfSyncBytes.WithLabelValues(volume, pool)); got != 2048*1024 {
 		t.Fatalf("out_of_sync_bytes = %v, want %v", got, 2048*1024)
 	}
-	if got := testutil.ToFloat64(metricPrimary.WithLabelValues(volume)); got != 1 {
+	if got := testutil.ToFloat64(metricPrimary.WithLabelValues(volume, pool)); got != 1 {
 		t.Fatalf("primary = %v, want 1", got)
 	}
+	if got := testutil.ToFloat64(metricVerifyTimestamp.WithLabelValues(volume, pool)); got != 1700000000 {
+		t.Fatalf("verify_last_timestamp_seconds = %v, want 1700000000", got)
+	}
+	if got := testutil.ToFloat64(metricVerifyOutOfSyncBytes.WithLabelValues(volume, pool)); got != 512 {
+		t.Fatalf("verify_out_of_sync_bytes = %v, want 512", got)
+	}
+	if got := testutil.ToFloat64(metricDisklessPrimary.WithLabelValues(volume)); got != 1 {
+		t.Fatalf("diskless_primary = %v, want 1", got)
+	}
 
+	// Drop knows only the volume, not the pool the series were recorded
+	// under — the partial-match delete must still clear every family.
 	dropVolumeMetrics(volume)
 	for _, family := range []string{
 		"miroir_volume_up_to_date",
@@ -104,6 +120,9 @@ func TestVolumeMetricsLifecycle(t *testing.T) {
 		"miroir_volume_disk_failed",
 		"miroir_volume_out_of_sync_bytes",
 		"miroir_volume_primary",
+		"miroir_volume_verify_last_timestamp_seconds",
+		"miroir_volume_verify_out_of_sync_bytes",
+		"miroir_volume_diskless_primary",
 	} {
 		if hasSeries(t, family, volume) {
 			t.Fatalf("%s{volume=%q} still exposed after drop", family, volume)

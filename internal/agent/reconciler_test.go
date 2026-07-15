@@ -224,7 +224,7 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	}
 	// No peers means fully in sync: the zero value would perma-fire any
 	// <1 resync alert for every unreplicated volume.
-	if ratio := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volPvc1)); ratio != 1 {
+	if ratio := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); ratio != 1 {
 		t.Fatalf("unreplicated resync_ratio = %v, want 1", ratio)
 	}
 }
@@ -1105,7 +1105,7 @@ func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 		t.Fatalf("latch must stay set while the leg is Diskless: %+v", st)
 	}
 	// The latch is the actionable hardware-failure alert signal.
-	if v := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volPvc1)); v != 1 {
+	if v := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 1 {
 		t.Fatalf("miroir_volume_disk_failed = %v, want 1", v)
 	}
 }
@@ -1164,11 +1164,11 @@ func TestReconcileQuorumLostExportsGauge(t *testing.T) {
 
 	reconcile(t, r, volPvc1)
 
-	if v := testutil.ToFloat64(metricQuorum.WithLabelValues(volPvc1)); v != 0 {
+	if v := testutil.ToFloat64(metricQuorum.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 0 {
 		t.Fatalf("miroir_volume_quorum = %v, want 0 on quorum loss", v)
 	}
 	// Local disk is fine — up_to_date must stay 1 (quorum is the signal).
-	if v := testutil.ToFloat64(metricUpToDate.WithLabelValues(volPvc1)); v != 1 {
+	if v := testutil.ToFloat64(metricUpToDate.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 1 {
 		t.Fatalf("miroir_volume_up_to_date = %v, want 1", v)
 	}
 }

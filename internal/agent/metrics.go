@@ -31,50 +31,54 @@ const (
 )
 
 var (
+	// Diskful volume gauges carry the pool backing this node's leg (pools
+	// are per-node, so peers' legs of the same volume may report different
+	// pool values). Diskless legs have no backing pool, so
+	// miroir_volume_diskless_primary stays volume-only.
 	metricUpToDate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_up_to_date",
 		Help: "1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created).",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricConnected = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_connected",
 		Help: "1 when all replication links from this node to diskful peers are established (a diskless tie-breaker's link is excluded).",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricSplitBrain = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_split_brain",
 		Help: "1 when DRBD refused to reconnect after divergence; manual resolution required.",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricSuspended = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_suspended",
 		Help: "1 while a user suspend-io (the snapshot write barrier) freezes this node's IO; sustained means a stranded barrier (snapshot rounds last seconds).",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricResyncRatio = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_resync_ratio",
 		Help: "Fraction in sync (0-1) of the least-synced diskful peer while resyncing; 1 when fully in sync (unreplicated volumes report 1).",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricQuorum = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_quorum",
 		Help: "1 when this node's replica sees DRBD quorum; 0 while a freeze-policy volume has lost quorum and refuses writes with I/O errors (on-no-quorum io-error; always 1 under last-man-standing, and for unreplicated volumes).",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricDiskFailed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_disk_failed",
 		Help: "1 when this leg's backing disk was detached after an I/O error and is latched failed — replace the disk, then remove and re-add the replica.",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricOutOfSyncBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_out_of_sync_bytes",
 		Help: "Largest per-peer out-of-sync amount in bytes: the exposure if the healthiest peer is lost. Grows while a peer is down with no resync running; also counts online-verify findings.",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricVerifyTimestamp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_verify_last_timestamp_seconds",
 		Help: "Unix time of the last completed scheduled online verify for this volume; absent until the first verify runs. Alert on staleness to catch a verify schedule that stopped firing.",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricVerifyOutOfSyncBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_verify_out_of_sync_bytes",
 		Help: "Out-of-sync bytes the last scheduled verify found (0 = clean). Findings also surface in miroir_volume_out_of_sync_bytes until a disconnect/connect resync clears them.",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricPrimary = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_primary",
 		Help: "1 while this node's diskful leg is DRBD Primary: the consumer pod or the RWX gateway runs here and this leg serves the I/O. Diskless legs report miroir_volume_diskless_primary instead; unreplicated volumes have no DRBD role and always report 0.",
-	}, []string{volumeLabel})
+	}, []string{volumeLabel, poolLabel})
 	metricDisklessPrimary = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_diskless_primary",
 		Help: "1 while this node's diskless leg (client or tie-breaker) is DRBD Primary: a consumer runs here and every read and write crosses the replication network. Sustained 1 means the workload pays network I/O — auto-diskful (autoDiskfulAfter) converts the leg to a local replica when the node has storage capacity.",
@@ -114,16 +118,16 @@ func init() {
 	)
 }
 
-func recordVolumeMetrics(volume string, st miroirReplicaView) {
-	metricUpToDate.WithLabelValues(volume).Set(boolGauge(st.upToDate))
-	metricConnected.WithLabelValues(volume).Set(boolGauge(st.connected))
-	metricSplitBrain.WithLabelValues(volume).Set(boolGauge(st.splitBrain))
-	metricSuspended.WithLabelValues(volume).Set(boolGauge(st.suspended))
-	metricResyncRatio.WithLabelValues(volume).Set(st.resyncRatio)
-	metricQuorum.WithLabelValues(volume).Set(boolGauge(st.quorum))
-	metricDiskFailed.WithLabelValues(volume).Set(boolGauge(st.diskFailed))
-	metricOutOfSyncBytes.WithLabelValues(volume).Set(st.outOfSyncBytes)
-	metricPrimary.WithLabelValues(volume).Set(boolGauge(st.primary))
+func recordVolumeMetrics(volume, pool string, st miroirReplicaView) {
+	metricUpToDate.WithLabelValues(volume, pool).Set(boolGauge(st.upToDate))
+	metricConnected.WithLabelValues(volume, pool).Set(boolGauge(st.connected))
+	metricSplitBrain.WithLabelValues(volume, pool).Set(boolGauge(st.splitBrain))
+	metricSuspended.WithLabelValues(volume, pool).Set(boolGauge(st.suspended))
+	metricResyncRatio.WithLabelValues(volume, pool).Set(st.resyncRatio)
+	metricQuorum.WithLabelValues(volume, pool).Set(boolGauge(st.quorum))
+	metricDiskFailed.WithLabelValues(volume, pool).Set(boolGauge(st.diskFailed))
+	metricOutOfSyncBytes.WithLabelValues(volume, pool).Set(st.outOfSyncBytes)
+	metricPrimary.WithLabelValues(volume, pool).Set(boolGauge(st.primary))
 }
 
 // recordPoolMetrics publishes one pool's sample. The pool set is fixed per
@@ -135,18 +139,22 @@ func recordPoolMetrics(pool string, capacityBytes, allocatedBytes int64, metaUse
 	metricPoolMetaUsedRatio.WithLabelValues(pool).Set(metaUsedRatio)
 }
 
+// dropVolumeMetrics deletes by volume alone (partial match): the pool a
+// torn-down leg reported under can be unknowable here, for the same reason
+// deletions sweep every pool — see Pools.SweepDelete.
 func dropVolumeMetrics(volume string) {
-	metricUpToDate.DeleteLabelValues(volume)
-	metricConnected.DeleteLabelValues(volume)
-	metricSplitBrain.DeleteLabelValues(volume)
-	metricSuspended.DeleteLabelValues(volume)
-	metricResyncRatio.DeleteLabelValues(volume)
-	metricQuorum.DeleteLabelValues(volume)
-	metricDiskFailed.DeleteLabelValues(volume)
-	metricOutOfSyncBytes.DeleteLabelValues(volume)
-	metricPrimary.DeleteLabelValues(volume)
-	metricVerifyTimestamp.DeleteLabelValues(volume)
-	metricVerifyOutOfSyncBytes.DeleteLabelValues(volume)
+	byVolume := prometheus.Labels{volumeLabel: volume}
+	metricUpToDate.DeletePartialMatch(byVolume)
+	metricConnected.DeletePartialMatch(byVolume)
+	metricSplitBrain.DeletePartialMatch(byVolume)
+	metricSuspended.DeletePartialMatch(byVolume)
+	metricResyncRatio.DeletePartialMatch(byVolume)
+	metricQuorum.DeletePartialMatch(byVolume)
+	metricDiskFailed.DeletePartialMatch(byVolume)
+	metricOutOfSyncBytes.DeletePartialMatch(byVolume)
+	metricPrimary.DeletePartialMatch(byVolume)
+	metricVerifyTimestamp.DeletePartialMatch(byVolume)
+	metricVerifyOutOfSyncBytes.DeletePartialMatch(byVolume)
 	metricDisklessPrimary.DeleteLabelValues(volume)
 }
 
@@ -168,9 +176,9 @@ func RecordDRBDKernelVersion(version string) {
 // recordVerifyMetrics publishes the outcome of a completed verify pass. The
 // coordinator sets these directly (they are event-driven, not part of the
 // per-poll recordVolumeMetrics view).
-func recordVerifyMetrics(volume string, at time.Time, outOfSyncBytes int64) {
-	metricVerifyTimestamp.WithLabelValues(volume).Set(float64(at.Unix()))
-	metricVerifyOutOfSyncBytes.WithLabelValues(volume).Set(float64(outOfSyncBytes))
+func recordVerifyMetrics(volume, pool string, at time.Time, outOfSyncBytes int64) {
+	metricVerifyTimestamp.WithLabelValues(volume, pool).Set(float64(at.Unix()))
+	metricVerifyOutOfSyncBytes.WithLabelValues(volume, pool).Set(float64(outOfSyncBytes))
 }
 
 type miroirReplicaView struct {

@@ -32,7 +32,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} is split-brain on
+              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) is split-brain on
               {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
               DRBD detected divergent data and refused to reconnect. Resolve
@@ -49,7 +50,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} lost quorum on
+              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) lost quorum on
               {{ "{{" }} $labels.node {{ "}}" }} — writes are failing
             description: >-
               The replica partition no longer holds a quorum majority and
@@ -68,7 +70,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} IO has been
+              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) IO has been
               suspended for 10m on {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
               A snapshot write barrier (suspend-io) has been held far longer
@@ -87,7 +90,8 @@ spec:
           annotations:
             summary: >-
               Backing disk failed for volume
-              {{ "{{" }} $labels.volume {{ "}}" }} on
+              {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) on
               {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
               The backing device was detached after an I/O error and is
@@ -104,7 +108,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
           annotations:
             summary: >-
-              Replica of {{ "{{" }} $labels.volume {{ "}}" }} on
+              Replica of {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) on
               {{ "{{" }} $labels.node {{ "}}" }} is not UpToDate
             description: >-
               The leg has not returned to UpToDate within 15 minutes —
@@ -121,7 +126,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} replication links
+              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) replication links
               down from {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
               Not all replication links to diskful peers are established;
@@ -137,7 +143,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} has
+              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) has
               {{ "{{" }} $value | humanize1024 {{ "}}" }}B out of sync on
               {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
@@ -176,7 +183,8 @@ spec:
             {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} has not completed
+              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              (pool {{ "{{" }} $labels.pool {{ "}}" }}) has not completed
               an online verify in {{ "{{" }} $value | humanizeDuration {{ "}}" }}
             description: >-
               The scheduled drbdadm verify has not completed within the

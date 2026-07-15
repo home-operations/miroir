@@ -204,7 +204,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			// resyncRatio 1 and quorum true, not the zero values: an
 			// unreplicated volume is fully in sync with itself and has no
 			// quorum to lose — zeros would perma-fire the alerts.
-			recordVolumeMetrics(vol.Name, miroirReplicaView{
+			recordVolumeMetrics(vol.Name, poolName, miroirReplicaView{
 				upToDate: true, connected: true, quorum: true, resyncRatio: 1,
 			})
 			if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
@@ -277,7 +277,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	splitActive := r.handleSplitBrain(ctx, vol, resource, st, connected)
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
-		recordVolumeMetrics(vol.Name, miroirReplicaView{
+		recordVolumeMetrics(vol.Name, poolName, miroirReplicaView{
 			upToDate:   st.DiskState == drbd.DiskUpToDate,
 			connected:  connected,
 			splitBrain: st.SplitBrain,
@@ -342,7 +342,7 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		return false, ctrl.Result{}
 	}
 	if !entry.replicated {
-		recordVolumeMetrics(vol.Name, miroirReplicaView{
+		recordVolumeMetrics(vol.Name, volumePoolOn(vol, r.NodeName), miroirReplicaView{
 			upToDate: true, connected: true, quorum: true, resyncRatio: 1,
 		})
 		return true, ctrl.Result{}
@@ -366,7 +366,7 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		return false, ctrl.Result{}
 	}
 	if !localDiskless {
-		recordVolumeMetrics(vol.Name, miroirReplicaView{
+		recordVolumeMetrics(vol.Name, volumePoolOn(vol, r.NodeName), miroirReplicaView{
 			upToDate:       st.DiskState == drbd.DiskUpToDate,
 			connected:      diskfulPeersConnected(st, vol, r.NodeName),
 			splitBrain:     st.SplitBrain,
