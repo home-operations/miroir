@@ -23,6 +23,31 @@ runs of zeros as discards — the same "these blocks are free" signal
 `drbd.resync.discardGranularity` remains as a manual cluster-wide
 fallback).
 
+**Dead nodes: auto-evict.** A node that dies permanently leaves every
+volume it carried degraded until someone re-places its replicas.
+Setting `autoEvictAfter` (Helm value; e.g. `"60m"`, off by default)
+automates that: once the node's heartbeat — the `MiroirNode` status its
+agent refreshes about every minute — has been stale that long, the
+controller swaps the dead entry out of each affected volume in one
+atomic edit and adds a fresh replica, which full-syncs from the
+survivors. The dead node's teardown finalizer is force-released (its
+agent cannot run), and the volume's status records the eviction; if the
+node ever returns, its agent uses that record to clean up the abandoned
+backing device and DRBD metadata instead of leaking them.
+
+Auto-evict is deliberately timid. It stands down when more than one
+node's heartbeat is stale (that pattern points at the network or API
+server, not at two simultaneous dead nodes), when any surviving replica
+still sees the "dead" node's DRBD connections up (then the node is
+alive and only its Kubernetes connection is broken), when the surviving
+replicas are not all UpToDate, or when snapshots pin the volume (a
+replacement replica would not carry them). It needs a spare storage
+node with the volume's pool and room for the volume's full size — on a
+cluster with no spare node it does nothing. A node with known long
+outages can opt out with `nodes.<name>.autoEvict: false`. Keep the
+threshold well above your longest planned reboot or upgrade window:
+eviction discards the dead node's copy of the data.
+
 **Verification** is the only cross-leg integrity check (a ZFS scrub
 validates one leg against itself). `drbd.verify.algorithm` (default
 `crc32c`) arms it, and `drbd.verify.schedule` (5-field cron, e.g.

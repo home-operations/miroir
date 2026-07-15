@@ -123,7 +123,7 @@ func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate
 		if !ok || cl.Address == "" || cl.AddedAt == nil {
 			continue
 		}
-		out = append(out, candidate{node: cl.Node, kind: "client", since: cl.AddedAt.Time,
+		out = append(out, candidate{node: cl.Node, kind: kindClient, since: cl.AddedAt.Time,
 			apply: func(v *miroirv1alpha1.MiroirVolume) { convertClient(v, i, entry.Backend, pool) }})
 	}
 	for i, rep := range vol.Spec.Replicas {
@@ -135,7 +135,7 @@ func candidates(vol *miroirv1alpha1.MiroirVolume, nodes nodemap.Map) []candidate
 		if !ok || since == nil {
 			continue
 		}
-		out = append(out, candidate{node: rep.Node, kind: "tiebreaker", since: since.Time,
+		out = append(out, candidate{node: rep.Node, kind: kindTieBreaker, since: since.Time,
 			apply: func(v *miroirv1alpha1.MiroirVolume) { convertTieBreaker(v, i, entry.Backend, pool) }})
 	}
 	return out

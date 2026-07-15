@@ -464,6 +464,20 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --auto-diskful-after=10m
+  - it: omits auto-evict-after by default
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --auto-evict-after=60m
+  - it: passes auto-evict-after when autoEvictAfter is set
+    documentIndex: 0
+    set:
+      autoEvictAfter: 60m
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --auto-evict-after=60m
   - it: withholds the gateway args by default (RWX is opt-in)
     documentIndex: 0
     asserts:

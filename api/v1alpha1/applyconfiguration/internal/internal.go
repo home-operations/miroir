@@ -269,6 +269,11 @@ var schemaYAML = typed.YAMLObject(`types:
           elementType:
             namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
           elementRelationship: atomic
+    - name: evicted
+      type:
+        map:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: export
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.ExportStatus

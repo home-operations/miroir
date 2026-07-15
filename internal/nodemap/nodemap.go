@@ -70,6 +70,10 @@ type Node struct {
 	// dedicated storage NIC/VLAN IP (IPv4 or IPv6); empty falls back to
 	// the node's InternalIP.
 	Address string `json:"address,omitempty"`
+	// AutoEvict, when explicitly false, exempts this node from auto-evict:
+	// its legs are never re-placed while its heartbeat is stale (a node
+	// with known long outages). Absent means eligible.
+	AutoEvict *bool `json:"autoEvict,omitempty"`
 	// Pools maps pool name → pool config. The pre-multi-pool single pool
 	// is the pool named "default" — volumes and classes that name no pool
 	// resolve there.
@@ -86,6 +90,13 @@ type Map map[string]Node
 func (m Map) Pool(node, pool string) (Pool, bool) {
 	p, ok := m[node].Pools[PoolOrDefault(pool)]
 	return p, ok
+}
+
+// AutoEvictAllowed reports whether auto-evict may re-place the node's
+// legs: the node is in the map and has not opted out.
+func (m Map) AutoEvictAllowed(node string) bool {
+	n, ok := m[node]
+	return ok && (n.AutoEvict == nil || *n.AutoEvict)
 }
 
 // PoolOrDefault maps the empty pool name to the default pool. Replicas

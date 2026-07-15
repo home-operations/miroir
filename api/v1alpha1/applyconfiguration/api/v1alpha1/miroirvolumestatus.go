@@ -20,6 +20,7 @@ package v1alpha1
 
 import (
 	apiv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
 )
 
@@ -49,6 +50,13 @@ type MiroirVolumeStatusApplyConfiguration struct {
 	Activated *bool `json:"activated,omitempty"`
 	// Conditions follow the standard Kubernetes condition conventions.
 	Conditions []v1.ConditionApplyConfiguration `json:"conditions,omitempty"`
+	// Evicted maps a node name to when auto-evict removed that node's leg
+	// and force-released its teardown finalizer (the node was dead, so its
+	// agent could not tear down). The marker is the returning agent's
+	// permission to scrub the leftover local state — leg absence from
+	// spec.replicas alone is never a destruction signal; the agent clears
+	// its entry once the scrub is done.
+	Evicted map[string]metav1.Time `json:"evicted,omitempty"`
 }
 
 // MiroirVolumeStatusApplyConfiguration constructs a declarative configuration of the MiroirVolumeStatus type for use with
@@ -112,6 +120,20 @@ func (b *MiroirVolumeStatusApplyConfiguration) WithConditions(values ...*v1.Cond
 			panic("nil value passed to WithConditions")
 		}
 		b.Conditions = append(b.Conditions, *values[i])
+	}
+	return b
+}
+
+// WithEvicted puts the entries into the Evicted field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, the entries provided by each call will be put on the Evicted field,
+// overwriting an existing map entries in Evicted field with the same key.
+func (b *MiroirVolumeStatusApplyConfiguration) WithEvicted(entries map[string]metav1.Time) *MiroirVolumeStatusApplyConfiguration {
+	if b.Evicted == nil && len(entries) > 0 {
+		b.Evicted = make(map[string]metav1.Time, len(entries))
+	}
+	for k, v := range entries {
+		b.Evicted[k] = v
 	}
 	return b
 }

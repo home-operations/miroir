@@ -21,6 +21,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+// Leg kinds labelling the auto-diskful and auto-evict counters.
+const (
+	kindReplica    = "replica"
+	kindTieBreaker = "tiebreaker"
+	kindClient     = "client"
+)
+
 // metricConversions counts auto-diskful conversions by leg kind. Counter,
 // not gauge: conversions are one-way topology changes, and the rate view
 // ("how often do workloads settle remotely") is the operational question.
@@ -29,6 +36,23 @@ var metricConversions = prometheus.NewCounterVec(prometheus.CounterOpts{
 	Help: "Auto-diskful conversions performed, by leg kind (client: a spec.clients leg replaced by a replica; tiebreaker: a diskless tie-breaker flipped diskful in place).",
 }, []string{"kind"})
 
+// metricEvictions counts auto-evict swaps by evicted leg kind. Each one
+// is a topology change an operator would otherwise have made by hand —
+// worth a durable trail beyond the per-volume event.
+var metricEvictions = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "miroir_autoevict_evictions_total",
+	Help: "Auto-evict swaps performed, by evicted leg kind (replica: a diskful replica re-placed; tiebreaker: a diskless tie-breaker re-placed; client: a dead consumer's leg dropped).",
+}, []string{"kind"})
+
+// metricEvictStanddown counts passes where eviction refused to act on a
+// stale node. A rising multiple_stale rate flags an observer-side
+// problem; peer_connected flags a node cut off from the API server but
+// not from its peers.
+var metricEvictStanddown = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "miroir_autoevict_standdown_total",
+	Help: "Auto-evict passes that stood down instead of evicting, by reason (multiple_stale: more than one node's heartbeat is stale; peer_connected: a survivor still holds DRBD links to the stale node).",
+}, []string{"reason"})
+
 func init() {
-	metrics.Registry.MustRegister(metricConversions)
+	metrics.Registry.MustRegister(metricConversions, metricEvictions, metricEvictStanddown)
 }
