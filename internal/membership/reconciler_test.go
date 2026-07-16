@@ -405,3 +405,27 @@ func TestClientLegNodeIDSkipsReplicaIDs(t *testing.T) {
 		t.Fatalf("client must take the lowest free id (1), got %d", got.NodeID)
 	}
 }
+
+// Two legs completed in one pass must get distinct node ids: the second
+// scan relies on the first entry's in-place completion being visible.
+func TestCompletesReplicaAndClientWithDistinctIDs(t *testing.T) {
+	v := replicatedVol() // node-c replica entry still bare
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: "bergen"}}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeC, addrC), node(nodeBergen, addrBergen)).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+		nodeC: storageNode(miroirv1alpha1.BackendZFS),
+	}}
+
+	reconcile(t, r, "pvc-1")
+
+	got := get(t, r, "pvc-1")
+	rep, cl := got.Spec.Replicas[2], got.Spec.Clients[0]
+	if rep.Address == "" || cl.Address == "" {
+		t.Fatalf("both legs must complete in one pass: %+v / %+v", rep, cl)
+	}
+	if rep.NodeID == cl.NodeID {
+		t.Fatalf("legs completed in one pass must get distinct node ids, both got %d", rep.NodeID)
+	}
+}

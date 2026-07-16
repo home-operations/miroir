@@ -109,25 +109,20 @@ func Device(ctx context.Context, d Deps, volumeID string) (string, *miroirv1alph
 		// from blocking a volume whose data legs are all established, and
 		// releases the hold the moment the loser reconnects, ahead of the
 		// slots clearing on the next status patch.
-		if !vol.Status.Activated && !vol.Status.Formatted &&
-			!diskfulPeersLive(vol, d.NodeName, live) {
-			for node, rep := range vol.Status.PerNode {
-				if rep.SplitBrain {
-					return "", nil, status.Errorf(codes.Unavailable,
-						"volume %s is recovering from split-brain (reported by node %s)", volumeID, node)
-				}
-			}
+		if err := HoldForSplitRecovery(vol, d.NodeName, live); err != nil {
+			return "", nil, err
 		}
 	}
 	return st.DevicePath, vol, nil
 }
 
-// diskfulPeersLive reports whether this node's replication links to every
+// DiskfulPeersLive reports whether this node's replication links to every
 // diskful peer are established, per the live kernel view. Mirrors the
 // agent's diskfulPeersConnected: a diskless tie-breaker's link is excluded
 // so its state never gates a data leg (the bug #78 class), and entries the
-// membership reconciler has not completed are skipped.
-func diskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
+// membership reconciler has not completed are skipped. Shared with the
+// node service's diskless staging path so the skip rules cannot drift.
+func DiskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == self || rep.Diskless || rep.Address == "" {
 			continue
@@ -137,6 +132,27 @@ func diskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.S
 		}
 	}
 	return true
+}
+
+// HoldForSplitRecovery returns the Unavailable hold for a never-activated
+// volume that is mid split-brain recovery, nil otherwise (issue #144).
+// The live-connectivity corroboration keeps a stale slot from a dead peer
+// from blocking a volume whose data legs are all established, and releases
+// the hold the moment the loser reconnects, ahead of the slots clearing on
+// the next status patch. One implementation for both the diskful staging
+// path and the diskless (client/tie-breaker) one — a tweak to the hold
+// applied to one must reach the other.
+func HoldForSplitRecovery(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) error {
+	if vol.Status.Activated || vol.Status.Formatted || DiskfulPeersLive(vol, self, live) {
+		return nil
+	}
+	for node, rep := range vol.Status.PerNode {
+		if rep.SplitBrain {
+			return status.Errorf(codes.Unavailable,
+				"volume %s is recovering from split-brain (reported by node %s)", vol.Name, node)
+		}
+	}
+	return nil
 }
 
 // EnsureFilesystem makes dev usable at target: mkfs-if-blank (exactly once

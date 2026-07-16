@@ -2741,3 +2741,57 @@ func TestReconcilePrimarySinceLifecycle(t *testing.T) {
 		t.Fatal("PrimarySince must clear on demotion")
 	}
 }
+
+// An informer lagging the CSI-side Activated latch must not park a
+// Primary leg in the fast path: the full pipeline owns the latch, and the
+// unprotected state (Primary, no Activated) is what split-brain
+// auto-discard safety keys on.
+func TestFastPathMissesOnPrimaryWithoutActivatedLatch(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrA
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrB
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, SizeBytes: 1 << 30}, // settled size
+	}
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \"node-a\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	// Prime a fingerprint matching the live kernel state: without the
+	// Activated guard this reconcile would park in the fast path.
+	st, err := r.DRBD.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.storeRealized(v.Generation, volPvc1, st, true)
+
+	reconcile(t, r, volPvc1)
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.Activated {
+		t.Fatal("the full pipeline must run and latch Activated for a Primary leg")
+	}
+}

@@ -236,7 +236,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				return ctrl.Result{}, err
 			}
 			r.storeRealized(vol.Generation, vol.Name, drbd.Status{}, false)
-			return ctrl.Result{}, nil
+			// Unreplicated volumes emit no DRBD events and no status
+			// wakeups; without a requeue, out-of-band backend drift (the
+			// #88 wipe signature) would only surface at the next watch
+			// event. This is the drift net deepCheckInterval promises.
+			return ctrl.Result{RequeueAfter: deepCheckInterval}, nil
 		}
 	} else {
 		// Diskless leg (tie-breaker or client): join DRBD without a
@@ -296,19 +300,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	splitActive := r.handleSplitBrain(ctx, vol, resource, st, connected)
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
-		recordVolumeMetrics(vol.Name, poolName, miroirReplicaView{
-			upToDate:   st.DiskState == drbd.DiskUpToDate,
-			connected:  connected,
-			splitBrain: st.SplitBrain,
-			suspended:  st.Suspended,
-			quorum:     st.Quorum,
-			diskFailed: diskFailed,
-			primary:    st.Primary,
-			// drbdsetup reports percent-in-sync and KiB; the exported
-			// gauges are a 0-1 ratio and bytes per Prometheus base units.
-			resyncRatio:    st.ResyncPercent / 100,
-			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
-		})
+		recordVolumeMetrics(vol.Name, poolName, replicaView(st, vol, r.NodeName, localDiskless))
 	} else {
 		recordDisklessMetrics(vol.Name, st.Primary)
 	}
@@ -364,7 +356,9 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		recordVolumeMetrics(vol.Name, volumePoolOn(vol, r.NodeName), miroirReplicaView{
 			upToDate: true, connected: true, quorum: true, resyncRatio: 1,
 		})
-		return true, ctrl.Result{}
+		// Same drift net as the full pass: nothing else wakes an
+		// unreplicated volume.
+		return true, ctrl.Result{RequeueAfter: deepCheckInterval}
 	}
 	st, err := r.DRBD.Status(ctx, vol.Name)
 	if err != nil || !statusEqual(st, entry.status) {
@@ -385,17 +379,7 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		return false, ctrl.Result{}
 	}
 	if !localDiskless {
-		recordVolumeMetrics(vol.Name, volumePoolOn(vol, r.NodeName), miroirReplicaView{
-			upToDate:       st.DiskState == drbd.DiskUpToDate,
-			connected:      diskfulPeersConnected(st, vol, r.NodeName),
-			splitBrain:     st.SplitBrain,
-			suspended:      st.Suspended,
-			quorum:         st.Quorum,
-			diskFailed:     diskFailedLatch(vol, r.NodeName, st, localDiskless),
-			primary:        st.Primary,
-			resyncRatio:    st.ResyncPercent / 100,
-			outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
-		})
+		recordVolumeMetrics(vol.Name, volumePoolOn(vol, r.NodeName), replicaView(st, vol, r.NodeName, localDiskless))
 	} else {
 		recordDisklessMetrics(vol.Name, st.Primary)
 	}
@@ -490,6 +474,25 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 // the degraded mode the tie-breaker exists to survive. Entries the
 // membership reconciler has not completed (no address) have no
 // connection yet and are skipped, matching the rendered config.
+// replicaView folds one diskful leg's kernel state into the exported
+// metric view — the one place the drbdsetup-unit conversions happen
+// (percent-in-sync → 0-1 ratio, KiB → bytes, per Prometheus base units).
+// Shared by the full pass and the fast path so a gauge added to one can
+// never silently serve stale values from the other.
+func replicaView(st drbd.Status, vol *miroirv1alpha1.MiroirVolume, self string, localDiskless bool) miroirReplicaView {
+	return miroirReplicaView{
+		upToDate:       st.DiskState == drbd.DiskUpToDate,
+		connected:      diskfulPeersConnected(st, vol, self),
+		splitBrain:     st.SplitBrain,
+		suspended:      st.Suspended,
+		quorum:         st.Quorum,
+		diskFailed:     diskFailedLatch(vol, self, st, localDiskless),
+		primary:        st.Primary,
+		resyncRatio:    st.ResyncPercent / 100,
+		outOfSyncBytes: float64(st.OutOfSyncKiB) * 1024,
+	}
+}
+
 func diskfulPeersConnected(st drbd.Status, vol *miroirv1alpha1.MiroirVolume, self string) bool {
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Node == self || rep.Diskless || rep.Address == "" {

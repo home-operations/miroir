@@ -106,6 +106,11 @@ func (r *Reconciler) ensureDeployment(ctx context.Context, vol *miroirv1alpha1.M
 	dep.Namespace = want.Namespace
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Labels = want.Labels
+		// Overwriting the whole Spec drops apiserver-defaulted fields, so
+		// CreateOrUpdate's equality check never holds and every reconcile
+		// sends an Update the apiserver re-defaults into a no-op (no RV
+		// bump, no event storm — one redundant write per reconcile).
+		// Accepted: the alternative is hand-maintaining the default set.
 		dep.Spec = want.Spec
 		return controllerutil.SetControllerReference(vol, dep, r.Scheme())
 	})

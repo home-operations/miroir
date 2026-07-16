@@ -32,7 +32,7 @@ import (
 // membership reconciler like a replica, removed at unstage. Unlike a
 // diskless tie-breaker it is not placed for quorum, and it is rendered
 // with "tiebreaker no" so DRBD never counts its vote — attach/detach
-// leaves the majority threshold alone (see README).
+// leaves the majority threshold alone (docs: remote-consumers).
 type VolumeClientApplyConfiguration struct {
 	// Node is the Kubernetes node name consuming the volume remotely.
 	Node *string `json:"node,omitempty"`

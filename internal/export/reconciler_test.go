@@ -280,3 +280,25 @@ func affinityNodes(t *testing.T, dep *appsv1.Deployment) []string {
 	}
 	return terms[0].MatchExpressions[0].Values
 }
+
+// A volume being deleted keeps its gateway workloads (GC removes them
+// with the owner) but its ready gauge is dropped — a stale 1 would mask
+// the teardown.
+func TestReconcileDeletingVolumeKeepsWorkloadsDropsMetric(t *testing.T) {
+	vol := exportVolume("pvc-deleting", nodeA, nodeB)
+	vol.Finalizers = []string{"miroir.home-operations.com/teardown-node-a"}
+	r, cl := newReconciler(vol)
+	reconcile(t, r, "pvc-deleting")
+	getDeployment(t, cl, "pvc-deleting") // created
+
+	// Delete with a finalizer held: DeletionTimestamp set, object remains.
+	if err := cl.Delete(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "pvc-deleting")
+
+	getDeployment(t, cl, "pvc-deleting") // deliberately retained for GC
+	if _, ok := exportReadyGauge(t, "pvc-deleting"); ok {
+		t.Fatal("gauge series must be dropped while the volume is deleting")
+	}
+}

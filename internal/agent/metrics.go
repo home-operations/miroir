@@ -145,8 +145,8 @@ func recordVolumeMetrics(volume, pool string, st miroirReplicaView) {
 }
 
 // recordPoolMetrics publishes one pool's sample. The pool set is fixed per
-// agent process (a node-map change is a Helm upgrade, hence a restart), so
-// series are never deleted.
+// agent process (the TopologyWatcher restarts the agent on a pool-spec
+// change), so series are never deleted.
 func recordPoolMetrics(pool string, capacityBytes, allocatedBytes int64, metaUsedRatio float64) {
 	metricPoolCapacity.WithLabelValues(pool).Set(float64(capacityBytes))
 	metricPoolAllocated.WithLabelValues(pool).Set(float64(allocatedBytes))

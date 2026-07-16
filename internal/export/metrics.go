@@ -25,7 +25,8 @@ import (
 // replica health and stay green while the gateway — a per-volume singleton —
 // is down and every NFS client hangs, so export health needs its own gauge.
 // Published from the controller (this reconciler owns the gateway workloads
-// and already watches them); the gateway pod has no metrics endpoint.
+// and already watches them): the gateway's own /metrics vanishes exactly
+// when the gateway is down, which is the state this gauge must report.
 var metricExportReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "miroir_export_ready",
 	Help: "1 when the RWX volume's NFS gateway is serving (gateway pod available and export address published); 0 while clients cannot reach the export — a failover in progress, or a gateway that cannot run.",

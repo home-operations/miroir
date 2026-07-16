@@ -140,3 +140,14 @@ func TestCacheOptionsControllerStaysClusterScopedForMiroirNodes(t *testing.T) {
 		t.Fatal("the controller reads every MiroirNode; its informer must stay cluster-scoped")
 	}
 }
+
+func TestCacheOptionsAgentPinsOwnNode(t *testing.T) {
+	opts := cacheOptions("agent", "", "node-a")
+	byNode, ok := byObjectFor[*corev1.Node](opts)
+	if !ok {
+		t.Fatal("agent mode must scope the corev1.Node informer")
+	}
+	if byNode.Field == nil || byNode.Field.String() != "metadata.name=node-a" {
+		t.Fatalf("Node informer must be pinned to the node's own object, got %v", byNode.Field)
+	}
+}

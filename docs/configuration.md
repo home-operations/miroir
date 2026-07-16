@@ -23,15 +23,20 @@ exist and where their behavior is explained.
 - **`drbd`**: replication tuning. `portBase`
   ([Coexistence](coexistence.md)), `onIoError`, resync knobs,
   `verify.algorithm` / `verify.schedule`
-  ([verification](resilience.md)), `autoTieBreaker`,
-  `autoDiskfulAfter` ([auto-diskful](remote-consumers.md#auto-diskful)).
+  ([verification](resilience.md)).
+- **Root-level behavior knobs** (the chart root is the controller):
+  `autoTieBreaker` ([Replication and quorum](replication.md)),
+  `autoDiskfulAfter` ([auto-diskful](remote-consumers.md#auto-diskful)),
+  `autoEvictAfter` ([resilience](resilience.md)), `overcommitRatio` /
+  `freeSpaceRatio`, `provisionTimeout`, `storageCapacity`.
 - **`gateway`**: the per-RWX-volume NFS gateway. `enabled` (RWX is
   opt-in, off by default) and the gateway image
   ([ReadWriteMany](rwx.md)).
 - **`monitoring`**: PodMonitor, PrometheusRule, dashboards
   ([Monitoring](monitoring.md)).
-- **`agent` / `controller` / `sidecars`**: workload knobs for images,
-  resources, `agent.kubeletDir`, `sidecars.healthMonitor`.
+- **`agent` / `sidecars`** (and the root's image/resources): workload
+  knobs for images, resources, `agent.kubeletDir`,
+  `sidecars.healthMonitor`.
 - **`logging`**: level and encoder for both components.
 
 ## ZFS zvol settings

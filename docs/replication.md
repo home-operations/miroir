@@ -41,11 +41,12 @@ majority of 2 and the volume keeps serving.
 Behavior and knobs:
 
 - **Placement is zone-aware.** A spare node in a zone neither data
-  leg occupies is preferred (`nodes.<node>.zone`); ties break by node
-  name.
+  leg occupies is preferred (`nodes.<node>.spec.zone`); ties break by
+  node name.
 - **Existing volumes are retrofitted.** Adding a third node to
-  `nodes` (a Helm upgrade, which restarts the controller) appends a
-  tie-breaker to every 2-replica `freeze` volume that lacks one.
+  `nodes` appends a tie-breaker to every 2-replica `freeze` volume
+  that lacks one — the controller follows MiroirNode changes live, no
+  restart involved.
   Editing a volume's `spec.quorumPolicy` from `last-man-standing` to
   `freeze` triggers the same reconciler.
 - **No spare node, no tie-breaker.** On a 2-node cluster the volume

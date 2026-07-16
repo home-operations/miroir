@@ -100,7 +100,7 @@ type DRBDSpec struct {
 	// resyncing more per dirty bit. Applied only when a replica's metadata
 	// is first created — replicas created earlier keep their granularity
 	// (DRBD exchanges bitmaps across differing block sizes). 0 means the
-	// DRBD default (4096). Needs kmod ≥ 9.3.0 (the agent's startup floor).
+	// DRBD default (4096). Needs kmod ≥ 9.3.1 (the agent's startup floor).
 	// +kubebuilder:validation:Enum=0;4096;8192;16384;32768;65536;131072;262144;524288;1048576
 	// +optional
 	BitmapGranularityBytes int64 `json:"bitmapGranularityBytes,omitempty"`
@@ -119,7 +119,7 @@ type VolumeSource struct {
 // membership reconciler like a replica, removed at unstage. Unlike a
 // diskless tie-breaker it is not placed for quorum, and it is rendered
 // with "tiebreaker no" so DRBD never counts its vote — attach/detach
-// leaves the majority threshold alone (see README).
+// leaves the majority threshold alone (docs: remote-consumers).
 type VolumeClient struct {
 	// Node is the Kubernetes node name consuming the volume remotely.
 	Node string `json:"node"`

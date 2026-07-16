@@ -71,7 +71,11 @@ func diskfulNodes(vol *miroirv1alpha1.MiroirVolume) []string {
 // buildDeployment renders the desired gateway Deployment for a volume.
 // replicas:1 with the Recreate strategy: two gateways writing the same
 // device is exactly the dual-primary case single-primary DRBD forbids, so
-// the old pod must be gone before the new one promotes.
+// a template rollout waits for the old pod to exit before starting the
+// new one. On a dead node the ReplicaSet replaces a Terminating pod
+// immediately — there the real dual-writer fence is DRBD's single
+// Primary claim (the replacement's promote fails until the old claim
+// dies with its node).
 func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, serviceAccount string) *appsv1.Deployment {
 	labels := shareLabels(vol.Name)
 	privileged := true

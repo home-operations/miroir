@@ -54,6 +54,10 @@ const ConditionAddressConflict = "AddressConflict"
 const (
 	reasonDuplicateAddress = "DuplicateAddress"
 	reasonAddressUnique    = "AddressUnique"
+	// topologyRequestKey is the fixed request name every MiroirNode event
+	// maps to — one pass per edit, not one per node. The name is never
+	// read; Reconcile ignores the request.
+	topologyRequestKey = "topology"
 )
 
 // ConflictReconciler maintains the AddressConflict condition on every
@@ -119,7 +123,8 @@ func (r *ConflictReconciler) reconcileNode(ctx context.Context, node *miroirv1al
 		return nil
 	}
 	if err := r.Status().Update(ctx, node); err != nil {
-		return err
+		// Deleted mid-pass: its deletion event re-runs the pass anyway.
+		return client.IgnoreNotFound(err)
 	}
 	if cond.Status == metav1.ConditionTrue && !wasConflicted && r.Recorder != nil {
 		r.Recorder.Eventf(node, nil, corev1.EventTypeWarning, ConditionAddressConflict, "Reconcile",
@@ -139,7 +144,7 @@ func (r *ConflictReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("topologyconflict").
 		Watches(&miroirv1alpha1.MiroirNode{}, handler.EnqueueRequestsFromMapFunc(
 			func(context.Context, client.Object) []ctrl.Request {
-				return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: "topology"}}}
+				return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: topologyRequestKey}}}
 			}), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

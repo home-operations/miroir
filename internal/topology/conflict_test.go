@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -83,7 +84,7 @@ func TestConflictSinglePassCoversAllNodes(t *testing.T) {
 		addrNode(nodeC, "10.0.100.3"))
 	r := &ConflictReconciler{Client: c}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "topology"},
+		NamespacedName: types.NamespacedName{Name: topologyRequestKey},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -151,5 +152,30 @@ func TestConflictConditionClearsWhenResolved(t *testing.T) {
 	}
 	if n := reconcile(t, c, nodeA); !meta.IsStatusConditionFalse(n.Status.Conditions, ConditionAddressConflict) {
 		t.Fatalf("resolving the peer's address must clear the condition, got %+v", n.Status.Conditions)
+	}
+}
+
+// The Warning event fires once per fresh conflict — repeat passes over an
+// unchanged (or message-only-changed) topology must stay silent.
+func TestConflictEventFiresOncePerFreshConflict(t *testing.T) {
+	c := newClient(t, addrNode(nodeA, "10.0.100.1"), addrNode(nodeB, "10.0.100.1"))
+	rec := events.NewFakeRecorder(8)
+	r := &ConflictReconciler{Client: c, Recorder: rec}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "topology"}}
+
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	close(rec.Events)
+	fired := 0
+	for range rec.Events {
+		fired++
+	}
+	if fired != 2 { // one per freshly conflicted node, none on the repeat
+		t.Fatalf("want exactly one event per fresh conflict (2), got %d", fired)
 	}
 }
