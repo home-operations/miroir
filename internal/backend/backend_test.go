@@ -470,6 +470,22 @@ func TestLVMThinSetupIdempotent(t *testing.T) {
 	}
 	fe.notCalledWith(t, "pvcreate")
 	fe.notCalledWith(t, "lvcreate")
+	// The existing pool is activated: Talos does not activate LVs at
+	// boot, and an inactive pool reports empty kernel-status fields that
+	// fail every Stats tick until the first volume lands on the node.
+	fe.calledWith(t, "lvchange --activate y vg-miroir/thinpool")
+}
+
+// A crash-retried Snapshot must skip the lvcreate when the snapshot LV
+// already exists (zfs and loopfile pin the same contract).
+func TestLVMThinSnapshotIdempotent(t *testing.T) {
+	fe := &fakeExec{} // lvs succeeds → snapshot LV exists
+	b := newLVMThin(cfg, fe.run)
+
+	if err := b.Snapshot(t.Context(), "pvc-1", "snapshot-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "lvcreate")
 }
 
 func TestLVMThinSetupNoDeviceFails(t *testing.T) {

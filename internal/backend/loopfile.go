@@ -149,12 +149,15 @@ func (lf *loopfile) attach(ctx context.Context, vol, file string) (string, error
 			return "", fmt.Errorf("losetup --find %s: %w", file, aerr)
 		}
 		dev = strings.TrimSpace(out)
-		// Direct I/O drops the host page cache under the loop device: the
-		// filesystem above it already caches, so buffered mode double-caches
-		// (wasted memory, extra copy). Best-effort — a backing filesystem
-		// without O_DIRECT (e.g. some ZFS builds) must not fail the attach.
-		_, _ = lf.exec(ctx, "losetup", "--direct-io=on", dev)
 	}
+	// Direct I/O drops the host page cache under the loop device: the
+	// filesystem above it already caches, so buffered mode double-caches
+	// (wasted memory, extra copy). Best-effort — a backing filesystem
+	// without O_DIRECT (e.g. some ZFS builds) must not fail the attach —
+	// and applied on the reuse path too, so a crash between attach and
+	// this call cannot leave the volume buffered for the attachment's
+	// lifetime.
+	_, _ = lf.exec(ctx, "losetup", "--direct-io=on", dev)
 	link := lf.DevicePath(vol)
 	if _, err := lf.exec(ctx, "ln", "-sfn", dev, link); err != nil {
 		return "", fmt.Errorf("symlink %s -> %s: %w", link, dev, err)
@@ -174,8 +177,15 @@ func (lf *loopfile) Create(ctx context.Context, vol string, sizeBytes int64) (st
 	}
 	if !ok {
 		// Sparse (thin) backing file, like the zfs -s zvol / lvm-thin LV.
-		if _, err := lf.exec(ctx, "truncate", "-s", strconv.FormatInt(sizeBytes, 10), file); err != nil {
+		// Created through a temp path + atomic rename: truncate is
+		// open(O_CREAT)+ftruncate, and a crash between the two would leave
+		// a 0-byte image the retry's exists() accepts as complete.
+		tmp := file + ".tmp"
+		if _, err := lf.exec(ctx, "truncate", "-s", strconv.FormatInt(sizeBytes, 10), tmp); err != nil {
 			return "", fmt.Errorf("create backing file %s: %w", file, err)
+		}
+		if _, err := lf.exec(ctx, "mv", tmp, file); err != nil {
+			return "", fmt.Errorf("move backing file into place %s: %w", file, err)
 		}
 	}
 	return lf.attach(ctx, vol, file)
@@ -271,17 +281,54 @@ func (lf *loopfile) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol 
 	return lf.attach(ctx, vol, file)
 }
 
+// held reports why the loop device cannot be detached ("" when it can):
+// a stacked device on top (a DRBD attach) or a mounted filesystem.
+// losetup -d on a held device does not fail on modern kernels — it sets
+// lazy AUTOCLEAR and returns success — so detaching without this check
+// would let Delete destroy an in-use volume's backing file.
+func (lf *loopfile) held(ctx context.Context, dev string) (string, error) {
+	out, err := lf.exec(ctx, "lsblk", "-rno", "NAME,MOUNTPOINT", dev)
+	if err != nil {
+		return "", fmt.Errorf("lsblk %s: %w", dev, err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) > 1 {
+		return "stacked device " + strings.Fields(lines[1])[0] + " holds it", nil
+	}
+	if f := strings.Fields(lines[0]); len(f) > 1 {
+		return "mounted at " + f[1], nil
+	}
+	return "", nil
+}
+
 func (lf *loopfile) Delete(ctx context.Context, vol string) error {
 	file := lf.imgPath(vol)
 	ok, err := lf.exists(ctx, file)
-	if err != nil || !ok {
+	if err != nil {
 		return err
+	}
+	if !ok {
+		// A crash between Create's truncate and its rename can leave only
+		// the .tmp; it would otherwise outlive the volume.
+		if _, err := lf.exec(ctx, "rm", "-f", file+".tmp"); err != nil {
+			return fmt.Errorf("remove leftover %s.tmp: %w", file, err)
+		}
+		return nil
 	}
 	dev, err := lf.loopDev(ctx, file)
 	if err != nil {
 		return err
 	}
 	if dev != "" {
+		reason, err := lf.held(ctx, dev)
+		if err != nil {
+			return err
+		}
+		if reason != "" {
+			// A positive determination — wrap ErrBusy directly instead of
+			// going through Busy()'s error-text classifier.
+			return fmt.Errorf("%w: detach %s: %s", ErrBusy, dev, reason)
+		}
 		if _, err := lf.exec(ctx, "losetup", "-d", dev); err != nil {
 			return Busy(fmt.Errorf("detach %s: %w", dev, err))
 		}
@@ -289,18 +336,20 @@ func (lf *loopfile) Delete(ctx context.Context, vol string) error {
 	if _, err := lf.exec(ctx, "rm", "-f", lf.DevicePath(vol)); err != nil {
 		return fmt.Errorf("remove symlink %s: %w", lf.DevicePath(vol), err)
 	}
-	if _, err := lf.exec(ctx, "rm", "-f", file); err != nil {
+	// The .tmp sibling is a crash leftover of reflinkAtomic/Create; as a
+	// full CoW reference it would silently pin the image's extents.
+	if _, err := lf.exec(ctx, "rm", "-f", file, file+".tmp"); err != nil {
 		return fmt.Errorf("remove backing file %s: %w", file, err)
 	}
 	return nil
 }
 
 func (lf *loopfile) DeleteSnapshot(ctx context.Context, _ /* vol */, snap string) error {
-	ok, err := lf.exists(ctx, lf.snapPath(snap))
-	if err != nil || !ok {
-		return err
-	}
-	if _, err := lf.exec(ctx, "rm", "-f", lf.snapPath(snap)); err != nil {
+	// No exists() gate: rm -f is the idempotency, and it must also reap a
+	// crash-leftover .tmp (reflinkAtomic aborted before its rename) when
+	// the snapshot itself never made it into place — as a full CoW
+	// reference the leftover silently pins the source image's extents.
+	if _, err := lf.exec(ctx, "rm", "-f", lf.snapPath(snap), lf.snapPath(snap)+".tmp"); err != nil {
 		return fmt.Errorf("remove snapshot %s: %w", snap, err)
 	}
 	return nil
