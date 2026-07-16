@@ -29,6 +29,7 @@ import (
 
 const (
 	volPvc1            = "pvc-1"
+	volPvc2            = "pvc-2"
 	cmdDrbdsetupStatus = "drbdsetup status"
 	cmdAdmVersion      = "drbdadm --version"
 	cmdDumpMD          = "dump-md"
@@ -91,7 +92,7 @@ func TestParseEvent2(t *testing.T) {
 	cases := []struct{ line, want string }{
 		{"exists resource name:pvc-1 role:Secondary suspended:no", volPvc1},
 		{"change connection name:pvc-1 peer-node-id:1 connection:StandAlone", volPvc1},
-		{"change device name:pvc-2 volume:0 minor:1000 disk:UpToDate", "pvc-2"},
+		{"change device name:pvc-2 volume:0 minor:1000 disk:UpToDate", volPvc2},
 		{"destroy resource name:pvc-3", "pvc-3"},
 		{"change peer-device name:pvc-1 peer-node-id:1 replication:SyncTarget", volPvc1},
 		{"exists -", ""},
@@ -186,7 +187,7 @@ func TestDay0GIDeterministicAndEven(t *testing.T) {
 	if a != b || len(a) != 16 {
 		t.Fatalf("unstable or malformed day0 GI: %q %q", a, b)
 	}
-	if Day0GI("pvc-2") == a {
+	if Day0GI(volPvc2) == a {
 		t.Fatal("different volumes must get different GIs")
 	}
 	last := a[len(a)-1]
@@ -862,7 +863,7 @@ func TestDownSecondariesContinuesOnError(t *testing.T) {
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
 	err := d.DownSecondaries(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "pvc-2") {
+	if err == nil || !strings.Contains(err.Error(), volPvc2) {
 		t.Fatalf("want a joined error naming pvc-2, got %v", err)
 	}
 	// One stuck resource must not strand the rest of the sweep.
@@ -880,7 +881,7 @@ func TestSweepOrphansContinuesOnError(t *testing.T) {
 		errOn: map[string]error{"down pvc-1": errors.New("signal: killed")},
 	}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	for _, name := range []string{volPvc1, "pvc-2"} {
+	for _, name := range []string{volPvc1, volPvc2} {
 		if err := os.WriteFile(d.path(name+".res"), nil, 0o640); err != nil {
 			t.Fatal(err)
 		}
