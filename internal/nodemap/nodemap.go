@@ -25,6 +25,7 @@ package nodemap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -157,17 +158,30 @@ func FromSpec(spec miroirv1alpha1.MiroirNodeSpec) Node {
 	return n
 }
 
+// ConflictKey canonicalizes a replication address for conflict grouping:
+// parseable IPs collapse to their canonical spelling (IPv6 zero-compression),
+// anything else — reachable only through a stale CRD or a writer bypassing
+// the isIP rule — groups on the raw string, so duplicated junk still
+// conflicts instead of slipping into persisted replica specs. Empty means
+// no address (InternalIP fallback) and never conflicts.
+func ConflictKey(address string) string {
+	if ip := net.ParseIP(address); ip != nil {
+		return ip.String()
+	}
+	return address
+}
+
 // FromNodes folds MiroirNode CRs into the placement Map. Nodes sharing a
-// replication address are all marked AddressConflict — keyed by the parsed
-// form so differently written but equal IPs (IPv6 zero-compression) still
+// replication address are all marked AddressConflict — keyed by ConflictKey
+// so differently written but equal IPs (IPv6 zero-compression) still
 // collide.
 func FromNodes(items []miroirv1alpha1.MiroirNode) Map {
 	m := make(Map, len(items))
 	owners := map[string][]string{}
 	for i := range items {
 		node := FromSpec(items[i].Spec)
-		if ip := net.ParseIP(node.Address); ip != nil {
-			owners[ip.String()] = append(owners[ip.String()], items[i].Name)
+		if key := ConflictKey(node.Address); key != "" {
+			owners[key] = append(owners[key], items[i].Name)
 		}
 		m[items[i].Name] = node
 	}
@@ -272,6 +286,12 @@ func (p Pool) ZFSVolBlockSizeBytes() int64 {
 	return zfsVolBlockSizes[p.ZFSVolBlockSize]
 }
 
+// ErrAddressConflict marks an address resolution refused because the node
+// shares its replication address with another MiroirNode. Callers that
+// distinguish unfixable-by-retry failures (membership's errBadPlacement)
+// test for it with errors.Is.
+var ErrAddressConflict = errors.New("replication address conflict")
+
 // ReplicationAddress resolves a node's DRBD replication endpoint: the node
 // map's address override when set (dedicated storage NIC/VLAN), otherwise
 // the Node object's InternalIP. An override needs no Node lookup, so it
@@ -280,8 +300,8 @@ func (p Pool) ZFSVolBlockSizeBytes() int64 {
 // would outlive the misconfiguration.
 func (m Map) ReplicationAddress(ctx context.Context, r client.Reader, name string) (string, error) {
 	if m[name].AddressConflict {
-		return "", fmt.Errorf("node %s shares its replication address %s with another MiroirNode; resolve the conflict first",
-			name, m[name].Address)
+		return "", fmt.Errorf("%w: node %s shares its replication address %s with another MiroirNode; resolve the conflict first",
+			ErrAddressConflict, name, m[name].Address)
 	}
 	if a := m[name].Address; a != "" {
 		return a, nil

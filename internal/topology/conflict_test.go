@@ -94,6 +94,21 @@ func TestConflictConditionRaisedAndNamesPeer(t *testing.T) {
 	}
 }
 
+// The fold conflicts on the parsed address; the peer list must group the
+// same way, or equal-but-differently-spelled IPv6 addresses raise a
+// condition naming no peer.
+func TestConflictConditionNamesPeerAcrossIPv6Spellings(t *testing.T) {
+	c := newClient(t, addrNode(nodeA, "fd00:1::2"), addrNode(nodeB, "fd00:0001:0:0::2"))
+	n := reconcile(t, c, nodeA)
+	cond := meta.FindStatusCondition(n.Status.Conditions, ConditionAddressConflict)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected AddressConflict=True, got %+v", cond)
+	}
+	if !strings.Contains(cond.Message, nodeB) {
+		t.Fatalf("the message must name the differently spelled peer, got %q", cond.Message)
+	}
+}
+
 func TestConflictConditionClearsWhenResolved(t *testing.T) {
 	a, b := addrNode(nodeA, "10.0.100.1"), addrNode(nodeB, "10.0.100.1")
 	c := newClient(t, a, b)

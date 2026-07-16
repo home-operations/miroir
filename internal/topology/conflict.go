@@ -84,9 +84,13 @@ func (r *ConflictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		Message: "replication address is unique (or unset)",
 	}
 	if topo[node.Name].AddressConflict {
+		// Group by the same canonical key the fold conflicts on: a raw
+		// string compare would miss equal-but-differently-spelled IPv6
+		// addresses and name no peer.
+		key := nodemap.ConflictKey(node.Spec.Address)
 		var peers []string
 		for name, n := range topo {
-			if name != node.Name && n.AddressConflict && n.Address == node.Spec.Address {
+			if name != node.Name && n.AddressConflict && nodemap.ConflictKey(n.Address) == key {
 				peers = append(peers, name)
 			}
 		}

@@ -21,6 +21,7 @@ import (
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -339,6 +340,33 @@ var _ = Describe("MiroirNode CEL validation", func() {
 		node := minimalNode("min-vg-exists", miroirv1alpha1.MiroirNodePool{
 			Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin, LVMThin: &miroirv1alpha1.LVMThinPool{},
 		})
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, node)).To(Succeed()) })
+	})
+
+	It("accepts explicit empty strings for optional fields (0.10 values compatibility)", func() {
+		// The chart passes values through verbatim, and 0.10 values files
+		// carry explicit empty strings the agent has always defaulted. The
+		// typed client's omitempty would drop them, so this speaks raw
+		// JSON like Helm does. The chart layer must never reject a
+		// topology the node code accepts.
+		node := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "miroir.home-operations.com/v1alpha1",
+			"kind":       "MiroirNode",
+			"metadata":   map[string]any{"name": "min-empty-strings"},
+			"spec": map[string]any{
+				"address": "",
+				"pools": []any{map[string]any{
+					"name":    poolDefault,
+					"backend": "zfs",
+					"zfs": map[string]any{
+						"dataset":      datasetTank,
+						"compression":  "",
+						"volBlockSize": "",
+					},
+				}},
+			},
+		}}
 		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, node)).To(Succeed()) })
 	})

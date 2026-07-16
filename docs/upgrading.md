@@ -20,10 +20,13 @@ are Helm values edits — neither moves data nor needs volume downtime.
 
 The chart ships its CRDs in `crds/`, and Helm applies that directory **only on
 install, never on upgrade**. An upgraded chart running against last release's
-CRDs fails in a quiet way: the API server prunes spec fields the old schema
-does not know, the apply succeeds, and the controller or agent then complains
-about configuration you can plainly see in your values. So every upgrade
-starts with the CRDs.
+CRDs would fail in a quiet way: the API server prunes spec fields the old
+schema does not know, the apply succeeds, and your pools run without the
+configuration you can plainly see in your values. To keep that failure loud,
+the controller and agent verify at startup that the installed MiroirNode CRD
+matches the release they were built with (a schema-revision annotation on the
+CRD) and refuse to run behind it, with an error naming this page. So every
+upgrade starts with the CRDs.
 
 **Flux** can do it from the chart automatically, but not by default;
 `upgrade.crds` must be set (`install.crds: Create` is already the default):
@@ -76,9 +79,10 @@ kubectl apply --server-side -f -` for plain Helm.
 
 Doing this first is what makes the rest of the upgrade safe: the new schema
 refuses the partial topology writes 0.10 agents make while the rollout is in
-flight (see step 4). Skip it and the old schema instead prunes the new pool
-fields from the chart's apply — quietly, with the agents then failing on
-configuration you can plainly see in your values.
+flight (see step 4). Skip it and the old schema would instead prune the new
+pool fields from the chart's apply; the 0.11 controller and agents detect the
+stale CRD at startup and exit with an error pointing back here rather than
+run on a pruned topology.
 
 ///
 

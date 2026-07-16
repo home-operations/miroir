@@ -4,6 +4,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// The schema-revision annotation stamps the generated MiroirNode CRD with
+// the spec shape this build was compiled against. Helm applies crds/ only
+// on install, never on upgrade, and an out-of-date CRD fails silently: the
+// API server prunes the spec fields the old schema does not know. The
+// controller and agent compare the served CRD's annotation against
+// MiroirNodeSchemaRevision at startup and refuse to run on a mismatch.
+// Bump the revision (constant AND the +kubebuilder:metadata marker on
+// MiroirNode below) whenever MiroirNodeSpec's schema changes shape.
+const (
+	SchemaRevisionAnnotation = "miroir.home-operations.com/schema-revision"
+	MiroirNodeSchemaRevision = "1"
+	MiroirNodeCRDName        = "miroirnodes.miroir.home-operations.com"
+)
+
 // LVMThinPool configures an lvmthin pool: a dm-thin pool on the LVM VG
 // vg-miroir (default pool) or vg-miroir-<pool>.
 type LVMThinPool struct {
@@ -30,15 +44,19 @@ type ZFSPool struct {
 	Dataset string `json:"dataset"`
 	// Compression is the compression property for newly created zvols;
 	// "inherit" uses the parent dataset's setting. Existing zvols are not
-	// mutated, and snapshot clones retain their source properties.
+	// mutated, and snapshot clones retain their source properties. Empty
+	// means the default (lz4) — 0.10 values files carry explicit empty
+	// strings, and the agent has always defaulted them.
 	// +optional
 	// +kubebuilder:default=lz4
-	// +kubebuilder:validation:Pattern=`^(inherit|on|off|lz4|lzjb|zle|gzip(-[1-9])?|zstd(-([1-9]|1[0-9]))?|zstd-fast(-(10|[1-9]|[2-9]0|100|500|1000))?)$`
+	// +kubebuilder:validation:Pattern=`^(|inherit|on|off|lz4|lzjb|zle|gzip(-[1-9])?|zstd(-([1-9]|1[0-9]))?|zstd-fast(-(10|[1-9]|[2-9]0|100|500|1000))?)$`
 	Compression string `json:"compression,omitempty"`
 	// VolBlockSize is the volblocksize property for newly created zvols.
+	// Empty means the default (4K), for the same 0.10 compatibility reason
+	// as Compression.
 	// +optional
 	// +kubebuilder:default="4K"
-	// +kubebuilder:validation:Enum="4K";"8K";"16K";"32K";"64K";"128K"
+	// +kubebuilder:validation:Enum="";"4K";"8K";"16K";"32K";"64K";"128K"
 	VolBlockSize string `json:"volBlockSize,omitempty"`
 }
 
@@ -93,10 +111,11 @@ type MiroirNodeSpec struct {
 	// Address optionally pins the node's DRBD replication endpoint to a
 	// dedicated storage NIC/VLAN IP (IPv4 or IPv6); empty falls back to
 	// the node's InternalIP. It applies to volumes created afterwards —
-	// existing volumes keep the address persisted at creation.
+	// existing volumes keep the address persisted at creation. An explicit
+	// empty string means unset (0.10 values files carry them).
 	// +optional
 	// +kubebuilder:validation:MaxLength=45
-	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="address must be a plain IPv4 or IPv6 address"
+	// +kubebuilder:validation:XValidation:rule="self == '' || isIP(self)",message="address must be a plain IPv4 or IPv6 address"
 	Address string `json:"address,omitempty"`
 	// AutoEvict, when explicitly false, exempts this node from auto-evict:
 	// its legs are never re-placed while its heartbeat is stale (a node
@@ -209,6 +228,7 @@ func (s MiroirNodeStatus) Pool(name string) *MiroirNodePoolStatus {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=min
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:annotations=miroir.home-operations.com/schema-revision=1
 // +kubebuilder:printcolumn:name="Pools",type=string,JSONPath=`.spec.pools[*].name`
 // +kubebuilder:printcolumn:name="Zone",type=string,JSONPath=`.spec.zone`
 // +kubebuilder:printcolumn:name="Capacity",type=string,JSONPath=`.status.pools[*].capacityBytes`

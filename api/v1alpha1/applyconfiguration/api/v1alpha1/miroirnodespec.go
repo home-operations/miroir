@@ -33,7 +33,8 @@ type MiroirNodeSpecApplyConfiguration struct {
 	// Address optionally pins the node's DRBD replication endpoint to a
 	// dedicated storage NIC/VLAN IP (IPv4 or IPv6); empty falls back to
 	// the node's InternalIP. It applies to volumes created afterwards —
-	// existing volumes keep the address persisted at creation.
+	// existing volumes keep the address persisted at creation. An explicit
+	// empty string means unset (0.10 values files carry them).
 	Address *string `json:"address,omitempty"`
 	// AutoEvict, when explicitly false, exempts this node from auto-evict:
 	// its legs are never re-placed while its heartbeat is stale (a node

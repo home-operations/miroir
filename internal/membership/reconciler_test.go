@@ -289,6 +289,30 @@ func TestUnknownNodeLeavesSpecUntouched(t *testing.T) {
 	}
 }
 
+// An address conflict is a topology misconfiguration, not a transient:
+// Reconcile must stop without an error (no backoff retries) — the
+// MiroirNode watch re-triggers it when the operator resolves the clash.
+func TestConflictedNodeStopsWithoutRequeue(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(replicatedVol()).
+		Build()
+	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+		nodeC: {
+			Address:         "10.0.100.9",
+			AddressConflict: true,
+			Pools:           map[string]nodemap.Pool{poolDefault: {Backend: miroirv1alpha1.BackendZFS}},
+		},
+	}}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatalf("an address conflict must not requeue with backoff, got %v", err)
+	}
+	if got := get(t, r, volPvc1).Spec.Replicas[2]; got.Address != "" {
+		t.Fatalf("entry must stay incomplete: %+v", got)
+	}
+}
+
 // A replica on a real storage node whose Node object is not ready yet
 // (unregistered, or InternalIP not posted) is transient: Reconcile must
 // return an error so it requeues. A Node gaining its InternalIP does not

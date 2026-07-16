@@ -29,9 +29,13 @@ type ZFSPoolApplyConfiguration struct {
 	Dataset *string `json:"dataset,omitempty"`
 	// Compression is the compression property for newly created zvols;
 	// "inherit" uses the parent dataset's setting. Existing zvols are not
-	// mutated, and snapshot clones retain their source properties.
+	// mutated, and snapshot clones retain their source properties. Empty
+	// means the default (lz4) — 0.10 values files carry explicit empty
+	// strings, and the agent has always defaulted them.
 	Compression *string `json:"compression,omitempty"`
 	// VolBlockSize is the volblocksize property for newly created zvols.
+	// Empty means the default (4K), for the same 0.10 compatibility reason
+	// as Compression.
 	VolBlockSize *string `json:"volBlockSize,omitempty"`
 }
 

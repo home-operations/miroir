@@ -24,6 +24,57 @@ tests:
       - failedTemplate:
           errorMessagePattern: "nodes.node-a: the node must be declared under `spec:`"
 
+  - it: fails with the migration pointer on a null node entry (no raw nil-pointer error)
+    set:
+      nodes:
+        node-a:
+    asserts:
+      - failedTemplate:
+          errorMessagePattern: "nodes.node-a: the node must be declared under `spec:`"
+
+  - it: fails on an unknown spec field instead of letting the API server prune it
+    set:
+      nodes:
+        node-a:
+          spec:
+            zne: rack-1
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin: {}
+    asserts:
+      - failedTemplate:
+          errorMessage: "nodes.node-a.spec.zne: unknown field (the API server would silently drop it); valid fields: zone, address, autoEvict, pools"
+
+  - it: fails on an unknown pool field
+    set:
+      nodes:
+        node-a:
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin: {}
+                device: /dev/sdb
+    asserts:
+      - failedTemplate:
+          errorMessage: "nodes.node-a.spec.pools[0].device: unknown field (the API server would silently drop it); valid fields: name, backend, lvmthin, zfs, loopfile"
+
+  - it: fails on an unknown backend-block field (the 0.10 thinPoolSize spelling)
+    set:
+      nodes:
+        node-a:
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/sdb
+                  thinPoolSize: 400g
+    asserts:
+      - failedTemplate:
+          errorMessage: "nodes.node-a.spec.pools[0].lvmthin.thinPoolSize: unknown field (the API server would silently drop it); valid fields: device, poolSize"
+
   - it: renders one cluster-scoped MiroirNode per entry, spec verbatim
     set:
       nodes:
@@ -106,7 +157,7 @@ tests:
           path: spec.pools[0].zfs.compression
           value: inherit
 
-  - it: passes unknown spec fields through untouched (the CRD is the validator)
+  - it: passes optional spec fields through untouched (the CRD validates values)
     set:
       nodes:
         node-a:

@@ -21,8 +21,9 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
 ## Upgrading
 
 Helm applies the chart's `crds/` directory only on install, never on
-upgrade, and a stale CRD schema silently prunes newer spec fields. Keep
-the CRDs in step with the chart on every upgrade — Flux users must set
+upgrade, and a stale CRD schema silently prunes newer spec fields — so the
+controller and agents refuse to start behind one. Keep the CRDs in step
+with the chart on every upgrade — Flux users must set
 `upgrade.crds: CreateReplace` on the HelmRelease (the default is Skip);
 plain Helm users apply them by hand first:
 

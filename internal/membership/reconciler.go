@@ -169,6 +169,12 @@ func (r *Reconciler) complete(ctx context.Context, nodes nodemap.Map, vol *miroi
 	}
 	addr, err := nodes.ReplicationAddress(ctx, r.Client, rep.Node)
 	if err != nil {
+		// An address conflict is a topology misconfiguration, not a
+		// transient: like unknown-node, only a topology fix can clear it,
+		// and that fix re-triggers this controller via the MiroirNode watch.
+		if errors.Is(err, nodemap.ErrAddressConflict) {
+			return fmt.Errorf("%w: %w", errBadPlacement, err)
+		}
 		return err
 	}
 	id := nextNodeID(vol, rep.Node)
@@ -205,6 +211,9 @@ func (r *Reconciler) completeClient(ctx context.Context, nodes nodemap.Map, vol 
 	}
 	addr, err := nodes.ReplicationAddress(ctx, r.Client, cl.Node)
 	if err != nil {
+		if errors.Is(err, nodemap.ErrAddressConflict) {
+			return fmt.Errorf("%w: %w", errBadPlacement, err)
+		}
 		return err
 	}
 	cl.NodeID = nextNodeID(vol, cl.Node)

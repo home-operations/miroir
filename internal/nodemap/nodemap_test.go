@@ -17,6 +17,7 @@ limitations under the License.
 package nodemap
 
 import (
+	"errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -119,8 +120,40 @@ func TestFromNodesMarksAddressConflicts(t *testing.T) {
 	if got := m.PickSpare(map[string]bool{nodeC: true}, nil, nil); got != "" {
 		t.Fatalf("PickSpare must skip conflicted nodes, picked %q", got)
 	}
-	if _, err := m.ReplicationAddress(t.Context(), nil, nodeA); err == nil {
-		t.Fatal("ReplicationAddress must refuse a conflicted node")
+	if _, err := m.ReplicationAddress(t.Context(), nil, nodeA); !errors.Is(err, ErrAddressConflict) {
+		t.Fatalf("ReplicationAddress must refuse a conflicted node with ErrAddressConflict, got %v", err)
+	}
+}
+
+// A non-IP address string is reachable only through a stale CRD (no isIP
+// rule) or a writer bypassing it; duplicated junk must still conflict so an
+// ambiguous endpoint never reaches persisted replica specs, and empty
+// addresses (the InternalIP fallback) must never conflict with each other.
+func TestFromNodesConflictsNonIPDuplicates(t *testing.T) {
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
+	m := FromNodes([]miroirv1alpha1.MiroirNode{
+		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Address: "storage-vlan", Pools: pools}),
+		miroirNode(nodeB, miroirv1alpha1.MiroirNodeSpec{Address: "storage-vlan", Pools: pools}),
+		miroirNode(nodeC, miroirv1alpha1.MiroirNodeSpec{Pools: pools}),
+	})
+	if !m[nodeA].AddressConflict || !m[nodeB].AddressConflict {
+		t.Fatalf("duplicated non-IP addresses must be conflicted: %+v", m)
+	}
+	if m[nodeC].AddressConflict {
+		t.Fatal("an empty address must never be conflicted")
+	}
+}
+
+func TestFromNodesEmptyAddressesNeverConflict(t *testing.T) {
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
+	m := FromNodes([]miroirv1alpha1.MiroirNode{
+		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Pools: pools}),
+		miroirNode(nodeB, miroirv1alpha1.MiroirNodeSpec{Pools: pools}),
+	})
+	if m[nodeA].AddressConflict || m[nodeB].AddressConflict {
+		t.Fatalf("nodes on the InternalIP fallback share no explicit address: %+v", m)
 	}
 }
 
