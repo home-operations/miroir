@@ -22,10 +22,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -56,7 +59,9 @@ func Serve(ctx context.Context, socketPath string, identity csi.IdentityServer, 
 		return fmt.Errorf("listen on %s: %w", socketPath, err)
 	}
 
-	srv := grpc.NewServer(grpc.UnaryInterceptor(logInterceptor))
+	// recover is outermost so it catches a panic from any handler (and from
+	// logInterceptor); grpc-go does not recover handler panics on its own.
+	srv := grpc.NewServer(grpc.ChainUnaryInterceptor(recoverInterceptor, logInterceptor))
 	if identity != nil {
 		csi.RegisterIdentityServer(srv, identity)
 	}
@@ -83,6 +88,25 @@ func Serve(ctx context.Context, socketPath string, identity csi.IdentityServer, 
 	}()
 	log.Info("serving CSI", "socket", socketPath)
 	return srv.Serve(lis)
+}
+
+// recoverInterceptor turns a panic in a CSI handler into a codes.Internal
+// error instead of letting it crash the process. grpc-go does not recover
+// handler panics, and this gRPC server runs outside the controller-runtime
+// manager (whose reconcilers get RecoverPanic by default), so without it a
+// panic in any RPC crashes the whole controller (provisioning), or on the
+// agent the node's CSI socket and every stage/publish there, until the pod
+// restarts. The stack is logged so the crash that would have happened stays
+// diagnosable.
+func recoverInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error(fmt.Errorf("%v", r), "recovered panic in CSI handler",
+				"method", info.FullMethod, "stack", string(debug.Stack()))
+			err = status.Errorf(codes.Internal, "internal error handling %s", info.FullMethod)
+		}
+	}()
+	return handler(ctx, req)
 }
 
 func logInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
