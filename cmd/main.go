@@ -37,6 +37,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -174,13 +175,26 @@ func fetchMiroirNode(r client.Reader, name string, budget time.Duration) (*miroi
 // objects). In controller mode the export reconciler manages gateway
 // Deployments and Services only in its own namespace, so scope those
 // informers there: Owns() otherwise lists them cluster-wide, which the
-// namespaced Role neither grants nor should. Other types stay cluster-scoped.
-func cacheOptions(mode, namespace string) cache.Options {
+// namespaced Role neither grants nor should. In agent mode the MiroirNode
+// informer is pinned to the node's own object — no agent consumer reads
+// another node's (the topology watcher and poolstats are self-only), and
+// an unscoped watch would deliver every node's per-minute status heartbeat
+// to every agent: N cached objects and N events/min per agent, N² across
+// the cluster, for reconciles a name predicate then discards. Other types
+// stay cluster-scoped.
+func cacheOptions(mode, namespace, nodeName string) cache.Options {
 	opts := cache.Options{DefaultTransform: cache.TransformStripManagedFields()}
 	if mode == modeController && namespace != "" {
 		opts.ByObject = map[client.Object]cache.ByObject{
 			&appsv1.Deployment{}: {Namespaces: map[string]cache.Config{namespace: {}}},
 			&corev1.Service{}:    {Namespaces: map[string]cache.Config{namespace: {}}},
+		}
+	}
+	if mode == "agent" && nodeName != "" {
+		opts.ByObject = map[client.Object]cache.ByObject{
+			&miroirv1alpha1.MiroirNode{}: {
+				Field: fields.OneTermEqualSelector("metadata.name", nodeName),
+			},
 		}
 	}
 	return opts
@@ -433,7 +447,7 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: metricsAddr},
-		Cache:   cacheOptions(mode, podNamespace),
+		Cache:   cacheOptions(mode, podNamespace, nodeName),
 		// The dedicated health-probe server is disabled; the probes are
 		// co-hosted on the (plain HTTP) metrics listener so each workload
 		// exposes a single operational port — the agent runs hostNetwork,
