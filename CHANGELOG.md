@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.3](https://github.com/home-operations/miroir/compare/0.10.2...0.10.3) (2026-07-16)
+
+
+### Features
+
+* **membership:** auto-evict legs of a permanently dead node ([#216](https://github.com/home-operations/miroir/issues/216)) ([5b52529](https://github.com/home-operations/miroir/commit/5b52529f59d216d0e7abb20fd69845759f695e84))
+
+
+### Bug Fixes
+
+* **agent:** bound busy teardown retries and park impossible restores (issue [#195](https://github.com/home-operations/miroir/issues/195)) ([#219](https://github.com/home-operations/miroir/issues/219)) ([45bd16a](https://github.com/home-operations/miroir/commit/45bd16aae9da50045f2f86d1e2f1de1a81ad832b))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool aqua:astral-sh/uv (0.11.28 → 0.11.29) ([#217](https://github.com/home-operations/miroir/issues/217)) ([03d8c8e](https://github.com/home-operations/miroir/commit/03d8c8e773198d4821a9c0a2f944957265ac91a6))
+
 ## [0.10.2](https://github.com/home-operations/miroir/compare/0.10.1...0.10.2) (2026-07-15)
 
 
