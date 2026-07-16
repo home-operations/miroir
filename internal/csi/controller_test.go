@@ -1094,6 +1094,39 @@ func TestPickNodeNoStorageNodes(t *testing.T) {
 	}
 }
 
+// Nodes excluded by an address conflict still carry the pool; the refusal
+// must name the conflict instead of blaming pool declarations the operator
+// would find correct.
+func TestCreateVolumeRefusalNamesAddressConflict(t *testing.T) {
+	s := newScheme(t)
+	conflicted := func(pool nodemap.Pool) nodemap.Node {
+		n := storageNode(pool)
+		n.Address, n.AddressConflict = "10.0.100.9", true
+		return n
+	}
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build(),
+		Nodes: nodemap.Map{
+			nodeA: conflicted(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+			nodeB: conflicted(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+		},
+	}
+
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: volCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+	})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("expected RESOURCE_EXHAUSTED, got %v", err)
+	}
+	if msg := status.Convert(err).Message(); !strings.Contains(msg, "address conflict") ||
+		!strings.Contains(msg, "2 carrying it are excluded") {
+		t.Fatalf("the refusal must name the address-conflict exclusion, got %q", msg)
+	}
+}
+
 func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
