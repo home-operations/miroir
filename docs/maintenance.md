@@ -5,15 +5,17 @@ Upgrading or rebooting nodes one at a time is safe for the data:
 `last-man-standing` cannot split-brain either. Two rules keep it
 non-disruptive as well.
 
-**Wait for Ready between nodes.** After a node rejoins, its legs
-resync from the surviving replicas and the affected volumes read
-`Degraded` until that finishes. Draining the next node inside that
-window takes the only UpToDate copy out of service: pods using those
-volumes cannot start anywhere, the RWX gateway has no healthy replica node to fail over
-to, and `freeze` volumes stop serving writes. No data is ever lost
-(DRBD refuses to serve stale legs), but every replicated volume goes
-unavailable until the drained node returns. Gate the loop on every
-volume being Ready again:
+/// warning | Wait for Ready between nodes
+
+After a node rejoins, its legs resync from the surviving replicas and
+the affected volumes read `Degraded` until that finishes. Draining the
+next node inside that window takes the only UpToDate copy out of
+service: pods using those volumes cannot start anywhere, the RWX
+gateway has no healthy replica node to fail over to, and `freeze`
+volumes stop serving writes. No data is ever lost (DRBD refuses to
+serve stale legs), but every replicated volume goes unavailable until
+the drained node returns. Gate the loop on every volume being Ready
+again:
 
 ```bash
 kubectl wait miroirvolumes --all \
@@ -23,12 +25,17 @@ kubectl wait miroirvolumes --all \
 `miroir_volume_resync_ratio` shows progress, and the
 [starter alerts](monitoring.md) flag sustained degradation.
 
-**Cordon before rebooting.** The agent releases its Secondary DRBD
-backings at shutdown only when the node is cordoned (the gate exists
-so routine pod restarts do not churn replication). `kubectl drain`
-and `talosctl upgrade` cordon for you; a bare `reboot` on a
-Debian/Ubuntu node does not, and risks the pool-export wedge the
-[Requirements](requirements.md) page warns about.
+///
+
+/// warning | Cordon before rebooting
+
+The agent releases its Secondary DRBD backings at shutdown only when
+the node is cordoned (the gate keeps routine pod restarts from churning
+replication). `kubectl drain` and `talosctl upgrade` cordon for you; a
+bare `reboot` on a Debian/Ubuntu node does not, and risks the
+pool-export wedge the [Requirements](requirements.md) page warns about.
+
+///
 
 The per-node loop is therefore: cordon and drain, upgrade or reboot,
 wait for the node to rejoin, wait for Ready, uncordon, next node.

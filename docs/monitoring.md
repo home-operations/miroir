@@ -1,18 +1,18 @@
 # Monitoring
 
-Volume health in miroir is reported per node: each agent exports
+Volume health in miroir is reported per node. Each agent exports
 what its own leg of every volume sees, so a problem shows up as a
-metric on the node that has it (and the controller adds the few
+metric on the node that has it. The controller adds the few
 cluster-level signals the agents can't know, like RWX gateway
-health).
+health.
 
 `monitoring.podMonitor.enabled: true` creates a Prometheus Operator
 PodMonitor scraping the controller **and every agent** on their
 `metrics` ports (the per-volume gauges are exported by the agent on
 each storage node; a `node` label is added to every series). The
 diskful per-volume gauges also carry a `pool` label naming the pool
-backing that node's leg — pools are per-node, so two legs of one
-volume can report different pools — which lets you scope volume
+backing that node's leg. Pools are per-node, so two legs of one
+volume can report different pools, which lets you scope volume
 health to a pool (the shipped dashboard's `pool` variable does
 exactly that). `miroir_volume_diskless_primary` and
 `miroir_volume_wedged` are the exceptions: a diskless leg holds no
@@ -40,12 +40,12 @@ Each agent additionally exports its pool capacities
 (`miroir_pool_capacity_bytes` / `miroir_pool_allocated_bytes` /
 `miroir_pool_meta_used_ratio`, one series per named pool via the
 `pool` label), the same sample that feeds capacity-aware placement
-and the `PoolUsageHigh` condition, so pool exhaustion is alertable —
-and two pools on one node stay distinguishable — not just an Event. It also exports
-`miroir_node_drbd_kernel_info` (always 1, `version` label): the DRBD
-kernel module version probed at startup, from client-only nodes too
-(which have no `MiroirNode` status). Query it for fleet version skew
-before a release raises the kernel floor.
+and the `PoolUsageHigh` condition. Pool exhaustion is alertable,
+and two pools on one node stay distinguishable, not just an Event.
+It also exports `miroir_node_drbd_kernel_info` (always 1, `version`
+label): the DRBD kernel module version probed at startup, from
+client-only nodes too (which have no `MiroirNode` status). Query it
+for fleet version skew before a release raises the kernel floor.
 
 For RWX volumes the **controller** exports `miroir_export_ready`: 1
 while the volume's NFS gateway is serving (gateway pod available,
@@ -59,7 +59,7 @@ Each **gateway** pod additionally serves its own metrics endpoint
 probe's NFS NULL call against the pod's local ganesha. The same
 probe backs the pod's `/healthz`, so a ganesha that still accepts
 TCP connections but has stopped answering NFS fails liveness and is
-restarted — previously that failure mode was invisible.
+restarted. Previously that failure mode was invisible.
 
 Prometheus is not the only surface. Volume health also flows through
 the CSI `VolumeCondition`: enable `sidecars.healthMonitor.enabled`
@@ -70,17 +70,19 @@ on their PVCs (`kubectl describe pvc`).
 
 `monitoring.prometheusRule.enabled: true` ships starter alerts for
 all of the above (split-brain, quorum lost, stranded barrier, disk
-failed, a wedged teardown, degraded replication, sustained out-of-sync, an unavailable
-RWX export, a stale verify schedule, pool and thin-metadata usage,
-and a down agent — a node whose agent stops answering scrapes loses
-every `miroir_*` series, so none of the per-volume alerts can fire
-for it; the kernel-floor refusal to start looks exactly like this),
-and `monitoring.dashboards.enabled: true` installs a Grafana
+failed, a wedged teardown, degraded replication, sustained
+out-of-sync, an unavailable RWX export, a stale verify schedule,
+pool and thin-metadata usage, and a down agent). A node whose agent
+stops answering scrapes loses every `miroir_*` series, so none of
+its per-volume alerts can fire; the kernel-floor refusal to start
+looks exactly like this.
+`monitoring.dashboards.enabled: true` installs a Grafana
 dashboard, either a sidecar-labelled ConfigMap or a grafana-operator
 `GrafanaDashboard` CR via `monitoring.dashboards.grafanaOperator`.
 
 The per-volume alerts inherit the `pool` label and name the pool in
 their summaries, so Alertmanager routes and silences can target a
-single pool (the wedged-teardown alert is the exception: a pool can
-be unknowable mid-teardown, so its metric carries only `volume`). The dashboard's `pool` variable defaults to **All**;
-narrowing it filters the volume-health and pool panels together.
+single pool. The wedged-teardown alert is the exception: a pool can
+be unknowable mid-teardown, so its metric carries only `volume`.
+The dashboard's `pool` variable defaults to **All**; narrowing it
+filters the volume-health and pool panels together.

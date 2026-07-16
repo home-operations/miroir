@@ -2,7 +2,7 @@
 
 Replicated volumes are 2-way synchronous (DRBD "protocol C"): a
 write completes only once both legs have it on disk, so the copies
-are identical at every instant — not eventually.
+are identical at every instant, not eventually.
 
 The hard problem in any replicated system is not a dead node; it is
 a **partition**: both nodes are alive but can't see each other. If

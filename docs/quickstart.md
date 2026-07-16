@@ -5,10 +5,10 @@ node shutdown), then:
 
 ## 1. Pick a storage layout
 
-`nodes` declares which nodes hold storage and how — each entry is
+`nodes` declares which nodes hold storage and how. Each entry is
 rendered as a MiroirNode custom resource (its `spec` passed through
 verbatim and validated by the CRD), listing named storage `pools`
-(one is enough; call it `default`);
+(one is enough; call it `default`).
 `storageClasses` declares the classes to create (`replicas: 1` is
 node-local, `replicas: 2` is DRBD-replicated). Pods can mount miroir
 volumes from any schedulable node; only nodes in the map hold data.
@@ -85,7 +85,7 @@ storageClasses:
 
 **Two tiers per node.** A pool name identifies the same tier across
 nodes, and a StorageClass selects one with `pool` (classes that name
-none use `default`). Volumes never span pools — every replica of a
+none use `default`). Volumes never span pools: every replica of a
 volume lands in the class's pool on its node.
 
 ```yaml
@@ -159,8 +159,8 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
 The chart deploys one `miroir-controller` Deployment, a
 `miroir-agent` DaemonSet on every schedulable node, and one
 MiroirNode object per `nodes` entry (`kubectl get miroirnodes`).
-Each agent provisions its pools at startup with idempotent setup —
-existing pools are reused — and restarts itself to re-run it when
+Each agent provisions its pools at startup with idempotent setup
+(existing pools are reused), and restarts itself to re-run it when
 its MiroirNode's pool spec changes.
 
 ## 3. Claim a volume
@@ -221,7 +221,7 @@ spec:
 
 For replicated volumes both legs get a copy-on-write snapshot while
 DRBD briefly holds writes (a "write barrier"), so the two snapshots
-are taken at the same instant and are consistent with each other —
+are taken at the same instant and are consistent with each other,
 not whichever leg happened to finish first.
 
 ## 5. Expand online

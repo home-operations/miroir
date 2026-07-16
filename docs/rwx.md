@@ -7,7 +7,7 @@ pods on many nodes read and write it at once, like CephFS.
 RWX is **opt-in**: set `gateway.enabled: true` in Helm values first.
 It is off by default because gateway pods run privileged in the
 release namespace and any user who can create a PVC can cause one to
-be spawned — enabling the capability is an explicit operator
+be spawned. Enabling the capability is an explicit operator
 decision. While disabled, an RWX PVC is rejected at provision time
 with a clear message on the PVC's events; enabling the gateway lets
 a pending RWX PVC provision on the next retry.
@@ -35,6 +35,18 @@ gateway is the only writer, DRBD stays in its normal single-writer
 (single-Primary) mode with all its safety properties intact: miroir
 never enables dual-primary, and there is no cluster filesystem.
 
+/// note | Failover takes tens of seconds, not milliseconds
+
+If the gateway's node dies, the Deployment reschedules the gateway onto
+a surviving replica node, and NFS clients (hard mounts) reconnect
+through the same Service IP. Expect **tens of seconds**: eviction from
+the dead node, DRBD promotion once quorum releases the old Primary, and
+the NFSv4 grace period. Client I/O stalls (never errors) across the
+window. This fits the homelab RWX cases (media libraries, shared
+config), not a low-latency-failover HA-NAS.
+
+///
+
 Things worth knowing:
 
 - **RWX requires a replicated class** (`replicas ≥ 2`). The gateway
@@ -44,14 +56,6 @@ Things worth knowing:
 - **Consistency is NFS close-to-open**, not shared-memory: a writer's
   changes are visible on other nodes once it closes the file (or
   `fsync`s).
-- **Failover.** If the gateway's node dies, the Deployment
-  reschedules the gateway onto a surviving replica node and NFS
-  clients (hard mounts) reconnect through the same Service IP. Expect
-  **tens of seconds**: eviction from the dead node, DRBD promotion
-  once quorum releases the old Primary, and the NFSv4 grace period.
-  Client I/O stalls (never errors) across the window. Fine for the
-  homelab RWX cases (media libraries, shared config); not a
-  low-latency-failover HA-NAS.
 - **`freeze` quorum is required** (the default). Under
   `last-man-standing` a partition could leave the old and rescheduled
   gateways both writable; the controller rejects that combination.
