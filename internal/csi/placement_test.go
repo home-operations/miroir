@@ -436,6 +436,52 @@ func TestGetCapacityPerPool(t *testing.T) {
 	}
 }
 
+// A pinned node that carries the pool but is excluded by an address
+// conflict forks like a node without the pool: a remote-access class gets
+// the cluster-wide answer (place() lands the volume elsewhere and the pod
+// attaches through a diskless client leg), a strict class gets zero —
+// matching place()'s refusal.
+func TestGetCapacityConflictedSegment(t *testing.T) {
+	s := newScheme(t)
+	conflicted := storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin})
+	conflicted.Address, conflicted.AddressConflict = "10.0.100.9", true
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeA, 10*gib, 0),
+			miroirNodeObj(nodeB, 10*gib, 0),
+			miroirNodeObj(nodeC, 10*gib, 0),
+		),
+		Nodes: nodemap.Map{
+			nodeA: conflicted,
+			nodeB: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+			nodeC: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+		},
+	}
+
+	req := topologySegment(nodeA)
+	req.Parameters = map[string]string{constants.ParamReplicas: "2"} // remote access defaults on
+	resp, err := c.GetCapacity(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 20*gib {
+		t.Fatalf("a remote-access class must report the cluster answer, got %d", resp.GetAvailableCapacity())
+	}
+
+	req = topologySegment(nodeA)
+	req.Parameters = map[string]string{
+		constants.ParamReplicas:          "2",
+		constants.ParamAllowRemoteAccess: "false",
+	}
+	resp, err = c.GetCapacity(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.GetAvailableCapacity() != 0 {
+		t.Fatalf("a strict class pinned to a conflicted node must report 0, got %d", resp.GetAvailableCapacity())
+	}
+}
+
 // topologyReq mirrors a strict-topology provisioner request: the
 // scheduler-selected node as both requisite and preferred.
 func topologyReq(node string) *csi.TopologyRequirement {

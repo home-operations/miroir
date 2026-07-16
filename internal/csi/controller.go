@@ -1057,16 +1057,19 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 		return bound
 	}
 
-	// Topology-aware provisioner: one segment per call.
+	// Topology-aware provisioner: one segment per call. A node that
+	// carries the pool but is unplaceable forks like one without the pool:
+	// place() never admits it as a candidate, so with remote access the
+	// volume lands elsewhere and without it the request refuses.
 	if seg := req.GetAccessibleTopology().GetSegments(); seg != nil {
 		node := seg[constants.TopologyKey]
-		if _, hasPool := nodes.Pool(node, pool); !hasPool {
+		if _, hasPool := nodes.Pool(node, pool); !hasPool || !nodes.Placeable(node) {
 			if remoteAccess {
 				// Consumers here attach a diskless client leg; the volume
 				// lands wherever place() ranks best.
 				return &csi.GetCapacityResponse{AvailableCapacity: capacityFor("")}, nil
 			}
-			return &csi.GetCapacityResponse{}, nil // no pool here, class pinned to replica nodes
+			return &csi.GetCapacityResponse{}, nil // no placeable pool here, class pinned to replica nodes
 		}
 		return &csi.GetCapacityResponse{AvailableCapacity: capacityFor(node)}, nil
 	}
