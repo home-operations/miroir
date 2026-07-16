@@ -35,7 +35,6 @@ import (
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -82,7 +81,6 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(miroirv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 }
 
 // setupMembership registers the membership reconciler (completes
@@ -167,37 +165,6 @@ func fetchMiroirNode(r client.Reader, name string, budget time.Duration) (*miroi
 		return nil, false, err
 	}
 	return node, true, nil
-}
-
-// verifyMiroirNodeCRD refuses to run against an out-of-date MiroirNode CRD.
-// Helm applies crds/ only on install, never on upgrade, and the failure
-// mode is silent: the API server prunes the spec fields a stale schema does
-// not know, so chart-rendered MiroirNodes lose pools, zone, and address
-// with no error anywhere. The generated CRD carries a schema-revision
-// annotation; a mismatch — or its absence, a pre-revision CRD — means the
-// CRDs were not refreshed alongside the chart, so fail loudly instead.
-func verifyMiroirNodeCRD(r client.Reader, budget time.Duration) {
-	if err := checkMiroirNodeCRD(r, budget); err != nil {
-		setupLog.Error(err, "refusing to start on an out-of-date MiroirNode CRD")
-		os.Exit(1)
-	}
-}
-
-func checkMiroirNodeCRD(r client.Reader, budget time.Duration) error {
-	crd := &apiextensionsv1.CustomResourceDefinition{}
-	err := apiWithRetry(budget, func(ctx context.Context) error {
-		return r.Get(ctx, types.NamespacedName{Name: miroirv1alpha1.MiroirNodeCRDName}, crd)
-	})
-	if err != nil {
-		return fmt.Errorf("read the MiroirNode CRD: %w", err)
-	}
-	if got := crd.Annotations[miroirv1alpha1.SchemaRevisionAnnotation]; got != miroirv1alpha1.MiroirNodeSchemaRevision {
-		return fmt.Errorf("the installed MiroirNode CRD carries schema revision %q, this release needs %q: "+
-			"an old schema silently prunes spec fields, and Helm never applies crds/ on upgrade — "+
-			"apply the chart's CRDs first (see https://miroir.home-operations.com/upgrading/)",
-			got, miroirv1alpha1.MiroirNodeSchemaRevision)
-	}
-	return nil
 }
 
 // cacheOptions builds the manager cache config. SSA-heavy objects grow a
@@ -527,7 +494,6 @@ func main() {
 
 	switch mode {
 	case modeController:
-		verifyMiroirNodeCRD(mgr.GetAPIReader(), apiStartupWait)
 		// The topology is watch-driven: placement and membership fold the
 		// MiroirNode CRs from the cache on every RPC/reconcile, so a
 		// chart-applied topology edit takes effect without a restart.
@@ -568,7 +534,6 @@ func main() {
 			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in agent mode")
 			os.Exit(1)
 		}
-		verifyMiroirNodeCRD(mgr.GetAPIReader(), apiStartupWait)
 		// The DaemonSet's chart-side scope is every schedulable node, but
 		// only storage nodes run agent-backed backends. A node with no
 		// MiroirNode holds no volumes and runs a client-only node service so

@@ -119,15 +119,6 @@ tests:
             apiGroups: ["events.k8s.io"]
             resources: ["events"]
             verbs: ["create", "patch"]
-      # The startup guard reads the MiroirNode CRD's schema revision.
-      - contains:
-          any: true
-          path: rules
-          content:
-            apiGroups: ["apiextensions.k8s.io"]
-            resources: ["customresourcedefinitions"]
-            resourceNames: ["miroirnodes.miroir.home-operations.com"]
-            verbs: ["get"]
 
   - it: agent ClusterRole only updates mirror CRDs and patches their status
     documentIndex: 4
@@ -161,14 +152,6 @@ tests:
             apiGroups: ["events.k8s.io"]
             resources: ["events"]
             verbs: ["create", "patch"]
-      - contains:
-          any: true
-          path: rules
-          content:
-            apiGroups: ["apiextensions.k8s.io"]
-            resources: ["customresourcedefinitions"]
-            resourceNames: ["miroirnodes.miroir.home-operations.com"]
-            verbs: ["get"]
 
   - it: grants Lease access only when leader election is on
     documentIndex: 2

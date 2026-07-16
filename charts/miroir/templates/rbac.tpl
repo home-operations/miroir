@@ -34,12 +34,6 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes/status"]
     verbs: ["get", "update", "patch"]
-  {{- /* The startup guard that refuses to run against a stale MiroirNode
-         CRD (Helm never applies crds/ on upgrade). */}}
-  - apiGroups: ["apiextensions.k8s.io"]
-    resources: ["customresourcedefinitions"]
-    resourceNames: ["miroirnodes.miroir.home-operations.com"]
-    verbs: ["get"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
@@ -136,11 +130,6 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes/status"]
     verbs: ["get", "update", "patch"]
-  {{- /* The same stale-CRD startup guard the controller runs. */}}
-  - apiGroups: ["apiextensions.k8s.io"]
-    resources: ["customresourcedefinitions"]
-    resourceNames: ["miroirnodes.miroir.home-operations.com"]
-    verbs: ["get"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

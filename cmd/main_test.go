@@ -19,20 +19,15 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/yaml"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
@@ -97,80 +92,5 @@ func TestListWithRetryReturnsTerminalErrorImmediately(t *testing.T) {
 		}).Build()
 	if err := listWithRetry(c, &miroirv1alpha1.MiroirVolumeList{}, apiStartupWait); !apierrors.IsUnauthorized(err) {
 		t.Fatalf("want the terminal Unauthorized returned, got %v", err)
-	}
-}
-
-// crdScheme builds a scheme carrying the apiextensions types the CRD guard
-// reads.
-func crdScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	s := runtime.NewScheme()
-	if err := apiextensionsv1.AddToScheme(s); err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
-func miroirNodeCRD(annotations map[string]string) *apiextensionsv1.CustomResourceDefinition {
-	return &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        miroirv1alpha1.MiroirNodeCRDName,
-			Annotations: annotations,
-		},
-	}
-}
-
-func TestCheckMiroirNodeCRD(t *testing.T) {
-	cases := map[string]struct {
-		crd     *apiextensionsv1.CustomResourceDefinition
-		wantErr bool
-	}{
-		"current revision passes": {
-			crd: miroirNodeCRD(map[string]string{
-				miroirv1alpha1.SchemaRevisionAnnotation: miroirv1alpha1.MiroirNodeSchemaRevision,
-			}),
-		},
-		"stale revision refuses": {
-			crd: miroirNodeCRD(map[string]string{
-				miroirv1alpha1.SchemaRevisionAnnotation: "0",
-			}),
-			wantErr: true,
-		},
-		"pre-revision CRD (no annotation) refuses": {
-			crd:     miroirNodeCRD(nil),
-			wantErr: true,
-		},
-		"missing CRD refuses": {wantErr: true},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			b := fake.NewClientBuilder().WithScheme(crdScheme(t))
-			if tc.crd != nil {
-				b = b.WithObjects(tc.crd)
-			}
-			err := checkMiroirNodeCRD(b.Build(), apiStartupWait)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("wantErr=%v, got %v", tc.wantErr, err)
-			}
-		})
-	}
-}
-
-// The guard compares the served CRD against MiroirNodeSchemaRevision, so
-// the CRD the chart ships must carry exactly that revision — this pins the
-// constant and the +kubebuilder:metadata marker together.
-func TestChartCRDCarriesCurrentSchemaRevision(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "charts", "miroir", "crds",
-		"miroir.home-operations.com_miroirnodes.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	crd := &apiextensionsv1.CustomResourceDefinition{}
-	if err := yaml.Unmarshal(raw, crd); err != nil {
-		t.Fatal(err)
-	}
-	if got := crd.Annotations[miroirv1alpha1.SchemaRevisionAnnotation]; got != miroirv1alpha1.MiroirNodeSchemaRevision {
-		t.Fatalf("chart CRD carries schema revision %q, the binary expects %q — regenerate with `mise run helm-crds` "+
-			"or bump the +kubebuilder:metadata marker with the constant", got, miroirv1alpha1.MiroirNodeSchemaRevision)
 	}
 }

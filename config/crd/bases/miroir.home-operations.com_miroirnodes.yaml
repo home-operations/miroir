@@ -4,7 +4,6 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
-    miroir.home-operations.com/schema-revision: "1"
   name: miroirnodes.miroir.home-operations.com
 spec:
   group: miroir.home-operations.com

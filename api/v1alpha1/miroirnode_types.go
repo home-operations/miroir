@@ -4,20 +4,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// The schema-revision annotation stamps the generated MiroirNode CRD with
-// the spec shape this build was compiled against. Helm applies crds/ only
-// on install, never on upgrade, and an out-of-date CRD fails silently: the
-// API server prunes the spec fields the old schema does not know. The
-// controller and agent compare the served CRD's annotation against
-// MiroirNodeSchemaRevision at startup and refuse to run on a mismatch.
-// Bump the revision (constant AND the +kubebuilder:metadata marker on
-// MiroirNode below) whenever MiroirNodeSpec's schema changes shape.
-const (
-	SchemaRevisionAnnotation = "miroir.home-operations.com/schema-revision"
-	MiroirNodeSchemaRevision = "1"
-	MiroirNodeCRDName        = "miroirnodes.miroir.home-operations.com"
-)
-
 // LVMThinPool configures an lvmthin pool: a dm-thin pool on the LVM VG
 // vg-miroir (default pool) or vg-miroir-<pool>.
 type LVMThinPool struct {
@@ -228,7 +214,6 @@ func (s MiroirNodeStatus) Pool(name string) *MiroirNodePoolStatus {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=min
 // +kubebuilder:subresource:status
-// +kubebuilder:metadata:annotations=miroir.home-operations.com/schema-revision=1
 // +kubebuilder:printcolumn:name="Pools",type=string,JSONPath=`.spec.pools[*].name`
 // +kubebuilder:printcolumn:name="Zone",type=string,JSONPath=`.spec.zone`
 // +kubebuilder:printcolumn:name="Capacity",type=string,JSONPath=`.status.pools[*].capacityBytes`
