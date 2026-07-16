@@ -502,6 +502,24 @@ func diskfulPeersConnected(st drbd.Status, vol *miroirv1alpha1.MiroirVolume, sel
 	return true
 }
 
+// diskfulPeersUpToDate reports whether every completed diskful peer's disk
+// is UpToDate in this node's kernel view. A resyncing (Inconsistent) or
+// failed (Diskless) peer cannot cut a snapshot leg, so a barrier raised
+// over it is doomed to expire — and it would freeze the workload for the
+// whole SuspendDeadline each retry. Same skip rule as
+// diskfulPeersConnected.
+func diskfulPeersUpToDate(st drbd.Status, vol *miroirv1alpha1.MiroirVolume, self string) bool {
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == self || rep.Diskless || rep.Address == "" {
+			continue
+		}
+		if st.PeerDiskState[rep.NodeID] != drbd.DiskUpToDate {
+			return false
+		}
+	}
+	return true
+}
+
 // peerBackingsGrown reports whether every peer realized the desired size.
 // The local leg is excluded: its status entry is stale (just patched).
 func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
