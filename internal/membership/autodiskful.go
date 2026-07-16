@@ -42,8 +42,9 @@ import (
 // online — the pod keeps running throughout.
 type AutoDiskfulReconciler struct {
 	client.Client
-	// Nodes is the storage topology; only nodes in it can become diskful.
-	Nodes nodemap.Map
+	// Nodes yields the storage topology, folded from the MiroirNode CRs
+	// per reconcile; only nodes in it can become diskful.
+	Nodes nodemap.Source
 	// After is the conversion threshold; the setup path guards > 0.
 	After time.Duration
 	// Recorder emits the AutoDiskful event on conversion; optional.
@@ -62,9 +63,13 @@ func (r *AutoDiskfulReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !vol.DeletionTimestamp.IsZero() || vol.Spec.DRBD == nil {
 		return ctrl.Result{}, nil
 	}
+	nodes, err := r.Nodes.Map(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	var wait time.Duration
-	for _, c := range candidates(vol, r.Nodes) {
+	for _, c := range candidates(vol, nodes) {
 		if remaining := r.After - time.Since(c.since); remaining > 0 {
 			if wait == 0 || remaining < wait {
 				wait = remaining
@@ -266,6 +271,8 @@ func (r *AutoDiskfulReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{},
 			builder.WithPredicates(predicate.Or(predicate.GenerationChangedPredicate{}, primaryEdge))).
+		Watches(&miroirv1alpha1.MiroirNode{}, enqueueAllVolumes(mgr.GetClient()),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("autodiskful").
 		Complete(r)
 }

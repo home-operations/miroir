@@ -17,9 +17,6 @@ limitations under the License.
 package nodemap
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -37,140 +34,124 @@ const (
 	nodeB      = "node-b"
 	nodeC      = "node-c"
 	nodeBergen = "bergen"
+
+	poolDefault = "default"
+	zoneRack1   = "rack-1"
+	volBlock16K = "16K"
+	datasetTank = "tank/miroir"
 )
 
-func writeMap(t *testing.T, body string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "nodes.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+func miroirNode(name string, spec miroirv1alpha1.MiroirNodeSpec) miroirv1alpha1.MiroirNode {
+	return miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: spec}
 }
 
-func TestLoadValid(t *testing.T) {
-	m, err := Load(writeMap(t, `
-node-a:
-  zone: rack-1
-  address: 10.0.100.1
-  pools:
-    default:
-      backend: lvmthin
-      device: /dev/disk/by-partlabel/r-miroir
-      thinPoolSize: 400g
-    fast:
-      backend: lvmthin
-      device: /dev/disk/by-id/nvme-fast
-node-b:
-  address: "fd00:1::2"
-  pools:
-    default:
-      backend: zfs
-      zfsDataset: tank/miroir
-      zfsVolBlockSize: 16K
-      zfsCompression: inherit
-node-c:
-  pools:
-    default:
-      backend: loopfile
-      baseDir: /var/lib/miroir
-`))
-	if err != nil {
-		t.Fatal(err)
+func TestFromSpecFlattensBackendBlocks(t *testing.T) {
+	autoEvict := false
+	n := FromSpec(miroirv1alpha1.MiroirNodeSpec{
+		Zone:      zoneRack1,
+		Address:   "10.0.100.1",
+		AutoEvict: &autoEvict,
+		Pools: []miroirv1alpha1.MiroirNodePool{
+			{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+				LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/disk/by-partlabel/r-miroir", PoolSize: "400g"}},
+			{Name: "fast", Backend: miroirv1alpha1.BackendZFS,
+				ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, Compression: "inherit", VolBlockSize: volBlock16K}},
+			{Name: "scratch", Backend: miroirv1alpha1.BackendLoopfile,
+				Loopfile: &miroirv1alpha1.LoopfilePool{BaseDir: "/var/lib/miroir"}},
+		},
+	})
+	if n.Zone != zoneRack1 || n.Address != "10.0.100.1" || n.AutoEvict == nil || *n.AutoEvict {
+		t.Fatalf("node-level settings wrong: %+v", n)
 	}
-	if len(m) != 3 {
-		t.Fatalf("want 3 nodes, got %d", len(m))
+	def := n.Pools[poolDefault]
+	if def.Backend != miroirv1alpha1.BackendLVMThin ||
+		def.Device != "/dev/disk/by-partlabel/r-miroir" || def.ThinPoolSize != "400g" {
+		t.Fatalf("lvmthin pool flattened wrong: %+v", def)
 	}
-	def := m["node-a"].Pools["default"]
-	if def.Backend != miroirv1alpha1.BackendLVMThin || def.ThinPoolSize != "400g" {
-		t.Fatalf("node-a default pool parsed wrong: %+v", def)
+	zfs := n.Pools["fast"]
+	if zfs.ZFSDataset != datasetTank || zfs.ZFSCompression != "inherit" ||
+		zfs.ZFSVolBlockSize != volBlock16K || zfs.ZFSVolBlockSizeBytes() != 16<<10 {
+		t.Fatalf("zfs pool flattened wrong: %+v", zfs)
 	}
-	if fast := m["node-a"].Pools["fast"]; fast.Device != "/dev/disk/by-id/nvme-fast" {
-		t.Fatalf("node-a fast pool parsed wrong: %+v", fast)
-	}
-	if m["node-a"].Zone != "rack-1" {
-		t.Fatalf("node-a zone not parsed: %+v", m["node-a"])
-	}
-	zfs := m["node-b"].Pools["default"]
-	if zfs.ZFSDataset != "tank/miroir" || zfs.ZFSVolBlockSize != "16K" ||
-		zfs.ZFSVolBlockSizeBytes() != 16<<10 || zfs.ZFSCompression != "inherit" {
-		t.Fatalf("node-b ZFS pool parsed wrong: %+v", zfs)
-	}
-	if m["node-c"].Pools["default"].BaseDir != "/var/lib/miroir" {
-		t.Fatalf("node-c baseDir wrong: %+v", m["node-c"])
-	}
-	if m["node-a"].Address != "10.0.100.1" || m["node-b"].Address != "fd00:1::2" {
-		t.Fatalf("addresses parsed wrong: %q %q", m["node-a"].Address, m["node-b"].Address)
+	if n.Pools["scratch"].BaseDir != "/var/lib/miroir" {
+		t.Fatalf("loopfile pool flattened wrong: %+v", n.Pools["scratch"])
 	}
 }
 
-func TestZFSDefaults(t *testing.T) {
-	m, err := Load(writeMap(t, `
-node-a:
-  pools:
-    default:
-      backend: zfs
-      zfsDataset: tank/miroir
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := m[nodeA].Pools[miroirv1alpha1.DefaultPoolName]
-	if p.ZFSVolBlockSize != DefaultZFSVolBlockSize {
-		t.Fatalf("zfsVolBlockSize = %q, want %q", p.ZFSVolBlockSize, DefaultZFSVolBlockSize)
-	}
+// The CRD defaults compression/volBlockSize on write, but a spec read
+// before defaulting (or built by hand) must still resolve sane values.
+func TestZFSVolBlockSizeDefaults(t *testing.T) {
+	p := Pool{Backend: miroirv1alpha1.BackendZFS}
 	if p.ZFSVolBlockSizeBytes() != 4<<10 {
-		t.Fatalf("zfsVolBlockSize bytes = %d, want %d", p.ZFSVolBlockSizeBytes(), 4<<10)
-	}
-	if p.ZFSCompression != DefaultZFSCompression {
-		t.Fatalf("zfsCompression = %q, want %q", p.ZFSCompression, DefaultZFSCompression)
+		t.Fatalf("empty volBlockSize should default to 4K, got %d bytes", p.ZFSVolBlockSizeBytes())
 	}
 }
 
-// Load canonicalizes the zfs settings' casing: the block size has to match
-// a zfsVolBlockSizes key, and the compression value reaches `zfs create -o`
-// verbatim, which OpenZFS accepts only in its own lowercase spelling.
-func TestZFSSettingsCanonicalizeCase(t *testing.T) {
-	m, err := Load(writeMap(t, `
-node-a:
-  pools:
-    default:
-      backend: zfs
-      zfsDataset: tank/miroir
-      zfsVolBlockSize: 16k
-      zfsCompression: ZSTD-3
-`))
+// A pool whose backend block is missing (an old object written before the
+// CRD required it, mid-upgrade) folds to an empty-config pool instead of
+// panicking; the agent's backend setup reports the missing config.
+func TestFromSpecToleratesMissingBlock(t *testing.T) {
+	n := FromSpec(miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{
+		{Name: poolDefault, Backend: miroirv1alpha1.BackendZFS},
+	}})
+	if p := n.Pools[poolDefault]; p.Backend != miroirv1alpha1.BackendZFS || p.ZFSDataset != "" {
+		t.Fatalf("missing block should fold empty, got %+v", p)
+	}
+}
+
+// FromNodes marks every node sharing a replication address, keyed by the
+// parsed form so IPv6 zero-compression variants still collide, and
+// PickSpare / ReplicationAddress both refuse conflicted nodes.
+func TestFromNodesMarksAddressConflicts(t *testing.T) {
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
+	m := FromNodes([]miroirv1alpha1.MiroirNode{
+		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Address: "fd00:1::2", Pools: pools}),
+		miroirNode(nodeB, miroirv1alpha1.MiroirNodeSpec{Address: "fd00:0001:0:0::2", Pools: pools}),
+		miroirNode(nodeC, miroirv1alpha1.MiroirNodeSpec{Address: "10.0.100.3", Pools: pools}),
+	})
+	if !m[nodeA].AddressConflict || !m[nodeB].AddressConflict {
+		t.Fatalf("both holders of the shared address must be conflicted: %+v", m)
+	}
+	if m[nodeC].AddressConflict {
+		t.Fatal("a unique address must not be conflicted")
+	}
+	if got := m.PickSpare(map[string]bool{nodeC: true}, nil, nil); got != "" {
+		t.Fatalf("PickSpare must skip conflicted nodes, picked %q", got)
+	}
+	if _, err := m.ReplicationAddress(t.Context(), nil, nodeA); err == nil {
+		t.Fatal("ReplicationAddress must refuse a conflicted node")
+	}
+}
+
+func TestCRSourceFoldsMiroirNodes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := miroirv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	node := miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{
+		Zone: zoneRack1,
+		Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank}}},
+	})
+	src := &CRSource{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(&node).Build()}
+	m, err := src.Map(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := m[nodeA].Pools[miroirv1alpha1.DefaultPoolName]
-	if p.ZFSVolBlockSizeBytes() != 16<<10 {
-		t.Fatalf("zfsVolBlockSizeBytes = %d, want %d", p.ZFSVolBlockSizeBytes(), 16<<10)
+	if p, ok := m.Pool(nodeA, ""); !ok || p.ZFSDataset != datasetTank {
+		t.Fatalf("CRSource folded wrong: %+v %t", p, ok)
 	}
-	if p.ZFSCompression != "zstd-3" {
-		t.Fatalf("zfsCompression = %q, want %q", p.ZFSCompression, "zstd-3")
+	if m[nodeA].Zone != zoneRack1 {
+		t.Fatalf("zone lost in fold: %+v", m[nodeA])
 	}
 }
 
-// autoEvict: false parses (UnmarshalStrict rejects unknown fields, so
-// this guards the schema) and flips AutoEvictAllowed; absence and
-// unmapped nodes resolve as documented.
 func TestAutoEvictOptOut(t *testing.T) {
-	m, err := Load(writeMap(t, `
-node-a:
-  autoEvict: false
-  pools:
-    default:
-      backend: zfs
-      zfsDataset: tank/miroir
-node-b:
-  pools:
-    default:
-      backend: zfs
-      zfsDataset: tank/miroir
-`))
-	if err != nil {
-		t.Fatal(err)
+	optOut := false
+	m := Map{
+		nodeA: {AutoEvict: &optOut},
+		nodeB: {},
 	}
 	if m.AutoEvictAllowed(nodeA) {
 		t.Fatal("autoEvict: false must opt the node out")
@@ -199,62 +180,6 @@ func TestPoolLookup(t *testing.T) {
 	}
 	if _, ok := m.Pool(nodeB, "default"); ok {
 		t.Fatal("absent node should not resolve")
-	}
-}
-
-func TestLoadErrors(t *testing.T) {
-	pool := func(body string) string {
-		return "node-a:\n  pools:\n    default:\n" + body
-	}
-	cases := map[string]string{
-		"unknown backend":          pool("      backend: btrfs\n"),
-		"zfs without dataset":      pool("      backend: zfs\n"),
-		"loopfile without baseDir": pool("      backend: loopfile\n"),
-		"unknown field":            pool("      backend: lvmthin\n      bogus: x\n"),
-		"malformed yaml":           "node-a: : :\n",
-		"no pools":                 "node-a:\n  zone: rack-1\n",
-		"invalid zfs block size":   pool("      backend: zfs\n      zfsDataset: tank/miroir\n      zfsVolBlockSize: 12K\n"),
-		"oversized zfs block size": pool("      backend: zfs\n      zfsDataset: tank/miroir\n      zfsVolBlockSize: 256K\n"),
-		"invalid zfs compression":  pool("      backend: zfs\n      zfsDataset: tank/miroir\n      zfsCompression: snappy\n"),
-		"empty pools":              "node-a:\n  pools: {}\n",
-		"invalid pool name": "node-a:\n  pools:\n    Fast_NVMe:\n" +
-			"      backend: lvmthin\n",
-		"pools sharing a device": "node-a:\n  pools:\n" +
-			"    a:\n      backend: lvmthin\n      device: /dev/sda\n" +
-			"    b:\n      backend: lvmthin\n      device: /dev/sda\n",
-		"invalid address":   pool("      backend: lvmthin\n") + "  address: not-an-ip\n",
-		"address is a CIDR": pool("      backend: lvmthin\n") + "  address: 10.0.0.0/24\n",
-		"duplicate address": pool("      backend: lvmthin\n") + "  address: 10.0.100.1\n" +
-			"node-b:\n  address: 10.0.100.1\n  pools:\n    default:\n      backend: lvmthin\n",
-		"duplicate address ipv6": pool("      backend: lvmthin\n") + "  address: fd00:1::2\n" +
-			"node-b:\n  address: fd00:0001:0:0::2\n  pools:\n    default:\n      backend: lvmthin\n",
-	}
-	for name, body := range cases {
-		t.Run(name, func(t *testing.T) {
-			if _, err := Load(writeMap(t, body)); err == nil {
-				t.Fatal("expected an error")
-			}
-		})
-	}
-}
-
-func TestLoadLegacyFlatShape(t *testing.T) {
-	_, err := Load(writeMap(t, `
-node-a:
-  backend: lvmthin
-  device: /dev/disk/by-partlabel/r-miroir
-`))
-	if err == nil {
-		t.Fatal("expected an error for the pre-0.10 flat shape")
-	}
-	if !strings.Contains(err.Error(), "pools") {
-		t.Fatalf("error should point at the pools migration, got: %v", err)
-	}
-}
-
-func TestLoadMissingFile(t *testing.T) {
-	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
-		t.Fatal("expected an error for a missing file")
 	}
 }
 

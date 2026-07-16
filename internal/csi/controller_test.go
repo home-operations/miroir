@@ -595,7 +595,7 @@ func TestCreateVolumeAutoTieBreakerAddressOverride(t *testing.T) {
 	c := tieBreakerController(t, true)
 	withAddr := storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin})
 	withAddr.Address = "10.0.100.44"
-	c.Nodes[nodeC] = withAddr
+	c.Nodes.(nodemap.Map)[nodeC] = withAddr
 
 	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
 		Name:               "pvc-tbo",

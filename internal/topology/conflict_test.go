@@ -1,0 +1,114 @@
+/*
+Copyright 2026.
+
+Licensed under the GNU Affero General Public License, Version 3 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.gnu.org/licenses/agpl-3.0.html
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package topology
+
+import (
+	"strings"
+	"testing"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+)
+
+const (
+	nodeA = "node-a"
+	nodeB = "node-b"
+	nodeC = "node-c"
+)
+
+func newClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := miroirv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	return fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&miroirv1alpha1.MiroirNode{}).
+		WithObjects(objs...).Build()
+}
+
+func addrNode(name, addr string) *miroirv1alpha1.MiroirNode {
+	return &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: miroirv1alpha1.MiroirNodeSpec{
+			Address: addr,
+			Pools: []miroirv1alpha1.MiroirNodePool{{
+				Name: "default", Backend: miroirv1alpha1.BackendLVMThin,
+				LVMThin: &miroirv1alpha1.LVMThinPool{},
+			}},
+		},
+	}
+}
+
+func reconcile(t *testing.T, c client.Client, name string) *miroirv1alpha1.MiroirNode {
+	t.Helper()
+	r := &ConflictReconciler{Client: c}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: name},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n := &miroirv1alpha1.MiroirNode{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: name}, n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestConflictConditionRaisedAndNamesPeer(t *testing.T) {
+	c := newClient(t, addrNode(nodeA, "10.0.100.1"), addrNode(nodeB, "10.0.100.1"),
+		addrNode(nodeC, "10.0.100.3"))
+	n := reconcile(t, c, nodeA)
+	cond := meta.FindStatusCondition(n.Status.Conditions, ConditionAddressConflict)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected AddressConflict=True, got %+v", cond)
+	}
+	if !strings.Contains(cond.Message, nodeB) {
+		t.Fatalf("the message must name the peer, got %q", cond.Message)
+	}
+	unique := reconcile(t, c, nodeC)
+	if cond := meta.FindStatusCondition(unique.Status.Conditions, ConditionAddressConflict); cond == nil ||
+		cond.Status != metav1.ConditionFalse {
+		t.Fatalf("a unique address must read False, got %+v", cond)
+	}
+}
+
+func TestConflictConditionClearsWhenResolved(t *testing.T) {
+	a, b := addrNode(nodeA, "10.0.100.1"), addrNode(nodeB, "10.0.100.1")
+	c := newClient(t, a, b)
+	if n := reconcile(t, c, nodeA); !meta.IsStatusConditionTrue(n.Status.Conditions, ConditionAddressConflict) {
+		t.Fatal("precondition: conflict must be raised first")
+	}
+	fresh := &miroirv1alpha1.MiroirNode{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: nodeB}, fresh); err != nil {
+		t.Fatal(err)
+	}
+	fresh.Spec.Address = "10.0.100.2"
+	if err := c.Update(t.Context(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	if n := reconcile(t, c, nodeA); !meta.IsStatusConditionFalse(n.Status.Conditions, ConditionAddressConflict) {
+		t.Fatalf("resolving the peer's address must clear the condition, got %+v", n.Status.Conditions)
+	}
+}

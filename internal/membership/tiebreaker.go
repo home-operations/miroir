@@ -36,13 +36,13 @@ import (
 // freeze volumes that lack one (#70) — volumes created before a spare
 // node existed, or switched to freeze later. It appends a bare
 // {node, diskless} entry; the membership Reconciler completes it exactly
-// like an operator-added replica. The node map is fixed per controller
-// process (a node-map change is a Helm upgrade, hence a restart), so the
-// startup reconcile pass covers node additions — no Node watch needed.
+// like an operator-added replica. The MiroirNode watch re-runs the
+// retrofit when a spare node joins the topology.
 type TieBreakerReconciler struct {
 	client.Client
-	// Nodes is the storage topology — the same map CreateVolume places from.
-	Nodes nodemap.Map
+	// Nodes yields the storage topology — the same map CreateVolume
+	// places from — folded from the MiroirNode CRs per reconcile.
+	Nodes nodemap.Source
 }
 
 // Reconcile appends a tie-breaker entry when the volume is a 2-replica
@@ -83,10 +83,14 @@ func (r *TieBreakerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 	}
-	tb := r.Nodes.TieBreakerNode(vol.Spec.Replicas)
+	nodes, err := r.Nodes.Map(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	tb := nodes.TieBreakerNode(vol.Spec.Replicas)
 	if tb == "" {
-		// No spare node; the startup pass after the next node-map change
-		// (Helm upgrade → restart) revisits this volume.
+		// No spare node; the MiroirNode watch revisits this volume when
+		// one joins the topology.
 		return ctrl.Result{}, nil
 	}
 
@@ -100,10 +104,13 @@ func (r *TieBreakerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 // SetupWithManager registers the reconciler. Generation-filtered like the
 // membership Reconciler; the initial list delivers every volume once at
-// startup, which is the retrofit pass.
+// startup, which is the retrofit pass, and the MiroirNode watch repeats
+// it when the topology gains a node.
 func (r *TieBreakerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{},
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&miroirv1alpha1.MiroirNode{}, enqueueAllVolumes(mgr.GetClient()),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("tiebreaker").
 		Complete(r)

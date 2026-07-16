@@ -33,7 +33,6 @@ import (
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
@@ -121,19 +120,11 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 		recordPoolMetrics(name, st.SizeBytes, st.UsedBytes, st.MetaUsedPercent/100)
 	}
 
-	node := &miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: p.NodeName}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, p.Client, node, func() error {
-		node.Spec.Pools = node.Spec.Pools[:0]
-		for _, name := range names {
-			node.Spec.Pools = append(node.Spec.Pools, miroirv1alpha1.MiroirNodePool{
-				Name: name, Backend: p.Pools[name].Type,
-			})
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("upsert MiroirNode %s: %w", p.NodeName, err)
-	}
-
+	// Status only: the spec is the chart-rendered desired state, owned by
+	// the operator's values — an agent writing it would revert their edits
+	// every tick. A missing MiroirNode (this node was just removed from
+	// the topology) surfaces as the Get error below; the topology watcher
+	// restarts the agent into client-only mode moments later.
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		cur := &miroirv1alpha1.MiroirNode{}
 		if err := p.Client.Get(ctx, types.NamespacedName{Name: p.NodeName}, cur); err != nil {

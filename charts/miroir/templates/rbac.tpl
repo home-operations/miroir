@@ -30,6 +30,10 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
     verbs: ["get", "list", "watch"]
+  # The AddressConflict condition (cross-object topology rule).
+  - apiGroups: ["miroir.home-operations.com"]
+    resources: ["miroirnodes/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
@@ -111,9 +115,12 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     verbs: ["get", "patch"]
+  # Read-only on the spec: MiroirNode specs are chart-rendered desired
+  # state — the agent reads its own at startup, watches it for drift, and
+  # publishes pool capacity through the status subresource only.
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes/status"]
     verbs: ["get", "update", "patch"]

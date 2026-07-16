@@ -30,10 +30,12 @@ import (
 	"fmt"
 	"slices"
 
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -46,8 +48,9 @@ import (
 // and Node objects, which agents do not have cluster-wide.
 type Reconciler struct {
 	client.Client
-	// Nodes is the storage topology — the same map CreateVolume places from.
-	Nodes nodemap.Map
+	// Nodes yields the storage topology — the same map CreateVolume
+	// places from — folded from the MiroirNode CRs per reconcile.
+	Nodes nodemap.Source
 }
 
 // Reconcile fills in NodeID/Address/FullSync for incomplete replica
@@ -65,6 +68,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// validation rule already blocks such edits).
 		return ctrl.Result{}, nil
 	}
+	nodes, err := r.Nodes.Map(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 
 	changed := false
 	for i := range vol.Spec.Replicas {
@@ -72,11 +79,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if rep.Address != "" {
 			continue
 		}
-		if err := r.complete(ctx, vol, rep); err != nil {
+		if err := r.complete(ctx, nodes, vol, rep); err != nil {
 			if errors.Is(err, errBadPlacement) {
-				// Unknown node or duplicate: no Node update or poll
-				// re-triggers this generation-filtered controller, but only
-				// a spec edit could fix it anyway, so stop without requeue.
+				// Unknown node or duplicate: only a volume spec edit or a
+				// topology change could fix it, and both re-trigger this
+				// controller (the MiroirNode watch), so stop without requeue.
 				log.Error(err, "cannot complete added replica",
 					"volume", vol.Name, "node", rep.Node)
 				return ctrl.Result{}, nil
@@ -92,7 +99,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if cl.Address != "" {
 			continue
 		}
-		if err := r.completeClient(ctx, vol, cl); err != nil {
+		if err := r.completeClient(ctx, nodes, vol, cl); err != nil {
 			if errors.Is(err, errBadPlacement) {
 				log.Error(err, "cannot complete client leg",
 					"volume", vol.Name, "node", cl.Node)
@@ -131,9 +138,9 @@ var errBadPlacement = errors.New("replica placement is invalid")
 // used by the other entries — freed ids may be reused; the joiner's
 // just-created metadata forces a full sync either way, so a stale bitmap
 // slot on the peers cannot leak as data.
-func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, rep *miroirv1alpha1.Replica) error {
-	if _, ok := r.Nodes[rep.Node]; !ok {
-		return fmt.Errorf("%w: node %s is not in the storage node map", errBadPlacement, rep.Node)
+func (r *Reconciler) complete(ctx context.Context, nodes nodemap.Map, vol *miroirv1alpha1.MiroirVolume, rep *miroirv1alpha1.Replica) error {
+	if _, ok := nodes[rep.Node]; !ok {
+		return fmt.Errorf("%w: node %s is not in the storage topology", errBadPlacement, rep.Node)
 	}
 	// A volume's diskful legs all live in one pool: snapshots and restores
 	// are pool-local, so a cross-pool leg would make every snapshot of the
@@ -146,7 +153,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 			return fmt.Errorf("%w: the volume's replicas live in pool %q; a replica in pool %q would make its snapshots unrestorable (restores are pool-local)",
 				errBadPlacement, targetPool, nodemap.PoolOrDefault(rep.Pool))
 		}
-		if _, ok := r.Nodes.Pool(rep.Node, targetPool); !ok {
+		if _, ok := nodes.Pool(rep.Node, targetPool); !ok {
 			return fmt.Errorf("%w: node %s has no storage pool %q",
 				errBadPlacement, rep.Node, targetPool)
 		}
@@ -160,7 +167,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 	if dup > 1 {
 		return fmt.Errorf("%w: node %s appears %d times in spec.replicas", errBadPlacement, rep.Node, dup)
 	}
-	addr, err := r.Nodes.ReplicationAddress(ctx, r.Client, rep.Node)
+	addr, err := nodes.ReplicationAddress(ctx, r.Client, rep.Node)
 	if err != nil {
 		return err
 	}
@@ -173,7 +180,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 		rep.Backend = ""
 		rep.Pool = ""
 	} else {
-		pool, _ := r.Nodes.Pool(rep.Node, targetPool)
+		pool, _ := nodes.Pool(rep.Node, targetPool)
 		rep.Backend = pool.Backend
 		rep.Pool = targetPool
 		rep.FullSync = true
@@ -186,7 +193,7 @@ func (r *Reconciler) complete(ctx context.Context, vol *miroirv1alpha1.MiroirVol
 // completeClient fills one client leg in place. Unlike a replica it needs
 // no node-map entry — any node running an agent can consume remotely, and
 // its address resolves like a replica's (map override, else InternalIP).
-func (r *Reconciler) completeClient(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cl *miroirv1alpha1.VolumeClient) error {
+func (r *Reconciler) completeClient(ctx context.Context, nodes nodemap.Map, vol *miroirv1alpha1.MiroirVolume, cl *miroirv1alpha1.VolumeClient) error {
 	dup := 0
 	for _, other := range vol.Spec.Clients {
 		if other.Node == cl.Node {
@@ -196,7 +203,7 @@ func (r *Reconciler) completeClient(ctx context.Context, vol *miroirv1alpha1.Mir
 	if dup > 1 {
 		return fmt.Errorf("%w: node %s appears %d times in spec.clients", errBadPlacement, cl.Node, dup)
 	}
-	addr, err := r.Nodes.ReplicationAddress(ctx, r.Client, cl.Node)
+	addr, err := nodes.ReplicationAddress(ctx, r.Client, cl.Node)
 	if err != nil {
 		return err
 	}
@@ -225,11 +232,34 @@ func nextNodeID(vol *miroirv1alpha1.MiroirVolume, self string) int32 {
 
 // SetupWithManager registers the reconciler. Generation-filtered: status
 // patches from agents arrive every poll interval and carry nothing this
-// reconciler reads.
+// reconciler reads. The MiroirNode watch revisits every volume on a
+// topology edit — a node joining the topology is what completes a replica
+// that previously failed with "not in the storage topology".
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&miroirv1alpha1.MiroirNode{}, enqueueAllVolumes(mgr.GetClient()),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("membership").
 		Complete(r)
+}
+
+// enqueueAllVolumes maps a MiroirNode event to every MiroirVolume: which
+// volumes a topology change unblocks cannot be known without reconciling
+// them, and both objects are cluster-scoped with small counts.
+func enqueueAllVolumes(c client.Client) handler.EventHandler {
+	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []ctrl.Request {
+		list := &miroirv1alpha1.MiroirVolumeList{}
+		if err := c.List(ctx, list); err != nil {
+			return nil
+		}
+		reqs := make([]ctrl.Request, 0, len(list.Items))
+		for i := range list.Items {
+			reqs = append(reqs, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: list.Items[i].Name},
+			})
+		}
+		return reqs
+	})
 }

@@ -56,9 +56,10 @@ import (
 // alive; kicking it would discard a healthy replica).
 type AutoEvictReconciler struct {
 	client.Client
-	// Nodes is the storage topology — placement candidates and the
-	// per-node opt-out come from it.
-	Nodes nodemap.Map
+	// Nodes yields the storage topology, folded from the MiroirNode CRs
+	// per reconcile — placement candidates and the per-node opt-out come
+	// from it.
+	Nodes nodemap.Source
 	// After is the heartbeat staleness that declares a node dead; the
 	// setup path guards > 0.
 	After time.Duration
@@ -81,6 +82,8 @@ type evictPass struct {
 	pinned map[string]bool
 	// nodes indexes the listed MiroirNodes by name.
 	nodes map[string]*miroirv1alpha1.MiroirNode
+	// topology is the folded placement map, resolved once per pass.
+	topology nodemap.Map
 }
 
 // Reconcile checks one node's heartbeat and, once it has been stale for
@@ -88,8 +91,12 @@ type evictPass struct {
 func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	if !r.Nodes.AutoEvictAllowed(req.Name) {
-		// Not a storage node, or opted out via the node map.
+	topology, err := r.Nodes.Map(ctx)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !topology.AutoEvictAllowed(req.Name) {
+		// Not a storage node, or opted out via the topology.
 		return ctrl.Result{}, nil
 	}
 	mn := &miroirv1alpha1.MiroirNode{}
@@ -105,7 +112,7 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
-	pass, stale, err := r.gather(ctx)
+	pass, stale, err := r.gather(ctx, topology)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -156,20 +163,21 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // gather lists the cluster state one eviction pass needs — MiroirNodes
 // (the safety-valve census and the capacity views) and snapshots (the
 // pin set) — exactly once.
-func (r *AutoEvictReconciler) gather(ctx context.Context) (*evictPass, []string, error) {
+func (r *AutoEvictReconciler) gather(ctx context.Context, topology nodemap.Map) (*evictPass, []string, error) {
 	nodes := &miroirv1alpha1.MiroirNodeList{}
 	if err := r.List(ctx, nodes); err != nil {
 		return nil, nil, err
 	}
 	pass := &evictPass{
-		pinned: map[string]bool{},
-		nodes:  make(map[string]*miroirv1alpha1.MiroirNode, len(nodes.Items)),
+		pinned:   map[string]bool{},
+		nodes:    make(map[string]*miroirv1alpha1.MiroirNode, len(nodes.Items)),
+		topology: topology,
 	}
 	var stale []string
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
 		pass.nodes[n.Name] = n
-		if _, ok := r.Nodes[n.Name]; !ok {
+		if _, ok := topology[n.Name]; !ok {
 			continue
 		}
 		if n.Status.ObservedAt != nil && time.Since(n.Status.ObservedAt.Time) >= r.After {
@@ -322,7 +330,7 @@ func (r *AutoEvictReconciler) plan(vol *miroirv1alpha1.MiroirVolume, dead string
 		for _, cl := range vol.Spec.Clients {
 			legs = append(legs, miroirv1alpha1.Replica{Node: cl.Node})
 		}
-		tb := r.Nodes.TieBreakerNode(legs)
+		tb := pass.topology.TieBreakerNode(legs)
 		if tb == "" {
 			return kindTieBreaker, nil
 		}
@@ -332,12 +340,12 @@ func (r *AutoEvictReconciler) plan(vol *miroirv1alpha1.MiroirVolume, dead string
 	}
 	poolName := volumePool(vol)
 	fits := func(node string) bool {
-		if _, ok := r.Nodes.Pool(node, poolName); !ok {
+		if _, ok := pass.topology.Pool(node, poolName); !ok {
 			return false
 		}
 		return poolRoom(pass.nodes[node], poolName, vol.Spec.SizeBytes) == ""
 	}
-	if repl := replacementNode(r.Nodes, vol, dead, fits); repl != "" {
+	if repl := replacementNode(pass.topology, vol, dead, fits); repl != "" {
 		return kindReplica, func(v *miroirv1alpha1.MiroirVolume) {
 			swapReplica(v, dead, miroirv1alpha1.Replica{Node: repl})
 		}
@@ -349,7 +357,7 @@ func (r *AutoEvictReconciler) plan(vol *miroirv1alpha1.MiroirVolume, dead string
 		if !rep.Diskless || rep.Node == dead || !fits(rep.Node) {
 			continue
 		}
-		pool, ok := r.Nodes.Pool(rep.Node, poolName)
+		pool, ok := pass.topology.Pool(rep.Node, poolName)
 		if !ok {
 			continue
 		}

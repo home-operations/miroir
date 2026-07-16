@@ -9,10 +9,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
     asserts:
       - hasDocuments:
           count: 1
@@ -45,10 +47,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - equal:
@@ -63,9 +67,6 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: "--csi-socket=/csi/csi.sock"
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: "--nodes-config=/etc/miroir/nodes.yaml"
       - equal:
           path: spec.template.spec.containers[0].securityContext.privileged
           value: true
@@ -89,10 +90,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - equal:
@@ -124,10 +127,12 @@ tests:
       agent.kubeletDir: /var/snap/kubelet
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - contains:
@@ -150,55 +155,67 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
         node-b:
-          pools:
-            default:
-              backend: zfs
-              zfsDataset: data-pool/miroir
+          spec:
+            pools:
+              - name: default
+                backend: zfs
+                zfs:
+                  dataset: data-pool/miroir
     documentIndex: 0
     asserts:
       - lengthEqual:
           path: spec.template.spec.containers[0].volumeMounts
-          count: 9
+          count: 8
       - lengthEqual:
           path: spec.template.spec.volumes
-          count: 10
+          count: 9
 
   - it: adds one identity-mounted loopfile mount and hostPath volume per baseDir
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
         node-b:
-          pools:
-            default:
-              backend: zfs
-              zfsDataset: data-pool/miroir
+          spec:
+            pools:
+              - name: default
+                backend: zfs
+                zfs:
+                  dataset: data-pool/miroir
         node-c:
-          pools:
-            default:
-              backend: loopfile
-              baseDir: /var/lib/miroir
+          spec:
+            pools:
+              - name: default
+                backend: loopfile
+                loopfile:
+                  baseDir: /var/lib/miroir
         backup:
-          pools:
-            default:
-              backend: loopfile
-              baseDir: /srv/miroir
+          spec:
+            pools:
+              - name: default
+                backend: loopfile
+                loopfile:
+                  baseDir: /srv/miroir
     documentIndex: 0
     asserts:
       - lengthEqual:
           path: spec.template.spec.containers[0].volumeMounts
-          count: 11
+          count: 10
       - lengthEqual:
           path: spec.template.spec.volumes
-          count: 12
+          count: 11
       - contains:
           any: true
           path: spec.template.spec.containers[0].volumeMounts
@@ -228,23 +245,27 @@ tests:
     set:
       nodes:
         a:
-          pools:
-            default:
-              backend: loopfile
-              baseDir: /var/lib/miroir
+          spec:
+            pools:
+              - name: default
+                backend: loopfile
+                loopfile:
+                  baseDir: /var/lib/miroir
         b:
-          pools:
-            default:
-              backend: loopfile
-              baseDir: /var/lib/miroir
+          spec:
+            pools:
+              - name: default
+                backend: loopfile
+                loopfile:
+                  baseDir: /var/lib/miroir
     documentIndex: 0
     asserts:
       - lengthEqual:
           path: spec.template.spec.containers[0].volumeMounts
-          count: 10
+          count: 9
       - lengthEqual:
           path: spec.template.spec.volumes
-          count: 11
+          count: 10
       - contains:
           any: true
           path: spec.template.spec.containers[0].volumeMounts
@@ -262,10 +283,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
       agent:
         image:
           tag: 1.2.3
@@ -280,10 +303,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
       global:
         imagePullSecrets:
           - name: ghcr-pull
@@ -301,10 +326,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
       agent:
         podAnnotations:
           reloader.stakater.com/auto: "true"
@@ -328,28 +355,31 @@ tests:
           path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
           value: "true"
 
-  - it: stamps a node-map checksum so a topology edit rolls the agent
+  - it: stamps no topology checksum (the agent watches its MiroirNode instead)
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
-      - matchRegex:
-          path: spec.template.metadata.annotations["checksum/nodes"]
-          pattern: "^[0-9a-f]{64}$"
+      - notExists:
+          path: spec.template.metadata.annotations
 
   - it: omits --verify-schedule by default
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - notContains:
@@ -360,10 +390,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           schedule: "0 5 * * 0"
@@ -377,10 +409,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           schedule: "0 5 * * 0"
@@ -395,10 +429,12 @@ tests:
     set:
       nodes:
         node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
+          spec:
+            pools:
+              - name: default
+                backend: lvmthin
+                lvmthin:
+                  device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           algorithm: ""

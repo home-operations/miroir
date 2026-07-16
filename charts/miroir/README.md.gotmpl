@@ -34,21 +34,26 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
 Version-specific steps live in the
 [upgrade guide](https://miroir.home-operations.com/upgrading/).
 
-## ZFS pool settings
+## Storage topology
 
-ZFS pools accept `zfsVolBlockSize` (`4K` through `128K`, default `4K`)
-and `zfsCompression` (default `lz4`; use `inherit` for the parent dataset
+Each entry under `nodes` is rendered as a MiroirNode custom resource;
+the `spec` is passed through verbatim and validated by the CRD (see
+`kubectl explain miroirnode.spec`). For example, a ZFS pool with its
+optional zvol settings (`volBlockSize` `4K` through `128K`, default
+`4K`; `compression` default `lz4`, `inherit` for the parent dataset
 policy):
 
 ```yaml
 nodes:
   node-a:
-    pools:
-      default:
-        backend: zfs
-        zfsDataset: tank/miroir
-        zfsVolBlockSize: 16K
-        zfsCompression: inherit
+    spec:
+      pools:
+        - name: default
+          backend: zfs
+          zfs:
+            dataset: tank/miroir
+            volBlockSize: 16K
+            compression: inherit
 ```
 
 Both settings apply only to newly created zvols. Existing volumes are not

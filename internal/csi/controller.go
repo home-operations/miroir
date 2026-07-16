@@ -55,9 +55,10 @@ type Controller struct {
 	// informer cache. Port allocation needs read-your-writes: the cache
 	// can lag a just-created volume, handing its port out twice.
 	APIReader client.Reader
-	// Nodes is the storage topology from the Helm-rendered node map —
-	// which nodes hold storage and with which backend.
-	Nodes nodemap.Map
+	// Nodes yields the storage topology — which nodes hold storage and
+	// with which backend — folded from the MiroirNode CRs per RPC, so a
+	// chart-applied topology edit takes effect without a restart.
+	Nodes nodemap.Source
 	// ProvisionTimeout bounds the wait for agents to realize a volume.
 	ProvisionTimeout time.Duration
 	// OvercommitRatio bounds thin-provisioning overcommit: CreateVolume is
@@ -381,18 +382,24 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 // each node's InternalIP and assigns DRBD node ids by slice position —
 // replicas[0] is the GI-seed winner (internal/drbd).
 func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string) ([]miroirv1alpha1.Replica, error) {
+	nodes, err := c.nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	// Every diskful leg needs the pool on its own node; a class naming a
 	// pool too few nodes carry must say so instead of a generic refusal.
+	// Address-conflicted nodes are excluded outright: their replication
+	// endpoint is ambiguous until the operator resolves the clash.
 	candidates := map[string]nodemap.Pool{}
-	for n := range c.Nodes {
-		if p, ok := c.Nodes.Pool(n, pool); ok {
+	for n := range nodes {
+		if p, ok := nodes.Pool(n, pool); ok && !nodes[n].AddressConflict {
 			candidates[n] = p
 		}
 	}
 	if len(candidates) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
-			"storage pool %q exists on %d of %d storage nodes; a %d-replica class needs %d (Helm values: nodes.<name>.pools)",
-			pool, len(candidates), len(c.Nodes), count, count)
+			"storage pool %q exists on %d of %d storage nodes; a %d-replica class needs %d (Helm values: nodes.<name>.spec.pools)",
+			pool, len(candidates), len(nodes), count, count)
 	}
 
 	stats, err := c.poolStats(ctx)
@@ -466,7 +473,7 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 				"(capacity×%g overcommit, free×%g free-space)",
 			len(ordered), len(candidates), pool, sizeBytes, overcommit, freeSpace)
 	}
-	ordered = spreadByZone(ordered, pinned, count, func(n string) string { return c.Nodes[n].Zone })
+	ordered = spreadByZone(ordered, pinned, count, func(n string) string { return nodes[n].Zone })
 	for _, n := range ordered {
 		if overcommitted(n) {
 			room, _ := c.poolHeadroom(stats[n].Pool(pool), provisioned[nodePool{n, pool}])
@@ -481,7 +488,7 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 	for i, name := range ordered {
 		r := miroirv1alpha1.Replica{Node: name, Backend: candidates[name].Backend, Pool: pool}
 		if count > 1 {
-			addr, err := c.replicationAddress(ctx, name)
+			addr, err := c.replicationAddress(ctx, nodes, name)
 			if err != nil {
 				return nil, err
 			}
@@ -501,11 +508,15 @@ func (c *Controller) withTieBreaker(ctx context.Context, placed []miroirv1alpha1
 	if !c.AutoTieBreaker || replicas != 2 || quorum != miroirv1alpha1.QuorumFreeze {
 		return placed, nil
 	}
-	tb := c.Nodes.TieBreakerNode(placed)
+	nodes, err := c.nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tb := nodes.TieBreakerNode(placed)
 	if tb == "" {
 		return placed, nil
 	}
-	addr, err := c.replicationAddress(ctx, tb)
+	addr, err := c.replicationAddress(ctx, nodes, tb)
 	if err != nil {
 		return nil, err
 	}
@@ -551,12 +562,22 @@ func spreadByZone(ordered []string, pinned, count int, zoneOf func(string) strin
 
 // replicationAddress resolves a node's replication endpoint — the node
 // map's address override, or the node's InternalIP when unset.
-func (c *Controller) replicationAddress(ctx context.Context, name string) (string, error) {
-	addr, err := c.Nodes.ReplicationAddress(ctx, c.Client, name)
+func (c *Controller) replicationAddress(ctx context.Context, nodes nodemap.Map, name string) (string, error) {
+	addr, err := nodes.ReplicationAddress(ctx, c.Client, name)
 	if err != nil {
 		return "", status.Errorf(codes.Internal, "%v", err)
 	}
 	return addr, nil
+}
+
+// nodes resolves the current topology from the Source, mapping a resolve
+// failure to the gRPC error every caller would otherwise repeat.
+func (c *Controller) nodes(ctx context.Context) (nodemap.Map, error) {
+	nodes, err := c.Nodes.Map(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "%v", err)
+	}
+	return nodes, nil
 }
 
 // reader returns the API-server reader for read-your-writes, falling back
@@ -966,6 +987,10 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 		return nil, err
 	}
 	pool := parsePool(req.GetParameters())
+	nodes, err := c.nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	stats, err := c.poolStats(ctx)
 	if err != nil {
 		return nil, err
@@ -976,8 +1001,8 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 	}
 	provisioned := provisionedPerPool(list.Items, "")
 	available := func(node string) int64 {
-		if _, ok := c.Nodes.Pool(node, pool); !ok {
-			return 0 // the class's pool is not on this node
+		if _, ok := nodes.Pool(node, pool); !ok || nodes[node].AddressConflict {
+			return 0 // no pool here, or the node is unplaceable (address conflict)
 		}
 		// Unknown stats fall out as zero — excluded until the agent
 		// publishes, where place() would still admit.
@@ -1002,8 +1027,8 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 		if need == 0 {
 			return bound
 		}
-		peers := make([]int64, 0, len(c.Nodes))
-		for node := range c.Nodes {
+		peers := make([]int64, 0, len(nodes))
+		for node := range nodes {
 			if node != pinned {
 				peers = append(peers, available(node))
 			}
@@ -1021,7 +1046,7 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 	// Topology-aware provisioner: one segment per call.
 	if seg := req.GetAccessibleTopology().GetSegments(); seg != nil {
 		node := seg[constants.TopologyKey]
-		if _, hasPool := c.Nodes.Pool(node, pool); !hasPool {
+		if _, hasPool := nodes.Pool(node, pool); !hasPool {
 			if remoteAccess {
 				// Consumers here attach a diskless client leg; the volume
 				// lands wherever place() ranks best.
@@ -1101,6 +1126,10 @@ func csiSnapshot(snap *miroirv1alpha1.MiroirSnapshot, sizeBytes int64) *csi.Snap
 // live Node's InternalIP; the source's were captured at its creation and
 // can be stale).
 func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1.MiroirVolume, snap *miroirv1alpha1.MiroirSnapshot) ([]miroirv1alpha1.Replica, error) {
+	nodes, err := c.nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	reps := slices.Clone(srcVol.Spec.Replicas)
 	for i := range reps {
 		// A leg clones from that node's local snapshot only if the node
@@ -1113,7 +1142,7 @@ func (c *Controller) restoreReplicas(ctx context.Context, srcVol *miroirv1alpha1
 		if reps[i].Address == "" {
 			continue
 		}
-		addr, err := c.replicationAddress(ctx, reps[i].Node)
+		addr, err := c.replicationAddress(ctx, nodes, reps[i].Node)
 		if err != nil {
 			return nil, err
 		}

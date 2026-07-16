@@ -20,16 +20,19 @@ Snapshot classes:
 {{- end }}
 
 Before provisioning volumes, every storage node needs an entry under
-`nodes` in values.yaml declaring its storage pools, e.g.:
+`nodes` in values.yaml — rendered as its MiroirNode CR, spec verbatim:
   nodes:
     <node-name>:
-      pools:
-        default:
-          backend: lvmthin | zfs | loopfile
-          device: /dev/disk/by-partlabel/r-miroir   # lvmthin
-          # zfsDataset: pool/miroir                 # zfs
-          # baseDir: /var/lib/miroir                # loopfile (reflink-capable FS)
+      spec:
+        pools:
+          - name: default
+            backend: lvmthin              # lvmthin | zfs | loopfile
+            lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+            # zfs: { dataset: pool/miroir }
+            # loopfile: { baseDir: /var/lib/miroir }  # reflink-capable FS
 StorageClasses select a pool with their `pool` knob (absent = "default").
+Inspect the topology with `kubectl get miroirnodes`.
 
 Verify the rollout:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "miroir.name" . }}

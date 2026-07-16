@@ -165,8 +165,9 @@ helm upgrade --install miroir charts/miroir \
   --namespace miroir-system --create-namespace \
   --wait --timeout 5m \
   -f deploy/e2e/values.yaml \
-  --set "nodes.${node}.pools.default.backend=lvmthin" \
-  --set "nodes.${node}.pools.default.device=${device}"
+  --set "nodes.${node}.spec.pools[0].name=default" \
+  --set "nodes.${node}.spec.pools[0].backend=lvmthin" \
+  --set "nodes.${node}.spec.pools[0].lvmthin.device=${device}"
 '''
 
 [tasks.e2e-run]

@@ -32,6 +32,9 @@ const (
 	nodeC    = "node-c"
 	nodeD    = "node-d"
 	poolFast = "fast"
+
+	poolDefault = "default"
+	datasetTank = "tank/miroir"
 )
 
 // unreplicatedVolume is the minimal valid single-replica volume.
@@ -248,5 +251,145 @@ var _ = Describe("MiroirSnapshot CEL validation", func() {
 		err := k8sClient.Update(ctx, snap)
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "retarget must be rejected, got: %v", err)
 		Expect(err.Error()).To(ContainSubstring("immutable"))
+	})
+})
+
+// minimalNode is a valid single-pool MiroirNode for the CEL cases below.
+func minimalNode(name string, pool miroirv1alpha1.MiroirNodePool) *miroirv1alpha1.MiroirNode {
+	return &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{pool}},
+	}
+}
+
+func lvmthinPool(name string) miroirv1alpha1.MiroirNodePool {
+	return miroirv1alpha1.MiroirNodePool{
+		Name: name, Backend: miroirv1alpha1.BackendLVMThin,
+		LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/sdb"},
+	}
+}
+
+var _ = Describe("MiroirNode CEL validation", func() {
+	It("accepts each backend with its own block and applies the zfs defaults", func() {
+		node := &miroirv1alpha1.MiroirNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "min-valid"},
+			Spec: miroirv1alpha1.MiroirNodeSpec{
+				Zone:    "rack-1",
+				Address: "10.0.100.11",
+				Pools: []miroirv1alpha1.MiroirNodePool{
+					lvmthinPool(poolDefault),
+					{Name: "fast", Backend: miroirv1alpha1.BackendZFS,
+						ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank}},
+					{Name: "scratch", Backend: miroirv1alpha1.BackendLoopfile,
+						Loopfile: &miroirv1alpha1.LoopfilePool{BaseDir: "/var/lib/miroir"}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, node)).To(Succeed()) })
+
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(node), node)).To(Succeed())
+		Expect(node.Spec.Pools[1].ZFS.Compression).To(Equal("lz4"), "CRD default")
+		Expect(node.Spec.Pools[1].ZFS.VolBlockSize).To(Equal("4K"), "CRD default")
+	})
+
+	It("rejects a pool whose backend block is missing (the 0.10-agent truncation guard)", func() {
+		node := minimalNode("min-block-missing", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+		})
+		err := k8sClient.Create(ctx, node)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "missing zfs block must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("exactly the selected backend's configuration block"))
+
+		// The same rule is what refuses a 0.10 agent's truncating update:
+		// spec.pools rebuilt as bare {name, backend} loses the block.
+		valid := minimalNode("min-truncation", lvmthinPool(poolDefault))
+		Expect(k8sClient.Create(ctx, valid)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, valid)).To(Succeed()) })
+		valid.Spec.Pools = []miroirv1alpha1.MiroirNodePool{
+			{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin},
+		}
+		err = k8sClient.Update(ctx, valid)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "a truncating spec write must be rejected, got: %v", err)
+	})
+
+	It("rejects another backend's options — they are unrepresentable, not ignored", func() {
+		node := minimalNode("min-cross-block", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+			LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/sdb"},
+			ZFS:     &miroirv1alpha1.ZFSPool{Dataset: datasetTank},
+		})
+		err := k8sClient.Create(ctx, node)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "a zfs block on an lvmthin pool must be rejected, got: %v", err)
+	})
+
+	It("requires dataset and baseDir inside their blocks (plain schema, not CEL)", func() {
+		node := minimalNode("min-no-dataset", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS, ZFS: &miroirv1alpha1.ZFSPool{},
+		})
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, node))).To(BeTrue())
+
+		node = minimalNode("min-no-basedir", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendLoopfile, Loopfile: &miroirv1alpha1.LoopfilePool{},
+		})
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, node))).To(BeTrue())
+	})
+
+	It("allows an empty lvmthin block for a pre-provisioned VG", func() {
+		node := minimalNode("min-vg-exists", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin, LVMThin: &miroirv1alpha1.LVMThinPool{},
+		})
+		Expect(k8sClient.Create(ctx, node)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, node)).To(Succeed()) })
+	})
+
+	It("rejects two pools sharing a backing", func() {
+		node := &miroirv1alpha1.MiroirNode{
+			ObjectMeta: metav1.ObjectMeta{Name: "min-shared-backing"},
+			Spec: miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{
+				lvmthinPool("a"),
+				lvmthinPool("b"),
+			}},
+		}
+		err := k8sClient.Create(ctx, node)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "shared device must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("share a device"))
+	})
+
+	It("rejects invalid enum, pattern, and address values", func() {
+		bad := minimalNode("min-bad-blocksize", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, VolBlockSize: "12K"},
+		})
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "12K is not a valid volBlockSize")
+
+		// Canonical spellings only: the CRD validates, it does not fold case.
+		bad = minimalNode("min-bad-case", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, VolBlockSize: "16k"},
+		})
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "lowercase 16k must be rejected")
+
+		bad = minimalNode("min-bad-compression", miroirv1alpha1.MiroirNodePool{
+			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, Compression: "snappy"},
+		})
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "snappy is not an OpenZFS algorithm")
+
+		bad = minimalNode("min-bad-poolname", lvmthinPool("Fast_NVMe"))
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "pool names stay DNS-label-style")
+
+		bad = minimalNode("min-bad-address", lvmthinPool(poolDefault))
+		bad.Spec.Address = "not-an-ip"
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "address must be an IP")
+
+		bad = minimalNode("min-cidr-address", lvmthinPool(poolDefault))
+		bad.Spec.Address = "10.0.0.0/24"
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "a CIDR is not a host address")
+	})
+
+	It("requires at least one pool", func() {
+		node := &miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: "min-no-pools"}}
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, node))).To(BeTrue())
 	})
 })

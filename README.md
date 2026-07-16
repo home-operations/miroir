@@ -42,25 +42,30 @@ agent image. Details, including the Talos and Debian/Ubuntu node
 setup and the graceful-node-shutdown requirement:
 [Requirements](https://miroir.home-operations.com/requirements/).
 
-`nodes` declares which nodes hold storage and how — each node lists
-named storage pools, and a StorageClass picks one with `pool`
-(default: the pool named `default`); `storageClasses` declares the
-classes to create (`replicas: 1` is node-local, `replicas: 2` is
-DRBD-replicated). The common two-node pair:
+`nodes` declares which nodes hold storage and how — each entry is
+rendered as a MiroirNode custom resource (spec verbatim, validated by
+the CRD) listing named storage pools, and a StorageClass picks one
+with `pool` (default: the pool named `default`); `storageClasses`
+declares the classes to create (`replicas: 1` is node-local,
+`replicas: 2` is DRBD-replicated). The common two-node pair:
 
 ```yaml
 # values.yaml
 nodes:
     node-a:
-        pools:
-            default:
-                backend: lvmthin
-                device: /dev/disk/by-partlabel/r-miroir
+        spec:
+            pools:
+                - name: default
+                  backend: lvmthin
+                  lvmthin:
+                      device: /dev/disk/by-partlabel/r-miroir
     node-b:
-        pools:
-            default:
-                backend: lvmthin
-                device: /dev/disk/by-partlabel/r-miroir
+        spec:
+            pools:
+                - name: default
+                  backend: lvmthin
+                  lvmthin:
+                      device: /dev/disk/by-partlabel/r-miroir
 storageClasses:
     - name: miroir-local
       replicas: 1
