@@ -89,6 +89,7 @@ Kubernetes: `>=1.31.0`
 | drbd.verify.suspend | bool | `false` | Pause scheduled verify without dropping the schedule above. |
 | extraArgs | list | `[]` | Extra arguments for the controller container. |
 | extraEnv | list | `[]` | Extra environment variables for the controller container. |
+| freeSpaceRatio | int | `20` | Physical-space guardrail: CreateVolume is refused when the request would exceed the pool's *free* bytes × this ratio. overcommitRatio alone bounds virtual bytes, so a pool whose thin volumes have actually filled it can still admit more; running a pool out of space surfaces as I/O errors under live volumes rather than a clean refusal. 20× matches LINSTOR and BlockStor and only bites once a pool is ~90% full; lower it toward 1 to keep more physical headroom in reserve. |
 | fullnameOverride | string | `""` | Override the fully qualified name prefix of every rendered object. |
 | gateway.enabled | bool | `false` | Serve ReadWriteMany (and ReadOnlyMany) PVCs via per-volume NFS gateways. Opt-in: gateway pods run privileged in the release namespace, and any user who can create a PVC can cause one to be spawned, so enabling RWX is an explicit operator decision. While disabled the controller rejects RWX at provision time with a clear message, and the gateway ServiceAccount, RBAC, PodMonitor, and export alerts are not installed. |
 | gateway.image.digest | string | `""` |  |

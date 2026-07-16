@@ -53,6 +53,14 @@ provisionTimeout: 120s
 # classic CoW headroom; raise it only if you trust your usage to stay
 # sparse, lower it toward 1 to provision conservatively.
 overcommitRatio: 2
+# -- Physical-space guardrail: CreateVolume is refused when the request would
+# exceed the pool's *free* bytes × this ratio. overcommitRatio alone bounds
+# virtual bytes, so a pool whose thin volumes have actually filled it can
+# still admit more; running a pool out of space surfaces as I/O errors under
+# live volumes rather than a clean refusal. 20× matches LINSTOR and BlockStor
+# and only bites once a pool is ~90% full; lower it toward 1 to keep more
+# physical headroom in reserve.
+freeSpaceRatio: 20
 # -- Add a diskless tie-breaker replica to 2-replica freeze volumes when a
 # spare storage node exists, so majority quorum survives a single node
 # loss. Also retrofits existing freeze volumes at controller startup.

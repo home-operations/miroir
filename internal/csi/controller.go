@@ -64,6 +64,10 @@ type Controller struct {
 	// refused when a node's provisioned total would exceed
 	// capacity×ratio. Zero → defaultOvercommitRatio.
 	OvercommitRatio float64
+	// FreeSpaceRatio bounds provisioning against a pool's *physical* room:
+	// CreateVolume is refused when the request would exceed
+	// free×ratio. Zero → defaultFreeSpaceRatio. See poolHeadroom.
+	FreeSpaceRatio float64
 	// AutoTieBreaker adds a diskless tie-breaker replica to new 2-replica
 	// freeze volumes when a spare storage node exists (#70).
 	AutoTieBreaker bool
@@ -91,6 +95,14 @@ const (
 	// defaultOvercommitRatio caps provisioned-over-capacity per pool;
 	// 2× is the documented default.
 	defaultOvercommitRatio = 2.0
+	// defaultFreeSpaceRatio caps provisioned-over-physically-free per
+	// pool, matching LINSTOR's and BlockStor's 20× thin default. It only
+	// binds once a pool is ~90% physically full — below that the 2×
+	// virtual bound above is always the tighter of the two. The two are
+	// complements: the virtual bound governs a pool filling with
+	// provisioned-but-empty volumes, this one a pool whose volumes have
+	// actually filled it.
+	defaultFreeSpaceRatio = 20.0
 	// defaultDRBDPortBase is the lowest DRBD replication port when
 	// DRBDPortBase is unset (zero). Ceph mgr dashboard's non-SSL default
 	// is also 7000; operators co-locating with Rook host-network Ceph can
@@ -388,19 +400,15 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 		return nil, err
 	}
 	provisioned := provisionedPerPool(vols, name)
-	ratio := c.OvercommitRatio
-	if ratio <= 0 {
-		ratio = defaultOvercommitRatio
-	}
-	// overcommitted reports whether placing sizeBytes in the pool on node
-	// would push its provisioned total past capacity×ratio, using fresh
-	// stats only.
+	// overcommitted reports whether the pool on node lacks the headroom for
+	// sizeBytes, using fresh stats only — a node that has published none is
+	// admitted (GetCapacity is the one that steers the scheduler away).
 	overcommitted := func(node string) bool {
-		st := stats[node].Pool(pool)
-		if st == nil || st.CapacityBytes <= 0 {
+		room, known := c.poolHeadroom(stats[node].Pool(pool), provisioned[nodePool{node, pool}])
+		if !known {
 			return false
 		}
-		return float64(provisioned[nodePool{node, pool}]+sizeBytes) > float64(st.CapacityBytes)*ratio
+		return sizeBytes > room
 	}
 	// freeBytes is the pool headroom used to rank candidates; 0 (sorts
 	// last) when stats are unknown.
@@ -451,16 +459,21 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 	})
 	pinned := len(ordered) // topology-selected nodes, honored unconditionally
 	ordered = append(ordered, rest...)
+	overcommit, freeSpace := c.ratios()
 	if len(ordered) < count {
 		return nil, status.Errorf(codes.ResourceExhausted,
-			"only %d of the %d nodes carrying pool %q can host a %d-byte volume within the %gx overcommit ratio",
-			len(ordered), len(candidates), pool, sizeBytes, ratio)
+			"only %d of the %d nodes carrying pool %q can host a %d-byte volume within its capacity guardrails "+
+				"(capacity×%g overcommit, free×%g free-space)",
+			len(ordered), len(candidates), pool, sizeBytes, overcommit, freeSpace)
 	}
 	ordered = spreadByZone(ordered, pinned, count, func(n string) string { return c.Nodes[n].Zone })
 	for _, n := range ordered {
 		if overcommitted(n) {
+			room, _ := c.poolHeadroom(stats[n].Pool(pool), provisioned[nodePool{n, pool}])
 			return nil, status.Errorf(codes.ResourceExhausted,
-				"pool %q on node %s would exceed the %gx overcommit ratio for a %d-byte volume", pool, n, ratio, sizeBytes)
+				"pool %q on node %s has room for %d of the requested %d bytes "+
+					"(capacity×%g overcommit, free×%g free-space)",
+				pool, n, room, sizeBytes, overcommit, freeSpace)
 		}
 	}
 
@@ -574,6 +587,40 @@ func (c *Controller) poolStats(ctx context.Context) (map[string]miroirv1alpha1.M
 		out[n.Name] = n.Status
 	}
 	return out, nil
+}
+
+// poolHeadroom reports the largest volume a pool can still admit: its
+// virtual overcommit allowance (capacity×OvercommitRatio − provisioned)
+// bounded by its physical room (free×FreeSpaceRatio). Thin legs consume
+// the pool only as they fill, so the virtual bound alone keeps admitting
+// onto a pool with no physical space left — and ENOSPC under a live
+// volume surfaces as DRBD I/O errors and a detached leg rather than a
+// clean refusal at provision time.
+//
+// known is false when the node published no fresh stats; the two callers
+// deliberately disagree on what that means, so neither gets a default
+// here (place() admits anyway, GetCapacity reports zero).
+func (c *Controller) poolHeadroom(st *miroirv1alpha1.MiroirNodePoolStatus, provisioned int64) (room int64, known bool) {
+	if st == nil || st.CapacityBytes <= 0 {
+		return 0, false
+	}
+	overcommit, freeSpace := c.ratios()
+	virtual := int64(float64(st.CapacityBytes)*overcommit) - provisioned
+	physical := int64(float64(max(0, st.CapacityBytes-st.AllocatedBytes)) * freeSpace)
+	return max(0, min(virtual, physical)), true
+}
+
+// ratios reports the effective admission ratios with defaults applied, so
+// a refusal can name the knobs an operator would turn.
+func (c *Controller) ratios() (overcommit, freeSpace float64) {
+	overcommit, freeSpace = c.OvercommitRatio, c.FreeSpaceRatio
+	if overcommit <= 0 {
+		overcommit = defaultOvercommitRatio
+	}
+	if freeSpace <= 0 {
+		freeSpace = defaultFreeSpaceRatio
+	}
+	return overcommit, freeSpace
 }
 
 // nodePool keys per-pool bookkeeping: one pool on one node. Replica pool
@@ -892,8 +939,8 @@ func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.Controlle
 // kube-scheduler (via the external-provisioner's CSIStorageCapacity objects)
 // steers a WaitForFirstConsumer pod onto a node whose pool can hold the volume,
 // instead of landing there and having CreateVolume refuse it. The number is the
-// same overcommit headroom place() guards on — capacity×ratio − provisioned —
-// so the scheduler filters a node exactly when placement would reject it.
+// same headroom place() guards on — both go through poolHeadroom — so the
+// scheduler filters a node exactly when placement would reject it.
 //
 // The provisioner calls this once per (StorageClass, topology segment) with
 // the class's parameters, and the agent registers the driver on every node —
@@ -928,19 +975,14 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 		return nil, status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
 	}
 	provisioned := provisionedPerPool(list.Items, "")
-	ratio := c.OvercommitRatio
-	if ratio <= 0 {
-		ratio = defaultOvercommitRatio
-	}
 	available := func(node string) int64 {
 		if _, ok := c.Nodes.Pool(node, pool); !ok {
 			return 0 // the class's pool is not on this node
 		}
-		st := stats[node].Pool(pool)
-		if st == nil || st.CapacityBytes <= 0 {
-			return 0 // no fresh stats yet; excluded until the agent publishes
-		}
-		return max(0, int64(float64(st.CapacityBytes)*ratio)-provisioned[nodePool{node, pool}])
+		// Unknown stats fall out as zero — excluded until the agent
+		// publishes, where place() would still admit.
+		room, _ := c.poolHeadroom(stats[node].Pool(pool), provisioned[nodePool{node, pool}])
+		return room
 	}
 
 	// capacityFor is the largest volume the class can still place: each of
