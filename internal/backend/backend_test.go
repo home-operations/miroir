@@ -21,6 +21,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeExec records invocations and replays scripted responses keyed by a
@@ -195,6 +196,67 @@ func TestZFSCreateInheritsCompression(t *testing.T) {
 	}
 	fe.calledWith(t, "zfs create -s -b 4096 -V 10737418240 tank/miroir/pvc-1")
 	fe.notCalledWith(t, "compression=")
+}
+
+// zfs create returns before udev has published /dev/zvol/…; Create must
+// not hand back a path that cannot be opened yet.
+func TestZFSCreateWaitsForDeviceNode(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
+	probes := 0
+	exec := func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "blockdev" {
+			probes++
+			if probes < 3 {
+				return "", errors.New("No such file or directory")
+			}
+			return "10737418240", nil
+		}
+		return fe.run(ctx, name, args...)
+	}
+	b := newZFS(cfg, exec)
+	b.readyTimeout = time.Second
+
+	dev, err := b.Create(t.Context(), "pvc-1", 10<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev != "/dev/zvol/tank/miroir/pvc-1" {
+		t.Fatalf("unexpected device path %q", dev)
+	}
+	if probes != 3 {
+		t.Fatalf("expected Create to poll until the device opened, got %d probes", probes)
+	}
+}
+
+func TestZFSCreateSurfacesUnreadyDevice(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
+	fe.respond("blockdev --getsize64", "", errors.New("No such file or directory"))
+	b := newZFS(cfg, fe.run)
+	b.readyTimeout = 10 * time.Millisecond
+
+	_, err := b.Create(t.Context(), "pvc-1", 10<<30)
+	if err == nil {
+		t.Fatal("expected an error when the device node never appears")
+	}
+	if !strings.Contains(err.Error(), "not usable") {
+		t.Fatalf("error should name the unready device, got %v", err)
+	}
+}
+
+func TestZFSCreateFromSnapshotWaitsForDeviceNode(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -H tank/miroir/pvc-2", "", errors.New("dataset does not exist"))
+	fe.respond("blockdev --getsize64", "", errors.New("No such file or directory"))
+	b := newZFS(cfg, fe.run)
+	b.readyTimeout = 10 * time.Millisecond
+
+	_, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snap-1")
+	if err == nil {
+		t.Fatal("expected an error when the clone's device node never appears")
+	}
+	fe.calledWith(t, "zfs clone tank/miroir/pvc-1@snap-1 tank/miroir/pvc-2")
 }
 
 func TestZFSSnapshotIdempotent(t *testing.T) {

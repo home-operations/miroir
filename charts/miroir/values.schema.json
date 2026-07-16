@@ -281,6 +281,12 @@
       "title": "extraEnv",
       "type": "array"
     },
+    "freeSpaceRatio": {
+      "default": 20,
+      "description": "Physical-space guardrail: CreateVolume is refused when the request would\nexceed the pool's *free* bytes × this ratio. overcommitRatio alone bounds\nvirtual bytes, so a pool whose thin volumes have actually filled it can\nstill admit more; running a pool out of space surfaces as I/O errors under\nlive volumes rather than a clean refusal. 20× matches LINSTOR and BlockStor\nand only bites once a pool is ~90% full; lower it toward 1 to keep more\nphysical headroom in reserve.",
+      "title": "freeSpaceRatio",
+      "type": "integer"
+    },
     "fullnameOverride": {
       "default": "",
       "description": "Override the fully qualified name prefix of every rendered object.",

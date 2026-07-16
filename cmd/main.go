@@ -336,6 +336,7 @@ func main() {
 		nodesConfig      string
 		provisionTimeout time.Duration
 		overcommitRatio  float64
+		freeSpaceRatio   float64
 		autoTieBreaker   bool
 		autoDiskfulAfter time.Duration
 		autoEvictAfter   time.Duration
@@ -370,6 +371,8 @@ func main() {
 		"wait for agents to realise a new volume (controller; 0 → default)")
 	flag.Float64Var(&overcommitRatio, "overcommit-ratio", 0,
 		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
+	flag.Float64Var(&freeSpaceRatio, "free-space-ratio", 0,
+		"max provisioned-over-physically-free per pool before CreateVolume is refused (controller; 0 → default 20.0)")
 	flag.DurationVar(&autoDiskfulAfter, "auto-diskful-after", 0,
 		"convert a diskless client leg into a diskful replica once it has been attached this long "+
 			"(controller; 0 disables; needs a storage node with capacity — see LINSTOR auto-diskful)")
@@ -499,6 +502,7 @@ func main() {
 			Nodes:            nodes,
 			ProvisionTimeout: provisionTimeout,
 			OvercommitRatio:  overcommitRatio,
+			FreeSpaceRatio:   freeSpaceRatio,
 			AutoTieBreaker:   autoTieBreaker,
 			RWXEnabled:       gatewayImage != "",
 			DRBDPortBase:     int32(drbdPortBase),

@@ -169,6 +169,46 @@ func TestPlaceHonoursConfiguredRatio(t *testing.T) {
 	}
 }
 
+// The gap the free-space bound closes: nothing is provisioned here, so the
+// 2× virtual allowance (200 GiB) would happily admit onto a pool with 1 GiB
+// of physical room left. Filling a thin pool surfaces as I/O errors under
+// live volumes, so the refusal belongs at provision time.
+func TestPlaceRefusesPhysicallyFullPool(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeA, 100*gib, 99*gib),
+			miroirNodeObj(nodeB, 100*gib, 99*gib),
+		),
+		Nodes: testNodes,
+	}
+
+	// Default 20× free-space ratio: 1 GiB free admits at most 20 GiB.
+	_, err := c.place(t.Context(), nil, 1, 25*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("a physically full pool must be ResourceExhausted, got %v", err)
+	}
+}
+
+func TestPlaceHonoursConfiguredFreeSpaceRatio(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeA, 100*gib, 90*gib),
+			miroirNodeObj(nodeB, 100*gib, 90*gib),
+		),
+		Nodes:          testNodes,
+		FreeSpaceRatio: 1, // no overcommit against the 10 GiB still free
+	}
+
+	// The default 20× would admit this out of the same 10 GiB of free space,
+	// as would the untouched 2× virtual bound.
+	_, err := c.place(t.Context(), nil, 1, 50*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("1x free-space ratio must refuse a volume past the physical headroom, got %v", err)
+	}
+}
+
 func TestSpreadByZone(t *testing.T) {
 	zoneOf := func(m map[string]string) func(string) string {
 		return func(n string) string { return m[n] }
@@ -505,6 +545,49 @@ func TestGetCapacityOvercommittedIsZero(t *testing.T) {
 	}
 	if resp.GetAvailableCapacity() != 0 {
 		t.Fatalf("overcommitted node must report 0, got %d", resp.GetAvailableCapacity())
+	}
+}
+
+// GetCapacity must bound by physical room too, or the scheduler would keep
+// steering pods onto a node whose pool CreateVolume then refuses.
+func TestGetCapacityBoundedByFreeSpace(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s, miroirNodeObj(nodeA, 100*gib, 99*gib)),
+		Nodes:  testNodes,
+	}
+	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 1 GiB free × 20 = 20 GiB, well under the 200 GiB virtual allowance.
+	if resp.GetAvailableCapacity() != 20*gib {
+		t.Fatalf("capacity = %d, want the physical bound %d", resp.GetAvailableCapacity(), 20*gib)
+	}
+}
+
+// Acceptance criterion (#228): placement and GetCapacity must enforce the
+// same headroom, so the scheduler filters a node exactly when place() would
+// reject it. The reported figure is the largest volume place() still admits.
+func TestGetCapacityAgreesWithPlacement(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s, miroirNodeObj(nodeA, 100*gib, 95*gib)),
+		Nodes:  testNodes,
+	}
+	resp, err := c.GetCapacity(t.Context(), topologySegment(nodeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	room := resp.GetAvailableCapacity()
+
+	vols := placementVols(t, c.Client)
+	if _, err := c.place(t.Context(), topologyPref(nodeA), 1, room, volNew, vols, false, poolDefault); err != nil {
+		t.Fatalf("place must admit exactly the reported capacity (%d): %v", room, err)
+	}
+	_, err = c.place(t.Context(), topologyPref(nodeA), 1, room+1, volNew, vols, false, poolDefault)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("place must refuse one byte over the reported capacity, got %v", err)
 	}
 }
 

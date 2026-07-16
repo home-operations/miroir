@@ -60,6 +60,7 @@ spec:
             - --nodes-config=/etc/miroir/nodes.yaml
             - --provision-timeout={{ .Values.provisionTimeout }}
             - --overcommit-ratio={{ .Values.overcommitRatio }}
+            - --free-space-ratio={{ .Values.freeSpaceRatio }}
             - --auto-tie-breaker={{ .Values.autoTieBreaker }}
             {{- with .Values.autoDiskfulAfter }}
             - --auto-diskful-after={{ . }}
