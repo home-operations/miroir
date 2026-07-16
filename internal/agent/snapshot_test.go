@@ -74,8 +74,12 @@ func reconcileSnap(t *testing.T, r *SnapshotReconciler, name string) ctrl.Result
 func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA)
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true},
+	}
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(vol(volPvc1, nodeA), snapObj(snapSnap1, volPvc1, nodeA)).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
 		Build()
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
@@ -88,6 +92,35 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 	}
 	if !got.Status.ReadyToUse {
 		t.Fatalf("unreplicated snapshot must be ready after one pass: %+v", got.Status)
+	}
+}
+
+// A snapshot scheduled before the volume reconciler created the backing
+// device (the two reconcilers race at startup, issue #195) must wait
+// quietly instead of error-looping Sync on the missing device.
+func TestSnapshotUnreplicatedWaitsForBackingDevice(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(vol(volPvc1, nodeA), snapObj(snapSnap1, volPvc1, nodeA)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+
+	res := reconcileSnap(t, r, snapSnap1)
+
+	if res.RequeueAfter != 5*time.Second {
+		t.Fatalf("want a 5s wait for the backing device, got %v", res.RequeueAfter)
+	}
+	if len(fb.snapCalls) != 0 {
+		t.Fatalf("must not touch the backend before the device exists: %v", fb.snapCalls)
+	}
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.ReadyToUse {
+		t.Fatal("snapshot must not report ready before the device exists")
 	}
 }
 

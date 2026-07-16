@@ -229,6 +229,13 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	if vol.Spec.DRBD == nil {
+		// The volume reconciler has not created the backing device yet —
+		// the two reconcilers race at startup, and Sync on the missing
+		// device would error-loop until it exists (issue #195). Mirrors
+		// the replicated path's DiskState gate above.
+		if !vol.Status.PerNode[r.NodeName].DeviceCreated {
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
 		// Single replica: no barrier needed, but queued writes must land.
 		be, err := r.backendFor(vol)
 		if err != nil {
