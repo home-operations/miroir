@@ -81,6 +81,43 @@
               "default": "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0",
               "title": "image",
               "type": "string"
+            },
+            "resources": {
+              "description": "Registrar sidecar resources.",
+              "properties": {
+                "limits": {
+                  "properties": {
+                    "memory": {
+                      "default": "64Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "limits",
+                  "type": "object"
+                },
+                "requests": {
+                  "properties": {
+                    "cpu": {
+                      "default": "5m",
+                      "title": "cpu",
+                      "type": "string"
+                    },
+                    "memory": {
+                      "default": "16Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "requests",
+                  "type": "object"
+                }
+              },
+              "required": [],
+              "title": "resources",
+              "type": "object"
             }
           },
           "required": [],
@@ -164,6 +201,44 @@
             "integer",
             "string"
           ]
+        },
+        "extraConfig": {
+          "description": "Free-form escape hatch for DRBD options the chart has no knob for:\nverbatim option lines (semicolons included) appended inside the matching\nsection of common{} in global_common.conf, inherited by every resource.\nOnly validated when an agent next runs drbdadm adjust, and a bad line\nbreaks every resource on the node — test on a throwaway cluster first.",
+          "properties": {
+            "disk": {
+              "default": "",
+              "description": "Extra lines for the disk {} section\n(e.g. \"read-balancing least-pending;\").",
+              "title": "disk",
+              "type": "string"
+            },
+            "handlers": {
+              "default": "",
+              "description": "Extra lines for the handlers {} section (e.g. fence handlers).",
+              "title": "handlers",
+              "type": "string"
+            },
+            "net": {
+              "default": "",
+              "description": "Extra lines for the net {} section (e.g. \"csums-alg crc32c;\").",
+              "title": "net",
+              "type": "string"
+            },
+            "options": {
+              "default": "",
+              "description": "Extra lines for the options {} section (resource options).",
+              "title": "options",
+              "type": "string"
+            },
+            "startup": {
+              "default": "",
+              "description": "Extra lines for the startup {} section.",
+              "title": "startup",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "title": "extraConfig",
+          "type": "object"
         },
         "net": {
           "properties": {
@@ -616,6 +691,12 @@
               "title": "labels",
               "type": "object"
             },
+            "overrides": {
+              "description": "Per-alert overrides keyed by alert name. Per entry: `disabled: true`\ndrops the rule, `for` replaces the rule's wait period, and `labels`\nmerge over the rule's own (set `severity` here to reclassify one\nalert). Example:\n  overrides:\n    MiroirVolumeOutOfSync: { disabled: true }\n    MiroirVolumeDisconnected:\n      for: 30m\n      labels: { severity: info }",
+              "required": [],
+              "title": "overrides",
+              "type": "object"
+            },
             "verifyStaleDays": {
               "default": 8,
               "description": "Days since the last completed scheduled verify before\nMiroirVolumeVerifyStale fires. Size it to just over the schedule\nperiod (a weekly `drbd.verify.schedule` → 8). The rule is only\nrendered when `drbd.verify.schedule` is set.",
@@ -738,6 +819,43 @@
               "description": "How often the monitor re-checks every volume's condition.",
               "title": "interval",
               "type": "string"
+            },
+            "resources": {
+              "description": "Health-monitor sidecar resources.",
+              "properties": {
+                "limits": {
+                  "properties": {
+                    "memory": {
+                      "default": "128Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "limits",
+                  "type": "object"
+                },
+                "requests": {
+                  "properties": {
+                    "cpu": {
+                      "default": "10m",
+                      "title": "cpu",
+                      "type": "string"
+                    },
+                    "memory": {
+                      "default": "32Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "requests",
+                  "type": "object"
+                }
+              },
+              "required": [],
+              "title": "resources",
+              "type": "object"
             }
           },
           "required": [],
@@ -750,6 +868,43 @@
               "default": "registry.k8s.io/sig-storage/csi-provisioner:v6.3.0",
               "title": "image",
               "type": "string"
+            },
+            "resources": {
+              "description": "Provisioner sidecar resources.",
+              "properties": {
+                "limits": {
+                  "properties": {
+                    "memory": {
+                      "default": "128Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "limits",
+                  "type": "object"
+                },
+                "requests": {
+                  "properties": {
+                    "cpu": {
+                      "default": "10m",
+                      "title": "cpu",
+                      "type": "string"
+                    },
+                    "memory": {
+                      "default": "32Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "requests",
+                  "type": "object"
+                }
+              },
+              "required": [],
+              "title": "resources",
+              "type": "object"
             },
             "timeout": {
               "default": "120s",
@@ -769,6 +924,43 @@
               "title": "image",
               "type": "string"
             },
+            "resources": {
+              "description": "Resizer sidecar resources.",
+              "properties": {
+                "limits": {
+                  "properties": {
+                    "memory": {
+                      "default": "128Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "limits",
+                  "type": "object"
+                },
+                "requests": {
+                  "properties": {
+                    "cpu": {
+                      "default": "10m",
+                      "title": "cpu",
+                      "type": "string"
+                    },
+                    "memory": {
+                      "default": "32Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "requests",
+                  "type": "object"
+                }
+              },
+              "required": [],
+              "title": "resources",
+              "type": "object"
+            },
             "timeout": {
               "default": "120s",
               "description": "Online grow can block on a rebooting node; keep \u003e= provisionTimeout.",
@@ -786,6 +978,43 @@
               "default": "registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0",
               "title": "image",
               "type": "string"
+            },
+            "resources": {
+              "description": "Snapshotter sidecar resources.",
+              "properties": {
+                "limits": {
+                  "properties": {
+                    "memory": {
+                      "default": "128Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "limits",
+                  "type": "object"
+                },
+                "requests": {
+                  "properties": {
+                    "cpu": {
+                      "default": "10m",
+                      "title": "cpu",
+                      "type": "string"
+                    },
+                    "memory": {
+                      "default": "32Mi",
+                      "title": "memory",
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "title": "requests",
+                  "type": "object"
+                }
+              },
+              "required": [],
+              "title": "resources",
+              "type": "object"
             },
             "timeout": {
               "default": "120s",
@@ -817,7 +1046,7 @@
       "type": "object"
     },
     "storageClasses": {
-      "description": "=============================================================================\nStorage classes\n=============================================================================\nStorageClasses to create. Empty by default: declare the classes you\nwant. One local + one replicated is the common pair (see the example\nbelow). Per entry:\n  name          (required) the StorageClass name\n  replicas      replica count, default 1; \u003e1 makes it DRBD-replicated\n  quorum        freeze | last-man-standing (replicated only, default\n                freeze). freeze never diverges but halts writes without a\n                peer majority; last-man-standing keeps the survivor\n                writable at the risk of split-brain. See the root README,\n                \"Replication and quorum\".\n  fsType        ext4 | xfs, default ext4\n  pool          named storage pool the class provisions from, default\n                \"default\". Every replica of a volume lands in this pool\n                on its node, so the pool must exist (under nodes.\u003cname\u003e\n                .pools) on at least `replicas` nodes.\n  allowRemoteVolumeAccess\n                true | false (replicated only; the controller defaults\n                absent to true, matching LINSTOR): pods on nodes without\n                a replica consume the volume through an ephemeral\n                diskless DRBD leg at replication-network speed. Set\n                false to pin pods to replica nodes for local reads. See\n                the root README, \"Remote consumers\".\n  bitmapGranularity\n                DRBD bitmap block size in bytes (replicated only): a\n                power of two, 4096–1048576, default absent (DRBD's 4096).\n                Each dirty bit tracks this many bytes — coarser cuts\n                bitmap RAM proportionally (65536 ≈ 1/16th) but resyncs\n                more per dirty bit; worth considering for classes holding\n                large volumes. Fixed when a replica's metadata is\n                created: changing the class affects new volumes only.\n  reclaimPolicy Delete | Retain, default Delete\n  isDefault     set the cluster default-class annotation, default false\nExample (coexisting with OpenEBS, which stays the cluster default):\n  storageClasses:\n    - name: miroir-local\n      replicas: 1\n    - name: miroir-replicated\n      replicas: 2\n      quorum: freeze",
+      "description": "=============================================================================\nStorage classes\n=============================================================================\nStorageClasses to create. Empty by default: declare the classes you\nwant. One local + one replicated is the common pair (see the example\nbelow). Per entry:\n  name          (required) the StorageClass name\n  replicas      replica count, default 1; \u003e1 makes it DRBD-replicated\n  quorum        freeze or last-man-standing (replicated only, default\n                freeze). freeze never diverges but halts writes without a\n                peer majority; last-man-standing keeps the survivor\n                writable at the risk of split-brain. See the root README,\n                \"Replication and quorum\".\n  fsType        ext4 or xfs, default ext4\n  pool          named storage pool the class provisions from, default\n                \"default\". Every replica of a volume lands in this pool\n                on its node, so the pool must exist (under nodes.\u003cname\u003e\n                .pools) on at least `replicas` nodes.\n  allowRemoteVolumeAccess\n                true or false (replicated only; the controller defaults\n                absent to true, matching LINSTOR): pods on nodes without\n                a replica consume the volume through an ephemeral\n                diskless DRBD leg at replication-network speed. Set\n                false to pin pods to replica nodes for local reads. See\n                the root README, \"Remote consumers\".\n  bitmapGranularity\n                DRBD bitmap block size in bytes (replicated only): a\n                power of two, 4096–1048576, default absent (DRBD's 4096).\n                Each dirty bit tracks this many bytes — coarser cuts\n                bitmap RAM proportionally (65536 ≈ 1/16th) but resyncs\n                more per dirty bit; worth considering for classes holding\n                large volumes. Fixed when a replica's metadata is\n                created: changing the class affects new volumes only.\n  reclaimPolicy Delete or Retain, default Delete\n  isDefault     set the cluster default-class annotation, default false\n  volumeBindingMode\n                WaitForFirstConsumer (default) delays provisioning until a\n                pod schedules, so placement can prefer that pod's node;\n                Immediate provisions on PVC creation — reasonable for a\n                replicated class consumed remotely.\n  mountOptions  mount options for the class's PVs (list of strings)\n  annotations   extra annotations on the StorageClass\n  labels        extra labels on the StorageClass\nExample (coexisting with OpenEBS, which stays the cluster default):\n  storageClasses:\n    - name: miroir-local\n      replicas: 1\n    - name: miroir-replicated\n      replicas: 2\n      quorum: freeze",
       "items": {
         "required": []
       },
@@ -825,10 +1054,17 @@
       "type": "array"
     },
     "uninstall": {
-      "description": "=============================================================================\nUninstall hook\n=============================================================================\nPre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent\ntears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.",
+      "description": "=============================================================================\nUninstall hook\n=============================================================================\n`helm uninstall` data handling. By default the release is removed but every\nMiroirVolume/MiroirSnapshot — and the data on the nodes — is left in place\n(the CRDs, installed from crds/, survive uninstall too, so a reinstall\nre-adopts everything). Destroying the data is opt-in via `confirmation`.",
       "properties": {
+        "confirmation": {
+          "default": "",
+          "description": "Consent to destroy all volume data on `helm uninstall`: set to the\nliteral \"yes-really-destroy-data\" to render the pre-delete hook Job that\ndeletes every MiroirSnapshot and MiroirVolume — the agents then tear down\neach DRBD resource and backing device, including volumes whose PV\nreclaimPolicy is Retain. Hooks are baked into the release at\ninstall/upgrade time, so set this with a `helm upgrade` *before* running\n`helm uninstall`. Any other non-empty value fails the render.",
+          "title": "confirmation",
+          "type": "string"
+        },
         "image": {
           "default": "registry.k8s.io/kubectl:v1.36.2",
+          "description": "Image for the uninstall hook Job (needs only `kubectl`).",
           "title": "image",
           "type": "string"
         }
@@ -837,8 +1073,14 @@
       "title": "uninstall",
       "type": "object"
     },
+    "unreachableNodeTolerationSeconds": {
+      "default": 5,
+      "description": "Seconds the controller pod stays bound to an unreachable node before\neviction. The Kubernetes default (300) leaves a single-replica controller\nunable to provision, expand, or snapshot for five minutes after its node\ndies; 5 reschedules it almost immediately (the controller is stateless).",
+      "title": "unreachableNodeTolerationSeconds",
+      "type": "integer"
+    },
     "volumeSnapshotClasses": {
-      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).\nVolumeSnapshotClasses to create (requires the snapshot-controller +\nCRDs, deployed separately). Empty by default. Per entry:\n  name           (required) the VolumeSnapshotClass name\n  deletionPolicy Delete | Retain, default Delete\n  isDefault      set the cluster default-snapshot-class annotation,\n                 default false\nExample:\n  volumeSnapshotClasses:\n    - name: miroir-snap\n      deletionPolicy: Delete",
+      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).\nVolumeSnapshotClasses to create (requires the snapshot-controller +\nCRDs, deployed separately). Empty by default. Per entry:\n  name           (required) the VolumeSnapshotClass name\n  deletionPolicy Delete or Retain, default Delete\n  isDefault      set the cluster default-snapshot-class annotation,\n                 default false\n  annotations    extra annotations on the VolumeSnapshotClass\n  labels         extra labels on the VolumeSnapshotClass\nExample:\n  volumeSnapshotClasses:\n    - name: miroir-snap\n      deletionPolicy: Delete",
       "items": {
         "required": []
       },

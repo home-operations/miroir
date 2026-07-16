@@ -15,9 +15,16 @@ data:
         udev-always-use-vnr;
     }
     common {
-        handlers {}
-        startup {}
-        options {}
+    {{- range $section := list "handlers" "startup" "options" }}
+    {{- $extra := index $.Values.drbd.extraConfig $section }}
+    {{- if $extra }}
+        {{ $section }} {
+            {{- trim $extra | nindent 12 }}
+        }
+    {{- else }}
+        {{ $section }} {}
+    {{- end }}
+    {{- end }}
         disk {
         {{- with .Values.drbd.onIoError }}
             on-io-error {{ . }};
@@ -45,6 +52,9 @@ data:
             rs-discard-granularity {{ .discardGranularity }};
         {{- end }}
         {{- end }}
+        {{- with .Values.drbd.extraConfig.disk }}
+            {{- trim . | nindent 12 }}
+        {{- end }}
         }
         net {
         {{- with .Values.drbd.net.maxBuffers }}
@@ -52,6 +62,9 @@ data:
         {{- end }}
         {{- with .Values.drbd.verify.algorithm }}
             verify-alg {{ . }};
+        {{- end }}
+        {{- with .Values.drbd.extraConfig.net }}
+            {{- trim . | nindent 12 }}
         {{- end }}
         }
     }

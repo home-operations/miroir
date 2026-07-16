@@ -1,0 +1,38 @@
+suite: test uninstall hook
+templates:
+  - uninstall-job.tpl
+  - job-rbac.tpl
+release:
+  name: miroir
+  namespace: miroir-system
+tests:
+  - it: renders no hook by default — uninstall keeps the data
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: the confirmation renders the hook Job and its RBAC
+    set:
+      uninstall.confirmation: yes-really-destroy-data
+    asserts:
+      - hasDocuments:
+          count: 1
+        template: uninstall-job.tpl
+      - hasDocuments:
+          count: 3
+        template: job-rbac.tpl
+      - isKind:
+          of: Job
+        template: uninstall-job.tpl
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: [delete, "miroirsnapshots,miroirvolumes", --all, --ignore-not-found]
+        template: uninstall-job.tpl
+
+  - it: any other confirmation value fails the render
+    set:
+      uninstall.confirmation: "yes"
+    template: uninstall-job.tpl
+    asserts:
+      - failedTemplate:
+          errorPattern: must be exactly

@@ -1,3 +1,10 @@
+{{- /* Data destruction is opt-in: without the exact confirmation the hook
+(and its RBAC) is not rendered, and helm uninstall leaves every
+MiroirVolume/MiroirSnapshot — and the data — in place. */}}
+{{- if .Values.uninstall.confirmation }}
+{{- if ne .Values.uninstall.confirmation "yes-really-destroy-data" }}
+{{- fail "uninstall.confirmation must be exactly \"yes-really-destroy-data\" (or empty to keep the data on uninstall)" }}
+{{- end }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -24,3 +31,4 @@ spec:
             - miroirsnapshots,miroirvolumes
             - --all
             - --ignore-not-found
+{{- end }}

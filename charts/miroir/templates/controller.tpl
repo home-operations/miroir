@@ -40,10 +40,16 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.global.tolerations }}
       tolerations:
+        # Pre-empts the 300s default so a dead node stalls provisioning for
+        # seconds, not five minutes, before the pod reschedules.
+        - key: node.kubernetes.io/unreachable
+          operator: Exists
+          effect: NoExecute
+          tolerationSeconds: {{ .Values.unreachableNodeTolerationSeconds }}
+        {{- with .Values.global.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       {{- with .Values.global.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
@@ -129,9 +135,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
           {{- end }}
-          resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 128Mi }
+          resources: {{- toYaml .Values.sidecars.provisioner.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
@@ -141,9 +145,7 @@ spec:
             - --csi-address=/csi/csi.sock
             - --timeout={{ .Values.sidecars.snapshotter.timeout }}
             - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
-          resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 128Mi }
+          resources: {{- toYaml .Values.sidecars.snapshotter.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
@@ -153,9 +155,7 @@ spec:
             - --csi-address=/csi/csi.sock
             - --timeout={{ .Values.sidecars.resizer.timeout }}
             - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
-          resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 128Mi }
+          resources: {{- toYaml .Values.sidecars.resizer.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
@@ -166,9 +166,7 @@ spec:
             - --csi-address=/csi/csi.sock
             - --monitor-interval={{ .Values.sidecars.healthMonitor.interval }}
             - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
-          resources:
-            requests: { cpu: 10m, memory: 32Mi }
-            limits: { memory: 128Mi }
+          resources: {{- toYaml .Values.sidecars.healthMonitor.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi

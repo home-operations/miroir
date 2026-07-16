@@ -345,8 +345,9 @@ tests:
       - equal:
           path: spec.template.spec.nodeSelector["kubernetes.io/arch"]
           value: amd64
+      # Global tolerations append after the built-in unreachable toleration.
       - equal:
-          path: spec.template.spec.tolerations[0].key
+          path: spec.template.spec.tolerations[1].key
           value: dedicated
       - equal:
           path: metadata.labels.team
@@ -359,8 +360,48 @@ tests:
           path: spec.template.spec.imagePullSecrets
       - notExists:
           path: spec.template.spec.nodeSelector
-      - notExists:
+      # Only the built-in unreachable toleration.
+      - lengthEqual:
           path: spec.template.spec.tolerations
+          count: 1
+
+  - it: tolerates an unreachable node for 5s so a dead node reschedules fast
+    documentIndex: 0
+    asserts:
+      - contains:
+          path: spec.template.spec.tolerations
+          content:
+            key: node.kubernetes.io/unreachable
+            operator: Exists
+            effect: NoExecute
+            tolerationSeconds: 5
+
+  - it: honours unreachableNodeTolerationSeconds
+    set:
+      unreachableNodeTolerationSeconds: 300
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.tolerations[0].tolerationSeconds
+          value: 300
+
+  - it: sidecar resources come from values
+    set:
+      sidecars.provisioner.resources:
+        requests: { cpu: 50m, memory: 256Mi }
+        limits: { memory: 512Mi }
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[?(@.name == "csi-provisioner")].resources.limits.memory
+          value: 512Mi
+      # The others keep their defaults.
+      - equal:
+          path: spec.template.spec.containers[?(@.name == "csi-resizer")].resources.limits.memory
+          value: 128Mi
+      - equal:
+          path: spec.template.spec.containers[?(@.name == "csi-snapshotter")].resources.requests.cpu
+          value: 10m
 
   - it: honours fullnameOverride and nameOverride
     set:

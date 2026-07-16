@@ -122,3 +122,37 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "drbd.verifyAlg was renamed to drbd.verify.algorithm"
+
+  - it: appends drbd.extraConfig lines inside the matching common{} sections
+    set:
+      drbd:
+        extraConfig:
+          handlers: |
+            fence-peer "/usr/lib/drbd/crm-fence-peer.9.sh";
+          disk: |
+            read-balancing least-pending;
+          net: |
+            csums-alg crc32c;
+            sndbuf-size 10M;
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "handlers \\{\n        fence-peer"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "read-balancing least-pending;"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "csums-alg crc32c;\n        sndbuf-size 10M;"
+      # Chart-rendered options keep their place in the same sections.
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "on-io-error detach;"
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "verify-alg crc32c;"
+      # Untouched sections stay in their empty inline form.
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "startup \\{\\}"
