@@ -537,10 +537,18 @@ func main() {
 		// The DaemonSet's chart-side scope is every schedulable node, but
 		// only storage nodes run agent-backed backends. A node with no
 		// MiroirNode holds no volumes and runs a client-only node service so
-		// pods there can still mount RWX (NFS) volumes.
+		// pods there can still mount RWX (NFS) volumes. A MiroirNode with no
+		// pools (unwritable under the current CRD, but a pre-0.11 stored
+		// object survives revalidation) holds no storage either and gets the
+		// same treatment — setupAgentPools would read zero pools as "every
+		// pool failed" and crash-loop.
 		miroirNode, found := agentTopology(mgr, nodeName, stop)
-		if !found {
-			setupLog.Info("no MiroirNode for this node; running client-only node service", "node", nodeName)
+		if !found || len(miroirNode.Spec.Pools) == 0 {
+			msg := "no MiroirNode for this node; running client-only node service"
+			if found {
+				msg = "MiroirNode declares no pools; running client-only node service"
+			}
+			setupLog.Info(msg, "node", nodeName)
 			// Client legs get DRBD configs rendered here too, so the
 			// kernel floor binds on client-only nodes as well.
 			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}

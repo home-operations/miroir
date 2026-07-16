@@ -21,11 +21,15 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	mount "k8s.io/mount-utils"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
@@ -143,8 +147,19 @@ func (w *TopologyWatcher) SetupWithManager(mgr ctrl.Manager) error {
 	own := predicate.NewPredicateFuncs(func(o client.Object) bool {
 		return o.GetName() == w.NodeName
 	})
+	// One synthetic boot event: a MiroirNode deleted between the agent's
+	// direct startup read and the informer's initial list produces no
+	// watch event at all (absent from the list means neither Add nor
+	// Delete), so without it the agent would serve the stale topology
+	// until some unrelated write touched the object. The extra Reconcile
+	// no-ops when nothing drifted.
+	boot := make(chan event.GenericEvent, 1)
+	boot <- event.GenericEvent{Object: &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: w.NodeName},
+	}}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirNode{}, builder.WithPredicates(own)).
+		WatchesRawSource(source.Channel(boot, &handler.EnqueueRequestForObject{})).
 		Named("topologywatcher").
 		Complete(w)
 }
