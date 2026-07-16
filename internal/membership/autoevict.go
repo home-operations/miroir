@@ -56,10 +56,6 @@ import (
 // alive; kicking it would discard a healthy replica).
 type AutoEvictReconciler struct {
 	client.Client
-	// Nodes yields the storage topology, folded from the MiroirNode CRs
-	// per reconcile — placement candidates and the per-node opt-out come
-	// from it.
-	Nodes nodemap.Source
 	// After is the heartbeat staleness that declares a node dead; the
 	// setup path guards > 0.
 	After time.Duration
@@ -91,18 +87,22 @@ type evictPass struct {
 func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	topology, err := r.Nodes.Map(ctx)
-	if err != nil {
+	// One MiroirNode list serves the whole pass — the topology fold, the
+	// opt-out gate, the heartbeat read, and the staleness census — so no
+	// two reads can observe different topologies.
+	nodes := &miroirv1alpha1.MiroirNodeList{}
+	if err := r.List(ctx, nodes); err != nil {
 		return ctrl.Result{}, err
 	}
+	topology := nodemap.FromNodes(nodes.Items)
 	if !topology.AutoEvictAllowed(req.Name) {
-		// Not a storage node, or opted out via the topology.
+		// Deleted between event and reconcile, or opted out via the spec.
 		return ctrl.Result{}, nil
 	}
-	mn := &miroirv1alpha1.MiroirNode{}
-	if err := r.Get(ctx, req.NamespacedName, mn); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
+	idx := slices.IndexFunc(nodes.Items, func(n miroirv1alpha1.MiroirNode) bool {
+		return n.Name == req.Name
+	})
+	mn := &nodes.Items[idx]
 	if mn.Status.ObservedAt == nil {
 		// Never heartbeated: there is no "was alive, went dark" signal to
 		// act on (a node added to the map but not yet provisioned).
@@ -112,7 +112,7 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
-	pass, stale, err := r.gather(ctx, topology)
+	pass, stale, err := r.gather(ctx, nodes, topology)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -160,14 +160,10 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
-// gather lists the cluster state one eviction pass needs — MiroirNodes
-// (the safety-valve census and the capacity views) and snapshots (the
-// pin set) — exactly once.
-func (r *AutoEvictReconciler) gather(ctx context.Context, topology nodemap.Map) (*evictPass, []string, error) {
-	nodes := &miroirv1alpha1.MiroirNodeList{}
-	if err := r.List(ctx, nodes); err != nil {
-		return nil, nil, err
-	}
+// gather builds the cluster state one eviction pass needs from the
+// caller's MiroirNode list (the safety-valve census and the capacity
+// views) plus one snapshot list (the pin set).
+func (r *AutoEvictReconciler) gather(ctx context.Context, nodes *miroirv1alpha1.MiroirNodeList, topology nodemap.Map) (*evictPass, []string, error) {
 	pass := &evictPass{
 		pinned:   map[string]bool{},
 		nodes:    make(map[string]*miroirv1alpha1.MiroirNode, len(nodes.Items)),
@@ -177,9 +173,6 @@ func (r *AutoEvictReconciler) gather(ctx context.Context, topology nodemap.Map) 
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
 		pass.nodes[n.Name] = n
-		if _, ok := topology[n.Name]; !ok {
-			continue
-		}
 		if n.Status.ObservedAt != nil && time.Since(n.Status.ObservedAt.Time) >= r.After {
 			stale = append(stale, n.Name)
 		}

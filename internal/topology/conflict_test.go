@@ -76,6 +76,32 @@ func reconcile(t *testing.T, c client.Client, name string) *miroirv1alpha1.Miroi
 	return n
 }
 
+// One pass covers the whole topology: a single reconcile (any request
+// name) must stamp the condition on every node, conflicted or not.
+func TestConflictSinglePassCoversAllNodes(t *testing.T) {
+	c := newClient(t, addrNode(nodeA, "10.0.100.1"), addrNode(nodeB, "10.0.100.1"),
+		addrNode(nodeC, "10.0.100.3"))
+	r := &ConflictReconciler{Client: c}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "topology"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, conflicted := range map[string]bool{nodeA: true, nodeB: true, nodeC: false} {
+		n := &miroirv1alpha1.MiroirNode{}
+		if err := c.Get(t.Context(), types.NamespacedName{Name: name}, n); err != nil {
+			t.Fatal(err)
+		}
+		cond := meta.FindStatusCondition(n.Status.Conditions, ConditionAddressConflict)
+		if cond == nil {
+			t.Fatalf("one pass must stamp the condition on %s", name)
+		}
+		if got := cond.Status == metav1.ConditionTrue; got != conflicted {
+			t.Fatalf("%s: conflicted=%v, want %v (%+v)", name, got, conflicted, cond)
+		}
+	}
+}
+
 func TestConflictConditionRaisedAndNamesPeer(t *testing.T) {
 	c := newClient(t, addrNode(nodeA, "10.0.100.1"), addrNode(nodeB, "10.0.100.1"),
 		addrNode(nodeC, "10.0.100.3"))

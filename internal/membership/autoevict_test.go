@@ -32,7 +32,6 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/drbd"
-	"github.com/home-operations/miroir/internal/nodemap"
 )
 
 const (
@@ -40,23 +39,19 @@ const (
 	volPvc1 = "pvc-1"
 )
 
-// evictMap is the 3-storage-node topology plus a spare (node-d), all on
-// the default pool.
-func evictMap() nodemap.Map {
-	return nodemap.Map{
-		nodeA: storageNode(miroirv1alpha1.BackendZFS),
-		nodeB: storageNode(miroirv1alpha1.BackendZFS),
-		nodeC: storageNode(miroirv1alpha1.BackendZFS),
-		nodeD: storageNode(miroirv1alpha1.BackendZFS),
-	}
-}
-
-// minAt is a MiroirNode whose heartbeat is age old, with the given free
-// space in the default pool.
+// minAt is a MiroirNode carrying a zfs default pool whose heartbeat is
+// age old, with the given free space in the pool. The reconciler folds
+// its topology from these CRs — the nodes seeded per test ARE the
+// topology.
 func minAt(name string, age time.Duration, free int64) *miroirv1alpha1.MiroirNode {
 	at := metav1.NewTime(time.Now().Add(-age))
 	return &miroirv1alpha1.MiroirNode{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: miroirv1alpha1.MiroirNodeSpec{
+			Pools: []miroirv1alpha1.MiroirNodePool{{
+				Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+			}},
+		},
 		Status: miroirv1alpha1.MiroirNodeStatus{
 			Pools: []miroirv1alpha1.MiroirNodePoolStatus{{
 				Name: poolDefault, CapacityBytes: 100 << 30, AllocatedBytes: 100<<30 - free,
@@ -88,12 +83,12 @@ func reconcileAE(t *testing.T, r *AutoEvictReconciler, name string) ctrl.Result 
 	return res
 }
 
-func newAE(t *testing.T, nodes nodemap.Map, objs ...client.Object) *AutoEvictReconciler {
+func newAE(t *testing.T, objs ...client.Object) *AutoEvictReconciler {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(objs...).Build()
-	return &AutoEvictReconciler{Client: c, Nodes: nodes, After: time.Hour}
+	return &AutoEvictReconciler{Client: c, After: time.Hour}
 }
 
 // A node stale past the threshold gets its diskful leg swapped in one
@@ -101,7 +96,7 @@ func newAE(t *testing.T, nodes nodemap.Map, objs ...client.Object) *AutoEvictRec
 // reconciler to complete. The dead node's teardown finalizer stays — it
 // is the record that the leg was never cleaned up there.
 func TestAutoEvictSwapsDeadDiskful(t *testing.T) {
-	r := newAE(t, evictMap(), evictVol(),
+	r := newAE(t, evictVol(),
 		minAt(nodeA, time.Minute, 50<<30),
 		minAt(nodeB, 2*time.Hour, 50<<30),
 		minAt(nodeD, time.Minute, 50<<30))
@@ -137,7 +132,7 @@ func TestAutoEvictSwapsDeadDiskful(t *testing.T) {
 
 // A heartbeat younger than the threshold only schedules a re-check.
 func TestAutoEvictWaitsForThreshold(t *testing.T) {
-	r := newAE(t, evictMap(), evictVol(),
+	r := newAE(t, evictVol(),
 		minAt(nodeB, 30*time.Minute, 10<<30))
 
 	res := reconcileAE(t, r, nodeB)
@@ -154,7 +149,7 @@ func TestAutoEvictWaitsForThreshold(t *testing.T) {
 // More than one stale heartbeat reads as an observer-side problem, not
 // two simultaneous dead nodes: the safety valve stands the whole pass down.
 func TestAutoEvictValveMultipleStale(t *testing.T) {
-	r := newAE(t, evictMap(), evictVol(),
+	r := newAE(t, evictVol(),
 		minAt(nodeA, 2*time.Hour, 50<<30),
 		minAt(nodeB, 2*time.Hour, 50<<30),
 		minAt(nodeD, time.Minute, 50<<30))
@@ -170,15 +165,13 @@ func TestAutoEvictValveMultipleStale(t *testing.T) {
 	}
 }
 
-// A node-map opt-out exempts the node no matter how stale it is.
+// A spec opt-out exempts the node no matter how stale it is.
 func TestAutoEvictOptOut(t *testing.T) {
-	nodes := evictMap()
-	optOut := nodes[nodeB]
+	optOut := minAt(nodeB, 2*time.Hour, 50<<30)
 	no := false
-	optOut.AutoEvict = &no
-	nodes[nodeB] = optOut
-	r := newAE(t, nodes, evictVol(),
-		minAt(nodeB, 2*time.Hour, 50<<30),
+	optOut.Spec.AutoEvict = &no
+	r := newAE(t, evictVol(),
+		optOut,
 		minAt(nodeD, time.Minute, 50<<30))
 
 	reconcileAE(t, r, nodeB)
@@ -194,7 +187,7 @@ func TestAutoEvictOptOut(t *testing.T) {
 func TestAutoEvictBlocksOnDirtySurvivor(t *testing.T) {
 	v := evictVol()
 	v.Status.PerNode[nodeA] = miroirv1alpha1.ReplicaStatus{DiskState: drbd.DiskInconsistent}
-	r := newAE(t, evictMap(), v,
+	r := newAE(t, v,
 		minAt(nodeB, 2*time.Hour, 50<<30),
 		minAt(nodeD, time.Minute, 50<<30))
 
@@ -214,7 +207,7 @@ func TestAutoEvictStandsDownWhenPeerConnected(t *testing.T) {
 	v.Status.PerNode[nodeA] = miroirv1alpha1.ReplicaStatus{
 		DiskState: drbd.DiskUpToDate, Connected: true,
 	}
-	r := newAE(t, evictMap(), v,
+	r := newAE(t, v,
 		minAt(nodeB, 2*time.Hour, 50<<30),
 		minAt(nodeD, time.Minute, 50<<30))
 
@@ -236,7 +229,7 @@ func TestAutoEvictBlocksOnSnapshot(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volPvc1},
 	}
-	r := newAE(t, evictMap(), evictVol(), snap,
+	r := newAE(t, evictVol(), snap,
 		minAt(nodeB, 2*time.Hour, 50<<30),
 		minAt(nodeD, time.Minute, 50<<30))
 
@@ -261,7 +254,7 @@ func TestAutoEvictSwapsDeadTieBreaker(t *testing.T) {
 	v.Status.PerNode[nodeB] = miroirv1alpha1.ReplicaStatus{
 		DiskState: drbd.DiskUpToDate, Connected: true,
 	}
-	r := newAE(t, evictMap(), v,
+	r := newAE(t, v,
 		minAt(nodeA, time.Minute, 50<<30),
 		minAt(nodeB, time.Minute, 50<<30),
 		minAt(nodeC, 2*time.Hour, 50<<30),
@@ -300,7 +293,7 @@ func TestAutoEvictDropsDeadClient(t *testing.T) {
 	v.Status.PerNode[nodeB] = miroirv1alpha1.ReplicaStatus{
 		DiskState: drbd.DiskUpToDate, Connected: true,
 	}
-	r := newAE(t, evictMap(), v,
+	r := newAE(t, v,
 		minAt(nodeC, 2*time.Hour, 50<<30))
 
 	reconcileAE(t, r, nodeC)
@@ -317,13 +310,12 @@ func TestAutoEvictDropsDeadClient(t *testing.T) {
 // With no spare node, a live diskless tie-breaker is flipped diskful in
 // place (toggle-disk) so the volume returns to two data copies.
 func TestAutoEvictFlipsTieBreakerWithoutSpare(t *testing.T) {
-	nodes := evictMap()
-	delete(nodes, nodeD)
+	// No node-d in the topology: the fold only sees the seeded CRs.
 	v := evictVol()
 	v.Spec.Replicas = append(v.Spec.Replicas,
 		miroirv1alpha1.Replica{Node: nodeC, NodeID: 2, Address: addrC, Diskless: true})
 	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeC)
-	r := newAE(t, nodes, v,
+	r := newAE(t, v,
 		minAt(nodeA, time.Minute, 50<<30),
 		minAt(nodeB, 2*time.Hour, 50<<30),
 		minAt(nodeC, time.Minute, 50<<30))
@@ -355,10 +347,8 @@ func TestAutoEvictFlipsTieBreakerWithoutSpare(t *testing.T) {
 // With neither a spare node nor a tie-breaker, the volume is left alone
 // and the pass re-checks later.
 func TestAutoEvictNoSpareLeavesVolume(t *testing.T) {
-	nodes := evictMap()
-	delete(nodes, nodeC)
-	delete(nodes, nodeD)
-	r := newAE(t, nodes, evictVol(),
+	// Only the dead node is in the topology: no spare, no tie-breaker.
+	r := newAE(t, evictVol(),
 		minAt(nodeB, 2*time.Hour, 50<<30))
 
 	res := reconcileAE(t, r, nodeB)
