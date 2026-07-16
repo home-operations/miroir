@@ -53,11 +53,11 @@ func TestFromSpecFlattensBackendBlocks(t *testing.T) {
 		Address:   "10.0.100.1",
 		AutoEvict: &autoEvict,
 		Pools: []miroirv1alpha1.MiroirNodePool{
-			{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+			{Name: poolDefault,
 				LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/disk/by-partlabel/r-miroir", PoolSize: "400g"}},
-			{Name: "fast", Backend: miroirv1alpha1.BackendZFS,
+			{Name: "fast",
 				ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, Compression: "inherit", VolBlockSize: volBlock16K}},
-			{Name: "scratch", Backend: miroirv1alpha1.BackendLoopfile,
+			{Name: "scratch",
 				Loopfile: &miroirv1alpha1.LoopfilePool{BaseDir: "/var/lib/miroir"}},
 		},
 	})
@@ -92,10 +92,12 @@ func TestZFSVolBlockSizeDefaults(t *testing.T) {
 // CRD required it, mid-upgrade) folds to an empty-config pool instead of
 // panicking; the agent's backend setup reports the missing config.
 func TestFromSpecToleratesMissingBlock(t *testing.T) {
+	// Unreachable through the CRD (exactly one block is required), but a
+	// stored pre-validation object must fold to an empty pool, not panic.
 	n := FromSpec(miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{
-		{Name: poolDefault, Backend: miroirv1alpha1.BackendZFS},
+		{Name: poolDefault},
 	}})
-	if p := n.Pools[poolDefault]; p.Backend != miroirv1alpha1.BackendZFS || p.ZFSDataset != "" {
+	if p := n.Pools[poolDefault]; p.Backend != "" || p.ZFSDataset != "" {
 		t.Fatalf("missing block should fold empty, got %+v", p)
 	}
 }
@@ -104,7 +106,7 @@ func TestFromSpecToleratesMissingBlock(t *testing.T) {
 // parsed form so IPv6 zero-compression variants still collide, and
 // PickSpare / ReplicationAddress both refuse conflicted nodes.
 func TestFromNodesMarksAddressConflicts(t *testing.T) {
-	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
 	m := FromNodes([]miroirv1alpha1.MiroirNode{
 		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Address: "fd00:1::2", Pools: pools}),
@@ -139,7 +141,7 @@ func TestFromNodesMarksAddressConflicts(t *testing.T) {
 // ambiguous endpoint never reaches persisted replica specs, and empty
 // addresses (the InternalIP fallback) must never conflict with each other.
 func TestFromNodesConflictsNonIPDuplicates(t *testing.T) {
-	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
 	m := FromNodes([]miroirv1alpha1.MiroirNode{
 		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Address: "storage-vlan", Pools: pools}),
@@ -155,7 +157,7 @@ func TestFromNodesConflictsNonIPDuplicates(t *testing.T) {
 }
 
 func TestFromNodesEmptyAddressesNeverConflict(t *testing.T) {
-	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
 	m := FromNodes([]miroirv1alpha1.MiroirNode{
 		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Pools: pools}),
@@ -173,7 +175,7 @@ func TestCRSourceFoldsMiroirNodes(t *testing.T) {
 	}
 	node := miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{
 		Zone: zoneRack1,
-		Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+		Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank}}},
 	})
 	src := &CRSource{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(&node).Build()}

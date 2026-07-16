@@ -28,8 +28,7 @@ resource, applied separately from this chart (kubectl, GitOps, ...):
   spec:
     pools:
       - name: default
-        backend: lvmthin                # lvmthin | zfs | loopfile
-        lvmthin:
+        lvmthin:                        # or zfs / loopfile — the block IS the backend
           device: /dev/disk/by-partlabel/r-miroir
         # zfs: { dataset: pool/miroir }
         # loopfile: { baseDir: /var/lib/miroir }  # reflink-capable FS

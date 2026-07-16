@@ -28,7 +28,6 @@ metadata:
 spec:
     pools:
         - name: default
-          backend: lvmthin
           lvmthin:
               device: /dev/disk/by-partlabel/r-miroir
 ---
@@ -39,7 +38,6 @@ metadata:
 spec:
     pools:
         - name: default
-          backend: lvmthin
           lvmthin:
               device: /dev/disk/by-partlabel/r-miroir
 ```
@@ -72,7 +70,6 @@ spec:
     address: 10.0.100.11
     pools:
         - name: default
-          backend: lvmthin
           lvmthin:
               device: /dev/disk/by-partlabel/r-miroir
 ---
@@ -84,7 +81,6 @@ spec:
     zone: rack-b
     pools:
         - name: default
-          backend: zfs
           zfs:
               dataset: data-pool/miroir
 ---
@@ -96,7 +92,6 @@ spec:
     zone: rack-c
     pools:
         - name: default
-          backend: loopfile
           loopfile:
               baseDir: /var/lib/miroir
 ```
@@ -114,11 +109,9 @@ metadata:
 spec:
     pools:
         - name: default # bulk tier
-          backend: lvmthin
           lvmthin:
               device: /dev/disk/by-partlabel/r-miroir
         - name: fast # NVMe tier for latency-sensitive workloads
-          backend: lvmthin
           lvmthin:
               device: /dev/disk/by-id/nvme-Micron_7450_XXXX
 ```
@@ -145,7 +138,6 @@ metadata:
 spec:
     pools:
         - name: default
-          backend: loopfile
           loopfile:
               baseDir: /var/lib/miroir
 ```
@@ -158,6 +150,10 @@ storageClasses:
       replicas: 1
       isDefault: true
 ```
+
+A pool's backend is the configuration block it carries — exactly one
+of `lvmthin`, `zfs`, or `loopfile` (write `lvmthin: {}` when the VG
+already exists).
 
 | Backend    | You provide                            | Notes                                                    |
 | ---------- | -------------------------------------- | -------------------------------------------------------- |

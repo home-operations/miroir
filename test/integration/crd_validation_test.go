@@ -266,7 +266,7 @@ func minimalNode(name string, pool miroirv1alpha1.MiroirNodePool) *miroirv1alpha
 
 func lvmthinPool(name string) miroirv1alpha1.MiroirNodePool {
 	return miroirv1alpha1.MiroirNodePool{
-		Name: name, Backend: miroirv1alpha1.BackendLVMThin,
+		Name:    name,
 		LVMThin: &miroirv1alpha1.LVMThinPool{Device: deviceSDB},
 	}
 }
@@ -280,9 +280,9 @@ var _ = Describe("MiroirNode CEL validation", func() {
 				Address: "10.0.100.11",
 				Pools: []miroirv1alpha1.MiroirNodePool{
 					lvmthinPool(poolDefault),
-					{Name: "fast", Backend: miroirv1alpha1.BackendZFS,
+					{Name: "fast",
 						ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank}},
-					{Name: "scratch", Backend: miroirv1alpha1.BackendLoopfile,
+					{Name: "scratch",
 						Loopfile: &miroirv1alpha1.LoopfilePool{BaseDir: "/var/lib/miroir"}},
 				},
 			},
@@ -295,51 +295,51 @@ var _ = Describe("MiroirNode CEL validation", func() {
 		Expect(node.Spec.Pools[1].ZFS.VolBlockSize).To(Equal("4K"), "CRD default")
 	})
 
-	It("rejects a pool whose backend block is missing (the 0.10-agent truncation guard)", func() {
+	It("rejects a pool with no backend block (the 0.10-agent truncation guard)", func() {
 		node := minimalNode("min-block-missing", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+			Name: poolDefault,
 		})
 		err := k8sClient.Create(ctx, node)
-		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "missing zfs block must be rejected, got: %v", err)
-		Expect(err.Error()).To(ContainSubstring("exactly the selected backend's configuration block"))
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "a block-less pool must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("exactly one backend block"))
 
 		// The same rule is what refuses a 0.10 agent's truncating update:
-		// spec.pools rebuilt as bare {name, backend} loses the block.
+		// spec.pools rebuilt as bare {name} loses the block.
 		valid := minimalNode("min-truncation", lvmthinPool(poolDefault))
 		Expect(k8sClient.Create(ctx, valid)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, valid)).To(Succeed()) })
 		valid.Spec.Pools = []miroirv1alpha1.MiroirNodePool{
-			{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin},
+			{Name: poolDefault},
 		}
 		err = k8sClient.Update(ctx, valid)
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "a truncating spec write must be rejected, got: %v", err)
 	})
 
-	It("rejects another backend's options — they are unrepresentable, not ignored", func() {
+	It("rejects two backend blocks on one pool — ambiguous, not merged", func() {
 		node := minimalNode("min-cross-block", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+			Name:    poolDefault,
 			LVMThin: &miroirv1alpha1.LVMThinPool{Device: deviceSDB},
 			ZFS:     &miroirv1alpha1.ZFSPool{Dataset: datasetTank},
 		})
 		err := k8sClient.Create(ctx, node)
-		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "a zfs block on an lvmthin pool must be rejected, got: %v", err)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "a pool with two backend blocks must be rejected, got: %v", err)
 	})
 
 	It("requires dataset and baseDir inside their blocks (plain schema, not CEL)", func() {
 		node := minimalNode("min-no-dataset", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS, ZFS: &miroirv1alpha1.ZFSPool{},
+			Name: poolDefault, ZFS: &miroirv1alpha1.ZFSPool{},
 		})
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, node))).To(BeTrue())
 
 		node = minimalNode("min-no-basedir", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendLoopfile, Loopfile: &miroirv1alpha1.LoopfilePool{},
+			Name: poolDefault, Loopfile: &miroirv1alpha1.LoopfilePool{},
 		})
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, node))).To(BeTrue())
 	})
 
 	It("allows an empty lvmthin block for a pre-provisioned VG", func() {
 		node := minimalNode("min-vg-exists", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin, LVMThin: &miroirv1alpha1.LVMThinPool{},
+			Name: poolDefault, LVMThin: &miroirv1alpha1.LVMThinPool{},
 		})
 		Expect(k8sClient.Create(ctx, node)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, node)).To(Succeed()) })
@@ -358,8 +358,7 @@ var _ = Describe("MiroirNode CEL validation", func() {
 			"spec": map[string]any{
 				"address": "",
 				"pools": []any{map[string]any{
-					"name":    poolDefault,
-					"backend": "zfs",
+					"name": poolDefault,
 					"zfs": map[string]any{
 						"dataset":      datasetTank,
 						"compression":  "",
@@ -387,21 +386,21 @@ var _ = Describe("MiroirNode CEL validation", func() {
 
 	It("rejects invalid enum, pattern, and address values", func() {
 		bad := minimalNode("min-bad-blocksize", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
-			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, VolBlockSize: "12K"},
+			Name: poolDefault,
+			ZFS:  &miroirv1alpha1.ZFSPool{Dataset: datasetTank, VolBlockSize: "12K"},
 		})
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "12K is not a valid volBlockSize")
 
 		// Canonical spellings only: the CRD validates, it does not fold case.
 		bad = minimalNode("min-bad-case", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
-			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, VolBlockSize: "16k"},
+			Name: poolDefault,
+			ZFS:  &miroirv1alpha1.ZFSPool{Dataset: datasetTank, VolBlockSize: "16k"},
 		})
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "lowercase 16k must be rejected")
 
 		bad = minimalNode("min-bad-compression", miroirv1alpha1.MiroirNodePool{
-			Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
-			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, Compression: "snappy"},
+			Name: poolDefault,
+			ZFS:  &miroirv1alpha1.ZFSPool{Dataset: datasetTank, Compression: "snappy"},
 		})
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, bad))).To(BeTrue(), "snappy is not an OpenZFS algorithm")
 

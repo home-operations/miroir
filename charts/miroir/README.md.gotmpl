@@ -52,7 +52,6 @@ metadata:
 spec:
   pools:
     - name: default
-      backend: zfs
       zfs:
         dataset: tank/miroir
         volBlockSize: 16K

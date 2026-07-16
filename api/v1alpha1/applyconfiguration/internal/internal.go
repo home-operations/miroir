@@ -101,9 +101,6 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodePool
   map:
     fields:
-    - name: backend
-      type:
-        namedType: com.github.home-operations.miroir.api.v1alpha1.BackendType
     - name: loopfile
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.LoopfilePool

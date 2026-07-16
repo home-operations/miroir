@@ -37,14 +37,14 @@ func watcherNode(pools ...miroirv1alpha1.MiroirNodePool) *miroirv1alpha1.MiroirN
 
 func lvmPool(name, device string) miroirv1alpha1.MiroirNodePool {
 	return miroirv1alpha1.MiroirNodePool{
-		Name: name, Backend: miroirv1alpha1.BackendLVMThin,
+		Name:    name,
 		LVMThin: &miroirv1alpha1.LVMThinPool{Device: device},
 	}
 }
 
 func loopfilePool(name, baseDir string) miroirv1alpha1.MiroirNodePool {
 	return miroirv1alpha1.MiroirNodePool{
-		Name: name, Backend: miroirv1alpha1.BackendLoopfile,
+		Name:     name,
 		Loopfile: &miroirv1alpha1.LoopfilePool{BaseDir: baseDir},
 	}
 }

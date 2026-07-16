@@ -173,7 +173,6 @@ metadata:
 spec:
   pools:
     - name: default
-      backend: lvmthin
       lvmthin:
         device: ${device}
 EOF

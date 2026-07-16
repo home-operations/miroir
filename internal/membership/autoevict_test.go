@@ -50,7 +50,7 @@ func minAt(name string, age time.Duration, free int64) *miroirv1alpha1.MiroirNod
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: miroirv1alpha1.MiroirNodeSpec{
 			Pools: []miroirv1alpha1.MiroirNodePool{{
-				Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+				Name: poolDefault, ZFS: &miroirv1alpha1.ZFSPool{},
 			}},
 		},
 		Status: miroirv1alpha1.MiroirNodeStatus{

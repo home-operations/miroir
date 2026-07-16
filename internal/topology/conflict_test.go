@@ -55,7 +55,7 @@ func addrNode(name, addr string) *miroirv1alpha1.MiroirNode {
 		Spec: miroirv1alpha1.MiroirNodeSpec{
 			Address: addr,
 			Pools: []miroirv1alpha1.MiroirNodePool{{
-				Name: "default", Backend: miroirv1alpha1.BackendLVMThin,
+				Name:    "default",
 				LVMThin: &miroirv1alpha1.LVMThinPool{},
 			}},
 		},

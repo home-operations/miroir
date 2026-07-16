@@ -59,7 +59,6 @@ metadata:
 spec:
     pools:
         - name: default
-          backend: lvmthin
           lvmthin:
               device: /dev/disk/by-partlabel/r-miroir
 ---
@@ -70,7 +69,6 @@ metadata:
 spec:
     pools:
         - name: default
-          backend: lvmthin
           lvmthin:
               device: /dev/disk/by-partlabel/r-miroir
 ```

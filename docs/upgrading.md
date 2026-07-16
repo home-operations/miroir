@@ -94,7 +94,7 @@ entries and each pool's options move under its backend's block:
 | `nodes.<n>.address`             | `spec.address`                |
 | `nodes.<n>.autoEvict`           | `spec.autoEvict`              |
 | `nodes.<n>.pools.<p>` (map key) | `spec.pools[].name`           |
-| `...pools.<p>.backend`          | `spec.pools[].backend`        |
+| `...pools.<p>.backend`          | (implied by the block below)  |
 | `...pools.<p>.device`           | `...pools[].lvmthin.device`   |
 | `...pools.<p>.thinPoolSize`     | `...pools[].lvmthin.poolSize` |
 | `...pools.<p>.zfsDataset`       | `...pools[].zfs.dataset`      |
@@ -102,8 +102,10 @@ entries and each pool's options move under its backend's block:
 | `...pools.<p>.zfsVolBlockSize`  | `...pools[].zfs.volBlockSize` |
 | `...pools.<p>.baseDir`          | `...pools[].loopfile.baseDir` |
 
-The selected backend's block is required, even when it has nothing to say: an
-lvmthin pool whose VG already exists still writes `lvmthin: {}`.
+There is no `backend` field any more: the block that is present IS the
+backend, so exactly one of `lvmthin`/`zfs`/`loopfile` is required even
+when it has nothing to say — an lvmthin pool whose VG already exists
+still writes `lvmthin: {}`.
 
 Before (values):
 
@@ -129,7 +131,6 @@ spec:
   zone: rack-1
   pools:
     - name: default
-      backend: lvmthin
       lvmthin:
         device: /dev/disk/by-partlabel/r-miroir
         poolSize: 400g

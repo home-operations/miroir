@@ -57,28 +57,26 @@ type LoopfilePool struct {
 	BaseDir string `json:"baseDir"`
 }
 
-// MiroirNodePool is one named storage pool on a node: the backend
-// implementation plus that backend's configuration block. Pool names are
-// cluster-wide identities — a StorageClass selects a pool by name and the
-// controller places each replica on a node carrying that pool.
-// +kubebuilder:validation:XValidation:rule="(self.backend == 'lvmthin') == has(self.lvmthin) && (self.backend == 'zfs') == has(self.zfs) && (self.backend == 'loopfile') == has(self.loopfile)",message="exactly the selected backend's configuration block must be set (lvmthin: {} when the VG already exists)"
+// MiroirNodePool is one named storage pool on a node. The backend is the
+// configuration block that is present — exactly one of lvmthin/zfs/
+// loopfile, even when it has nothing to say (lvmthin: {} when the VG
+// already exists). Pool names are cluster-wide identities — a
+// StorageClass selects a pool by name and the controller places each
+// replica on a node carrying that pool.
+// +kubebuilder:validation:XValidation:rule="[has(self.lvmthin), has(self.zfs), has(self.loopfile)].filter(x, x).size() == 1",message="exactly one backend block (lvmthin, zfs, or loopfile) must be set — lvmthin: {} when the VG already exists"
 type MiroirNodePool struct {
 	// Name is the pool name ("default" for the pre-multi-pool single
 	// pool). It becomes an LVM VG name suffix, a metric label value, and a
 	// StorageClass parameter, so it stays a short lowercase identifier.
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`
 	Name string `json:"name"`
-	// Backend is the storage implementation backing this pool. An explicit
-	// discriminator (not inferred from the block below): it is also
-	// persisted per Replica, beyond pool config.
-	Backend BackendType `json:"backend"`
-	// LVMThin configures the pool when backend is lvmthin.
+	// LVMThin makes this an lvmthin pool.
 	// +optional
 	LVMThin *LVMThinPool `json:"lvmthin,omitempty"`
-	// ZFS configures the pool when backend is zfs.
+	// ZFS makes this a zfs pool.
 	// +optional
 	ZFS *ZFSPool `json:"zfs,omitempty"`
-	// Loopfile configures the pool when backend is loopfile.
+	// Loopfile makes this a loopfile pool.
 	// +optional
 	Loopfile *LoopfilePool `json:"loopfile,omitempty"`
 }
