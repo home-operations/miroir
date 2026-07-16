@@ -111,7 +111,6 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Source, autoTieBreaker bool
 	if autoEvictAfter > 0 {
 		ae := &membership.AutoEvictReconciler{
 			Client:   mgr.GetClient(),
-			Nodes:    nodes,
 			After:    autoEvictAfter,
 			Recorder: mgr.GetEventRecorder("miroir-controller"),
 		}

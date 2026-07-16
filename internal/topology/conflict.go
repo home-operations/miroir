@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -64,19 +65,29 @@ type ConflictReconciler struct {
 	Recorder events.EventRecorder
 }
 
-// Reconcile recomputes one node's conflict state against the full
-// topology and updates its condition on change.
-func (r *ConflictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	node := &miroirv1alpha1.MiroirNode{}
-	if err := r.Get(ctx, req.NamespacedName, node); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
+// Reconcile recomputes every node's conflict state against the full
+// topology in one pass and updates the conditions that changed. The
+// request is a fixed sentinel (SetupWithManager), so the request name is
+// ignored.
+func (r *ConflictReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result, error) {
 	list := &miroirv1alpha1.MiroirNodeList{}
 	if err := r.List(ctx, list); err != nil {
 		return ctrl.Result{}, err
 	}
 	topo := nodemap.FromNodes(list.Items)
+	for i := range list.Items {
+		// A mid-pass failure retries the whole pass: SetStatusCondition
+		// skips already-updated nodes, so the retry is cheap and emits no
+		// duplicate events.
+		if err := r.reconcileNode(ctx, &list.Items[i], topo); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, nil
+}
 
+// reconcileNode updates one node's AddressConflict condition on change.
+func (r *ConflictReconciler) reconcileNode(ctx context.Context, node *miroirv1alpha1.MiroirNode, topo nodemap.Map) error {
 	cond := metav1.Condition{
 		Type:    ConditionAddressConflict,
 		Status:  metav1.ConditionFalse,
@@ -105,37 +116,30 @@ func (r *ConflictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	prev := meta.FindStatusCondition(node.Status.Conditions, ConditionAddressConflict)
 	wasConflicted := prev != nil && prev.Status == metav1.ConditionTrue
 	if !meta.SetStatusCondition(&node.Status.Conditions, cond) {
-		return ctrl.Result{}, nil
+		return nil
 	}
 	if err := r.Status().Update(ctx, node); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
 	if cond.Status == metav1.ConditionTrue && !wasConflicted && r.Recorder != nil {
 		r.Recorder.Eventf(node, nil, corev1.EventTypeWarning, ConditionAddressConflict, "Reconcile",
 			cond.Message)
 	}
-	return ctrl.Result{}, nil
+	return nil
 }
 
-// SetupWithManager registers the reconciler. Every topology edit fans out
-// to every MiroirNode: removing one node's address is what clears its
-// former peer's conflict, so the peer must be revisited too. Generation
-// filter keeps the per-minute status heartbeats out.
+// SetupWithManager registers the reconciler. Every topology edit enqueues
+// one fixed request and the pass revisits all nodes — removing one node's
+// address is what clears its former peer's conflict, so peers must be
+// recomputed anyway, and a per-node fan-out would make one chart apply
+// O(N²) reconcile work. Generation filter keeps the per-minute status
+// heartbeats out.
 func (r *ConflictReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&miroirv1alpha1.MiroirNode{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&miroirv1alpha1.MiroirNode{}, handler.EnqueueRequestsFromMapFunc(
-			func(ctx context.Context, _ client.Object) []ctrl.Request {
-				list := &miroirv1alpha1.MiroirNodeList{}
-				if err := r.List(ctx, list); err != nil {
-					return nil
-				}
-				reqs := make([]ctrl.Request, 0, len(list.Items))
-				for i := range list.Items {
-					reqs = append(reqs, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
-				}
-				return reqs
-			}), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Named("topologyconflict").
+		Watches(&miroirv1alpha1.MiroirNode{}, handler.EnqueueRequestsFromMapFunc(
+			func(context.Context, client.Object) []ctrl.Request {
+				return []ctrl.Request{{NamespacedName: types.NamespacedName{Name: "topology"}}}
+			}), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

@@ -191,12 +191,20 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	}
 	placed := srcReplicas
 	if snapID == "" {
-		p, err := c.place(ctx, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess, params.pool)
+		// One topology snapshot serves both placement and the tie-breaker
+		// pick; separate resolves could observe different topologies
+		// mid-RPC.
+		nodes, err := c.nodes(ctx)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
 		}
-		placed, err = c.withTieBreaker(ctx, p, replicas, quorum)
+		p, err := c.place(ctx, nodes, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess, params.pool)
+		if err != nil {
+			c.allocMu.Unlock()
+			return nil, err
+		}
+		placed, err = c.withTieBreaker(ctx, nodes, p, replicas, quorum)
 		if err != nil {
 			c.allocMu.Unlock()
 			return nil, err
@@ -381,11 +389,7 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 // so a cold cluster still provisions. For replicated volumes it resolves
 // each node's InternalIP and assigns DRBD node ids by slice position —
 // replicas[0] is the GI-seed winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string) ([]miroirv1alpha1.Replica, error) {
-	nodes, err := c.nodes(ctx)
-	if err != nil {
-		return nil, err
-	}
+func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string) ([]miroirv1alpha1.Replica, error) {
 	// Every diskful leg needs the pool on its own node; a class naming a
 	// pool too few nodes carry must say so instead of a generic refusal.
 	// Unplaceable nodes (address conflict) are excluded outright — but
@@ -516,15 +520,12 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 
 // withTieBreaker appends a diskless tie-breaker to a freshly placed
 // 2-replica freeze volume, so majority quorum survives a single node loss
-// (#70). Unchanged when disabled, not applicable, or no spare node exists —
+// (#70). It picks from the same topology snapshot the caller placed with.
+// Unchanged when disabled, not applicable, or no spare node exists —
 // the tie-breaker reconciler retrofits skipped volumes once one joins.
-func (c *Controller) withTieBreaker(ctx context.Context, placed []miroirv1alpha1.Replica, replicas int, quorum miroirv1alpha1.QuorumPolicy) ([]miroirv1alpha1.Replica, error) {
+func (c *Controller) withTieBreaker(ctx context.Context, nodes nodemap.Map, placed []miroirv1alpha1.Replica, replicas int, quorum miroirv1alpha1.QuorumPolicy) ([]miroirv1alpha1.Replica, error) {
 	if !c.AutoTieBreaker || replicas != 2 || quorum != miroirv1alpha1.QuorumFreeze {
 		return placed, nil
-	}
-	nodes, err := c.nodes(ctx)
-	if err != nil {
-		return nil, err
 	}
 	tb := nodes.TieBreakerNode(placed)
 	if tb == "" {

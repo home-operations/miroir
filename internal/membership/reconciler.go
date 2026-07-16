@@ -256,11 +256,13 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // enqueueAllVolumes maps a MiroirNode event to every MiroirVolume: which
 // volumes a topology change unblocks cannot be known without reconciling
-// them, and both objects are cluster-scoped with small counts.
+// them, and both objects are cluster-scoped with small counts. Deep-copy
+// is off — three reconcilers each list here per node event and only the
+// names are read; the items must not be mutated or escape this func.
 func enqueueAllVolumes(c client.Client) handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []ctrl.Request {
 		list := &miroirv1alpha1.MiroirVolumeList{}
-		if err := c.List(ctx, list); err != nil {
+		if err := c.List(ctx, list, client.UnsafeDisableDeepCopy); err != nil {
 			return nil
 		}
 		reqs := make([]ctrl.Request, 0, len(list.Items))
