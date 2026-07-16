@@ -125,6 +125,14 @@ func init() {
 }
 
 func recordVolumeMetrics(volume, pool string, st miroirReplicaView) {
+	// This leg is diskful, so clear any diskless-primary series a prior life
+	// of it left behind: auto-diskful and auto-evict convert a diskless
+	// tie-breaker/client leg into a diskful replica in place, without the
+	// removal path (dropVolumeMetrics) that would otherwise clear it. Left
+	// alone the stale series reads its last value until the volume is deleted.
+	// The reverse (diskful to diskless) only happens via removal, which drops
+	// every series, so no symmetric clear is needed. Cheap no-op when absent.
+	metricDisklessPrimary.DeleteLabelValues(volume)
 	metricUpToDate.WithLabelValues(volume, pool).Set(boolGauge(st.upToDate))
 	metricConnected.WithLabelValues(volume, pool).Set(boolGauge(st.connected))
 	metricSplitBrain.WithLabelValues(volume, pool).Set(boolGauge(st.splitBrain))
