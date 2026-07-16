@@ -23,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -111,6 +112,18 @@ func (r *AutoEvictReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if remaining := r.After - time.Since(mn.Status.ObservedAt.Time); remaining > 0 {
 		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
+	if ready, err := r.nodeReady(ctx, req.Name); err != nil {
+		return ctrl.Result{}, err
+	} else if ready {
+		// The kubelet still heartbeats: the node is alive and only the
+		// miroir agent's heartbeat is gone (crash-loop, rollout stuck).
+		// Its DRBD legs replicate in the kernel without the agent, and a
+		// consumer pod there is still doing IO through its client leg —
+		// evicting anything would sever live storage.
+		metricEvictStanddown.WithLabelValues("node_ready").Inc()
+		log.Info("auto-evict standing down: the node's kubelet is Ready", "node", req.Name)
+		return ctrl.Result{RequeueAfter: evictRecheckInterval}, nil
+	}
 
 	pass, stale, err := r.gather(ctx, nodes, topology)
 	if err != nil {
@@ -173,6 +186,13 @@ func (r *AutoEvictReconciler) gather(ctx context.Context, nodes *miroirv1alpha1.
 	for i := range nodes.Items {
 		n := &nodes.Items[i]
 		pass.nodes[n.Name] = n
+		if !topology.AutoEvictAllowed(n.Name) {
+			// An opted-out node is expected to go dark ("known long
+			// outages"); counting it would trip the multiple-stale valve
+			// for as long as it stays away and disable auto-evict for the
+			// nodes that actually died.
+			continue
+		}
 		if n.Status.ObservedAt != nil && time.Since(n.Status.ObservedAt.Time) >= r.After {
 			stale = append(stale, n.Name)
 		}
@@ -186,6 +206,23 @@ func (r *AutoEvictReconciler) gather(ctx context.Context, nodes *miroirv1alpha1.
 		pass.pinned[snaps.Items[i].Spec.VolumeName] = true
 	}
 	return pass, stale, nil
+}
+
+// nodeReady reports whether the node's kubelet heartbeat is current — a
+// liveness signal independent of the miroir agent. Absent Node object or
+// a NotReady/Unknown condition reads as not-alive (the eviction gates
+// below still apply).
+func (r *AutoEvictReconciler) nodeReady(ctx context.Context, name string) (bool, error) {
+	node := &corev1.Node{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, node); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			return cond.Status == corev1.ConditionTrue, nil
+		}
+	}
+	return false, nil
 }
 
 // evictOutcome classifies one volume's eviction attempt.
@@ -347,11 +384,11 @@ func (r *AutoEvictReconciler) plan(vol *miroirv1alpha1.MiroirVolume, dead string
 	// toggle-disk) restores 2 data copies at the cost of the quorum leg —
 	// strictly better than staying at 1 clean copy.
 	for i, rep := range vol.Spec.Replicas {
-		if !rep.Diskless || rep.Node == dead || !fits(rep.Node) {
+		if !rep.Diskless || rep.Node == dead {
 			continue
 		}
 		pool, ok := pass.topology.Pool(rep.Node, poolName)
-		if !ok {
+		if !ok || poolRoom(pass.nodes[rep.Node], poolName, vol.Spec.SizeBytes) != "" {
 			continue
 		}
 		return kindReplica, func(v *miroirv1alpha1.MiroirVolume) {

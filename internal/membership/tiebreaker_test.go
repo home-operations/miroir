@@ -205,3 +205,59 @@ func TestTieBreakerSkips(t *testing.T) {
 		})
 	}
 }
+
+// A client leg's finalizer is a live leg, not a removal in flight: the
+// retrofit must still run instead of polling forever behind it.
+func TestTieBreakerRetrofitWithClientLeg(t *testing.T) {
+	v := freezeVol()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{
+		{Node: nodeBergen, NodeID: 2, Address: addrBergen},
+	}
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeBergen)
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeC, addrC)).
+		Build()
+	nodes := nodemap.Map{
+		nodeA: storageNode(miroirv1alpha1.BackendZFS),
+		nodeB: storageNode(miroirv1alpha1.BackendZFS),
+		nodeC: storageNode(miroirv1alpha1.BackendZFS),
+	}
+	r := &TieBreakerReconciler{Client: c, Nodes: nodes}
+
+	tbReconcile(t, r)
+
+	got := get(t, &Reconciler{Client: c}, volTB)
+	idx := slices.IndexFunc(got.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == nodeC
+	})
+	if idx < 0 || !got.Spec.Replicas[idx].Diskless {
+		t.Fatalf("retrofit must append the tie-breaker despite the client leg: %+v", got.Spec.Replicas)
+	}
+}
+
+// A client's node is used: a replica may not share a node with a client
+// leg (CEL rule), so the retrofit must not pick it — with no other spare
+// it skips quietly instead of bouncing off the apiserver forever.
+func TestTieBreakerSkipsClientNode(t *testing.T) {
+	v := freezeVol()
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{
+		{Node: nodeC, NodeID: 2, Address: addrC},
+	}
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeC)
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeC, addrC)).
+		Build()
+	nodes := nodemap.Map{
+		nodeA: storageNode(miroirv1alpha1.BackendZFS),
+		nodeB: storageNode(miroirv1alpha1.BackendZFS),
+		nodeC: storageNode(miroirv1alpha1.BackendZFS), // the client's node
+	}
+	r := &TieBreakerReconciler{Client: c, Nodes: nodes}
+
+	tbReconcile(t, r)
+
+	got := get(t, &Reconciler{Client: c}, volTB)
+	if len(got.Spec.Replicas) != 2 {
+		t.Fatalf("the client's node must not receive the tie-breaker: %+v", got.Spec.Replicas)
+	}
+}

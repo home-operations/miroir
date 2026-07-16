@@ -47,7 +47,12 @@ is yours to erase.
 
 Auto-evict is deliberately timid. It stands down in any of these cases:
 
-- More than one node's heartbeat is stale. That pattern points at the
+- The node's kubelet is still Ready. Then only the miroir agent is
+  broken (a crash-loop, a stuck rollout); the node's DRBD legs keep
+  replicating in the kernel and evicting anything would sever live
+  storage.
+- More than one node's heartbeat is stale (opted-out nodes don't
+  count — theirs are expected to go dark). That pattern points at the
   network or API server, not at two simultaneous dead nodes.
 - A surviving replica still sees the "dead" node's DRBD connections up.
   The node is then alive, and only its Kubernetes connection is broken.
@@ -57,7 +62,7 @@ Auto-evict is deliberately timid. It stands down in any of these cases:
 It also needs a spare storage node with the volume's pool and room for
 the volume's full size; on a cluster with no spare node it does nothing.
 A node with known long outages can opt out with
-`nodes.<name>.autoEvict: false`. Keep the threshold well above your
+`nodes.<name>.spec.autoEvict: false`. Keep the threshold well above your
 longest planned reboot or upgrade window, since eviction discards the
 dead node's copy of the data.
 
