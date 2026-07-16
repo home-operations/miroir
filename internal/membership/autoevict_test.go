@@ -23,6 +23,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -359,5 +360,100 @@ func TestAutoEvictNoSpareLeavesVolume(t *testing.T) {
 	}
 	if res.RequeueAfter != evictRecheckInterval {
 		t.Fatalf("must re-check later, got %v", res.RequeueAfter)
+	}
+}
+
+// An opted-out node is expected to go dark: its stale heartbeat must not
+// trip the multiple-stale valve and freeze eviction of a node that
+// actually died.
+func TestAutoEvictValveIgnoresOptedOutNodes(t *testing.T) {
+	optOut := minAt(nodeC, 3*time.Hour, 50<<30) // dark for hours, by design
+	no := false
+	optOut.Spec.AutoEvict = &no
+	r := newAE(t, evictVol(),
+		minAt(nodeA, time.Minute, 50<<30),
+		minAt(nodeB, 2*time.Hour, 50<<30), // genuinely dead
+		optOut,
+		minAt(nodeD, time.Minute, 50<<30))
+
+	reconcileAE(t, r, nodeB)
+
+	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
+	if slices.ContainsFunc(got.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == nodeB
+	}) {
+		t.Fatalf("the opted-out node's staleness must not block the eviction: %+v", got.Spec.Replicas)
+	}
+}
+
+// A Ready kubelet is proof of life independent of the agent: a
+// crash-looping agent pod must not get the node's legs — replica or
+// client — severed while the node is alive and doing IO.
+func TestAutoEvictStandsDownWhenNodeReady(t *testing.T) {
+	kubeletAlive := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
+			{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+		}},
+	}
+	r := newAE(t, evictVol(), kubeletAlive,
+		minAt(nodeB, 2*time.Hour, 50<<30),
+		minAt(nodeD, time.Minute, 50<<30))
+
+	res := reconcileAE(t, r, nodeB)
+
+	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
+	if len(got.Spec.Replicas) != 2 {
+		t.Fatalf("a Ready node must never be evicted: %+v", got.Spec)
+	}
+	if res.RequeueAfter != evictRecheckInterval {
+		t.Fatalf("must re-check later, got %v", res.RequeueAfter)
+	}
+	if v := testutil.ToFloat64(metricEvictStanddown.WithLabelValues("node_ready")); v < 1 {
+		t.Fatalf("stand-down counter must increment, got %v", v)
+	}
+}
+
+// A NotReady Node object does not stand the pass down — that is the dead
+// node the reconciler exists for.
+func TestAutoEvictProceedsWhenNodeNotReady(t *testing.T) {
+	kubeletDead := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
+		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
+			{Type: corev1.NodeReady, Status: corev1.ConditionUnknown},
+		}},
+	}
+	r := newAE(t, evictVol(), kubeletDead,
+		minAt(nodeB, 2*time.Hour, 50<<30),
+		minAt(nodeD, time.Minute, 50<<30))
+
+	reconcileAE(t, r, nodeB)
+
+	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
+	if slices.ContainsFunc(got.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == nodeB
+	}) {
+		t.Fatalf("a NotReady node must still be evicted: %+v", got.Spec.Replicas)
+	}
+}
+
+// One membership edit at a time: an entry still awaiting completion
+// blocks the swap — acting on a half-completed spec races the membership
+// reconciler's update.
+func TestAutoEvictBlocksOnIncompleteMembershipChange(t *testing.T) {
+	v := evictVol()
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{Node: nodeC}) // bare, mid-completion
+	r := newAE(t, v,
+		minAt(nodeB, 2*time.Hour, 50<<30),
+		minAt(nodeC, time.Minute, 50<<30),
+		minAt(nodeD, time.Minute, 50<<30))
+
+	reconcileAE(t, r, nodeB)
+
+	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
+	if !slices.ContainsFunc(got.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == nodeB
+	}) {
+		t.Fatalf("an in-flight membership change must block eviction: %+v", got.Spec.Replicas)
 	}
 }

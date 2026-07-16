@@ -71,15 +71,15 @@ func (r *TieBreakerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if !ok {
 			continue
 		}
-		if !slices.ContainsFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
-			return rep.Node == node
-		}) {
-			// A removed replica's teardown is still in flight: its agent
+		if !hasLegOn(vol, node) {
+			// A removed leg's teardown is still in flight: its agent
 			// holds the finalizer until the leg is safely gone. Picking
 			// that node now would cancel the teardown, leaking its backing
 			// device and stale DRBD metadata that a later diskful re-add
 			// would adopt. Releasing the finalizer does not bump the
 			// generation, so poll instead of waiting on a watch event.
+			// Client legs hold finalizers too — theirs are live legs, not
+			// removals in flight.
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 	}
@@ -87,7 +87,14 @@ func (r *TieBreakerReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	tb := nodes.TieBreakerNode(vol.Spec.Replicas)
+	// Client-leg nodes count as used: a replica may not share a node with
+	// a client leg (CEL rule), so picking one would only bounce off the
+	// apiserver forever.
+	legs := slices.Clone(vol.Spec.Replicas)
+	for _, cl := range vol.Spec.Clients {
+		legs = append(legs, miroirv1alpha1.Replica{Node: cl.Node})
+	}
+	tb := nodes.TieBreakerNode(legs)
 	if tb == "" {
 		// No spare node; the MiroirNode watch revisits this volume when
 		// one joins the topology.
