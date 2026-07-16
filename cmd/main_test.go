@@ -21,9 +21,12 @@ import (
 	"errors"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -92,5 +95,48 @@ func TestListWithRetryReturnsTerminalErrorImmediately(t *testing.T) {
 		}).Build()
 	if err := listWithRetry(c, &miroirv1alpha1.MiroirVolumeList{}, apiStartupWait); !apierrors.IsUnauthorized(err) {
 		t.Fatalf("want the terminal Unauthorized returned, got %v", err)
+	}
+}
+
+// byObjectFor resolves a type's entry in Options.ByObject: the map is
+// keyed by object pointers, so lookups must match by type, not identity.
+func byObjectFor[T client.Object](opts cache.Options) (cache.ByObject, bool) {
+	for obj, cfg := range opts.ByObject {
+		if _, ok := obj.(T); ok {
+			return cfg, true
+		}
+	}
+	return cache.ByObject{}, false
+}
+
+func TestCacheOptionsAgentPinsOwnMiroirNode(t *testing.T) {
+	opts := cacheOptions("agent", "", "node-a")
+	byNode, ok := byObjectFor[*miroirv1alpha1.MiroirNode](opts)
+	if !ok {
+		t.Fatal("agent mode must scope the MiroirNode informer")
+	}
+	if byNode.Field == nil || byNode.Field.String() != "metadata.name=node-a" {
+		t.Fatalf("MiroirNode informer must be pinned to the node's own object, got %v", byNode.Field)
+	}
+}
+
+// nodeName is validated after the manager (and its cache config) is
+// built; an empty name must not produce a match-nothing selector.
+func TestCacheOptionsAgentWithoutNodeNameStaysUnscoped(t *testing.T) {
+	if opts := cacheOptions("agent", "", ""); opts.ByObject != nil {
+		t.Fatalf("no scoping without a node name, got %v", opts.ByObject)
+	}
+}
+
+func TestCacheOptionsControllerStaysClusterScopedForMiroirNodes(t *testing.T) {
+	opts := cacheOptions(modeController, "miroir-system", "")
+	if _, ok := byObjectFor[*appsv1.Deployment](opts); !ok {
+		t.Fatal("controller mode must namespace the gateway Deployment informer")
+	}
+	if _, ok := byObjectFor[*corev1.Service](opts); !ok {
+		t.Fatal("controller mode must namespace the gateway Service informer")
+	}
+	if _, ok := byObjectFor[*miroirv1alpha1.MiroirNode](opts); ok {
+		t.Fatal("the controller reads every MiroirNode; its informer must stay cluster-scoped")
 	}
 }
