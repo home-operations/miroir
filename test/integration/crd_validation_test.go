@@ -36,6 +36,7 @@ const (
 
 	poolDefault = "default"
 	datasetTank = "tank/miroir"
+	deviceSDB   = "/dev/sdb"
 )
 
 // unreplicatedVolume is the minimal valid single-replica volume.
@@ -266,7 +267,7 @@ func minimalNode(name string, pool miroirv1alpha1.MiroirNodePool) *miroirv1alpha
 func lvmthinPool(name string) miroirv1alpha1.MiroirNodePool {
 	return miroirv1alpha1.MiroirNodePool{
 		Name: name, Backend: miroirv1alpha1.BackendLVMThin,
-		LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/sdb"},
+		LVMThin: &miroirv1alpha1.LVMThinPool{Device: deviceSDB},
 	}
 }
 
@@ -317,7 +318,7 @@ var _ = Describe("MiroirNode CEL validation", func() {
 	It("rejects another backend's options — they are unrepresentable, not ignored", func() {
 		node := minimalNode("min-cross-block", miroirv1alpha1.MiroirNodePool{
 			Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
-			LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/sdb"},
+			LVMThin: &miroirv1alpha1.LVMThinPool{Device: deviceSDB},
 			ZFS:     &miroirv1alpha1.ZFSPool{Dataset: datasetTank},
 		})
 		err := k8sClient.Create(ctx, node)

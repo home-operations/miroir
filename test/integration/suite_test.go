@@ -15,8 +15,9 @@ limitations under the License.
 */
 
 // Package integration runs against a real (envtest) apiserver. It exists
-// for behavior only the apiserver enforces — CRD structural schemas and
-// CEL validation rules — which no fake client or unit test exercises.
+// for behavior only the apiserver exhibits — CRD structural schemas, CEL
+// validation rules, and watch delivery semantics — which no fake client or
+// unit test exercises.
 package integration
 
 import (
@@ -27,6 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -35,6 +37,8 @@ import (
 
 var (
 	testEnv   *envtest.Environment
+	cfg       *rest.Config
+	scheme    *runtime.Scheme
 	k8sClient client.Client
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -51,10 +55,11 @@ var _ = BeforeSuite(func() {
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
-	cfg, err := testEnv.Start()
+	var err error
+	cfg, err = testEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
 
-	scheme := runtime.NewScheme()
+	scheme = runtime.NewScheme()
 	Expect(miroirv1alpha1.AddToScheme(scheme)).To(Succeed())
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	Expect(err).NotTo(HaveOccurred())
