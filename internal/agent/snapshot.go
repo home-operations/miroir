@@ -99,6 +99,15 @@ const (
 	barrierRetryAfter = time.Minute
 )
 
+// drbdBarrierTimeout bounds each DRBD control call the snapshot round makes.
+// This reconciler is single-worker (its round protocol assumes head-of-line
+// ordering), so a call left on RealExec's 2-minute default would, against a
+// wedged resource (LINBIT/drbd#137), stall every other volume's snapshot on
+// the node for that long. The teardown path bounds its own DRBD calls the
+// same way (drbd.downTimeout); these are metadata ops that finish in
+// milliseconds on healthy hardware.
+const drbdBarrierTimeout = 30 * time.Second
+
 // barrierFailed classifies one barrier-path failure: fast backoff below
 // barrierFailLimit, then a Warning Event and the parked retry.
 func (r *SnapshotReconciler) barrierFailed(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
@@ -139,6 +148,28 @@ func (r *SnapshotReconciler) backendFor(vol *miroirv1alpha1.MiroirVolume) (backe
 	return pb.Backend, nil
 }
 
+// drbdStatus, suspendIO, and resumeIO wrap the driver's DRBD control calls
+// with drbdBarrierTimeout so one wedged call cannot pin the single reconcile
+// worker. RealExec applies the tighter of its own bound and the parent
+// deadline, so the effective bound is drbdBarrierTimeout.
+func (r *SnapshotReconciler) drbdStatus(ctx context.Context, name string) (drbd.Status, error) {
+	ctx, cancel := context.WithTimeout(ctx, drbdBarrierTimeout)
+	defer cancel()
+	return r.DRBD.Status(ctx, name)
+}
+
+func (r *SnapshotReconciler) suspendIO(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, drbdBarrierTimeout)
+	defer cancel()
+	return r.DRBD.SuspendIO(ctx, name)
+}
+
+func (r *SnapshotReconciler) resumeIO(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, drbdBarrierTimeout)
+	defer cancel()
+	return r.DRBD.ResumeIO(ctx, name)
+}
+
 // Reconcile drives one snapshot's state machine from this node's view.
 func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	snap := &miroirv1alpha1.MiroirSnapshot{}
@@ -174,7 +205,7 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// (Status fails → nothing is suspended). Never lift a barrier a
 		// sibling snapshot's live round now owns.
 		if vol.Spec.DRBD != nil {
-			if st, err := r.DRBD.Status(ctx, vol.Name); err == nil && st.Suspended {
+			if st, err := r.drbdStatus(ctx, vol.Name); err == nil && st.Suspended {
 				if err := r.resumeUnlessSiblingRound(ctx, snap, vol); err != nil {
 					return ctrl.Result{}, err
 				}
@@ -209,7 +240,7 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// unless a sibling snapshot's round owns the kernel barrier now.
 		// Best-effort: if DRBD cannot report, nothing holds a barrier.
 		if vol.Spec.DRBD != nil {
-			if st, err := r.DRBD.Status(ctx, vol.Name); err == nil && st.Suspended {
+			if st, err := r.drbdStatus(ctx, vol.Name); err == nil && st.Suspended {
 				return ctrl.Result{}, r.resumeUnlessSiblingRound(ctx, snap, vol)
 			}
 		}
@@ -260,7 +291,7 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) (ctrl.Result, error) {
-	st, err := r.DRBD.Status(ctx, vol.Name)
+	st, err := r.drbdStatus(ctx, vol.Name)
 	if err != nil {
 		// On a wedged module this call is the one that fails (hanging
 		// until execTimeout kills it), so it must ride the same bounded
@@ -310,7 +341,7 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 	case snap.Status.IOSuspended && expired && st.Suspended:
 		// Dead round, coordinator gone before voiding it: self-expire
 		// the local barrier; the void patch stays the coordinator's.
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.DRBD.ResumeIO(ctx, vol.Name)
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeIO(ctx, vol.Name)
 
 	case !snap.Status.IOSuspended && st.Suspended:
 		// The round ended (voided) while the local barrier was still up —
@@ -330,7 +361,7 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 	if _, err := r.backendFor(vol); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
+	if err := r.suspendIO(ctx, vol.Name); err != nil {
 		return r.barrierFailed(ctx, snap, vol, err)
 	}
 	r.clearBarrierFails(snap.Name)
@@ -366,7 +397,7 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 	if err != nil {
 		// The barrier is only real once recorded; a failed patch must
 		// not leave IO frozen until the retry.
-		_ = r.DRBD.ResumeIO(ctx, vol.Name)
+		_ = r.resumeIO(ctx, vol.Name)
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Second}, nil
@@ -386,7 +417,7 @@ func (r *SnapshotReconciler) cutLeg(ctx context.Context, snap *miroirv1alpha1.Mi
 	}
 	// Re-assert the local barrier first (idempotent) — a crash or manual
 	// resume-io between phases must not let a leg be cut unprotected.
-	if err := r.DRBD.SuspendIO(ctx, vol.Name); err != nil {
+	if err := r.suspendIO(ctx, vol.Name); err != nil {
 		return r.barrierFailed(ctx, snap, vol, err)
 	}
 	r.clearBarrierFails(snap.Name)
@@ -421,7 +452,7 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *miroirv1alph
 	}
 	// Resume before reporting anything else: a frozen volume is an
 	// outage, a late snapshot is just not ready.
-	if err := r.DRBD.ResumeIO(ctx, vol.Name); err != nil {
+	if err := r.resumeIO(ctx, vol.Name); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
@@ -483,7 +514,7 @@ func (r *SnapshotReconciler) resumeUnlessSiblingRound(ctx context.Context, snap 
 	if err != nil || active {
 		return err
 	}
-	return r.DRBD.ResumeIO(ctx, vol.Name)
+	return r.resumeIO(ctx, vol.Name)
 }
 
 // isCoordinator: the Primary owns the barrier (suspend-io only blocks
