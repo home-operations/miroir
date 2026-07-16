@@ -18,6 +18,22 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
   --namespace miroir-system --create-namespace -f values.yaml
 ```
 
+## Upgrading
+
+Helm applies the chart's `crds/` directory only on install, never on
+upgrade, and a stale CRD schema silently prunes newer spec fields. Keep
+the CRDs in step with the chart on every upgrade — Flux users must set
+`upgrade.crds: CreateReplace` on the HelmRelease (the default is Skip);
+plain Helm users apply them by hand first:
+
+```sh
+helm show crds oci://ghcr.io/home-operations/charts/miroir \
+  --version <new-version> | kubectl apply --server-side -f -
+```
+
+Version-specific steps live in the
+[upgrade guide](https://miroir.home-operations.com/upgrading/).
+
 ## ZFS pool settings
 
 ZFS pools accept `zfsVolBlockSize` (`4K` through `128K`, default `4K`)
