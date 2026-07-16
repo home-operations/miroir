@@ -20,9 +20,14 @@ confirmation must be set **before** running `helm uninstall`:
 ```bash
 helm upgrade miroir oci://ghcr.io/home-operations/charts/miroir \
   -n miroir-system --reuse-values \
+  --version <installed-chart-version> \
   --set uninstall.confirmation=yes-really-destroy-data
 helm uninstall miroir -n miroir-system
 ```
+
+Pin `--version` to the chart version already installed (`helm list -n
+miroir-system` shows it) so this step arms the hook without also upgrading
+the release to a newer chart on its way out.
 
 The hook Job deletes every MiroirVolume and MiroirSnapshot and waits while
 each node's agent tears down its DRBD resources and backing devices through

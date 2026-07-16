@@ -335,18 +335,18 @@ nodes: {}
 # below). Per entry:
 #   name          (required) the StorageClass name
 #   replicas      replica count, default 1; >1 makes it DRBD-replicated
-#   quorum        freeze | last-man-standing (replicated only, default
+#   quorum        freeze or last-man-standing (replicated only, default
 #                 freeze). freeze never diverges but halts writes without a
 #                 peer majority; last-man-standing keeps the survivor
 #                 writable at the risk of split-brain. See the root README,
 #                 "Replication and quorum".
-#   fsType        ext4 | xfs, default ext4
+#   fsType        ext4 or xfs, default ext4
 #   pool          named storage pool the class provisions from, default
 #                 "default". Every replica of a volume lands in this pool
 #                 on its node, so the pool must exist (under nodes.<name>
 #                 .pools) on at least `replicas` nodes.
 #   allowRemoteVolumeAccess
-#                 true | false (replicated only; the controller defaults
+#                 true or false (replicated only; the controller defaults
 #                 absent to true, matching LINSTOR): pods on nodes without
 #                 a replica consume the volume through an ephemeral
 #                 diskless DRBD leg at replication-network speed. Set
@@ -360,7 +360,7 @@ nodes: {}
 #                 more per dirty bit; worth considering for classes holding
 #                 large volumes. Fixed when a replica's metadata is
 #                 created: changing the class affects new volumes only.
-#   reclaimPolicy Delete | Retain, default Delete
+#   reclaimPolicy Delete or Retain, default Delete
 #   isDefault     set the cluster default-class annotation, default false
 #   volumeBindingMode
 #                 WaitForFirstConsumer (default) delays provisioning until a
@@ -384,7 +384,7 @@ storageClasses: []
 # -- VolumeSnapshotClasses to create (requires the snapshot-controller +
 # CRDs, deployed separately). Empty by default. Per entry:
 #   name           (required) the VolumeSnapshotClass name
-#   deletionPolicy Delete | Retain, default Delete
+#   deletionPolicy Delete or Retain, default Delete
 #   isDefault      set the cluster default-snapshot-class annotation,
 #                  default false
 #   annotations    extra annotations on the VolumeSnapshotClass
