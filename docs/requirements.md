@@ -6,16 +6,24 @@
 - Kernel modules on each storage node (per-OS notes below):
   `dm_thin_pool` (lvmthin), ZFS (zfs), `loop` plus a reflink-capable
   filesystem for `baseDir` (loopfile; reflinks are copy-on-write
-  file clones — XFS with `reflink=1` or btrfs), and, for replication, the
+  file clones: XFS with `reflink=1` or btrfs), and, for replication, the
   DRBD9 `drbd` and `drbd_transport_tcp` modules, **version ≥ 9.3.1**
   (on Talos: shipped by ≥ 1.13.0). The agent refuses to start on a
-  node whose module is older — the drbd-utils in the agent image
+  node whose module is older: the drbd-utils in the agent image
   render options an older module rejects. Nodes without the module at
   all are fine (local-only).
 - Kubelet [graceful node shutdown][gns], so the agent (a
   `system-node-critical` pod) is stopped _after_ workloads on reboot
-  and can release DRBD backings before the backend pool exports;
-  otherwise a node reboot can wedge unmounting the pool.
+  and can release DRBD backings before the backend pool exports.
+
+/// warning | Graceful node shutdown is not optional for replication
+
+Skip it and a reboot can stop the agent before or alongside the
+workloads instead of after them. The agent then cannot release its DRBD
+backings before the backend pool exports, and unmounting the pool can
+wedge. The per-OS sections below show how to enable it.
+
+///
 
 All storage userland (`drbdadm`, `lvm`, `zfs`, `mkfs`, `mount.nfs`)
 ships inside the agent image; nodes only provide kernel modules.
@@ -24,7 +32,7 @@ ships inside the agent image; nodes only provide kernel modules.
 
 ## Talos
 
-Talos is the primary target — **≥ 1.13.0** for replication (its
+Talos is the primary target. For replication use **≥ 1.13.0** (its
 `siderolabs/drbd` extension ships the DRBD 9.3.1 module the agent
 requires). The stock kernel ships `dm_thin_pool`
 and `loop` (the agent loads them on demand), and `/var` is XFS with

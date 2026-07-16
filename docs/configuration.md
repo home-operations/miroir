@@ -6,32 +6,33 @@ Every chart value is documented value-by-value in the generated
 stale). This page is the orientation layer: which groups of values
 exist and where their behavior is explained.
 
-- **`nodes`** — the per-node storage topology, rendered as one
+- **`nodes`**: the per-node storage topology, rendered as one
   MiroirNode custom resource per entry (the `spec` passes through
-  verbatim; the CRD validates it — `kubectl explain miroirnode.spec`):
-  named `pools`, each with a backend (`lvmthin` / `zfs` / `loopfile`)
-  and that backend's block; node-level `zone` and replication
-  `address`. See the [Quickstart](quickstart.md) layouts.
-- **`storageClasses`** — the classes to create: `replicas`, `quorum`
+  verbatim and the CRD validates it; see `kubectl explain
+  miroirnode.spec`). Named `pools`, each with a backend
+  (`lvmthin` / `zfs` / `loopfile`) and that backend's block; node-level
+  `zone` and replication `address`. See the
+  [Quickstart](quickstart.md) layouts.
+- **`storageClasses`**: the classes to create. `replicas`, `quorum`
   policy ([Replication and quorum](replication.md)), `pool` (which
   named pool the class provisions from), `fsType`, `reclaimPolicy`,
   `allowRemoteVolumeAccess` ([Remote consumers](remote-consumers.md)),
   `isDefault`.
-- **`volumeSnapshotClasses`** — snapshot classes
+- **`volumeSnapshotClasses`**: snapshot classes
   ([Quickstart](quickstart.md#4-snapshot-and-restore)).
-- **`drbd`** — replication tuning: `portBase`
+- **`drbd`**: replication tuning. `portBase`
   ([Coexistence](coexistence.md)), `onIoError`, resync knobs,
   `verify.algorithm` / `verify.schedule`
   ([verification](resilience.md)), `autoTieBreaker`,
   `autoDiskfulAfter` ([auto-diskful](remote-consumers.md#auto-diskful)).
-- **`gateway`** — the per-RWX-volume NFS gateway: `enabled` (RWX is
+- **`gateway`**: the per-RWX-volume NFS gateway. `enabled` (RWX is
   opt-in, off by default) and the gateway image
   ([ReadWriteMany](rwx.md)).
-- **`monitoring`** — PodMonitor, PrometheusRule, dashboards
+- **`monitoring`**: PodMonitor, PrometheusRule, dashboards
   ([Monitoring](monitoring.md)).
-- **`agent` / `controller` / `sidecars`** — workload knobs: images,
+- **`agent` / `controller` / `sidecars`**: workload knobs for images,
   resources, `agent.kubeletDir`, `sidecars.healthMonitor`.
-- **`logging`** — level and encoder for both components.
+- **`logging`**: level and encoder for both components.
 
 ## ZFS zvol settings
 
@@ -39,8 +40,8 @@ Each ZFS pool can tune properties for newly created zvols:
 
 - `zfs.volBlockSize` accepts `4K`, `8K`, `16K`, `32K`, `64K`, or
   `128K` (canonical spelling, uppercase `K`). It defaults to `4K`.
-  Miroir rounds new volume sizes up to this boundary because OpenZFS
-  requires `volsize` alignment. Expansion follows the existing zvol's
+  OpenZFS requires `volsize` alignment, so miroir rounds new volume
+  sizes up to this boundary. Expansion follows the existing zvol's
   actual block size, including for snapshot clones.
 - `zfs.compression` defaults to `lz4`. Set it to `inherit` to omit a
   per-zvol property and use the parent dataset policy. It also accepts
@@ -60,7 +61,7 @@ nodes:
                       compression: inherit
 ```
 
-These settings apply only when Miroir creates a zvol. Reconciliation does
+These settings apply only when miroir creates a zvol. Reconciliation does
 not mutate existing volumes, and restored snapshot clones retain their
 source properties.
 

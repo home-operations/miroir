@@ -5,13 +5,12 @@ volume. Replicated volumes are consumable from any node by default
 (matching LINSTOR): the PV carries no node affinity, so the
 scheduler is free to place the pod anywhere. When the pod lands on a
 node without a replica, it reads and writes the volume over the
-replication network through an ephemeral **diskless client leg** — a
-DRBD peer with no local storage that miroir adds to the volume's
-`spec.clients` when the pod's volume is mounted and removes when it
-is unmounted, filling in the connection details (node id, address)
-exactly as for an operator-added replica. A pod landing on the
-tie-breaker's node needs no client leg; it uses the tie-breaker leg
-directly.
+replication network through an ephemeral **diskless client leg**, a
+DRBD peer with no local storage. miroir adds that leg to the volume's
+`spec.clients` when the pod's volume is mounted and removes it on
+unmount, filling in the connection details (node id, address) exactly
+as for an operator-added replica. A pod landing on the tie-breaker's
+node needs no client leg; it uses the tie-breaker leg directly.
 
 Set `allowRemoteVolumeAccess: false` on a `storageClasses` entry to
 opt that class out: its PVs then pin pods to the diskful replica
@@ -21,7 +20,7 @@ Trade-offs to understand:
 
 - **Every remote read and write crosses the replication network.**
   Pin latency-sensitive workloads with
-  `allowRemoteVolumeAccess: "false"` so a replica is always under the
+  `allowRemoteVolumeAccess: false` so a replica is always under the
   pod.
 - **Replica nodes are only preferred at first use.** The first
   consumer's node is pinned as a replica when it is a storage node

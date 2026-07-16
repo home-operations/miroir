@@ -5,14 +5,14 @@ to do something appear here; any version not listed upgrades by bumping the
 chart.
 
 miroir is pre-1.0, so breaking changes land in minor versions (0.9.0, 0.10.0,
-…). Read the section for every version you are crossing, oldest first —
-upgrading 0.8.x → 0.10.x means doing 0.9.0 and then 0.10.0.
+…). Read the section for every version you are crossing, oldest
+first. Upgrading 0.8.x → 0.10.x means doing 0.9.0 and then 0.10.0.
 
 /// tip | Check before you upgrade
 
 `helm template` (or a Flux dry-run) against your new values catches the
-chart-side failures below without touching the cluster. Both migrations here
-are Helm values edits — neither moves data nor needs volume downtime.
+chart-side failures below without touching the cluster. None of these
+migrations move data or need volume downtime.
 
 ///
 
@@ -46,7 +46,7 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
   --version <new-version> | kubectl apply --server-side -f -
 ```
 
-## 0.10.x → 0.11.0 — node topology becomes MiroirNode CRs
+## 0.10.x → 0.11.0: node topology becomes MiroirNode CRs
 
 The per-node storage topology moves out of the Helm-rendered ConfigMap and
 into `MiroirNode` custom resources. The chart still renders them from `nodes`
@@ -77,8 +77,8 @@ kubectl apply --server-side -f -` for plain Helm.
 Doing this first is what makes the rest of the upgrade safe: the new schema
 refuses the partial topology writes 0.10 agents make while the rollout is in
 flight (see step 4). Skip it and the old schema instead prunes the new pool
-fields from the chart's apply — quietly, with the agents then failing on
-configuration you can plainly see in your values.
+fields from the chart's apply. The prune is quiet, and the agents then fail
+on configuration you can plainly see in your values.
 
 ///
 
@@ -203,14 +203,14 @@ CRDs and run the upgrade again.
   or tooling that watched the setup Jobs would notice.
 - Topology edits no longer roll the pods (the ConfigMap checksum annotation
   is gone). The controller follows MiroirNode changes live, and each agent
-  restarts itself when its own pool spec changes — this is the new intended
+  restarts itself when its own pool spec changes. This is the new intended
   behavior, not a regression.
 - Two MiroirNodes sharing a replication `address` no longer keep every
   component from starting. The conflict is reported as an `AddressConflict`
   condition (plus a Warning event) on the offending nodes, which are excluded
   from new placement until it is resolved.
 
-## 0.9.x → 0.10.0 — named storage pools
+## 0.9.x → 0.10.0: named storage pools
 
 Each node's storage config moves under a named pool. Your existing single pool
 **must be adopted as the pool named `default`**: MiroirVolume replicas and
@@ -219,9 +219,9 @@ all resolve to `default`.
 
 ### 1. Nest each node's storage under `pools.default`
 
-`zone` and `address` stay node-level. Everything else — `backend`, `device`,
-`zfsDataset`, `zfsVolBlockSize`, `zfsCompression`, `baseDir`, `thinPoolSize` —
-moves:
+`zone` and `address` stay node-level. Everything else moves: `backend`,
+`device`, `zfsDataset`, `zfsVolBlockSize`, `zfsCompression`, `baseDir`,
+and `thinPoolSize`.
 
 Before:
 
@@ -256,7 +256,7 @@ flux reconcile helmrelease miroir -n miroir-system --with-source
 ```
 
 Existing volumes, snapshots, VGs (`vg-miroir`), datasets, and loopfile
-directories are reused as they are — **no data migration and no volume
+directories are reused as they are, with **no data migration and no volume
 downtime**. During the rollout an old agent and a new controller can briefly
 disagree on the `MiroirNode` status shape; placement treats those stats as
 unknown (the same as a cold cluster) until the DaemonSet finishes rolling.
@@ -288,7 +288,7 @@ needs no data migration.
 
 ### Also breaking, but unlikely to affect you
 
-- The agent/setup `--lvm-vg` and `--lvm-thinpool` flags are gone — VG naming
+- The agent/setup `--lvm-vg` and `--lvm-thinpool` flags are gone; VG naming
   derives from the pool name. The chart never set them; only custom
   `agent.extraArgs` would notice.
 - `MiroirNode.spec.backend` and the flat `status.capacityBytes`,
@@ -302,7 +302,7 @@ needs no data migration.
   reconciles and deletions fail loudly (`storage pool "x" is not configured on
   this node`) until the pool returns or the volumes are gone.
 
-## 0.8.x → 0.9.0 — RWX is opt-in
+## 0.8.x → 0.9.0: RWX is opt-in
 
 Serving ReadWriteMany is now an explicit operator decision. Gateway pods run
 privileged in the release namespace, and anyone who can create a PVC could
@@ -324,7 +324,7 @@ restarted gateway cannot read its volume), and new RWX PVCs are rejected.
 
 ///
 
-If you do not use RWX, no action is needed — the default is `false`, and the
+If you do not use RWX, no action is needed: the default is `false`, and the
 gateway ServiceAccount, RBAC, PodMonitor, and export alert group are simply
 not installed.
 
