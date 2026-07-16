@@ -78,6 +78,12 @@ type SnapshotReconciler struct {
 	// pool holding the volume's local replica.
 	Pools Pools
 	DRBD  *drbd.Driver
+	// Reader is the uncached API reader for the sibling-round check: the
+	// coordinator writes status.ioSuspended before any barrier action, so
+	// an API-server read is never stale — the informer cache can be, and
+	// a missed fresh round would lift a live barrier. Falls back to the
+	// cached client when unset (tests).
+	Reader client.Reader
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
 
@@ -304,28 +310,27 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 		time.Since(snap.Status.SuspendedAt.Time) > SuspendDeadline
 	// Disconnected or resyncing legs have diverged (quorum off lets the
 	// survivor write alone) and a barrier over diverged legs cuts
-	// diverged legs. Gates raising and cutting only — a degraded volume
-	// must still resume. Only diskful peers count: a downed tie-breaker
-	// holds no leg, and gating on its link would block every snapshot in
-	// exactly the degraded mode the tie-breaker exists to survive.
-	healthy := diskfulPeersConnected(st, vol, r.NodeName) && st.DiskState == drbd.DiskUpToDate
+	// diverged legs. Peer disk states count too: a resyncing or
+	// disk-failed peer can never raise its own barrier, so a round opened
+	// over it only freezes the workload until the deadline voids it —
+	// repeating for as long as the resync runs. Gates raising and cutting
+	// only — a degraded volume must still resume. Only diskful peers
+	// count: a downed tie-breaker holds no leg, and gating on its link
+	// would block every snapshot in exactly the degraded mode the
+	// tie-breaker exists to survive.
+	healthy := diskfulPeersConnected(st, vol, r.NodeName) &&
+		diskfulPeersUpToDate(st, vol, r.NodeName) &&
+		st.DiskState == drbd.DiskUpToDate
 
 	switch {
-	case coordinator && !snap.Status.IOSuspended && healthy:
-		// A failed previous round (a replica never finished before the
-		// deadline) retries with backoff instead of churning the barrier.
-		if myState == miroirv1alpha1.SnapshotError &&
-			snap.Status.SuspendedAt != nil &&
-			time.Since(snap.Status.SuspendedAt.Time) < suspendRetryBackoff {
-			return ctrl.Result{RequeueAfter: suspendRetryBackoff}, nil
-		}
-		// One round per volume: the kernel suspend flag is shared, so a
-		// second snapshot's round would tear the first's barrier down
-		// mid-cut. Wait for the sibling round to close.
-		if active, err := r.otherRoundActive(ctx, snap); err != nil || active {
-			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
-		}
-		return r.raiseBarrier(ctx, snap, vol, true)
+	case coordinator && !snap.Status.IOSuspended && healthy && !st.Suspended:
+		// The !st.Suspended guard is the kernel-truth half of the
+		// one-round-per-volume rule: a sibling round opened milliseconds
+		// ago holds suspend-io before its status write reaches this
+		// node's informer, so openRound's cache check can miss it. A held
+		// barrier with no live sibling round is stale — the case at the
+		// bottom lifts it, and the next pass opens cleanly.
+		return r.openRound(ctx, snap, vol, myState)
 
 	case !coordinator && snap.Status.IOSuspended && !expired && healthy &&
 		myState != miroirv1alpha1.SnapshotSuspended && myState != miroirv1alpha1.SnapshotDone:
@@ -488,14 +493,37 @@ func allSuspended(vol *miroirv1alpha1.MiroirVolume, snap *miroirv1alpha1.MiroirS
 	return true
 }
 
+// openRound starts a new barrier round as coordinator: a fresh raise,
+// unless the previous round's failure is still inside its retry backoff
+// or a sibling snapshot's round is mid-flight.
+func (r *SnapshotReconciler) openRound(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, myState miroirv1alpha1.SnapshotNodeState) (ctrl.Result, error) {
+	// A failed previous round (a replica never finished before the
+	// deadline) retries with backoff instead of churning the barrier.
+	if myState == miroirv1alpha1.SnapshotError &&
+		snap.Status.SuspendedAt != nil &&
+		time.Since(snap.Status.SuspendedAt.Time) < suspendRetryBackoff {
+		return ctrl.Result{RequeueAfter: suspendRetryBackoff}, nil
+	}
+	// One round per volume: the kernel suspend flag is shared, so a
+	// second snapshot's round would tear the first's barrier down
+	// mid-cut. Wait for the sibling round to close.
+	if active, err := r.otherRoundActive(ctx, snap); err != nil || active {
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, err
+	}
+	return r.raiseBarrier(ctx, snap, vol, true)
+}
+
 // otherRoundActive reports whether a different MiroirSnapshot of the same
 // volume is mid-round (its coordinator holds status.ioSuspended). The
 // kernel suspend-io flag is per-resource, not per-snapshot: concurrent
 // rounds would lift each other's barrier and cut non-identical legs, so
-// every barrier touch outside a round defers to a live sibling.
+// every barrier touch outside a round defers to a live sibling. Reads
+// through the uncached Reader: a round opened milliseconds ago is not in
+// the informer cache yet, and treating it as absent would lift its
+// barrier mid-cut.
 func (r *SnapshotReconciler) otherRoundActive(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) (bool, error) {
 	list := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := r.List(ctx, list); err != nil {
+	if err := r.snapReader().List(ctx, list); err != nil {
 		return false, err
 	}
 	for i := range list.Items {
@@ -505,6 +533,15 @@ func (r *SnapshotReconciler) otherRoundActive(ctx context.Context, snap *miroirv
 		}
 	}
 	return false, nil
+}
+
+// snapReader returns the uncached API reader, falling back to the cached
+// client when unset (tests).
+func (r *SnapshotReconciler) snapReader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
 }
 
 // resumeUnlessSiblingRound lifts the local barrier unless a sibling

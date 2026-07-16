@@ -463,13 +463,15 @@ func TestSnapshotProceedsWithTieBreakerDown(t *testing.T) {
 	// Both diskful views: data link Connected, tie-breaker link down.
 	feK := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"peer-node-id":1,"connection-state":"Connected"},
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]},
 			{"peer-node-id":2,"connection-state":"Connecting"}]}]`}
 	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-		"connections":[{"peer-node-id":0,"connection-state":"Connected"},
+		"connections":[{"peer-node-id":0,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]},
 			{"peer-node-id":2,"connection-state":"Connecting"}]}]`}
 	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
@@ -981,4 +983,162 @@ func TestSnapshotBarrierCallsAreBounded(t *testing.T) {
 			t.Fatalf("call deadline %s is not bounded by drbdBarrierTimeout (%s)", d, drbdBarrierTimeout)
 		}
 	}
+}
+
+// A resyncing peer (link up, disk Inconsistent) can never cut its leg, so
+// opening a round would only freeze the workload until the deadline voids
+// it — repeating for the whole resync. The coordinator must not raise.
+func TestSnapshotWaitsForResyncingPeer(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrA
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrB
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	// Primary, locally UpToDate, peer link established — but the peer is
+	// still resync-target Inconsistent.
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"Inconsistent"}]}]}]`}
+	fb := newFakeBackend()
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, snapSnap1)
+
+	fe.notCalledWith(t, "suspend-io")
+	if len(fb.snapCalls) != 0 {
+		t.Fatalf("no leg may be cut while a peer resyncs: %v", fb.snapCalls)
+	}
+}
+
+// The kernel suspend flag is the ground truth half of one-round-per-volume:
+// a healthy coordinator must not open a round while suspend-io is already
+// held — a sibling round's status write may not have reached the cache yet.
+// With a live sibling it defers; with none it lifts the stale barrier and
+// leaves the raise for the next pass.
+func TestSnapshotOpenDefersToKernelBarrier(t *testing.T) {
+	kernelSuspended := `[{"name":"` + volPvc1 + `","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`
+
+	build := func(t *testing.T, siblingOpen bool) (*SnapshotReconciler, *fakeDRBDExec) {
+		t.Helper()
+		s := newScheme(t)
+		v := vol(volPvc1, nodeA, nodeB)
+		v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+		v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+			nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+			nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		}
+		sibling := snapObj("snap-2", volPvc1, nodeA, nodeB)
+		sibling.Status.IOSuspended = siblingOpen
+		c := fake.NewClientBuilder().WithScheme(s).
+			WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB), sibling).
+			WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+			Build()
+		fe := &fakeDRBDExec{statusJSON: kernelSuspended}
+		return &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+			DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}, fe
+	}
+
+	// Sibling round open: neither raise nor lift — the sibling owns it.
+	r, fe := build(t, true)
+	reconcileSnap(t, r, snapSnap1)
+	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, "resume-io")
+
+	// No sibling round: the barrier is stale — lift it, raise next pass.
+	r, fe = build(t, false)
+	reconcileSnap(t, r, snapSnap1)
+	fe.notCalledWith(t, "suspend-io")
+	fe.calledWith(t, "drbdadm resume-io pvc-1")
+}
+
+// A round whose last leg lands after the deadline still ships: done==all
+// wins over expiry, so a slow-but-complete snapshot is not thrown away.
+func TestSnapshotLateCompleteRoundStillShips(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	snap := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
+	expired := metav1.NewTime(time.Now().Add(-2 * SuspendDeadline))
+	snap.Status.IOSuspended = true
+	snap.Status.SuspendedAt = &expired
+	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+		nodeA: miroirv1alpha1.SnapshotDone,
+		nodeB: miroirv1alpha1.SnapshotDone,
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, snapSnap1)
+
+	fe.calledWith(t, "drbdadm resume-io pvc-1")
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.ReadyToUse || got.Status.IOSuspended {
+		t.Fatalf("a complete round past the deadline must still ship: %+v", got.Status)
+	}
+}
+
+// The sibling-round check reads through the uncached API reader: a round
+// opened milliseconds ago is not in the informer cache yet, and treating
+// it as absent would lift its live barrier. The cached client here serves
+// a stale sibling (round not visible); the reader serves the truth.
+func TestSnapshotSiblingCheckReadsThroughAPIReader(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	staleSibling := snapObj("snap-2", volPvc1, nodeA, nodeB) // cache: no round
+	freshSibling := snapObj("snap-2", volPvc1, nodeA, nodeB)
+	freshSibling.Status.IOSuspended = true // API server: round open
+	cached := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB), staleSibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+	apiServer := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(freshSibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}).
+		Build()
+
+	// Local barrier held by the fresh sibling round.
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: cached, Reader: apiServer, NodeName: nodeA,
+		Pools: poolsOf(newFakeBackend()),
+		DRBD:  &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, snapSnap1)
+
+	fe.notCalledWith(t, "resume-io")
+	fe.notCalledWith(t, "suspend-io")
 }
