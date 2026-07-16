@@ -38,6 +38,10 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1alpha1.ExportSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ExportStatus"):
 		return &apiv1alpha1.ExportStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("LoopfilePool"):
+		return &apiv1alpha1.LoopfilePoolApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("LVMThinPool"):
+		return &apiv1alpha1.LVMThinPoolApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNode"):
 		return &apiv1alpha1.MiroirNodeApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNodePool"):
@@ -68,6 +72,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1alpha1.VolumeClientApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("VolumeSource"):
 		return &apiv1alpha1.VolumeSourceApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ZFSPool"):
+		return &apiv1alpha1.ZFSPoolApplyConfiguration{}
 
 	}
 	return nil

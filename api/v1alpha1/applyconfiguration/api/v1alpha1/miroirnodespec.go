@@ -21,9 +21,26 @@ package v1alpha1
 // MiroirNodeSpecApplyConfiguration represents a declarative configuration of the MiroirNodeSpec type for use
 // with apply.
 //
-// MiroirNodeSpec records which pools a storage node runs.
+// MiroirNodeSpec is one storage node's desired topology: its named pools
+// plus node-level replication settings. Rendered by the Helm chart from
+// the release's `nodes` values; read by the controller for placement and
+// by the node's agent for backend selection.
 type MiroirNodeSpecApplyConfiguration struct {
-	// Pools lists this node's storage pools, one entry per pool.
+	// Zone is an optional failure domain (rack, host group, AZ). When set,
+	// the controller spreads a volume's replicas across distinct zones;
+	// empty means unconstrained.
+	Zone *string `json:"zone,omitempty"`
+	// Address optionally pins the node's DRBD replication endpoint to a
+	// dedicated storage NIC/VLAN IP (IPv4 or IPv6); empty falls back to
+	// the node's InternalIP. It applies to volumes created afterwards —
+	// existing volumes keep the address persisted at creation.
+	Address *string `json:"address,omitempty"`
+	// AutoEvict, when explicitly false, exempts this node from auto-evict:
+	// its legs are never re-placed while its heartbeat is stale (a node
+	// with known long outages). Absent means eligible.
+	AutoEvict *bool `json:"autoEvict,omitempty"`
+	// Pools lists this node's storage pools, one entry per pool. Every
+	// node in the topology carries at least one.
 	Pools []MiroirNodePoolApplyConfiguration `json:"pools,omitempty"`
 }
 
@@ -31,6 +48,30 @@ type MiroirNodeSpecApplyConfiguration struct {
 // apply.
 func MiroirNodeSpec() *MiroirNodeSpecApplyConfiguration {
 	return &MiroirNodeSpecApplyConfiguration{}
+}
+
+// WithZone sets the Zone field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Zone field is set to the value of the last call.
+func (b *MiroirNodeSpecApplyConfiguration) WithZone(value string) *MiroirNodeSpecApplyConfiguration {
+	b.Zone = &value
+	return b
+}
+
+// WithAddress sets the Address field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Address field is set to the value of the last call.
+func (b *MiroirNodeSpecApplyConfiguration) WithAddress(value string) *MiroirNodeSpecApplyConfiguration {
+	b.Address = &value
+	return b
+}
+
+// WithAutoEvict sets the AutoEvict field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the AutoEvict field is set to the value of the last call.
+func (b *MiroirNodeSpecApplyConfiguration) WithAutoEvict(value bool) *MiroirNodeSpecApplyConfiguration {
+	b.AutoEvict = &value
+	return b
 }
 
 // WithPools adds the given value to the Pools field in the declarative configuration

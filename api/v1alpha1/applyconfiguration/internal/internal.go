@@ -65,6 +65,21 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: address
       type:
         scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.LVMThinPool
+  map:
+    fields:
+    - name: device
+      type:
+        scalar: string
+    - name: poolSize
+      type:
+        scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.LoopfilePool
+  map:
+    fields:
+    - name: baseDir
+      type:
+        scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNode
   map:
     fields:
@@ -89,9 +104,18 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: backend
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.BackendType
+    - name: loopfile
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.LoopfilePool
+    - name: lvmthin
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.LVMThinPool
     - name: name
       type:
         scalar: string
+    - name: zfs
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.ZFSPool
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodePoolStatus
   map:
     fields:
@@ -113,6 +137,12 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeSpec
   map:
     fields:
+    - name: address
+      type:
+        scalar: string
+    - name: autoEvict
+      type:
+        scalar: boolean
     - name: pools
       type:
         list:
@@ -121,6 +151,9 @@ var schemaYAML = typed.YAMLObject(`types:
           elementRelationship: associative
           keys:
           - name
+    - name: zone
+      type:
+        scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeStatus
   map:
     fields:
@@ -382,6 +415,20 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: snapshotName
       type:
         scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.ZFSPool
+  map:
+    fields:
+    - name: compression
+      type:
+        scalar: string
+      default: lz4
+    - name: dataset
+      type:
+        scalar: string
+    - name: volBlockSize
+      type:
+        scalar: string
+      default: 4K
 - name: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
   map:
     fields:

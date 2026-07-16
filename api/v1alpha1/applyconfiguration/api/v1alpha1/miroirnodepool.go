@@ -25,15 +25,25 @@ import (
 // MiroirNodePoolApplyConfiguration represents a declarative configuration of the MiroirNodePool type for use
 // with apply.
 //
-// MiroirNodePool is the per-pool slice of a node's spec: which backend
-// implementation the named pool runs, mirrored from the node map so
-// `kubectl get miroirnodes` reads without the ConfigMap.
+// MiroirNodePool is one named storage pool on a node: the backend
+// implementation plus that backend's configuration block. Pool names are
+// cluster-wide identities — a StorageClass selects a pool by name and the
+// controller places each replica on a node carrying that pool.
 type MiroirNodePoolApplyConfiguration struct {
-	// Name is the pool name from the node map ("default" for the
-	// pre-multi-pool single pool).
+	// Name is the pool name ("default" for the pre-multi-pool single
+	// pool). It becomes an LVM VG name suffix, a metric label value, and a
+	// StorageClass parameter, so it stays a short lowercase identifier.
 	Name *string `json:"name,omitempty"`
-	// Backend is the storage implementation backing this pool.
+	// Backend is the storage implementation backing this pool. An explicit
+	// discriminator (not inferred from the block below): it is also
+	// persisted per Replica, beyond pool config.
 	Backend *apiv1alpha1.BackendType `json:"backend,omitempty"`
+	// LVMThin configures the pool when backend is lvmthin.
+	LVMThin *LVMThinPoolApplyConfiguration `json:"lvmthin,omitempty"`
+	// ZFS configures the pool when backend is zfs.
+	ZFS *ZFSPoolApplyConfiguration `json:"zfs,omitempty"`
+	// Loopfile configures the pool when backend is loopfile.
+	Loopfile *LoopfilePoolApplyConfiguration `json:"loopfile,omitempty"`
 }
 
 // MiroirNodePoolApplyConfiguration constructs a declarative configuration of the MiroirNodePool type for use with
@@ -55,5 +65,29 @@ func (b *MiroirNodePoolApplyConfiguration) WithName(value string) *MiroirNodePoo
 // If called multiple times, the Backend field is set to the value of the last call.
 func (b *MiroirNodePoolApplyConfiguration) WithBackend(value apiv1alpha1.BackendType) *MiroirNodePoolApplyConfiguration {
 	b.Backend = &value
+	return b
+}
+
+// WithLVMThin sets the LVMThin field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LVMThin field is set to the value of the last call.
+func (b *MiroirNodePoolApplyConfiguration) WithLVMThin(value *LVMThinPoolApplyConfiguration) *MiroirNodePoolApplyConfiguration {
+	b.LVMThin = value
+	return b
+}
+
+// WithZFS sets the ZFS field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ZFS field is set to the value of the last call.
+func (b *MiroirNodePoolApplyConfiguration) WithZFS(value *ZFSPoolApplyConfiguration) *MiroirNodePoolApplyConfiguration {
+	b.ZFS = value
+	return b
+}
+
+// WithLoopfile sets the Loopfile field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Loopfile field is set to the value of the last call.
+func (b *MiroirNodePoolApplyConfiguration) WithLoopfile(value *LoopfilePoolApplyConfiguration) *MiroirNodePoolApplyConfiguration {
+	b.Loopfile = value
 	return b
 }

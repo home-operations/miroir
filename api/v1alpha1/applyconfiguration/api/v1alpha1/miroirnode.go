@@ -30,8 +30,10 @@ import (
 // MiroirNodeApplyConfiguration represents a declarative configuration of the MiroirNode type for use
 // with apply.
 //
-// MiroirNode publishes one storage node's pool capacities. Named after the
-// node; written by that node's agent, read by the controller at placement.
+// MiroirNode declares one storage node's topology and publishes its pool
+// capacities. Named after the node; the spec is authored through the Helm
+// chart's `nodes` values, the status is written by that node's agent, and
+// the controller reads both at placement.
 type MiroirNodeApplyConfiguration struct {
 	v1.TypeMetaApplyConfiguration    `json:",inline"`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
