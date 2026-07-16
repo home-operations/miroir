@@ -1434,3 +1434,178 @@ func TestParseAllowRemoteAccess(t *testing.T) {
 		})
 	}
 }
+
+// Expansion must honor the same capacity guardrails as CreateVolume: one
+// PVC grown past the pool ENOSPCs every thin volume sharing it.
+func TestControllerExpandRefusesBeyondHeadroom(t *testing.T) {
+	s := newScheme(t)
+	v := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 10 << 30,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin},
+			},
+		},
+	}
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(v, miroirNodeObj(nodeA, 100*gib, 95*gib)).
+			WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build(),
+		ProvisionTimeout: time.Second,
+	}
+
+	_, err := c.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      volPvc1,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 10 << 40}, // 10 TiB
+	})
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("a grow past the pool guardrails must refuse, got %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.SizeBytes != 10<<30 {
+		t.Fatalf("a refused grow must not touch the spec: %d", got.Spec.SizeBytes)
+	}
+}
+
+// A node without fresh stats admits the grow, matching place().
+func TestControllerExpandAdmitsWithoutStats(t *testing.T) {
+	s := newScheme(t)
+	v := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 10 << 30,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin},
+			},
+		},
+		Status: miroirv1alpha1.MiroirVolumeStatus{
+			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {SizeBytes: 20 << 30}, // realization already caught up
+			},
+		},
+	}
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+			WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build(),
+		ProvisionTimeout: time.Second,
+	}
+
+	if _, err := c.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      volPvc1,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 20 << 30},
+	}); err != nil {
+		t.Fatalf("no fresh stats must admit: %v", err)
+	}
+}
+
+// A Volume-type content source (PVC clone) is not implemented; silently
+// ignoring it would provision a blank volume under a clone's name.
+func TestCreateVolumeRejectsVolumeContentSource(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: volCaps(),
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "pvc-0"},
+			},
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("a volume content source must be InvalidArgument, got %v", err)
+	}
+}
+
+// CreateSnapshot idempotency: a same-name retry with the same source
+// returns the existing snapshot; the same name for a different source is
+// AlreadyExists.
+func TestCreateSnapshotIdempotent(t *testing.T) {
+	s := newScheme(t)
+	v := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 10 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendZFS}},
+		},
+	}
+	other := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-2"},
+		Spec:       miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30},
+	}
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(v, other).
+			WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}).Build(),
+	}
+
+	first, err := c.CreateSnapshot(t.Context(), &csi.CreateSnapshotRequest{
+		Name: snapSnap1, SourceVolumeId: volPvc1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := c.CreateSnapshot(t.Context(), &csi.CreateSnapshotRequest{
+		Name: snapSnap1, SourceVolumeId: volPvc1,
+	})
+	if err != nil {
+		t.Fatalf("same-name same-source retry must succeed: %v", err)
+	}
+	if retry.Snapshot.SnapshotId != first.Snapshot.SnapshotId {
+		t.Fatalf("retry must return the existing snapshot: %+v", retry.Snapshot)
+	}
+
+	_, err = c.CreateSnapshot(t.Context(), &csi.CreateSnapshotRequest{
+		Name: snapSnap1, SourceVolumeId: "pvc-2",
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("same name for a different source must be AlreadyExists, got %v", err)
+	}
+}
+
+// Tokens are positional: pages must neither skip nor duplicate, and a
+// garbage or out-of-range token is Aborted per the CSI spec.
+func TestListVolumesPagination(t *testing.T) {
+	s := newScheme(t)
+	objs := make([]client.Object, 0, 3)
+	for _, name := range []string{"pvc-b", "pvc-a", "pvc-c"} {
+		objs = append(objs, &miroirv1alpha1.MiroirVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30},
+		})
+	}
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()}
+
+	page1, err := c.ListVolumes(t.Context(), &csi.ListVolumesRequest{MaxEntries: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page1.Entries) != 2 || page1.Entries[0].Volume.VolumeId != "pvc-a" ||
+		page1.Entries[1].Volume.VolumeId != "pvc-b" {
+		t.Fatalf("page 1 must be the first two in stable order: %+v", page1.Entries)
+	}
+	if page1.NextToken == "" {
+		t.Fatal("a truncated page must return a token")
+	}
+
+	page2, err := c.ListVolumes(t.Context(), &csi.ListVolumesRequest{
+		MaxEntries: 2, StartingToken: page1.NextToken,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2.Entries) != 1 || page2.Entries[0].Volume.VolumeId != "pvc-c" ||
+		page2.NextToken != "" {
+		t.Fatalf("page 2 must hold the remainder with no token: %+v", page2)
+	}
+
+	for _, token := range []string{"9", "x", "-1"} {
+		if _, err := c.ListVolumes(t.Context(), &csi.ListVolumesRequest{StartingToken: token}); status.Code(err) != codes.Aborted {
+			t.Fatalf("token %q must be Aborted, got %v", token, err)
+		}
+	}
+}

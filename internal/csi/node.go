@@ -53,6 +53,13 @@ type Node struct {
 	// reconciler lags, and staging on a stale UpToDate mounts (or worse,
 	// formats) a diverged replica.
 	DRBD stage.DRBDStatus
+	// ClientOnly marks a node with no MiroirNode: no volume reconciler
+	// runs there, so an added client leg would never be realized — the
+	// pod would wedge in ContainerCreating, the spec entry would burn one
+	// of the two client slots, and its teardown finalizer would block the
+	// volume's deletion forever. RWO remote-access staging refuses
+	// instead; RWX (NFS) staging needs no DRBD leg and still works.
+	ClientOnly bool
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
@@ -136,6 +143,15 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroir
 // reconciler completes the entry and the agent realizes it; until then the
 // stage returns Unavailable and the CO retries.
 func (n *Node) clientDevicePath(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (string, *miroirv1alpha1.MiroirVolume, error) {
+	if n.ClientOnly {
+		// No reconciler would ever realize the leg (see ClientOnly);
+		// refuse loudly instead of polluting the spec with an entry that
+		// wedges the pod and blocks the volume's deletion.
+		return "", nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s cannot be consumed remotely from node %s: the node is not in the storage topology "+
+				"(add it under the Helm `nodes` value, or set allowRemoteVolumeAccess: \"false\" on the class "+
+				"to pin pods to replica nodes)", vol.Name, n.NodeName)
+	}
 	if vol.Spec.ClientForNode(n.NodeName) == nil {
 		if err := n.addClientLeg(ctx, vol); err != nil {
 			return "", nil, err
@@ -402,26 +418,17 @@ func (n *Node) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRe
 // wedge NodeUnstageVolume indefinitely.
 const nfsUnmountTimeout = 30 * time.Second
 
-// NodeUnstageVolume unmounts the staging path. Idempotent. An export
-// volume's staging mount is NFS: if its gateway has died a plain unmount
-// blocks, so force it with a deadline. The volume lookup is best-effort —
-// a volume already deleted falls back to the normal cleanup.
+// NodeUnstageVolume unmounts the staging path. Idempotent. Cleanup is
+// forced (deadline-bounded) whenever the mounter supports it: an export
+// volume's staging mount is NFS, and when its gateway is gone a plain
+// unmount hangs — worst exactly when the MiroirVolume is already deleted,
+// which is why the force path must not be gated on a CR lookup. Forcing
+// is harmless for local block staging mounts.
 func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	if req.GetVolumeId() == "" || req.GetStagingTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and staging path are required")
 	}
-	target := req.GetStagingTargetPath()
-
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := n.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err == nil && vol.Spec.Export != nil {
-		if forcer, ok := n.Mounter.Interface.(mount.MounterForceUnmounter); ok {
-			if err := mount.CleanupMountWithForce(target, forcer, true, nfsUnmountTimeout); err != nil {
-				return nil, status.Errorf(codes.Internal, "unstage: %v", err)
-			}
-			return &csi.NodeUnstageVolumeResponse{}, nil
-		}
-	}
-	if err := mount.CleanupMountPoint(target, n.Mounter, true); err != nil {
+	if err := cleanupMount(req.GetStagingTargetPath(), n.Mounter); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage: %v", err)
 	}
 	// A client leg follows its consumer: with the device released, drop the
@@ -488,15 +495,28 @@ func (n *Node) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolume
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
-// NodeUnpublishVolume removes the pod bind mount. Idempotent.
+// NodeUnpublishVolume removes the pod bind mount. Idempotent. Forced for
+// the same reason as NodeUnstageVolume — a bind of a dead-gateway NFS
+// staging mount hangs a plain unmount.
 func (n *Node) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
 	if req.GetVolumeId() == "" || req.GetTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and target path are required")
 	}
-	if err := mount.CleanupMountPoint(req.GetTargetPath(), n.Mounter, true); err != nil {
+	if err := cleanupMount(req.GetTargetPath(), n.Mounter); err != nil {
 		return nil, status.Errorf(codes.Internal, "unpublish: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
+}
+
+// cleanupMount unmounts and removes target, with a deadline-bounded
+// forced unmount when the mounter supports it — a hung hard-NFS mount
+// (dead gateway) blocks the plain path's umount indefinitely, piling
+// kubelet retries onto more hung RPCs.
+func cleanupMount(target string, mounter *mount.SafeFormatAndMount) error {
+	if forcer, ok := mounter.Interface.(mount.MounterForceUnmounter); ok {
+		return mount.CleanupMountWithForce(target, forcer, true, nfsUnmountTimeout)
+	}
+	return mount.CleanupMountPoint(target, mounter, true)
 }
 
 // NodeGetVolumeStats reports capacity on a published volume via statfs.
