@@ -652,6 +652,7 @@ func main() {
 			NodeName: nodeName,
 			Pools:    pools,
 			DRBD:     drbdDriver,
+			Reader:   mgr.GetAPIReader(),
 			Recorder: mgr.GetEventRecorder("miroir-agent"),
 		}
 		if err := snapReconciler.SetupWithManager(mgr); err != nil {

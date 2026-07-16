@@ -1105,3 +1105,40 @@ func TestSnapshotLateCompleteRoundStillShips(t *testing.T) {
 		t.Fatalf("a complete round past the deadline must still ship: %+v", got.Status)
 	}
 }
+
+// The sibling-round check reads through the uncached API reader: a round
+// opened milliseconds ago is not in the informer cache yet, and treating
+// it as absent would lift its live barrier. The cached client here serves
+// a stale sibling (round not visible); the reader serves the truth.
+func TestSnapshotSiblingCheckReadsThroughAPIReader(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	staleSibling := snapObj("snap-2", volPvc1, nodeA, nodeB) // cache: no round
+	freshSibling := snapObj("snap-2", volPvc1, nodeA, nodeB)
+	freshSibling.Status.IOSuspended = true // API server: round open
+	cached := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB), staleSibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+	apiServer := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(freshSibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}).
+		Build()
+
+	// Local barrier held by the fresh sibling round.
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: cached, Reader: apiServer, NodeName: nodeA,
+		Pools: poolsOf(newFakeBackend()),
+		DRBD:  &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, snapSnap1)
+
+	fe.notCalledWith(t, "resume-io")
+	fe.notCalledWith(t, "suspend-io")
+}

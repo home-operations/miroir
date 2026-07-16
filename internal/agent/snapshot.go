@@ -78,6 +78,12 @@ type SnapshotReconciler struct {
 	// pool holding the volume's local replica.
 	Pools Pools
 	DRBD  *drbd.Driver
+	// Reader is the uncached API reader for the sibling-round check: the
+	// coordinator writes status.ioSuspended before any barrier action, so
+	// an API-server read is never stale — the informer cache can be, and
+	// a missed fresh round would lift a live barrier. Falls back to the
+	// cached client when unset (tests).
+	Reader client.Reader
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
 
@@ -511,10 +517,13 @@ func (r *SnapshotReconciler) openRound(ctx context.Context, snap *miroirv1alpha1
 // volume is mid-round (its coordinator holds status.ioSuspended). The
 // kernel suspend-io flag is per-resource, not per-snapshot: concurrent
 // rounds would lift each other's barrier and cut non-identical legs, so
-// every barrier touch outside a round defers to a live sibling.
+// every barrier touch outside a round defers to a live sibling. Reads
+// through the uncached Reader: a round opened milliseconds ago is not in
+// the informer cache yet, and treating it as absent would lift its
+// barrier mid-cut.
 func (r *SnapshotReconciler) otherRoundActive(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) (bool, error) {
 	list := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := r.List(ctx, list); err != nil {
+	if err := r.snapReader().List(ctx, list); err != nil {
 		return false, err
 	}
 	for i := range list.Items {
@@ -524,6 +533,15 @@ func (r *SnapshotReconciler) otherRoundActive(ctx context.Context, snap *miroirv
 		}
 	}
 	return false, nil
+}
+
+// snapReader returns the uncached API reader, falling back to the cached
+// client when unset (tests).
+func (r *SnapshotReconciler) snapReader() client.Reader {
+	if r.Reader != nil {
+		return r.Reader
+	}
+	return r.Client
 }
 
 // resumeUnlessSiblingRound lifts the local barrier unless a sibling
