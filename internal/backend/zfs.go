@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // zfsBackend provisions sparse zvols under a dedicated dataset (paris's
@@ -30,6 +31,8 @@ type zfsBackend struct {
 	volBlockSize int64
 	compression  string
 	exec         Exec
+	// readyTimeout bounds awaitDevice; a field so tests need not wait it out.
+	readyTimeout time.Duration
 }
 
 func newZFS(cfg Config, e Exec) *zfsBackend {
@@ -46,6 +49,7 @@ func newZFS(cfg Config, e Exec) *zfsBackend {
 		volBlockSize: blockSize,
 		compression:  compression,
 		exec:         e,
+		readyTimeout: zvolReadyTimeout,
 	}
 }
 
@@ -94,7 +98,38 @@ func (z *zfsBackend) Exists(ctx context.Context, vol string) (bool, error) {
 const (
 	defaultZFSVolBlockSize int64 = 4 << 10
 	defaultZFSCompression        = "lz4"
+	// zvolReadyTimeout bounds the wait for a fresh zvol's device node.
+	// zfs create returns once the volume exists in the pool, but
+	// /dev/zvol/… is a udev-managed symlink that lands asynchronously —
+	// the reason OpenZFS ships zvol_wait. udev normally settles in
+	// milliseconds; the budget covers a node whose queue is backed up.
+	zvolReadyTimeout  = 30 * time.Second
+	zvolReadyInterval = 100 * time.Millisecond
 )
+
+// awaitDevice returns vol's device path once the node can be opened.
+// blockdev is the probe rather than a stat: the /dev/zvol symlink appears
+// before its target is guaranteed openable, and every consumer of this
+// path (drbdadm create-md, mkfs) opens the device.
+func (z *zfsBackend) awaitDevice(ctx context.Context, vol string) (string, error) {
+	dev := z.DevicePath(vol)
+	deadline := time.Now().Add(z.readyTimeout)
+	for {
+		_, err := z.exec(ctx, "blockdev", "--getsize64", dev)
+		if err == nil {
+			return dev, nil
+		}
+		if !time.Now().Before(deadline) {
+			return "", fmt.Errorf("zvol %s: %s not usable after %s (udev may be stuck): %w",
+				vol, dev, z.readyTimeout, err)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(zvolReadyInterval):
+		}
+	}
+}
 
 // alignSize rounds sizeBytes up to blockSize. PVC sizes are not necessarily
 // block-size multiples (1G = 10^9), and the other backends already realize
@@ -123,7 +158,9 @@ func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (s
 			return "", fmt.Errorf("zfs create %s: %w", vol, err)
 		}
 	}
-	return z.DevicePath(vol), nil
+	// Also on the already-exists path: a node that just imported the pool
+	// has the zvol without its device node yet.
+	return z.awaitDevice(ctx, vol)
 }
 
 func (z *zfsBackend) Resize(ctx context.Context, vol string, sizeBytes int64) error {
@@ -179,7 +216,7 @@ func (z *zfsBackend) CreateFromSnapshot(ctx context.Context, vol, sourceVol, sna
 			return "", err
 		}
 	}
-	return z.DevicePath(vol), nil
+	return z.awaitDevice(ctx, vol)
 }
 
 func (z *zfsBackend) Delete(ctx context.Context, vol string) error {
