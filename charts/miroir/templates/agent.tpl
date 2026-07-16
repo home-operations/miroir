@@ -1,12 +1,14 @@
 {{- /* Distinct loopfile base directories across nodes, identity-mounted
        (host path == container path) so losetup/reflink see the same path
-       the agent reads from nodes.yaml. DirectoryOrCreate is harmless on
-       nodes that don't use the loopfile backend. */ -}}
+       the agent reads from its MiroirNode spec. DirectoryOrCreate is
+       harmless on nodes that don't use the loopfile backend. This is the
+       chart's cross-cutting wiring over the pass-through node specs, not
+       validation. */ -}}
 {{- $loopDirs := list }}
 {{- range $name, $node := .Values.nodes }}
-{{-   range $poolName, $pool := $node.pools }}
-{{-     if eq (toString $pool.backend) "loopfile" }}
-{{-       $loopDirs = append $loopDirs $pool.baseDir }}
+{{-   range $pool := ($node.spec).pools }}
+{{-     if $pool.loopfile }}
+{{-       $loopDirs = append $loopDirs $pool.loopfile.baseDir }}
 {{-     end }}
 {{-   end }}
 {{- end }}
@@ -35,16 +37,12 @@ spec:
         {{- with .Values.agent.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- /* No topology checksum: the agent watches its MiroirNode and
+      restarts itself when the pool spec drifts from what it booted with. */}}
+      {{- with .Values.agent.podAnnotations }}
       annotations:
-        {{- /* nodemap.Load reads nodes.yaml once at startup, so a topology
-        edit would otherwise sit unread until something unrelated restarted
-        the pod — kubelet syncs the mounted ConfigMap in place. Only the
-        nodes map is hashed: global_common.conf is read by drbdadm on every
-        invocation, so it needs no restart. */}}
-        checksum/nodes: {{ .Values.nodes | toYaml | sha256sum }}
-        {{- with .Values.agent.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-        {{- end }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.agentName" . }}
       hostNetwork: true
@@ -62,7 +60,6 @@ spec:
           args:
             - --mode=agent
             - --csi-socket=/csi/csi.sock
-            - --nodes-config=/etc/miroir/nodes.yaml
             - --metrics-bind-address=:9810
             - --pool-stats-interval={{ .Values.agent.poolStatsInterval }}
             - --volume-workers={{ .Values.agent.volumeWorkers }}
@@ -99,9 +96,6 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
-            - name: nodes
-              mountPath: /etc/miroir
-              readOnly: true
             - name: kubelet
               mountPath: {{ .Values.agent.kubeletDir }}
               mountPropagation: Bidirectional
@@ -139,9 +133,6 @@ spec:
             - name: registration
               mountPath: /registration
       volumes:
-        - name: nodes
-          configMap:
-            name: {{ include "miroir.nodesConfigName" . }}
         - name: socket-dir
           hostPath:
             path: {{ .Values.agent.kubeletDir }}/plugins/miroir.home-operations.com

@@ -38,6 +38,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -61,6 +62,7 @@ import (
 	"github.com/home-operations/miroir/internal/gateway"
 	"github.com/home-operations/miroir/internal/membership"
 	"github.com/home-operations/miroir/internal/nodemap"
+	"github.com/home-operations/miroir/internal/topology"
 )
 
 var (
@@ -87,7 +89,7 @@ func init() {
 // auto-diskful converter for long-lived client legs when a threshold is
 // set, and the auto-evict reconciler for dead nodes when its threshold
 // is set.
-func setupMembership(mgr ctrl.Manager, nodes nodemap.Map, autoTieBreaker bool,
+func setupMembership(mgr ctrl.Manager, nodes nodemap.Source, autoTieBreaker bool,
 	autoDiskfulAfter, autoEvictAfter time.Duration,
 ) error {
 	r := &membership.Reconciler{Client: mgr.GetClient(), Nodes: nodes}
@@ -146,10 +148,24 @@ func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string) erro
 	return nil
 }
 
-// errNodeUnmapped marks a node that is not in the storage map: it runs a
-// client-only agent (CSI node service for RWX/NFS consumers) rather than
-// failing to start.
-var errNodeUnmapped = errors.New("node absent from the storage node map")
+// fetchMiroirNode reads this node's MiroirNode straight from the API
+// server (the cache has not started), retrying transient errors within the
+// startup budget so a reboot that races control-plane recovery does not
+// churn through CrashLoopBackOff. found is false when no MiroirNode names
+// this node — it holds no storage and runs a client-only agent.
+func fetchMiroirNode(r client.Reader, name string, budget time.Duration) (*miroirv1alpha1.MiroirNode, bool, error) {
+	node := &miroirv1alpha1.MiroirNode{}
+	err := apiWithRetry(budget, func(ctx context.Context) error {
+		return r.Get(ctx, types.NamespacedName{Name: name}, node)
+	})
+	if apierrors.IsNotFound(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return node, true, nil
+}
 
 // cacheOptions builds the manager cache config. SSA-heavy objects grow a
 // managedFields entry per field manager (every agent + the CSI controller
@@ -180,18 +196,36 @@ func volumeGroupFor(pool string) string {
 	return "vg-miroir-" + pool
 }
 
-// poolBackendsFor resolves this node's pools from the node map and builds
-// one backend per pool — shared by setup and agent mode so the two can
-// never wire Config differently.
-func poolBackendsFor(nodeName, nodesConfig string) (agent.Pools, error) {
-	nodes, err := nodemap.Load(nodesConfig)
+// agentTopology reads this node's MiroirNode (with the startup retry
+// budget) and arms the watcher that restarts the agent when the pool spec
+// drifts from this snapshot — or appears at all — so a chart-applied pool
+// edit reaches the agent without the ConfigMap-checksum pod roll it used
+// to ride. found is false for a client-only node (no MiroirNode).
+func agentTopology(mgr manager.Manager, nodeName string, stop context.CancelFunc) (*miroirv1alpha1.MiroirNode, bool) {
+	miroirNode, found, err := fetchMiroirNode(mgr.GetAPIReader(), nodeName, apiStartupWait)
 	if err != nil {
-		return nil, fmt.Errorf("load node map: %w", err)
+		setupLog.Error(err, "unable to read this node's MiroirNode")
+		os.Exit(1)
 	}
-	entry, ok := nodes[nodeName]
-	if !ok {
-		return nil, errNodeUnmapped
+	var bootedPools []miroirv1alpha1.MiroirNodePool
+	if found {
+		bootedPools = miroirNode.Spec.Pools
 	}
+	if err := (&agent.TopologyWatcher{
+		Client:      mgr.GetClient(),
+		NodeName:    nodeName,
+		BootedPools: bootedPools,
+		Stop:        stop,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up topology watcher")
+		os.Exit(1)
+	}
+	return miroirNode, found
+}
+
+// poolBackendsFor builds one backend per pool from this node's flattened
+// MiroirNode spec.
+func poolBackendsFor(nodeName string, entry nodemap.Node) (agent.Pools, error) {
 	pools := agent.Pools{}
 	for name, p := range entry.Pools {
 		be, err := backend.New(p.Backend, backend.Config{
@@ -268,35 +302,6 @@ func addVerifyScheduler(mgr manager.Manager, nodeName string, drbdReady bool, sc
 	}
 }
 
-// runSetup provisions the node-local pools and returns. It reads the node
-// map from a file and drives lvm/zfs directly, needing no API connection.
-// Any pool failing setup fails the run (it backs a Job whose failure is
-// the operator's signal); every pool is still attempted so one bad pool
-// does not hide the others' state.
-func runSetup(nodeName, nodesConfig string) {
-	if nodeName == "" {
-		setupLog.Error(nil, "--node-name (or NODE_NAME) is required in setup mode")
-		os.Exit(1)
-	}
-	pools, err := poolBackendsFor(nodeName, nodesConfig)
-	if err != nil {
-		setupLog.Error(err, "unable to build the node's backends")
-		os.Exit(1)
-	}
-	failed := false
-	for _, name := range slices.Sorted(maps.Keys(pools)) {
-		if err := pools[name].Backend.Setup(context.Background()); err != nil {
-			setupLog.Error(err, "pool setup failed", "node", nodeName, "pool", name)
-			failed = true
-			continue
-		}
-		setupLog.Info("pool ready", "node", nodeName, "pool", name)
-	}
-	if failed {
-		os.Exit(1)
-	}
-}
-
 // runGateway serves one RWX volume over NFS and blocks until the process
 // is signalled. It builds a direct client (no manager/cache) and drives
 // the host's DRBD/mount tooling like the agent, exiting non-zero if the
@@ -333,7 +338,6 @@ func main() {
 		mode             string
 		csiSocket        string
 		metricsAddr      string
-		nodesConfig      string
 		provisionTimeout time.Duration
 		overcommitRatio  float64
 		freeSpaceRatio   float64
@@ -360,13 +364,11 @@ func main() {
 		exportDir   string
 		ganeshaConf string
 	)
-	flag.StringVar(&mode, "mode", "", "controller | agent | setup | gateway")
+	flag.StringVar(&mode, "mode", "", "controller | agent | gateway")
 	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081",
 		"single operational endpoint: /metrics plus the /healthz and /readyz probes (org port standard)")
 	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"), "this node's name (agent)")
-	flag.StringVar(&nodesConfig, "nodes-config", "/etc/miroir/nodes.yaml",
-		"per-node storage topology (rendered from Helm values)")
 	flag.DurationVar(&provisionTimeout, "provision-timeout", 0,
 		"wait for agents to realise a new volume (controller; 0 → default)")
 	flag.Float64Var(&overcommitRatio, "overcommit-ratio", 0,
@@ -419,13 +421,8 @@ func main() {
 
 	validateDRBDPortBase(drbdPortBase)
 
-	// Setup and gateway modes drive the host directly and need neither the
-	// controller-runtime manager nor (for setup) an API connection, so they
-	// build neither and exit before the manager is constructed.
-	if mode == "setup" {
-		runSetup(nodeName, nodesConfig)
-		return
-	}
+	// Gateway mode drives the host directly and needs no controller-runtime
+	// manager, so it builds none and exits before one is constructed.
 	if mode == "gateway" {
 		// The gateway skips the manager but serves the same operational
 		// endpoint itself (/healthz liveness + /metrics) on metricsAddr.
@@ -489,13 +486,18 @@ func main() {
 	// barrier — both are kernel state that outlives the process.
 	var shutdownSweep func()
 
+	// The signal context is created before the mode switch so the agent's
+	// topology watcher can stop the manager gracefully (restart-to-reload)
+	// through the same cancellation path a SIGTERM takes.
+	ctx, stop := context.WithCancel(ctrl.SetupSignalHandler())
+	defer stop()
+
 	switch mode {
 	case modeController:
-		nodes, err := nodemap.Load(nodesConfig)
-		if err != nil {
-			setupLog.Error(err, "unable to load node map")
-			os.Exit(1)
-		}
+		// The topology is watch-driven: placement and membership fold the
+		// MiroirNode CRs from the cache on every RPC/reconcile, so a
+		// chart-applied topology edit takes effect without a restart.
+		nodes := &nodemap.CRSource{Reader: mgr.GetClient()}
 		controller := &csi.Controller{
 			Client:           mgr.GetClient(),
 			APIReader:        mgr.GetAPIReader(),
@@ -511,6 +513,16 @@ func main() {
 			setupLog.Error(err, "unable to set up membership reconcilers")
 			os.Exit(1)
 		}
+		// Cross-object topology rules (duplicate replication address) are
+		// reported as MiroirNode conditions — a CRD validates one object at
+		// a time, and placement already refuses conflicted nodes.
+		if err := (&topology.ConflictReconciler{
+			Client:   mgr.GetClient(),
+			Recorder: mgr.GetEventRecorder("miroir-controller"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to set up topology conflict reconciler")
+			os.Exit(1)
+		}
 		if err := setupExport(mgr, podNamespace, gatewayImage, gatewaySA); err != nil {
 			setupLog.Error(err, "unable to set up export reconciler")
 			os.Exit(1)
@@ -523,12 +535,12 @@ func main() {
 			os.Exit(1)
 		}
 		// The DaemonSet's chart-side scope is every schedulable node, but
-		// only storage nodes run agent-backed backends. A node absent from
-		// the map holds no volumes and runs a client-only node service so
+		// only storage nodes run agent-backed backends. A node with no
+		// MiroirNode holds no volumes and runs a client-only node service so
 		// pods there can still mount RWX (NFS) volumes.
-		pools, err := poolBackendsFor(nodeName, nodesConfig)
-		if errors.Is(err, errNodeUnmapped) {
-			setupLog.Info("node not in the storage map; running client-only node service", "node", nodeName)
+		miroirNode, found := agentTopology(mgr, nodeName, stop)
+		if !found {
+			setupLog.Info("no MiroirNode for this node; running client-only node service", "node", nodeName)
 			// Client legs get DRBD configs rendered here too, so the
 			// kernel floor binds on client-only nodes as well.
 			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
@@ -537,6 +549,7 @@ func main() {
 			serveCSI(mgr, csiSocket, identity, nil, node)
 			break
 		}
+		pools, err := poolBackendsFor(nodeName, nodemap.FromSpec(miroirNode.Spec))
 		if err != nil {
 			setupLog.Error(err, "unable to build the node's backends")
 			os.Exit(1)
@@ -643,12 +656,12 @@ func main() {
 		serveCSI(mgr, csiSocket, identity, nil, node)
 
 	default:
-		setupLog.Error(nil, "--mode must be controller, agent, setup, or gateway")
+		setupLog.Error(nil, "--mode must be controller, agent, or gateway")
 		os.Exit(1)
 	}
 
 	setupLog.Info("starting manager")
-	err = mgr.Start(ctrl.SetupSignalHandler())
+	err = mgr.Start(ctx)
 	// The sweep must run even when the manager exits with an error — a
 	// runnable blowing the shutdown grace is exactly the case where a
 	// cordoned node still needs its DRBD backings released for reboot.
@@ -676,14 +689,15 @@ const drbdShutdownTimeout = 15 * time.Second
 // guarantee a SIGKILL mid-sweep.
 const apiShutdownWait = 5 * time.Second
 
-// listWithRetry retries an API list until it succeeds, hits a terminal
-// (non-transient) error, or apiStartupWait elapses — so a control plane still
-// coming back up does not crash the agent on startup.
-func listWithRetry(c client.Client, list client.ObjectList, budget time.Duration) error {
+// apiWithRetry retries one API call until it succeeds, hits a terminal
+// (non-transient) error, or the budget elapses — so a control plane still
+// coming back up does not crash the process on startup. It is the one
+// retry policy every pre-manager API access shares.
+func apiWithRetry(budget time.Duration, op func(ctx context.Context) error) error {
 	var lastErr error
 	waitErr := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, budget, true,
 		func(ctx context.Context) (bool, error) {
-			lastErr = c.List(ctx, list)
+			lastErr = op(ctx)
 			if lastErr == nil {
 				return true, nil
 			}
@@ -697,6 +711,11 @@ func listWithRetry(c client.Client, list client.ObjectList, budget time.Duration
 		return lastErr
 	}
 	return waitErr
+}
+
+// listWithRetry retries an API list with the shared startup retry policy.
+func listWithRetry(c client.Client, list client.ObjectList, budget time.Duration) error {
+	return apiWithRetry(budget, func(ctx context.Context) error { return c.List(ctx, list) })
 }
 
 // transientAPIError reports whether an API error is worth retrying. Dial

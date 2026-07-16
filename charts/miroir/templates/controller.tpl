@@ -26,14 +26,13 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- /* No topology checksum: the controller folds the MiroirNode CRs
+      from its cache per RPC/reconcile, so a topology edit needs no
+      restart. */}}
+      {{- with .Values.podAnnotations }}
       annotations:
-        {{- /* The controller loads the node map once at startup and places
-        replicas from it; without this a topology edit sits unread until the
-        pod happens to restart. */}}
-        checksum/nodes: {{ .Values.nodes | toYaml | sha256sum }}
-        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-        {{- end }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.controllerName" . }}
       {{- include "miroir.imagePullSecrets" . | nindent 6 }}
@@ -61,7 +60,6 @@ spec:
           args:
             - --mode=controller
             - --csi-socket=/csi/csi.sock
-            - --nodes-config=/etc/miroir/nodes.yaml
             - --provision-timeout={{ .Values.provisionTimeout }}
             - --overcommit-ratio={{ .Values.overcommitRatio }}
             - --free-space-ratio={{ .Values.freeSpaceRatio }}
@@ -109,9 +107,6 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
-            - name: nodes
-              mountPath: /etc/miroir
-              readOnly: true
         - name: csi-provisioner
           image: {{ .Values.sidecars.provisioner.image }}
           args:
@@ -181,9 +176,6 @@ spec:
       volumes:
         - name: socket-dir
           emptyDir: {}
-        - name: nodes
-          configMap:
-            name: {{ include "miroir.nodesConfigName" . }}
 {{- if gt (int .Values.replicaCount) 1 }}
 ---
 apiVersion: policy/v1

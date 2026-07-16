@@ -5,87 +5,10 @@ release:
   name: miroir
   namespace: miroir-system
 tests:
-  - it: fails fast when no nodes are configured
-    set:
-      nodes: {}
-    asserts:
-      - failedTemplate:
-          errorMessage: "Helm values must define `nodes` — the per-node storage topology (see values.yaml)"
-
-  - it: fails fast on the pre-0.10 flat single-pool node shape
-    set:
-      nodes:
-        node-a:
-          backend: lvmthin
-          device: /dev/disk/by-partlabel/r-miroir
-    asserts:
-      - failedTemplate:
-          errorMessagePattern: "nodes.node-a uses the pre-0.10 flat single-pool shape"
-
-  - it: fails fast when a node declares no pools
-    set:
-      nodes:
-        node-a:
-          zone: rack-1
-    asserts:
-      - failedTemplate:
-          errorMessagePattern: "nodes.node-a declares no pools"
-
-  - it: rejects an invalid zvol block size
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: zfs
-              zfsDataset: tank/miroir
-              zfsVolBlockSize: 12K
-    asserts:
-      - failedTemplate:
-          errorMessagePattern: "zfsVolBlockSize.*value must be one of"
-
-  - it: rejects an invalid ZFS compression value
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: zfs
-              zfsDataset: tank/miroir
-              zfsCompression: snappy
-    asserts:
-      - failedTemplate:
-          errorMessagePattern: "zfsCompression.*does not match pattern"
-
-  - it: takes the ZFS defaults when the settings are present but empty
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: zfs
-              zfsDataset: tank/miroir
-              zfsVolBlockSize: null
-              zfsCompression: null
-    asserts:
-      - notFailedTemplate: {}
-
-  - it: renders the nodes ConfigMap and the drbd ConfigMap
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
-        node-b:
-          pools:
-            default:
-              backend: zfs
-              zfsDataset: data-pool/miroir
+  - it: renders only the drbd ConfigMap (the topology is MiroirNode CRs)
     asserts:
       - hasDocuments:
-          count: 2
+          count: 1
       - documentIndex: 0
         equal:
           path: kind
@@ -95,67 +18,12 @@ tests:
           path: apiVersion
           value: v1
       - documentIndex: 0
-        equal:
-          path: metadata.name
-          value: miroir-nodes
-      - documentIndex: 1
-        equal:
-          path: kind
-          value: ConfigMap
-      - documentIndex: 1
-        equal:
-          path: apiVersion
-          value: v1
-      - documentIndex: 1
         equal:
           path: metadata.name
           value: miroir-drbd-conf
 
-  - it: embeds the per-node topology in miroir-nodes as YAML
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
-        node-b:
-          pools:
-            default:
-              backend: zfs
-              zfsDataset: data-pool/miroir
-              zfsVolBlockSize: 16K
-              zfsCompression: inherit
-    documentIndex: 0
-    asserts:
-      - matchRegex:
-          path: data["nodes.yaml"]
-          pattern: "backend: lvmthin"
-      - matchRegex:
-          path: data["nodes.yaml"]
-          pattern: "device: /dev/disk/by-partlabel/r-miroir"
-      - matchRegex:
-          path: data["nodes.yaml"]
-          pattern: "backend: zfs"
-      - matchRegex:
-          path: data["nodes.yaml"]
-          pattern: "zfsDataset: data-pool/miroir"
-      - matchRegex:
-          path: data["nodes.yaml"]
-          pattern: "zfsVolBlockSize: 16K"
-      - matchRegex:
-          path: data["nodes.yaml"]
-          pattern: "zfsCompression: inherit"
-
   - it: keeps the drbd global config to usage-count no and an empty common{}
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
-    documentIndex: 1
+    documentIndex: 0
     asserts:
       - matchRegex:
           path: data["global_common.conf"]
@@ -188,12 +56,6 @@ tests:
 
   - it: renders cluster-wide resync tuning into common{} when set
     set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
       drbd:
         onIoError: pass_on
         resync:
@@ -202,7 +64,7 @@ tests:
           minRate: 20M
         net:
           maxBuffers: "36864"
-    documentIndex: 1
+    documentIndex: 0
     asserts:
       - matchRegex:
           path: data["global_common.conf"]
@@ -222,18 +84,12 @@ tests:
 
   - it: renders discard granularity and verify-alg when set
     set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           algorithm: crc32c
         resync:
           discardGranularity: "65536"
-    documentIndex: 1
+    documentIndex: 0
     asserts:
       - matchRegex:
           path: data["global_common.conf"]
@@ -243,48 +99,24 @@ tests:
           pattern: "verify-alg crc32c;"
 
   - it: default emits no discard granularity (loopfile-unsafe, opt-in)
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
-    documentIndex: 1
+    documentIndex: 0
     asserts:
       - notMatchRegex:
           path: data["global_common.conf"]
           pattern: "rs-discard-granularity"
 
-  - it: honours a non-default Release namespace for both ConfigMaps
+  - it: honours a non-default Release namespace
     release:
       name: miroir
       namespace: storage
-    set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
     asserts:
       - documentIndex: 0
-        equal:
-          path: metadata.namespace
-          value: storage
-      - documentIndex: 1
         equal:
           path: metadata.namespace
           value: storage
 
   - it: fails loudly when the pre-0.7 drbd.verifyAlg key is still set
     set:
-      nodes:
-        node-a:
-          pools:
-            default:
-              backend: lvmthin
-              device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verifyAlg: crc32c
     asserts:

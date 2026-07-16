@@ -1,19 +1,6 @@
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ include "miroir.setupServiceAccountName" . }}
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "miroir.labels" . | nindent 4 }}
-    app.kubernetes.io/component: setup
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "-10"
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
   name: {{ include "miroir.uninstallServiceAccountName" . }}
   namespace: {{ .Release.Namespace }}
   labels:

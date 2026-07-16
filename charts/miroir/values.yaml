@@ -6,10 +6,9 @@ fullnameOverride: ""
 # Fleet-wide defaults (kopiur layout). imagePullSecrets and commonLabels
 # reach every pod/object; the scheduling globals apply to the controller —
 # the only freely schedulable workload (the agent DaemonSet must run on
-# every schedulable node for the CSI node service, and the setup Job is
-# node-pinned).
+# every schedulable node for the CSI node service).
 global:
-  # -- Pull secrets added to every pod (controller, agent, setup, uninstall).
+  # -- Pull secrets added to every pod (controller, agent, uninstall).
   imagePullSecrets: []
   # -- Labels stamped on every rendered object (fleet-wide labelling).
   commonLabels: {}
@@ -83,7 +82,7 @@ autoDiskfulAfter: ""
 # It never acts when more than one node looks dead, when a survivor still
 # sees the node's DRBD links up, when the remaining legs are not clean,
 # or when snapshots pin the volume. Needs a spare storage node carrying
-# the volume's pool; per-node opt-out via `nodes.<name>.autoEvict: false`.
+# the volume's pool; per-node opt-out via `nodes.<name>.spec.autoEvict: false`.
 # Empty disables it (the default: eviction discards the dead node's data).
 autoEvictAfter: ""
 # Storage-capacity-aware scheduling. When enabled, the external-provisioner
@@ -166,8 +165,8 @@ sidecars:
 # Agent (per-node DaemonSet: storage userland + CSI node service)
 # =============================================================================
 agent:
-  # Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent and the
-  # setup Job exec on each storage node).
+  # Agent image (Debian + the lvm/zfs/drbd/mkfs userland the agent execs
+  # on each storage node).
   image:
     repository: ghcr.io/home-operations/miroir-agent
     # Overrides the image tag; defaults to the chart appVersion.
@@ -234,75 +233,58 @@ gateway:
 # Storage topology
 # =============================================================================
 # Per-node storage topology — the single source of truth for which nodes
-# hold volumes and how. Rendered into the miroir-nodes ConfigMap, read by
-# the controller (placement) and each agent (backend selection).
+# hold volumes and how. Rendered as one MiroirNode custom resource per
+# entry: each node's `spec` below IS the MiroirNode spec, passed through
+# verbatim, and the MiroirNode CRD is what validates it — see the CRD
+# (`kubectl explain miroirnode.spec`) for the full reference. The
+# controller places replicas from these objects and each node's agent
+# reads its own for backend selection (and restarts itself when the pool
+# spec changes).
+#
 # Each node declares named storage `pools` (StorageClasses select one via
-# their `pool` knob; classes that name none use the pool called "default").
-# A pool name identifies the same tier across nodes — a 2-replica volume in
-# pool `fast` needs a `fast` pool on 2 nodes. Per pool: `backend` (lvmthin /
-# zfs / loopfile) plus its location (`device`, `zfsDataset`, or `baseDir`)
-# and optional `thinPoolSize`.
-# ZFS pools optionally set `zfsVolBlockSize` (4K, 8K, 16K, 32K, 64K,
-# or 128K; default 4K) and `zfsCompression` (default lz4; `inherit` uses
-# the parent dataset). Both apply only to newly created zvols. Existing
-# volumes are unchanged, and snapshot clones retain their source properties.
-# Optional per-node `zone` (rack, host group, AZ): when set, the controller
-# spreads a volume's replicas across distinct zones; empty is unconstrained.
-# Optional per-node `address` (IPv4 or IPv6) pins DRBD replication to a
-# dedicated storage NIC/VLAN; empty uses the node's InternalIP. It applies
-# to volumes created afterwards — existing volumes keep the address
-# persisted at creation.
-# Optional per-node `autoEvict: false` exempts the node from auto-evict
-# (see `autoEvictAfter`): its legs are never re-placed while it is down —
-# for a node with known long outages.
+# their `pool` knob; classes that name none use the pool called
+# "default"). A pool name identifies the same tier across nodes — a
+# 2-replica volume in pool `fast` needs a `fast` pool on 2 nodes. Each
+# pool sets `backend` (lvmthin / zfs / loopfile) and exactly that
+# backend's configuration block.
 # nodes:
 #   kharkiv:
-#     # zone: rack-1         # spread replicas across failure domains
-#     # address: 10.0.100.11 # replicate over a dedicated storage NIC
-#     # autoEvict: false     # never re-place this node's legs (autoEvictAfter)
-#     pools:
-#       default:
-#         backend: lvmthin
-#         device: /dev/disk/by-partlabel/r-miroir
-#         # thinPoolSize: 400g   # bound the pool when sharing the VG
-#       fast:                    # a second tier on another disk
-#         backend: lvmthin
-#         device: /dev/disk/by-id/nvme-Micron_7450_XXXX
+#     spec:
+#       # zone: rack-1         # spread replicas across failure domains
+#       # address: 10.0.100.11 # replicate over a dedicated storage NIC
+#       # autoEvict: false     # never re-place this node's legs (autoEvictAfter)
+#       pools:
+#         - name: default
+#           backend: lvmthin
+#           lvmthin:
+#             device: /dev/disk/by-partlabel/r-miroir
+#             # poolSize: 400g   # bound the pool when sharing the VG
+#         - name: fast           # a second tier on another disk
+#           backend: lvmthin
+#           lvmthin:
+#             device: /dev/disk/by-id/nvme-Micron_7450_XXXX
 #   paris:
-#     # zone: rack-2
-#     pools:
-#       default:
-#         backend: zfs
-#         zfsDataset: data-pool/miroir
-#         # zfsVolBlockSize: 4K  # powers of two from 4K through 128K
-#         # zfsCompression: lz4  # use inherit for the parent dataset policy
+#     spec:
+#       # zone: rack-2
+#       pools:
+#         - name: default
+#           backend: zfs
+#           zfs:
+#             dataset: data-pool/miroir
+#             # volBlockSize: 4K  # powers of two from 4K through 128K
+#             # compression: lz4  # use inherit for the parent dataset policy
 #   le-havre:
-#     pools:
-#       default:
-#         # loopfile: sparse files on the node's existing filesystem — no
-#         # dedicated disk or pool. baseDir must be reflink-capable (XFS
-#         # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the
-#         # agent refuses to start otherwise. The dir is hostPath-mounted
-#         # into the agent at the same path.
-#         backend: loopfile
-#         baseDir: /var/lib/miroir
-# @schema
-# type: object
-# additionalProperties:
-#   type: object
-#   properties:
-#     pools:
-#       type: object
-#       additionalProperties:
-#         type: object
-#         properties:
-#           zfsVolBlockSize:
-#             type: [string, "null"]
-#             enum: ["4K", "8K", "16K", "32K", "64K", "128K", "", null]
-#           zfsCompression:
-#             type: [string, "null"]
-#             pattern: ^(inherit|on|off|lz4|lzjb|zle|gzip(-[1-9])?|zstd(-([1-9]|1[0-9]))?|zstd-fast(-(10|[1-9]|[2-9]0|100|500|1000))?)?$
-# @schema
+#     spec:
+#       pools:
+#         - name: default
+#           # loopfile: sparse files on the node's existing filesystem — no
+#           # dedicated disk or pool. baseDir must be reflink-capable (XFS
+#           # reflink=1, e.g. Talos /var, or btrfs) for CoW snapshots; the
+#           # agent refuses to start otherwise. The dir is hostPath-mounted
+#           # into the agent at the same path.
+#           backend: loopfile
+#           loopfile:
+#             baseDir: /var/lib/miroir
 nodes: {}
 
 # =============================================================================

@@ -18,21 +18,42 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
   --namespace miroir-system --create-namespace -f values.yaml
 ```
 
-## ZFS pool settings
+## Upgrading
 
-ZFS pools accept `zfsVolBlockSize` (`4K` through `128K`, default `4K`)
-and `zfsCompression` (default `lz4`; use `inherit` for the parent dataset
+Helm applies the chart's `crds/` directory only on install, never on
+upgrade, and a stale CRD schema silently prunes newer spec fields. Keep
+the CRDs in step with the chart on every upgrade — Flux users must set
+`upgrade.crds: CreateReplace` on the HelmRelease (the default is Skip);
+plain Helm users apply them by hand first:
+
+```sh
+helm show crds oci://ghcr.io/home-operations/charts/miroir \
+  --version <new-version> | kubectl apply --server-side -f -
+```
+
+Version-specific steps live in the
+[upgrade guide](https://miroir.home-operations.com/upgrading/).
+
+## Storage topology
+
+Each entry under `nodes` is rendered as a MiroirNode custom resource;
+the `spec` is passed through verbatim and validated by the CRD (see
+`kubectl explain miroirnode.spec`). For example, a ZFS pool with its
+optional zvol settings (`volBlockSize` `4K` through `128K`, default
+`4K`; `compression` default `lz4`, `inherit` for the parent dataset
 policy):
 
 ```yaml
 nodes:
   node-a:
-    pools:
-      default:
-        backend: zfs
-        zfsDataset: tank/miroir
-        zfsVolBlockSize: 16K
-        zfsCompression: inherit
+    spec:
+      pools:
+        - name: default
+          backend: zfs
+          zfs:
+            dataset: tank/miroir
+            volBlockSize: 16K
+            compression: inherit
 ```
 
 Both settings apply only to newly created zvols. Existing volumes are not
@@ -72,7 +93,7 @@ Kubernetes: `>=1.31.0`
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | agent.volumeWorkers | int | `4` | Concurrent volume reconciles per agent. Per-volume work is serialized by controller-runtime regardless; this bounds how many distinct volumes one agent works at once. |
 | autoDiskfulAfter | string | `""` | Convert a diskless leg (client or tie-breaker) that has stayed DRBD Primary past this duration into a local diskful replica on its node, so a settled consumer stops paying network I/O (LINSTOR's auto-diskful; Go duration, e.g. "10m"). Conversion needs the leg's node in `nodes` with fresh pool stats and room for the volume's full size. Empty disables it. See the root README, "Auto-diskful". |
-| autoEvictAfter | string | `""` | Re-place a dead storage node's legs once its heartbeat (MiroirNode status, refreshed ~60s) has been stale this long (LINSTOR's auto-evict; Go duration, e.g. "60m" — keep it well above any reboot or upgrade window). Each affected volume gets one atomic swap: the dead entry out, a fresh replica in (full sync follows). The dead node keeps its teardown finalizer as the record of its never-cleaned leg: deleting an evicted volume still waits for that node, and when the node returns its agent tears the leftover leg down through the normal removal flow. It never acts when more than one node looks dead, when a survivor still sees the node's DRBD links up, when the remaining legs are not clean, or when snapshots pin the volume. Needs a spare storage node carrying the volume's pool; per-node opt-out via `nodes.<name>.autoEvict: false`. Empty disables it (the default: eviction discards the dead node's data). |
+| autoEvictAfter | string | `""` | Re-place a dead storage node's legs once its heartbeat (MiroirNode status, refreshed ~60s) has been stale this long (LINSTOR's auto-evict; Go duration, e.g. "60m" — keep it well above any reboot or upgrade window). Each affected volume gets one atomic swap: the dead entry out, a fresh replica in (full sync follows). The dead node keeps its teardown finalizer as the record of its never-cleaned leg: deleting an evicted volume still waits for that node, and when the node returns its agent tears the leftover leg down through the normal removal flow. It never acts when more than one node looks dead, when a survivor still sees the node's DRBD links up, when the remaining legs are not clean, or when snapshots pin the volume. Needs a spare storage node carrying the volume's pool; per-node opt-out via `nodes.<name>.spec.autoEvict: false`. Empty disables it (the default: eviction discards the dead node's data). |
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
 | drbd.alExtents | string | `""` | al-extents, the DRBD activity-log size (number of 4 MiB extents kept "hot"). DRBD's default (1237) forces frequent metadata updates under a scattered random-write workload; raising it (e.g. 6007) cuts that write amplification at the cost of a longer resync of the active region after a crash. Empty leaves DRBD's default. Must be a prime below 65534. |
 | drbd.net.maxBuffers | string | `""` | max-buffers, the DRBD receive-buffer count (e.g. "36864"); raises resync throughput on fast links. |
@@ -98,7 +119,7 @@ Kubernetes: `>=1.31.0`
 | gateway.image.tag | string | `""` |  |
 | global.affinity | object | `{}` |  |
 | global.commonLabels | object | `{}` | Labels stamped on every rendered object (fleet-wide labelling). |
-| global.imagePullSecrets | list | `[]` | Pull secrets added to every pod (controller, agent, setup, uninstall). |
+| global.imagePullSecrets | list | `[]` | Pull secrets added to every pod (controller, agent, uninstall). |
 | global.nodeSelector | object | `{}` | Controller scheduling defaults. |
 | global.tolerations | list | `[]` |  |
 | image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/home-operations/miroir-controller","tag":""}` | Controller image (distroless, no storage userland — the controller never execs a storage CLI). |

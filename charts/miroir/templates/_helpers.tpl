@@ -126,14 +126,8 @@ Resource names. All derive from fullname so nameOverride / fullnameOverride flow
 {{- define "miroir.gatewayName" -}}
 {{- printf "%s-gateway" (include "miroir.fullname" .) -}}
 {{- end -}}
-{{- define "miroir.nodesConfigName" -}}
-{{- printf "%s-nodes" (include "miroir.fullname" .) -}}
-{{- end -}}
 {{- define "miroir.drbdConfigName" -}}
 {{- printf "%s-drbd-conf" (include "miroir.fullname" .) -}}
-{{- end -}}
-{{- define "miroir.setupServiceAccountName" -}}
-{{- printf "%s-setup" (include "miroir.fullname" .) -}}
 {{- end -}}
 {{- define "miroir.uninstallServiceAccountName" -}}
 {{- printf "%s-uninstall" (include "miroir.fullname" .) -}}

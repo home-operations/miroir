@@ -30,6 +30,10 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
     verbs: ["get", "list", "watch"]
+  {{- /* The AddressConflict condition (cross-object topology rule). */}}
+  - apiGroups: ["miroir.home-operations.com"]
+    resources: ["miroirnodes/status"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch"]
@@ -48,6 +52,12 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["list", "watch", "create", "update", "patch"]
+  {{- /* controller-runtime's event recorder writes events.k8s.io/v1, not
+         core v1; without this grant every recorded event is dropped with
+         Forbidden. The core-group rule above stays for the CSI sidecars. */}}
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshotclasses", "volumesnapshots"]
     verbs: ["get", "list", "watch"]
@@ -111,13 +121,19 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     verbs: ["get", "patch"]
+  {{- /* Read-only on the spec: MiroirNode specs are chart-rendered desired
+         state; the agent reads its own at startup, watches it for drift,
+         and publishes pool capacity through the status subresource only. */}}
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
   - apiGroups: [""]

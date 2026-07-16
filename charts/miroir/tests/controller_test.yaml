@@ -79,9 +79,6 @@ tests:
           content: "--csi-socket=/csi/csi.sock"
       - contains:
           path: spec.template.spec.containers[0].args
-          content: "--nodes-config=/etc/miroir/nodes.yaml"
-      - contains:
-          path: spec.template.spec.containers[0].args
           content: "--auto-tie-breaker=true"
       - equal:
           path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
@@ -313,7 +310,7 @@ tests:
           path: metadata.namespace
           value: storage
 
-  - it: shares a CSI socketDir + the mirror-nodes ConfigMap across the pod
+  - it: shares a CSI socketDir across the pod (no topology ConfigMap)
     documentIndex: 0
     asserts:
       - contains:
@@ -322,13 +319,9 @@ tests:
           content:
             name: socket-dir
             emptyDir: {}
-      - contains:
-          any: true
+      - lengthEqual:
           path: spec.template.spec.volumes
-          content:
-            name: nodes
-            configMap:
-              name: miroir-nodes
+          count: 1
 
   - it: applies global pull secrets, scheduling, and common labels
     set:
@@ -422,12 +415,11 @@ tests:
           path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
           value: "true"
 
-  - it: stamps a node-map checksum so a topology edit rolls the controller
+  - it: stamps no topology checksum (placement is watch-driven)
     documentIndex: 0
     asserts:
-      - matchRegex:
-          path: spec.template.metadata.annotations["checksum/nodes"]
-          pattern: "^[0-9a-f]{64}$"
+      - notExists:
+          path: spec.template.metadata.annotations
 
   - it: leaves the provisioner without capacity flags by default
     documentIndex: 0

@@ -37,8 +37,11 @@ const poolGiB = 1 << 30
 func newPublisher(t *testing.T, pools Pools, rec events.EventRecorder) (*PoolStatsPublisher, func() *miroirv1alpha1.MiroirNode) {
 	t.Helper()
 	s := newScheme(t)
+	// The MiroirNode pre-exists (chart-rendered); the publisher writes
+	// status only and never creates or mutates the spec.
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&miroirv1alpha1.MiroirNode{}).
+		WithObjects(&miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: nodeA}}).
 		Build()
 	p := &PoolStatsPublisher{
 		Client:   c,
@@ -70,9 +73,8 @@ func TestPoolStatsPublisherPublishes(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := get()
-	if len(n.Spec.Pools) != 1 || n.Spec.Pools[0].Name != poolDefault ||
-		n.Spec.Pools[0].Backend != miroirv1alpha1.BackendLVMThin {
-		t.Fatalf("spec pools = %+v, want one lvmthin default", n.Spec.Pools)
+	if len(n.Spec.Pools) != 0 {
+		t.Fatalf("the publisher must not write the spec (chart-owned), got %+v", n.Spec.Pools)
 	}
 	st := n.Status.Pool(poolDefault)
 	if st == nil || st.CapacityBytes != 100*poolGiB || st.AllocatedBytes != 50*poolGiB {
@@ -102,8 +104,8 @@ func TestPoolStatsPublisherPublishesPerPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := get()
-	if len(n.Spec.Pools) != 2 || len(n.Status.Pools) != 2 {
-		t.Fatalf("want 2 pools in spec and status, got %+v / %+v", n.Spec.Pools, n.Status.Pools)
+	if len(n.Status.Pools) != 2 {
+		t.Fatalf("want 2 pools in status, got %+v", n.Status.Pools)
 	}
 	if st := n.Status.Pool("bulk"); st == nil || st.CapacityBytes != 100*poolGiB {
 		t.Fatalf("bulk pool wrong: %+v", st)
