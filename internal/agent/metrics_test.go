@@ -139,3 +139,32 @@ func TestRecordDRBDKernelVersion(t *testing.T) {
 		t.Fatalf("drbd_kernel_info{version=9.3.2} = %v, want 1", got)
 	}
 }
+
+// A leg converted from diskless to diskful in place (auto-diskful /
+// auto-evict, which never pass through the removal path that drops metrics)
+// must not keep exposing its diskless-primary series at a stale value;
+// recording the diskful view clears it.
+func TestDisklessMetricClearedWhenLegBecomesDiskful(t *testing.T) {
+	const volume = "pvc-diskless-to-diskful"
+	const pool = "default"
+
+	// Diskless tie-breaker / client leg: only the diskless-primary series.
+	recordDisklessMetrics(volume, true)
+	if !hasSeries(t, "miroir_volume_diskless_primary", volume) {
+		t.Fatal("diskless_primary series missing after recordDisklessMetrics")
+	}
+
+	// Converted to a diskful replica: it now publishes the diskful view, and
+	// the diskless-primary series must be gone from the scrape.
+	recordVolumeMetrics(volume, pool, miroirReplicaView{
+		upToDate: true, connected: true, quorum: true, resyncRatio: 1,
+	})
+	if hasSeries(t, "miroir_volume_diskless_primary", volume) {
+		t.Fatal("diskless_primary series still exposed after the leg became diskful")
+	}
+	if got := testutil.ToFloat64(metricUpToDate.WithLabelValues(volume, pool)); got != 1 {
+		t.Fatalf("up_to_date = %v, want 1", got)
+	}
+
+	dropVolumeMetrics(volume)
+}
