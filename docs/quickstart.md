@@ -5,14 +5,15 @@ node shutdown), then:
 
 ## 1. Pick a storage layout
 
-The storage topology is **MiroirNode custom resources**, one per
-storage node (named after it), applied and managed separately from the
-Helm chart — kubectl, GitOps, whatever applies your manifests. Each
-lists named storage `pools` (one is enough; call it `default`), and
-the CRD validates the spec (`kubectl explain miroirnode.spec`).
-The chart's `storageClasses` value declares the classes to create
-(`replicas: 1` is node-local, `replicas: 2` is DRBD-replicated). Pods
-can mount miroir volumes from any schedulable node; only nodes with a
+Storage configuration lives in the **miroir-config** chart, separate
+from the driver: the node topology (`nodes`, rendered as one MiroirNode
+custom resource per entry, spec verbatim, validated by the CRD), the
+`storageClasses` to create (`replicas: 1` is node-local, `replicas: 2`
+is DRBD-replicated), and `volumeSnapshotClasses` — one reviewed
+document where pool names and the classes that select them sit side by
+side. Prefer plain manifests? Apply MiroirNode/StorageClass YAML
+directly instead; the chart is convenience, not a requirement. Pods can
+mount miroir volumes from any schedulable node; only nodes with a
 MiroirNode hold data.
 
 **Two nodes, a spare partition each.** The common pair: one local and
@@ -20,30 +21,20 @@ one replicated class. Add a third storage node later and existing
 replicated volumes pick it up as a quorum tie-breaker automatically.
 
 ```yaml
-# topology.yaml — one MiroirNode per storage node
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-    name: node-a
-spec:
-    pools:
-        - name: default
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
----
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-    name: node-b
-spec:
-    pools:
-        - name: default
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
-```
-
-```yaml
-# values.yaml — the chart carries only the driver and its classes
+# config-values.yaml (the miroir-config chart)
+nodes:
+    node-a:
+        spec:
+            pools:
+                - name: default
+                  lvmthin:
+                      device: /dev/disk/by-partlabel/r-miroir
+    node-b:
+        spec:
+            pools:
+                - name: default
+                  lvmthin:
+                      device: /dev/disk/by-partlabel/r-miroir
 storageClasses:
     - name: miroir-local
       replicas: 1
@@ -61,39 +52,33 @@ replication to a dedicated storage NIC/VLAN, IPv4 or IPv6 (default:
 the node's `InternalIP`; applies to volumes created afterwards).
 
 ```yaml
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-    name: kharkiv
-spec:
-    zone: rack-a
-    address: 10.0.100.11
-    pools:
-        - name: default
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
----
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-    name: paris
-spec:
-    zone: rack-b
-    pools:
-        - name: default
-          zfs:
-              dataset: data-pool/miroir
----
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-    name: le-havre
-spec:
-    zone: rack-c
-    pools:
-        - name: default
-          loopfile:
-              baseDir: /var/lib/miroir
+nodes:
+    kharkiv:
+        spec:
+            zone: rack-a
+            address: 10.0.100.11
+            pools:
+                - name: default
+                  lvmthin:
+                      device: /dev/disk/by-partlabel/r-miroir
+    paris:
+        spec:
+            zone: rack-b
+            pools:
+                - name: default
+                  zfs:
+                      dataset: data-pool/miroir
+    le-havre:
+        spec:
+            zone: rack-c
+            pools:
+                - name: default
+                  loopfile:
+                      baseDir: /var/lib/miroir
+storageClasses:
+    - name: miroir-replicated
+      replicas: 2
+      quorum: freeze
 ```
 
 **Two tiers per node.** A pool name identifies the same tier across
@@ -102,21 +87,25 @@ none use `default`). Volumes never span pools: every replica of a
 volume lands in the class's pool on its node.
 
 ```yaml
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-    name: node-a
-spec:
-    pools:
-        - name: default # bulk tier
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
-        - name: fast # NVMe tier for latency-sensitive workloads
-          lvmthin:
-              device: /dev/disk/by-id/nvme-Micron_7450_XXXX
-```
-
-```yaml
+nodes:
+    node-a:
+        spec:
+            pools:
+                - name: default # bulk tier
+                  lvmthin:
+                      device: /dev/disk/by-partlabel/r-miroir
+                - name: fast # NVMe tier for latency-sensitive workloads
+                  lvmthin:
+                      device: /dev/disk/by-id/nvme-Micron_7450_XXXX
+    node-b: # identical
+        spec:
+            pools:
+                - name: default
+                  lvmthin:
+                      device: /dev/disk/by-partlabel/r-miroir
+                - name: fast
+                  lvmthin:
+                      device: /dev/disk/by-id/nvme-Micron_7450_YYYY
 storageClasses:
     - name: miroir-replicated
       replicas: 2
@@ -127,24 +116,17 @@ storageClasses:
 
 **One node, no dedicated disk.** Dev clusters: loopfile backs volumes
 with sparse files on an existing filesystem. Loopfile base
-directories must also be listed in the chart's
+directories must also be listed in the **driver** chart's
 `agent.loopfileBaseDirs` so the agent pod mounts them.
 
 ```yaml
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-    name: solo
-spec:
-    pools:
-        - name: default
-          loopfile:
-              baseDir: /var/lib/miroir
-```
-
-```yaml
-agent:
-    loopfileBaseDirs: [/var/lib/miroir]
+nodes:
+    solo:
+        spec:
+            pools:
+                - name: default
+                  loopfile:
+                      baseDir: /var/lib/miroir
 storageClasses:
     - name: miroir-local
       replicas: 1
@@ -161,26 +143,30 @@ already exists).
 | `zfs`      | A ZFS pool, you specify the dataset    | ZFS module on the node ([Requirements](requirements.md)) |
 | `loopfile` | A path on a reflink-capable filesystem | `loop` module; XFS `reflink=1` / btrfs                   |
 
-[Helm chart values](configuration.md) documents every value:
-per-class `fsType`, `reclaimPolicy`, and `allowRemoteVolumeAccess`,
-`lvmthin.poolSize` for VGs shared with other tenants, DRBD tuning,
-and more.
+[Helm chart values](configuration.md) documents every value of both
+charts: per-class `fsType`, `reclaimPolicy`, and
+`allowRemoteVolumeAccess`, `lvmthin.poolSize` for VGs shared with
+other tenants, DRBD tuning, and more.
 
 ## 2. Install
 
 ```bash
 helm install miroir oci://ghcr.io/home-operations/charts/miroir \
-  -n miroir-system --create-namespace -f values.yaml
-kubectl apply -f topology.yaml
+  -n miroir-system --create-namespace
+helm install miroir-config oci://ghcr.io/home-operations/charts/miroir-config \
+  -n miroir-system -f config-values.yaml
 ```
 
-The chart deploys one `miroir-controller` Deployment and a
+The driver chart deploys one `miroir-controller` Deployment and a
 `miroir-agent` DaemonSet on every schedulable node (plus the CRDs, so
-the topology applies after the first install). Each agent provisions
-its node's pools with idempotent setup the moment its MiroirNode
-exists (existing pools are reused) — agents on nodes without one
-serve client-only and switch over by themselves — and restarts itself
-to re-run setup when the pool spec changes. Inspect the topology with
+miroir-config installs after it). Each agent provisions its node's
+pools with idempotent setup the moment its MiroirNode exists (existing
+pools are reused) — agents on nodes without one serve client-only and
+switch over by themselves — and restarts itself to re-run setup when
+the pool spec changes. Uninstalling (or shrinking) miroir-config never
+deletes MiroirNodes out from under live volumes: they carry
+`helm.sh/resource-policy: keep`, and decommissioning a node stays an
+explicit `kubectl delete miroirnode <name>`. Inspect the topology with
 `kubectl get miroirnodes`.
 
 ## 3. Claim a volume

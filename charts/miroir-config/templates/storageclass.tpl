@@ -15,7 +15,7 @@ metadata:
   annotations:
     {{- /* merge: the isDefault knob wins over a conflicting user annotation. */}}
     {{- toYaml (merge (dict "storageclass.kubernetes.io/is-default-class" ($sc.isDefault | default false | toString)) ($sc.annotations | default dict)) | nindent 4 }}
-provisioner: {{ include "miroir.csiDriverName" $ }}
+provisioner: {{ include "miroir-config.csiDriverName" $ }}
 volumeBindingMode: {{ $sc.volumeBindingMode | default "WaitForFirstConsumer" }}
 allowVolumeExpansion: true
 reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
@@ -59,6 +59,6 @@ metadata:
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-driver: {{ include "miroir.csiDriverName" $ }}
+driver: {{ include "miroir-config.csiDriverName" $ }}
 deletionPolicy: {{ $vsc.deletionPolicy | default "Delete" }}
 {{- end }}

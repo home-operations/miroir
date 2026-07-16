@@ -6,35 +6,14 @@ Workloads:
   controller  Deployment/{{ include "miroir.controllerName" . }}        1 replica
   agent       DaemonSet/{{ include "miroir.agentName" . }}            one per schedulable node
 
-Storage classes:
-{{- range .Values.storageClasses }}
-  - {{ .name }}  replicas={{ .replicas | default 1 }}{{ if gt (int (.replicas | default 1)) 1 }}, quorum={{ .quorum | default "freeze" }}{{ end }}, fsType={{ .fsType | default "ext4" }}{{ if .isDefault }} (cluster default){{ end }}
-{{- else }}
-  (none — set `storageClasses` in values to create one; see values.yaml for the example pair)
-{{- end }}
-{{- if .Values.volumeSnapshotClasses }}
-Snapshot classes:
-{{- range .Values.volumeSnapshotClasses }}
-  - {{ .name }}  driver={{ include "miroir.csiDriverName" $ }}, deletionPolicy={{ .deletionPolicy | default "Delete" }}{{ if .isDefault }} (cluster default){{ end }}
-{{- end }}
-{{- end }}
-
-Before provisioning volumes, every storage node needs a MiroirNode custom
-resource, applied separately from this chart (kubectl, GitOps, ...):
-  apiVersion: miroir.home-operations.com/v1alpha1
-  kind: MiroirNode
-  metadata:
-    name: <node-name>
-  spec:
-    pools:
-      - name: default
-        lvmthin:                        # or zfs / loopfile — the block IS the backend
-          device: /dev/disk/by-partlabel/r-miroir
-        # zfs: { dataset: pool/miroir }
-        # loopfile: { baseDir: /var/lib/miroir }  # reflink-capable FS
+Before provisioning volumes, install the storage configuration — the
+node topology (MiroirNodes), StorageClasses, and VolumeSnapshotClasses —
+via the sibling miroir-config chart (one reviewed document) or plain
+manifests:
+  helm install miroir-config oci://ghcr.io/home-operations/charts/miroir-config \
+    -f config-values.yaml
 Agents on nodes without a MiroirNode serve client-only (RWX mounts) and
 switch to storage mode by themselves when their MiroirNode appears.
-StorageClasses select a pool with their `pool` knob (absent = "default").
 Inspect the topology with `kubectl get miroirnodes`.
 
 Verify the rollout:

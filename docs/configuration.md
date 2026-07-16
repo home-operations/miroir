@@ -6,17 +6,20 @@ Every chart value is documented value-by-value in the generated
 stale). This page is the orientation layer: which groups of values
 exist and where their behavior is explained.
 
-The per-node storage topology is **not** a chart value: it lives in
-MiroirNode custom resources applied separately (`kubectl explain
-miroirnode.spec`; [Quickstart](quickstart.md) shows the layouts). The
-chart carries only the driver and the values below.
+Two charts: **miroir** carries the driver and the values below;
+**miroir-config** carries the storage configuration — the node topology
+(`nodes`, rendered as MiroirNode custom resources; `kubectl explain
+miroirnode.spec`), `storageClasses`, and `volumeSnapshotClasses` — as
+one reviewed document ([Quickstart](quickstart.md) shows the layouts).
+Plain MiroirNode/StorageClass manifests work identically.
 
-- **`storageClasses`**: the classes to create. `replicas`, `quorum`
-  policy ([Replication and quorum](replication.md)), `pool` (which
-  named pool the class provisions from), `fsType`, `reclaimPolicy`,
+- **miroir-config `storageClasses`**: the classes to create.
+  `replicas`, `quorum` policy
+  ([Replication and quorum](replication.md)), `pool` (which named pool
+  the class provisions from), `fsType`, `reclaimPolicy`,
   `allowRemoteVolumeAccess` ([Remote consumers](remote-consumers.md)),
   `isDefault`.
-- **`volumeSnapshotClasses`**: snapshot classes
+- **miroir-config `volumeSnapshotClasses`**: snapshot classes
   ([Quickstart](quickstart.md#4-snapshot-and-restore)).
 - **`drbd`**: replication tuning. `portBase`
   ([Coexistence](coexistence.md)), `onIoError`, resync knobs,

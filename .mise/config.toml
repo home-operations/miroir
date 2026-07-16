@@ -52,18 +52,18 @@ run = "golangci-lint run --fix"
 
 [tasks.helm-lint]
 description = "Run helm lint"
-run = "helm lint charts/miroir"
+run = "helm lint charts/miroir charts/miroir-config"
 
 [tasks.helm-test]
 description = "Run helm-unittest against the chart templates"
-run = "helm unittest charts/miroir"
+run = "helm unittest charts/miroir charts/miroir-config"
 
 [tasks.helm-docs-check]
 description = "Verify chart README + values.schema.json are in sync with values.yaml"
 run = '''
 helm-docs --chart-search-root=charts --log-level=warn
-helm-schema --chart-search-root charts/miroir --skip-auto-generation required,additionalProperties --append-newline
-git diff --exit-code charts/miroir/README.md charts/miroir/values.schema.json
+helm-schema --chart-search-root charts --skip-auto-generation required,additionalProperties --append-newline
+git diff --exit-code charts/*/README.md charts/*/values.schema.json
 '''
 
 [tasks.helm-docs]
@@ -73,7 +73,7 @@ helm-docs --chart-search-root=charts --log-level=warn
 # required/additionalProperties are skipped so the schema stays permissive: values.yaml
 # supplies every default and the free-form maps stay open. --append-newline gives a
 # clean EOF; the file is .prettierignore'd (a generated artifact), so oxfmt skips it.
-helm-schema --chart-search-root charts/miroir --skip-auto-generation required,additionalProperties --append-newline
+helm-schema --chart-search-root charts --skip-auto-generation required,additionalProperties --append-newline
 """
 
 [tasks.helm-crds]
@@ -160,26 +160,22 @@ kubectl wait --for=condition=established --timeout=60s \
 kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//deploy/kubernetes/snapshot-controller?ref=$snap_ver"
 kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 
-# Topology is CR-first: CRDs, then the MiroirNode, then the chart — the
-# same order the upgrade guide mandates, so the agent boots straight into
-# storage mode instead of client-only + self-restart.
-echo "==> applying CRDs + MiroirNode for $node"
+# Config is CR-first: CRDs, then the miroir-config chart (topology +
+# classes), then the driver — the same order the upgrade guide mandates,
+# so the agent boots straight into storage mode instead of
+# client-only + self-restart. Installing miroir-config here is also its
+# end-to-end coverage.
+echo "==> applying CRDs + installing miroir-config for $node"
 kubectl apply -f charts/miroir/crds/
-kubectl apply -f - <<EOF
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-  name: ${node}
-spec:
-  pools:
-    - name: default
-      lvmthin:
-        device: ${device}
-EOF
+helm upgrade --install miroir-config charts/miroir-config \
+  --namespace miroir-system --create-namespace \
+  -f deploy/e2e/config-values.yaml \
+  --set "nodes.${node}.spec.pools[0].name=default" \
+  --set "nodes.${node}.spec.pools[0].lvmthin.device=${device}"
 
 echo "==> helm install miroir"
 helm upgrade --install miroir charts/miroir \
-  --namespace miroir-system --create-namespace \
+  --namespace miroir-system \
   --wait --timeout 5m \
   -f deploy/e2e/values.yaml
 '''

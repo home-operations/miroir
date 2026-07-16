@@ -157,7 +157,7 @@ tests:
           path: data["global_common.conf"]
           pattern: "startup \\{\\}"
 
-  - it: fails loudly when the pre-decoupling nodes value is still set
+  - it: fails loudly when the pre-split nodes value is still set
     set:
       nodes:
         kharkiv:
@@ -165,4 +165,12 @@ tests:
             pools: []
     asserts:
       - failedTemplate:
-          errorPattern: MiroirNode custom resources
+          errorPattern: moved to the miroir-config chart
+
+  - it: fails loudly when the pre-split storageClasses value is still set
+    set:
+      storageClasses:
+        - name: miroir-local
+    asserts:
+      - failedTemplate:
+          errorPattern: moved to the miroir-config chart

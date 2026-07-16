@@ -1,8 +1,10 @@
 {{- if hasKey .Values.drbd "verifyAlg" }}
 {{- fail "drbd.verifyAlg was renamed to drbd.verify.algorithm" }}
 {{- end }}
-{{- if .Values.nodes }}
-{{- fail "the `nodes` value is gone: the storage topology lives in MiroirNode custom resources applied separately from the chart — see https://miroir.home-operations.com/upgrading/" }}
+{{- range $key := list "nodes" "storageClasses" "volumeSnapshotClasses" }}
+{{- if index $.Values $key }}
+{{- fail (printf "the `%s` value moved to the miroir-config chart (or plain manifests) — the miroir chart installs only the driver; see https://miroir.home-operations.com/upgrading/" $key) }}
+{{- end }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap

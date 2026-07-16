@@ -48,11 +48,12 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
 
 ## 0.10.x → 0.11.0: node topology becomes MiroirNode CRs
 
-The per-node storage topology moves out of the Helm chart entirely and
-into `MiroirNode` custom resources, applied and managed separately
-(kubectl, GitOps, any manifest tooling) — the chart installs only the
-driver. The CRD schema is what validates the topology. Alongside the
-move:
+The storage configuration moves out of the miroir chart entirely: the
+node topology becomes `MiroirNode` custom resources and, together with
+the StorageClasses and VolumeSnapshotClasses, now lives in the new
+**miroir-config** chart (or plain manifests) — the miroir chart
+installs only the driver. The CRD schema is what validates the
+topology. Alongside the move:
 
 - Pool options are grouped under a per-backend block (`lvmthin`, `zfs`, or
   `loopfile`) instead of prefixed flat keys.
@@ -82,18 +83,21 @@ on configuration you can plainly see in your files.
 
 ///
 
-### 2. Author and apply the MiroirNode manifests
+### 2. Move the storage configuration to the miroir-config chart
 
-Turn each entry of your old `nodes` values into a MiroirNode manifest —
-one per storage node, named after it. `pools` becomes a list of named
-entries and each pool's options move under its backend's block:
+The `nodes`, `storageClasses`, and `volumeSnapshotClasses` values move
+verbatim to the new **miroir-config** chart (or to plain manifests, if
+you prefer authoring MiroirNode/StorageClass YAML directly). For
+`nodes`, each entry gains a `spec:` wrapper (the values are the CR spec
+verbatim), `pools` becomes a list of named entries, and each pool's
+options move under its backend's block:
 
-| 0.10.x values                   | MiroirNode manifest           |
+| 0.10.x values                   | miroir-config values          |
 | ------------------------------- | ----------------------------- |
-| `nodes.<n>.zone`                | `spec.zone`                   |
-| `nodes.<n>.address`             | `spec.address`                |
-| `nodes.<n>.autoEvict`           | `spec.autoEvict`              |
-| `nodes.<n>.pools.<p>` (map key) | `spec.pools[].name`           |
+| `nodes.<n>.zone`                | `nodes.<n>.spec.zone`         |
+| `nodes.<n>.address`             | `nodes.<n>.spec.address`      |
+| `nodes.<n>.autoEvict`           | `nodes.<n>.spec.autoEvict`    |
+| `nodes.<n>.pools.<p>` (map key) | `...spec.pools[].name`        |
 | `...pools.<p>.backend`          | (implied by the block below)  |
 | `...pools.<p>.device`           | `...pools[].lvmthin.device`   |
 | `...pools.<p>.thinPoolSize`     | `...pools[].lvmthin.poolSize` |
@@ -105,9 +109,10 @@ entries and each pool's options move under its backend's block:
 There is no `backend` field any more: the block that is present IS the
 backend, so exactly one of `lvmthin`/`zfs`/`loopfile` is required even
 when it has nothing to say — an lvmthin pool whose VG already exists
-still writes `lvmthin: {}`.
+still writes `lvmthin: {}`. `storageClasses` and
+`volumeSnapshotClasses` move unchanged.
 
-Before (values):
+Before (0.10 miroir values):
 
 ```yaml
 nodes:
@@ -118,38 +123,60 @@ nodes:
         backend: lvmthin
         device: /dev/disk/by-partlabel/r-miroir
         thinPoolSize: 400g
+storageClasses:
+  - name: miroir-replicated
+    replicas: 2
 ```
 
-After (a manifest, applied like any other):
+After (miroir-config values):
 
 ```yaml
-apiVersion: miroir.home-operations.com/v1alpha1
-kind: MiroirNode
-metadata:
-  name: k8s-0
-spec:
-  zone: rack-1
-  pools:
-    - name: default
-      lvmthin:
-        device: /dev/disk/by-partlabel/r-miroir
-        poolSize: 400g
+nodes:
+  k8s-0:
+    spec:
+      zone: rack-1
+      pools:
+        - name: default
+          lvmthin:
+            device: /dev/disk/by-partlabel/r-miroir
+            poolSize: 400g
+storageClasses:
+  - name: miroir-replicated
+    replicas: 2
+```
+
+Install miroir-config **before** upgrading the driver chart, so the
+rolled agents boot straight into storage mode:
+
+```bash
+helm install miroir-config oci://ghcr.io/home-operations/charts/miroir-config \
+  -n miroir-system -f config-values.yaml
 ```
 
 Your cluster already has one `MiroirNode` per storage node (the 0.10
-agents created them to publish pool capacity); applying your manifests
-over them is expected and fine — the spec fields are yours, the status
-stays the agents'. Apply them **before** the chart upgrade so the rolled
-agents boot straight into storage mode.
+agents created them to publish pool capacity). miroir-config adopts
+them on install — run the upgrade with `--take-ownership` (Helm ≥ 3.17)
+or annotate them first:
 
-Loopfile users: also set the chart's `agent.loopfileBaseDirs` to every
-`loopfile.baseDir` in use — the agent pod's hostPath mounts are pod
-spec, which the chart cannot derive from CRs it does not read.
+```bash
+for n in $(kubectl get miroirnodes -o name); do
+  kubectl annotate "$n" \
+    meta.helm.sh/release-name=miroir-config \
+    meta.helm.sh/release-namespace=miroir-system --overwrite
+  kubectl label "$n" app.kubernetes.io/managed-by=Helm --overwrite
+done
+```
 
-### 3. Upgrade the chart and let the agents roll
+Loopfile users: also set the driver chart's `agent.loopfileBaseDirs`
+to every `loopfile.baseDir` in use — the agent pod's hostPath mounts
+are pod spec, which the driver chart cannot derive from objects it
+does not render.
 
-Remove `nodes` from your values (the chart fails fast with a pointer at
-this page if it is still set) and run the upgrade as usual. While the
+### 3. Upgrade the driver chart and let the agents roll
+
+Remove `nodes`, `storageClasses`, and `volumeSnapshotClasses` from the
+miroir chart's values (it fails fast with a pointer at this page if any
+is still set) and run the upgrade as usual. While the
 agent DaemonSet rolls node by node, the not-yet-rolled 0.10 agents keep
 trying to write their old, partial pool topology into the MiroirNode
 spec; the new CRD schema rejects those writes. That is by design (it
@@ -168,9 +195,9 @@ kubectl get miroirnode <node> -o yaml
 ```
 
 `spec.pools` on every storage node should show the per-backend blocks from
-your manifests (`lvmthin.device`, `zfs.dataset`, ...). If a block is missing,
-the CRD update in step 1 was skipped and the old schema pruned it: apply the
-CRDs and apply the manifests again.
+your configuration (`lvmthin.device`, `zfs.dataset`, ...). If a block is
+missing, the CRD update in step 1 was skipped and the old schema pruned it:
+apply the CRDs and upgrade miroir-config again.
 
 ### Also breaking, but unlikely to affect you
 

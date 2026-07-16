@@ -1047,14 +1047,6 @@
       "title": "storageCapacity",
       "type": "object"
     },
-    "storageClasses": {
-      "description": "=============================================================================\nStorage classes\n=============================================================================\nStorageClasses to create. Empty by default: declare the classes you\nwant. One local + one replicated is the common pair (see the example\nbelow). Per entry:\n  name          (required) the StorageClass name\n  replicas      replica count, default 1; \u003e1 makes it DRBD-replicated\n  quorum        freeze or last-man-standing (replicated only, default\n                freeze). freeze never diverges but halts writes without a\n                peer majority; last-man-standing keeps the survivor\n                writable at the risk of split-brain. See the root README,\n                \"Replication and quorum\".\n  fsType        ext4 or xfs, default ext4\n  pool          named storage pool the class provisions from, default\n                \"default\". Every replica of a volume lands in this pool\n                on its node, so the pool must exist (in the MiroirNode\n                specs) on at least `replicas` nodes.\n  allowRemoteVolumeAccess\n                true or false (replicated only; the controller defaults\n                absent to true, matching LINSTOR): pods on nodes without\n                a replica consume the volume through an ephemeral\n                diskless DRBD leg at replication-network speed. Set\n                false to pin pods to replica nodes for local reads. See\n                the root README, \"Remote consumers\".\n  bitmapGranularity\n                DRBD bitmap block size in bytes (replicated only): a\n                power of two, 4096–1048576, default absent (DRBD's 4096).\n                Each dirty bit tracks this many bytes — coarser cuts\n                bitmap RAM proportionally (65536 ≈ 1/16th) but resyncs\n                more per dirty bit; worth considering for classes holding\n                large volumes. Fixed when a replica's metadata is\n                created: changing the class affects new volumes only.\n  reclaimPolicy Delete or Retain, default Delete\n  isDefault     set the cluster default-class annotation, default false\n  volumeBindingMode\n                WaitForFirstConsumer (default) delays provisioning until a\n                pod schedules, so placement can prefer that pod's node;\n                Immediate provisions on PVC creation — reasonable for a\n                replicated class consumed remotely.\n  mountOptions  mount options for the class's PVs (list of strings)\n  annotations   extra annotations on the StorageClass\n  labels        extra labels on the StorageClass\nExample (coexisting with OpenEBS, which stays the cluster default):\n  storageClasses:\n    - name: miroir-local\n      replicas: 1\n    - name: miroir-replicated\n      replicas: 2\n      quorum: freeze",
-      "items": {
-        "required": []
-      },
-      "title": "storageClasses",
-      "type": "array"
-    },
     "uninstall": {
       "description": "=============================================================================\nUninstall hook\n=============================================================================\n`helm uninstall` data handling. By default the release is removed but every\nMiroirVolume/MiroirSnapshot — and the data on the nodes — is left in place\n(the CRDs, installed from crds/, survive uninstall too, so a reinstall\nre-adopts everything). Destroying the data is opt-in via `confirmation`.",
       "properties": {
@@ -1080,14 +1072,6 @@
       "description": "Seconds the controller pod stays bound to an unreachable node before\neviction. The Kubernetes default (300) leaves a single-replica controller\nunable to provision, expand, or snapshot for five minutes after its node\ndies; 5 reschedules it almost immediately (the controller is stateless).",
       "title": "unreachableNodeTolerationSeconds",
       "type": "integer"
-    },
-    "volumeSnapshotClasses": {
-      "description": "Requires the cluster-wide snapshot-controller + CRDs (deployed\nseparately; kube-system/snapshot-controller in the homelab).\nVolumeSnapshotClasses to create (requires the snapshot-controller +\nCRDs, deployed separately). Empty by default. Per entry:\n  name           (required) the VolumeSnapshotClass name\n  deletionPolicy Delete or Retain, default Delete\n  isDefault      set the cluster default-snapshot-class annotation,\n                 default false\n  annotations    extra annotations on the VolumeSnapshotClass\n  labels         extra labels on the VolumeSnapshotClass\nExample:\n  volumeSnapshotClasses:\n    - name: miroir-snap\n      deletionPolicy: Delete",
-      "items": {
-        "required": []
-      },
-      "title": "volumeSnapshotClasses",
-      "type": "array"
     }
   },
   "required": [],
