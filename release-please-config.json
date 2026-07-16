@@ -56,6 +56,11 @@
       "hidden": false
     },
     {
+      "type": "chart",
+      "section": "Helm Chart",
+      "hidden": false
+    },
+    {
       "type": "test",
       "section": "Tests",
       "hidden": true
