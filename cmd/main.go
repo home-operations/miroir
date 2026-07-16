@@ -565,11 +565,11 @@ func main() {
 			// No volume reconciler runs here, so a client leg could never
 			// be realized: the node service refuses RWO remote-access
 			// staging outright (ClientOnly) — RWX/NFS staging needs no
-			// DRBD leg and still works. The driver is wired for the node
-			// service's status reads, none of which are reachable with
-			// client legs refused; the probe only logs what the node ships.
+			// DRBD leg and still works. No kernel-floor probe either: with
+			// client legs refused nothing touches DRBD on this node, and
+			// the probe's fatal below-floor exit would crash-loop a
+			// consumer-only node over a check that protects nothing here.
 			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
-			probeDRBD(clientDRBD)
 			node := csi.NewNode(mgr.GetClient(), nodeName, clientDRBD)
 			node.ClientOnly = true
 			serveCSI(mgr, csiSocket, identity, nil, node)
