@@ -388,15 +388,29 @@ func (c *Controller) place(ctx context.Context, reqs *csi.TopologyRequirement, c
 	}
 	// Every diskful leg needs the pool on its own node; a class naming a
 	// pool too few nodes carry must say so instead of a generic refusal.
-	// Address-conflicted nodes are excluded outright: their replication
-	// endpoint is ambiguous until the operator resolves the clash.
+	// Unplaceable nodes (address conflict) are excluded outright — but
+	// counted, so the refusal names the real cause instead of blaming the
+	// pool declarations.
 	candidates := map[string]nodemap.Pool{}
+	conflicted := 0
 	for n := range nodes {
-		if p, ok := nodes.Pool(n, pool); ok && !nodes[n].AddressConflict {
-			candidates[n] = p
+		p, ok := nodes.Pool(n, pool)
+		if !ok {
+			continue
 		}
+		if !nodes.Placeable(n) {
+			conflicted++
+			continue
+		}
+		candidates[n] = p
 	}
 	if len(candidates) < count {
+		if conflicted > 0 {
+			return nil, status.Errorf(codes.ResourceExhausted,
+				"storage pool %q exists on %d of %d storage nodes, but %d carrying it are excluded by a replication "+
+					"address conflict; a %d-replica class needs %d (kubectl get miroirnodes; see the AddressConflict condition)",
+				pool, len(candidates)+conflicted, len(nodes), conflicted, count, count)
+		}
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"storage pool %q exists on %d of %d storage nodes; a %d-replica class needs %d (Helm values: nodes.<name>.spec.pools)",
 			pool, len(candidates), len(nodes), count, count)
@@ -1001,7 +1015,7 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 	}
 	provisioned := provisionedPerPool(list.Items, "")
 	available := func(node string) int64 {
-		if _, ok := nodes.Pool(node, pool); !ok || nodes[node].AddressConflict {
+		if _, ok := nodes.Pool(node, pool); !ok || !nodes.Placeable(node) {
 			return 0 // no pool here, or the node is unplaceable (address conflict)
 		}
 		// Unknown stats fall out as zero — excluded until the agent
