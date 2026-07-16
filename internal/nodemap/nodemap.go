@@ -27,6 +27,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -48,6 +49,11 @@ type Pool struct {
 	Device string `json:"device,omitempty"`
 	// ZFSDataset is the parent dataset for zvols (zfs).
 	ZFSDataset string `json:"zfsDataset,omitempty"`
+	// ZFSVolBlockSize is the block size for newly created zvols (zfs).
+	ZFSVolBlockSize string `json:"zfsVolBlockSize,omitempty"`
+	// ZFSCompression is the compression algorithm for newly created zvols
+	// (zfs), or "inherit" to use the parent dataset's setting.
+	ZFSCompression string `json:"zfsCompression,omitempty"`
 	// ThinPoolSize bounds the thin pool (lvm size spec, e.g. "400g");
 	// empty claims all free VG space.
 	ThinPoolSize string `json:"thinPoolSize,omitempty"`
@@ -156,6 +162,27 @@ func (m Map) PickSpare(usedNodes, usedZones map[string]bool, keep func(node stri
 // keep them short lowercase DNS-label-style identifiers.
 var poolNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$`)
 
+const (
+	DefaultZFSVolBlockSize = "4K"
+	DefaultZFSCompression  = "lz4"
+)
+
+var (
+	zfsVolBlockSizes = map[string]int64{
+		"4K": 4 << 10, "8K": 8 << 10, "16K": 16 << 10,
+		"32K": 32 << 10, "64K": 64 << 10, "128K": 128 << 10,
+	}
+	zfsCompressionRe = regexp.MustCompile(`^(on|off|lz4|lzjb|zle|gzip(-[1-9])?|zstd(-([1-9]|1[0-9]))?|zstd-fast(-(10|[1-9]|[2-9]0|100|500|1000))?)$`)
+)
+
+// ZFSVolBlockSizeBytes returns the validated zvol block size in bytes.
+func (p Pool) ZFSVolBlockSizeBytes() int64 {
+	if p.ZFSVolBlockSize == "" {
+		return zfsVolBlockSizes[DefaultZFSVolBlockSize]
+	}
+	return zfsVolBlockSizes[strings.ToUpper(p.ZFSVolBlockSize)]
+}
+
 // Load reads and validates the node map from a YAML file.
 func Load(path string) (Map, error) {
 	raw, err := os.ReadFile(path)
@@ -166,7 +193,7 @@ func Load(path string) (Map, error) {
 	if err := yaml.UnmarshalStrict(raw, &m); err != nil {
 		if legacy := legacyFlatNode(raw); legacy != "" {
 			return nil, fmt.Errorf("node %s uses the pre-0.10 flat single-pool shape; "+
-				"move backend/device/zfsDataset/baseDir/thinPoolSize under `pools: {%s: {...}}` "+
+				"move backend/device/zfsDataset/zfsVolBlockSize/zfsCompression/baseDir/thinPoolSize under `pools: {%s: {...}}` "+
 				"(zone and address stay node-level)", legacy, miroirv1alpha1.DefaultPoolName)
 		}
 		return nil, fmt.Errorf("parse node map %s: %w", path, err)
@@ -201,7 +228,9 @@ func Load(path string) (Map, error) {
 
 // validatePools checks one node's pools: valid names and backends, the
 // per-backend required field, and no two pools sharing a backing location
-// (one device/dataset/dir belongs to exactly one pool).
+// (one device/dataset/dir belongs to exactly one pool). It also writes the
+// zfs settings back canonicalized (defaulted, and cased as OpenZFS spells
+// them) so callers hand zfs(8) property values it accepts verbatim.
 func validatePools(node string, pools map[string]Pool) error {
 	backingOwner := map[string]string{}
 	for poolName, p := range pools {
@@ -217,6 +246,24 @@ func validatePools(node string, pools map[string]Pool) error {
 			if p.ZFSDataset == "" {
 				return fmt.Errorf("node %s pool %s: zfs backend requires zfsDataset", node, poolName)
 			}
+			if p.ZFSVolBlockSize == "" {
+				p.ZFSVolBlockSize = DefaultZFSVolBlockSize
+			} else {
+				p.ZFSVolBlockSize = strings.ToUpper(p.ZFSVolBlockSize)
+			}
+			if _, ok := zfsVolBlockSizes[p.ZFSVolBlockSize]; !ok {
+				return fmt.Errorf("node %s pool %s: invalid zfsVolBlockSize %q (want 4K, 8K, 16K, 32K, 64K, or 128K)",
+					node, poolName, p.ZFSVolBlockSize)
+			}
+			if p.ZFSCompression == "" {
+				p.ZFSCompression = DefaultZFSCompression
+			} else {
+				p.ZFSCompression = strings.ToLower(p.ZFSCompression)
+			}
+			if p.ZFSCompression != "inherit" && !zfsCompressionRe.MatchString(p.ZFSCompression) {
+				return fmt.Errorf("node %s pool %s: invalid zfsCompression %q", node, poolName, p.ZFSCompression)
+			}
+			pools[poolName] = p
 			backing = p.ZFSDataset
 		case miroirv1alpha1.BackendLoopfile:
 			if p.BaseDir == "" {

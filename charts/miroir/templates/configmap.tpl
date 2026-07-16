@@ -3,10 +3,22 @@
 {{- end }}
 {{- range $name, $node := .Values.nodes }}
 {{- if hasKey $node "backend" }}
-{{- fail (printf "nodes.%s uses the pre-0.10 flat single-pool shape; move backend/device/zfsDataset/baseDir/thinPoolSize under `pools: {default: {...}}` (zone and address stay node-level)" $name) }}
+{{- fail (printf "nodes.%s uses the pre-0.10 flat single-pool shape; move backend/device/zfsDataset/zfsVolBlockSize/zfsCompression/baseDir/thinPoolSize under `pools: {default: {...}}` (zone and address stay node-level)" $name) }}
 {{- end }}
 {{- if not $node.pools }}
 {{- fail (printf "nodes.%s declares no pools; declare at least pools.default (see values.yaml)" $name) }}
+{{- end }}
+{{- range $poolName, $pool := $node.pools }}
+{{- if eq (toString $pool.backend) "zfs" }}
+{{- $blockSize := upper (toString (default "4K" (dig "zfsVolBlockSize" "" $pool))) }}
+{{- if not (has $blockSize (list "4K" "8K" "16K" "32K" "64K" "128K")) }}
+{{- fail (printf "nodes.%s.pools.%s.zfsVolBlockSize must be one of 4K, 8K, 16K, 32K, 64K, or 128K" $name $poolName) }}
+{{- end }}
+{{- $compression := lower (toString (default "lz4" (dig "zfsCompression" "" $pool))) }}
+{{- if and (ne $compression "inherit") (not (regexMatch "^(on|off|lz4|lzjb|zle|gzip(-[1-9])?|zstd(-([1-9]|1[0-9]))?|zstd-fast(-(10|[1-9]|[2-9]0|100|500|1000))?)$" $compression)) }}
+{{- fail (printf "nodes.%s.pools.%s.zfsCompression is not a supported OpenZFS compression value" $name $poolName) }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- if hasKey .Values.drbd "verifyAlg" }}

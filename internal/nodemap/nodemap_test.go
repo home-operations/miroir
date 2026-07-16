@@ -67,6 +67,8 @@ node-b:
     default:
       backend: zfs
       zfsDataset: tank/miroir
+      zfsVolBlockSize: 16K
+      zfsCompression: inherit
 node-c:
   pools:
     default:
@@ -89,14 +91,64 @@ node-c:
 	if m["node-a"].Zone != "rack-1" {
 		t.Fatalf("node-a zone not parsed: %+v", m["node-a"])
 	}
-	if m["node-b"].Pools["default"].ZFSDataset != "tank/miroir" {
-		t.Fatalf("node-b dataset wrong: %+v", m["node-b"])
+	zfs := m["node-b"].Pools["default"]
+	if zfs.ZFSDataset != "tank/miroir" || zfs.ZFSVolBlockSize != "16K" ||
+		zfs.ZFSVolBlockSizeBytes() != 16<<10 || zfs.ZFSCompression != "inherit" {
+		t.Fatalf("node-b ZFS pool parsed wrong: %+v", zfs)
 	}
 	if m["node-c"].Pools["default"].BaseDir != "/var/lib/miroir" {
 		t.Fatalf("node-c baseDir wrong: %+v", m["node-c"])
 	}
 	if m["node-a"].Address != "10.0.100.1" || m["node-b"].Address != "fd00:1::2" {
 		t.Fatalf("addresses parsed wrong: %q %q", m["node-a"].Address, m["node-b"].Address)
+	}
+}
+
+func TestZFSDefaults(t *testing.T) {
+	m, err := Load(writeMap(t, `
+node-a:
+  pools:
+    default:
+      backend: zfs
+      zfsDataset: tank/miroir
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := m[nodeA].Pools[miroirv1alpha1.DefaultPoolName]
+	if p.ZFSVolBlockSize != DefaultZFSVolBlockSize {
+		t.Fatalf("zfsVolBlockSize = %q, want %q", p.ZFSVolBlockSize, DefaultZFSVolBlockSize)
+	}
+	if p.ZFSVolBlockSizeBytes() != 4<<10 {
+		t.Fatalf("zfsVolBlockSize bytes = %d, want %d", p.ZFSVolBlockSizeBytes(), 4<<10)
+	}
+	if p.ZFSCompression != DefaultZFSCompression {
+		t.Fatalf("zfsCompression = %q, want %q", p.ZFSCompression, DefaultZFSCompression)
+	}
+}
+
+// Load canonicalizes the zfs settings' casing: the block size has to match
+// a zfsVolBlockSizes key, and the compression value reaches `zfs create -o`
+// verbatim, which OpenZFS accepts only in its own lowercase spelling.
+func TestZFSSettingsCanonicalizeCase(t *testing.T) {
+	m, err := Load(writeMap(t, `
+node-a:
+  pools:
+    default:
+      backend: zfs
+      zfsDataset: tank/miroir
+      zfsVolBlockSize: 16k
+      zfsCompression: ZSTD-3
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := m[nodeA].Pools[miroirv1alpha1.DefaultPoolName]
+	if p.ZFSVolBlockSizeBytes() != 16<<10 {
+		t.Fatalf("zfsVolBlockSizeBytes = %d, want %d", p.ZFSVolBlockSizeBytes(), 16<<10)
+	}
+	if p.ZFSCompression != "zstd-3" {
+		t.Fatalf("zfsCompression = %q, want %q", p.ZFSCompression, "zstd-3")
 	}
 }
 
@@ -161,6 +213,9 @@ func TestLoadErrors(t *testing.T) {
 		"unknown field":            pool("      backend: lvmthin\n      bogus: x\n"),
 		"malformed yaml":           "node-a: : :\n",
 		"no pools":                 "node-a:\n  zone: rack-1\n",
+		"invalid zfs block size":   pool("      backend: zfs\n      zfsDataset: tank/miroir\n      zfsVolBlockSize: 12K\n"),
+		"oversized zfs block size": pool("      backend: zfs\n      zfsDataset: tank/miroir\n      zfsVolBlockSize: 256K\n"),
+		"invalid zfs compression":  pool("      backend: zfs\n      zfsDataset: tank/miroir\n      zfsCompression: snappy\n"),
 		"empty pools":              "node-a:\n  pools: {}\n",
 		"invalid pool name": "node-a:\n  pools:\n    Fast_NVMe:\n" +
 			"      backend: lvmthin\n",

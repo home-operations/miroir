@@ -31,6 +31,34 @@ exist and where their behavior is explained.
   resources, `agent.kubeletDir`, `sidecars.healthMonitor`.
 - **`logging`** — level and encoder for both components.
 
+## ZFS zvol settings
+
+Each ZFS pool can tune properties for newly created zvols:
+
+- `zfsVolBlockSize` accepts `4K`, `8K`, `16K`, `32K`, `64K`, or
+  `128K`. It defaults to `4K`. Miroir rounds new volume sizes up to this
+  boundary because OpenZFS requires `volsize` alignment. Expansion follows
+  the existing zvol's actual block size, including for snapshot clones.
+- `zfsCompression` defaults to `lz4`. Set it to `inherit` to omit a
+  per-zvol property and use the parent dataset policy. It also accepts
+  OpenZFS `on`, `off`, `lzjb`, `zle`, `gzip` levels, `zstd` levels, and
+  `zstd-fast` levels.
+
+```yaml
+nodes:
+    paris:
+        pools:
+            default:
+                backend: zfs
+                zfsDataset: data-pool/miroir
+                zfsVolBlockSize: 16K
+                zfsCompression: inherit
+```
+
+These settings apply only when Miroir creates a zvol. Reconciliation does
+not mutate existing volumes, and restored snapshot clones retain their
+source properties.
+
 ## The complete values.yaml
 
 The block below is the chart's real `charts/miroir/values.yaml`,

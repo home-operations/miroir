@@ -25,14 +25,28 @@ import (
 
 // zfsBackend provisions sparse zvols under a dedicated dataset (paris's
 // backend; pool shared with OpenEBS LocalPV-ZFS).
-// volblocksize is fixed at 4k to align with the LVM-thin peer leg.
 type zfsBackend struct {
-	dataset string
-	exec    Exec
+	dataset      string
+	volBlockSize int64
+	compression  string
+	exec         Exec
 }
 
 func newZFS(cfg Config, e Exec) *zfsBackend {
-	return &zfsBackend{dataset: cfg.Dataset, exec: e}
+	blockSize := cfg.ZFSVolBlockSize
+	if blockSize == 0 {
+		blockSize = defaultZFSVolBlockSize
+	}
+	compression := cfg.ZFSCompression
+	if compression == "" {
+		compression = defaultZFSCompression
+	}
+	return &zfsBackend{
+		dataset:      cfg.Dataset,
+		volBlockSize: blockSize,
+		compression:  compression,
+		exec:         e,
+	}
 }
 
 // Setup creates the parent dataset (e.g. tank/miroir) if absent — the
@@ -77,16 +91,16 @@ func (z *zfsBackend) Exists(ctx context.Context, vol string) (bool, error) {
 	return z.exists(ctx, z.name(vol))
 }
 
-// zvolBlockSize is the volblocksize passed to zfs create (-b); volsize
-// must be a multiple of it or OpenZFS rejects the create/set with EINVAL.
-const zvolBlockSize = 4096
+const (
+	defaultZFSVolBlockSize int64 = 4 << 10
+	defaultZFSCompression        = "lz4"
+)
 
-// alignSize rounds sizeBytes up to the zvol block size: PVC sizes are not
-// necessarily 4KiB-multiples (1G = 10^9), and the other backends already
-// realize >= the requested size, so rounding up is harmless — DRBD sizes
-// the device to the smallest leg.
-func alignSize(sizeBytes int64) int64 {
-	return (sizeBytes + zvolBlockSize - 1) &^ (zvolBlockSize - 1)
+// alignSize rounds sizeBytes up to blockSize. PVC sizes are not necessarily
+// block-size multiples (1G = 10^9), and the other backends already realize
+// at least the requested size, so rounding up is harmless.
+func alignSize(sizeBytes, blockSize int64) int64 {
+	return (sizeBytes + blockSize - 1) &^ (blockSize - 1)
 }
 
 func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (string, error) {
@@ -95,14 +109,16 @@ func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (s
 		return "", err
 	}
 	if !ok {
-		_, err = z.exec(ctx, "zfs", "create",
+		args := []string{
+			"create",
 			"-s", // sparse: thin semantics, matching the lvm-thin leg
-			"-b", strconv.Itoa(zvolBlockSize),
-			// lz4 early-aborts on incompressible data (≈free) and cuts
-			// physical I/O; a near-universal default for zvols.
-			"-o", "compression=lz4",
-			"-V", strconv.FormatInt(alignSize(sizeBytes), 10),
-			z.name(vol))
+			"-b", strconv.FormatInt(z.volBlockSize, 10),
+		}
+		if z.compression != "inherit" {
+			args = append(args, "-o", "compression="+z.compression)
+		}
+		args = append(args, "-V", strconv.FormatInt(alignSize(sizeBytes, z.volBlockSize), 10), z.name(vol))
+		_, err = z.exec(ctx, "zfs", args...)
 		if err != nil {
 			return "", fmt.Errorf("zfs create %s: %w", vol, err)
 		}
@@ -111,7 +127,7 @@ func (z *zfsBackend) Create(ctx context.Context, vol string, sizeBytes int64) (s
 }
 
 func (z *zfsBackend) Resize(ctx context.Context, vol string, sizeBytes int64) error {
-	cur, err := z.volSize(ctx, vol)
+	cur, blockSize, err := z.volGeometry(ctx, vol)
 	if err != nil {
 		return err
 	}
@@ -119,7 +135,7 @@ func (z *zfsBackend) Resize(ctx context.Context, vol string, sizeBytes int64) er
 		return nil // already big enough (idempotent retry)
 	}
 	if _, err := z.exec(ctx, "zfs", "set",
-		fmt.Sprintf("volsize=%d", alignSize(sizeBytes)), z.name(vol)); err != nil {
+		fmt.Sprintf("volsize=%d", alignSize(sizeBytes, blockSize)), z.name(vol)); err != nil {
 		return fmt.Errorf("zfs set volsize %s to %d: %w", vol, sizeBytes, err)
 	}
 	return nil
@@ -232,12 +248,24 @@ func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error
 	return nil
 }
 
-func (z *zfsBackend) volSize(ctx context.Context, vol string) (int64, error) {
-	out, err := z.exec(ctx, "zfs", "get", "-Hpo", "value", "volsize", z.name(vol))
+func (z *zfsBackend) volGeometry(ctx context.Context, vol string) (sizeBytes, blockSize int64, err error) {
+	out, err := z.exec(ctx, "zfs", "get", "-Hpo", "value", "volsize,volblocksize", z.name(vol))
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	values := strings.Fields(out)
+	if len(values) != 2 {
+		return 0, 0, fmt.Errorf("unexpected zfs volume geometry %q", out)
+	}
+	sizeBytes, err = strconv.ParseInt(values[0], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	blockSize, err = strconv.ParseInt(values[1], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	return sizeBytes, blockSize, nil
 }
 
 func (z *zfsBackend) Stats(ctx context.Context) (PoolStats, error) {
