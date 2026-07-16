@@ -950,3 +950,35 @@ func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 		t.Fatal("peer must wait for the IO barrier")
 	}
 }
+
+// The single-worker reconciler must bound each DRBD control call on the
+// barrier path tighter than RealExec's 2-minute default, so one wedged call
+// cannot stall every other volume's snapshot on the node. The injected exec
+// records the deadline each wrapped call carries.
+func TestSnapshotBarrierCallsAreBounded(t *testing.T) {
+	var deadlines []time.Duration
+	capture := func(ctx context.Context, _ string, _ ...string) (string, error) {
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Error("snapshot DRBD call reached exec with no deadline")
+			return "[]", nil
+		}
+		deadlines = append(deadlines, time.Until(dl))
+		return "[]", nil
+	}
+	r := &SnapshotReconciler{DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: capture}}
+
+	ctx := context.Background()
+	_, _ = r.drbdStatus(ctx, volPvc1)
+	_ = r.suspendIO(ctx, volPvc1)
+	_ = r.resumeIO(ctx, volPvc1)
+
+	if len(deadlines) != 3 {
+		t.Fatalf("expected 3 bounded DRBD calls, got %d", len(deadlines))
+	}
+	for _, d := range deadlines {
+		if d <= 0 || d > drbdBarrierTimeout+time.Second {
+			t.Fatalf("call deadline %s is not bounded by drbdBarrierTimeout (%s)", d, drbdBarrierTimeout)
+		}
+	}
+}
