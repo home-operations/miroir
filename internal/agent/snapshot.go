@@ -143,9 +143,10 @@ func (r *SnapshotReconciler) clearBarrierFails(name string) {
 	r.barrierFailsMu.Unlock()
 }
 
-// backendFor resolves the backend holding the volume's local leg — the
-// spec entry, or the self-reported status slot for a leg pending removal
-// (snapshots block replica removal, so the slot is still there).
+// backendFor resolves the backend holding the volume's local leg. Every
+// caller sits behind the replicaOn early-return, so the leg is always a
+// live spec entry here (volumePoolOn's status-slot fallback serves the
+// volume reconciler's teardown, not this path).
 func (r *SnapshotReconciler) backendFor(vol *miroirv1alpha1.MiroirVolume) (backend.Backend, error) {
 	pb, err := r.Pools.Get(volumePoolOn(vol, r.NodeName))
 	if err != nil {

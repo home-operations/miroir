@@ -39,7 +39,7 @@ type DRBDSpecApplyConfiguration struct {
 	// resyncing more per dirty bit. Applied only when a replica's metadata
 	// is first created — replicas created earlier keep their granularity
 	// (DRBD exchanges bitmaps across differing block sizes). 0 means the
-	// DRBD default (4096). Needs kmod ≥ 9.3.0 (the agent's startup floor).
+	// DRBD default (4096). Needs kmod ≥ 9.3.1 (the agent's startup floor).
 	BitmapGranularityBytes *int64 `json:"bitmapGranularityBytes,omitempty"`
 }
 

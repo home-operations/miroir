@@ -190,8 +190,13 @@ func cacheOptions(mode, namespace, nodeName string) cache.Options {
 		}
 	}
 	if mode == "agent" && nodeName != "" {
+		// The corev1.Node informer gets the same pin: its only agent
+		// consumer is the CordonWatcher, which reads the node's own object.
 		opts.ByObject = map[client.Object]cache.ByObject{
 			&miroirv1alpha1.MiroirNode{}: {
+				Field: fields.OneTermEqualSelector("metadata.name", nodeName),
+			},
+			&corev1.Node{}: {
 				Field: fields.OneTermEqualSelector("metadata.name", nodeName),
 			},
 		}

@@ -457,3 +457,32 @@ func TestAutoEvictBlocksOnIncompleteMembershipChange(t *testing.T) {
 		t.Fatalf("an in-flight membership change must block eviction: %+v", got.Spec.Replicas)
 	}
 }
+
+// A swap with a surviving tie-breaker must insert the bare diskful
+// replacement BEFORE the diskless leg: the CEL first-replica-diskful rule
+// holds no matter which entry died.
+func TestAutoEvictSwapKeepsDisklessLast(t *testing.T) {
+	v := evictVol()
+	v.Spec.Replicas = append(v.Spec.Replicas,
+		miroirv1alpha1.Replica{Node: nodeC, NodeID: 2, Address: addrC, Diskless: true})
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeC)
+	r := newAE(t, v,
+		minAt(nodeA, time.Minute, 50<<30),
+		minAt(nodeB, 2*time.Hour, 50<<30),
+		minAt(nodeC, time.Minute, 50<<30),
+		minAt(nodeD, time.Minute, 50<<30))
+
+	reconcileAE(t, r, nodeB)
+
+	got := get(t, &Reconciler{Client: r.Client}, volPvc1)
+	nodes := make([]string, 0, len(got.Spec.Replicas))
+	for _, rep := range got.Spec.Replicas {
+		nodes = append(nodes, rep.Node)
+	}
+	if !slices.Equal(nodes, []string{nodeA, nodeD, nodeC}) {
+		t.Fatalf("replacement must precede the diskless leg: %v", nodes)
+	}
+	if got.Spec.Replicas[2].Node != nodeC || !got.Spec.Replicas[2].Diskless {
+		t.Fatalf("tie-breaker must stay last and diskless: %+v", got.Spec.Replicas)
+	}
+}

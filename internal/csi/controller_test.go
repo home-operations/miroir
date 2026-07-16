@@ -379,19 +379,7 @@ func nodeObj(name, ip string) *corev1.Node {
 func TestCreateVolumeReplicated(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
-		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, "192.168.1.42")).
-			WithInterceptorFuncs(interceptor.Funcs{
-				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-					if err := cl.Get(ctx, key, obj, opts...); err != nil {
-						return err
-					}
-					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
-						vol.Status.Phase = miroirv1alpha1.VolumeReady
-					}
-					return nil
-				},
-			}).Build(),
+		Client:           readyOnGet(s, nodeObj(nodeA, addrA), nodeObj(nodeB, "192.168.1.42")),
 		Nodes:            testNodes,
 		ProvisionTimeout: 2 * time.Second,
 	}
@@ -470,19 +458,7 @@ func TestCreateVolumeReplicatedAddressOverride(t *testing.T) {
 	entry.Address = "10.0.100.42"
 	nodes[nodeB] = entry
 	c := &Controller{
-		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)).
-			WithInterceptorFuncs(interceptor.Funcs{
-				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-					if err := cl.Get(ctx, key, obj, opts...); err != nil {
-						return err
-					}
-					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
-						vol.Status.Phase = miroirv1alpha1.VolumeReady
-					}
-					return nil
-				},
-			}).Build(),
+		Client:           readyOnGet(s, nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)),
 		Nodes:            nodes,
 		ProvisionTimeout: 2 * time.Second,
 	}
@@ -517,19 +493,8 @@ func TestCreateVolumeReplicatedAddressOverride(t *testing.T) {
 func tieBreakerController(t *testing.T, autoTieBreaker bool) *Controller {
 	t.Helper()
 	return &Controller{
-		Client: fake.NewClientBuilder().WithScheme(newScheme(t)).
-			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, addrB), nodeObj(nodeC, addrC)).
-			WithInterceptorFuncs(interceptor.Funcs{
-				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-					if err := cl.Get(ctx, key, obj, opts...); err != nil {
-						return err
-					}
-					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
-						vol.Status.Phase = miroirv1alpha1.VolumeReady
-					}
-					return nil
-				},
-			}).Build(),
+		Client: readyOnGet(newScheme(t),
+			nodeObj(nodeA, addrA), nodeObj(nodeB, addrB), nodeObj(nodeC, addrC)),
 		Nodes: nodemap.Map{
 			nodeA: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
 			nodeB: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendZFS, ZFSDataset: "data-pool/miroir"}),
@@ -1323,19 +1288,7 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 func TestCreateVolumeRemoteAccessDropsTopology(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{
-		Client: fake.NewClientBuilder().WithScheme(s).
-			WithObjects(nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)).
-			WithInterceptorFuncs(interceptor.Funcs{
-				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-					if err := cl.Get(ctx, key, obj, opts...); err != nil {
-						return err
-					}
-					if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
-						vol.Status.Phase = miroirv1alpha1.VolumeReady
-					}
-					return nil
-				},
-			}).Build(),
+		Client:           readyOnGet(s, nodeObj(nodeA, addrA), nodeObj(nodeB, addrB)),
 		Nodes:            testNodes,
 		ProvisionTimeout: 2 * time.Second,
 	}

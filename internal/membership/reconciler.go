@@ -158,23 +158,11 @@ func (r *Reconciler) complete(ctx context.Context, nodes nodemap.Map, vol *miroi
 				errBadPlacement, rep.Node, targetPool)
 		}
 	}
-	dup := 0
-	for _, other := range vol.Spec.Replicas {
-		if other.Node == rep.Node {
-			dup++
-		}
+	if err := refuseDuplicate(rep.Node, "spec.replicas", nodesOf(vol.Spec.Replicas)); err != nil {
+		return err
 	}
-	if dup > 1 {
-		return fmt.Errorf("%w: node %s appears %d times in spec.replicas", errBadPlacement, rep.Node, dup)
-	}
-	addr, err := nodes.ReplicationAddress(ctx, r.Client, rep.Node)
+	addr, err := resolveAddress(ctx, r.Client, nodes, rep.Node)
 	if err != nil {
-		// An address conflict is a topology misconfiguration, not a
-		// transient: like unknown-node, only a topology fix can clear it,
-		// and that fix re-triggers this controller via the MiroirNode watch.
-		if errors.Is(err, nodemap.ErrAddressConflict) {
-			return fmt.Errorf("%w: %w", errBadPlacement, err)
-		}
 		return err
 	}
 	id := nextNodeID(vol, rep.Node)
@@ -200,25 +188,59 @@ func (r *Reconciler) complete(ctx context.Context, nodes nodemap.Map, vol *miroi
 // no node-map entry — any node running an agent can consume remotely, and
 // its address resolves like a replica's (map override, else InternalIP).
 func (r *Reconciler) completeClient(ctx context.Context, nodes nodemap.Map, vol *miroirv1alpha1.MiroirVolume, cl *miroirv1alpha1.VolumeClient) error {
-	dup := 0
+	clients := make([]string, 0, len(vol.Spec.Clients))
 	for _, other := range vol.Spec.Clients {
-		if other.Node == cl.Node {
-			dup++
-		}
+		clients = append(clients, other.Node)
 	}
-	if dup > 1 {
-		return fmt.Errorf("%w: node %s appears %d times in spec.clients", errBadPlacement, cl.Node, dup)
+	if err := refuseDuplicate(cl.Node, "spec.clients", clients); err != nil {
+		return err
 	}
-	addr, err := nodes.ReplicationAddress(ctx, r.Client, cl.Node)
+	addr, err := resolveAddress(ctx, r.Client, nodes, cl.Node)
 	if err != nil {
-		if errors.Is(err, nodemap.ErrAddressConflict) {
-			return fmt.Errorf("%w: %w", errBadPlacement, err)
-		}
 		return err
 	}
 	cl.NodeID = nextNodeID(vol, cl.Node)
 	cl.Address = addr
 	return nil
+}
+
+// nodesOf lists the node names of a replica set.
+func nodesOf(reps []miroirv1alpha1.Replica) []string {
+	nodes := make([]string, 0, len(reps))
+	for _, rep := range reps {
+		nodes = append(nodes, rep.Node)
+	}
+	return nodes
+}
+
+// refuseDuplicate rejects a node appearing more than once in a leg list —
+// permanent (errBadPlacement): only a spec edit can fix it.
+func refuseDuplicate(node, field string, nodes []string) error {
+	dup := 0
+	for _, n := range nodes {
+		if n == node {
+			dup++
+		}
+	}
+	if dup > 1 {
+		return fmt.Errorf("%w: node %s appears %d times in %s", errBadPlacement, node, dup, field)
+	}
+	return nil
+}
+
+// resolveAddress resolves a leg's replication endpoint, mapping an address
+// conflict to errBadPlacement: it is a topology misconfiguration, not a
+// transient — like unknown-node, only a topology fix can clear it, and
+// that fix re-triggers this controller via the MiroirNode watch.
+func resolveAddress(ctx context.Context, c client.Client, nodes nodemap.Map, node string) (string, error) {
+	addr, err := nodes.ReplicationAddress(ctx, c, node)
+	if err != nil {
+		if errors.Is(err, nodemap.ErrAddressConflict) {
+			return "", fmt.Errorf("%w: %w", errBadPlacement, err)
+		}
+		return "", err
+	}
+	return addr, nil
 }
 
 // nextNodeID returns the lowest DRBD node id unused by any completed

@@ -194,33 +194,16 @@ func (n *Node) disklessDevicePath(ctx context.Context, vol *miroirv1alpha1.Miroi
 	// back, an UpToDate survivor serving — while the losing leg is still
 	// divergent and disconnected. Staging here would latch Activated and
 	// close the auto-recovery that heals the loser.
-	if !vol.Status.Activated && !vol.Status.Formatted && !allDiskfulPeersLive(vol, n.NodeName, live) {
-		for node, rep := range vol.Status.PerNode {
-			if rep.SplitBrain {
-				return "", nil, status.Errorf(codes.Unavailable,
-					"volume %s is recovering from split-brain (reported by node %s)", vol.Name, node)
-			}
-		}
+	if err := stage.HoldForSplitRecovery(vol, n.NodeName, live); err != nil {
+		return "", nil, err
 	}
 	return st.DevicePath, vol, nil
 }
 
-// allDiskfulPeersLive reports whether every diskful peer's replication link
-// is established from this leg's view — the corroboration that keeps a
-// stale split-brain slot from holding a healthy volume.
-func allDiskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.Status) bool {
-	for _, rep := range diskfulPeerReplicas(vol, self) {
-		if !live.PeerConnected[rep.NodeID] {
-			return false
-		}
-	}
-	return true
-}
-
 // diskfulPeerReplicas yields the completed diskful replicas excluding
-// self — the one peers-walk both live gates below share, so their skip
-// rules (diskless excluded per the bug #78 class, incomplete membership
-// entries skipped) cannot drift apart.
+// self, with the shared skip rules (diskless excluded per the bug #78
+// class, incomplete membership entries skipped) — the same walk
+// stage.DiskfulPeersLive does for the recovery hold.
 func diskfulPeerReplicas(vol *miroirv1alpha1.MiroirVolume, self string) []miroirv1alpha1.Replica {
 	out := make([]miroirv1alpha1.Replica, 0, len(vol.Spec.Replicas))
 	for _, rep := range vol.Spec.Replicas {
