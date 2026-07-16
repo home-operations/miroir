@@ -42,30 +42,41 @@ agent image. Details, including the Talos and Debian/Ubuntu node
 setup and the graceful-node-shutdown requirement:
 [Requirements](https://miroir.home-operations.com/requirements/).
 
-`nodes` declares which nodes hold storage and how — each entry is
-rendered as a MiroirNode custom resource (spec verbatim, validated by
-the CRD) listing named storage pools, and a StorageClass picks one
-with `pool` (default: the pool named `default`); `storageClasses`
-declares the classes to create (`replicas: 1` is node-local,
-`replicas: 2` is DRBD-replicated). The common two-node pair:
+MiroirNode custom resources — applied separately from the chart, one
+per storage node — declare which nodes hold storage and how (named
+storage pools, validated by the CRD). A StorageClass picks a pool
+with `pool` (default: the pool named `default`); the chart's
+`storageClasses` value declares the classes to create (`replicas: 1`
+is node-local, `replicas: 2` is DRBD-replicated). The common
+two-node pair:
+
+```yaml
+# topology.yaml
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: node-a
+spec:
+    pools:
+        - name: default
+          backend: lvmthin
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+---
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: node-b
+spec:
+    pools:
+        - name: default
+          backend: lvmthin
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+```
 
 ```yaml
 # values.yaml
-nodes:
-    node-a:
-        spec:
-            pools:
-                - name: default
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-    node-b:
-        spec:
-            pools:
-                - name: default
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
 storageClasses:
     - name: miroir-local
       replicas: 1
@@ -78,6 +89,7 @@ volumeSnapshotClasses:
 ```bash
 helm install miroir oci://ghcr.io/home-operations/charts/miroir \
   -n miroir-system --create-namespace -f values.yaml
+kubectl apply -f topology.yaml
 ```
 
 Then claim volumes through the created StorageClasses as usual.

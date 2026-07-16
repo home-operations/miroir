@@ -10,14 +10,6 @@ tests:
   - it: nameOverride renames controller but leaves CSI driver as .Chart.Name
     set:
       nameOverride: alt
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: csidriver.tpl
     documentIndex: 0
     asserts:
@@ -28,14 +20,6 @@ tests:
   - it: nameOverride flows through to the controller Deployment
     set:
       nameOverride: alt
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -46,14 +30,6 @@ tests:
   - it: nameOverride flows through to the agent DaemonSet
     set:
       nameOverride: alt
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
     documentIndex: 0
     asserts:
@@ -64,14 +40,6 @@ tests:
   - it: fullnameOverride replaces the chart-name portion for the controller
     set:
       fullnameOverride: storage
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -82,14 +50,6 @@ tests:
   - it: fullnameOverride replaces the chart-name portion for the agent
     set:
       fullnameOverride: storage
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
     documentIndex: 0
     asserts:
@@ -112,14 +72,6 @@ tests:
       name: miroir-prod
       namespace: miroir-system
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -132,14 +84,6 @@ tests:
       name: miroir-prod
       namespace: miroir-system
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: agent.tpl
     documentIndex: 0
     asserts:
@@ -149,14 +93,6 @@ tests:
 
   - it: every workload carries the standard label set
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:
@@ -178,14 +114,6 @@ tests:
 
   - it: Deployment matchLabels only carry the immutable selector set
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     template: controller.tpl
     documentIndex: 0
     asserts:

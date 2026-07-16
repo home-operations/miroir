@@ -7,14 +7,6 @@ release:
 tests:
   - it: renders a DaemonSet with the agent + node-driver-registrar
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     asserts:
       - hasDocuments:
           count: 1
@@ -45,14 +37,6 @@ tests:
 
   - it: agent container runs with mode=agent and a privileged securityContext
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - equal:
@@ -88,14 +72,6 @@ tests:
 
   - it: pod runs with hostNetwork, hostPID and ClusterFirstWithHostNet
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - equal:
@@ -125,14 +101,6 @@ tests:
   - it: binds /var/lib/kubelet at kubeletDir with Bidirectional propagation
     set:
       agent.kubeletDir: /var/snap/kubelet
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - contains:
@@ -151,23 +119,7 @@ tests:
               path: /var/snap/kubelet
               type: Directory
 
-  - it: with no loopfile nodes, no loopfile mount or volume is rendered
-    set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
-        node-b:
-          spec:
-            pools:
-              - name: default
-                backend: zfs
-                zfs:
-                  dataset: data-pool/miroir
+  - it: with no loopfile base dirs, no loopfile mount or volume is rendered
     documentIndex: 0
     asserts:
       - lengthEqual:
@@ -179,35 +131,7 @@ tests:
 
   - it: adds one identity-mounted loopfile mount and hostPath volume per baseDir
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
-        node-b:
-          spec:
-            pools:
-              - name: default
-                backend: zfs
-                zfs:
-                  dataset: data-pool/miroir
-        node-c:
-          spec:
-            pools:
-              - name: default
-                backend: loopfile
-                loopfile:
-                  baseDir: /var/lib/miroir
-        backup:
-          spec:
-            pools:
-              - name: default
-                backend: loopfile
-                loopfile:
-                  baseDir: /srv/miroir
+      agent.loopfileBaseDirs: [/var/lib/miroir, /srv/miroir]
     documentIndex: 0
     asserts:
       - lengthEqual:
@@ -241,23 +165,9 @@ tests:
               path: /srv/miroir
               type: DirectoryOrCreate
 
-  - it: dedups loopfile mounts when two nodes share a baseDir
+  - it: dedups duplicate loopfile base dirs
     set:
-      nodes:
-        a:
-          spec:
-            pools:
-              - name: default
-                backend: loopfile
-                loopfile:
-                  baseDir: /var/lib/miroir
-        b:
-          spec:
-            pools:
-              - name: default
-                backend: loopfile
-                loopfile:
-                  baseDir: /var/lib/miroir
+      agent.loopfileBaseDirs: [/var/lib/miroir, /var/lib/miroir]
     documentIndex: 0
     asserts:
       - lengthEqual:
@@ -281,14 +191,6 @@ tests:
 
   - it: pins the agent image by digest when set, overriding the tag
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
       agent:
         image:
           tag: 1.2.3
@@ -301,14 +203,6 @@ tests:
 
   - it: applies global pull secrets but not global scheduling (agent runs everywhere)
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
       global:
         imagePullSecrets:
           - name: ghcr-pull
@@ -324,14 +218,6 @@ tests:
 
   - it: wires agent pod metadata and extra args/env after NODE_NAME
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
       agent:
         podAnnotations:
           reloader.stakater.com/auto: "true"
@@ -357,14 +243,6 @@ tests:
 
   - it: stamps no topology checksum (the agent watches its MiroirNode instead)
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - notExists:
@@ -372,14 +250,6 @@ tests:
 
   - it: omits --verify-schedule by default
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
     documentIndex: 0
     asserts:
       - notContains:
@@ -388,14 +258,6 @@ tests:
 
   - it: passes --verify-schedule when a schedule is set
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           schedule: "0 5 * * 0"
@@ -407,14 +269,6 @@ tests:
 
   - it: omits --verify-schedule while suspended
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           schedule: "0 5 * * 0"
@@ -427,14 +281,6 @@ tests:
 
   - it: fails when a verify schedule is set without an algorithm
     set:
-      nodes:
-        node-a:
-          spec:
-            pools:
-              - name: default
-                backend: lvmthin
-                lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
       drbd:
         verify:
           algorithm: ""

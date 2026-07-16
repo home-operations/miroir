@@ -6,13 +6,11 @@ Every chart value is documented value-by-value in the generated
 stale). This page is the orientation layer: which groups of values
 exist and where their behavior is explained.
 
-- **`nodes`**: the per-node storage topology, rendered as one
-  MiroirNode custom resource per entry (the `spec` passes through
-  verbatim and the CRD validates it; see `kubectl explain
-  miroirnode.spec`). Named `pools`, each with a backend
-  (`lvmthin` / `zfs` / `loopfile`) and that backend's block; node-level
-  `zone` and replication `address`. See the
-  [Quickstart](quickstart.md) layouts.
+The per-node storage topology is **not** a chart value: it lives in
+MiroirNode custom resources applied separately (`kubectl explain
+miroirnode.spec`; [Quickstart](quickstart.md) shows the layouts). The
+chart carries only the driver and the values below.
+
 - **`storageClasses`**: the classes to create. `replicas`, `quorum`
   policy ([Replication and quorum](replication.md)), `pool` (which
   named pool the class provisions from), `fsType`, `reclaimPolicy`,

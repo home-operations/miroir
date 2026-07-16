@@ -156,3 +156,13 @@ tests:
       - matchRegex:
           path: data["global_common.conf"]
           pattern: "startup \\{\\}"
+
+  - it: fails loudly when the pre-decoupling nodes value is still set
+    set:
+      nodes:
+        kharkiv:
+          spec:
+            pools: []
+    asserts:
+      - failedTemplate:
+          errorPattern: MiroirNode custom resources

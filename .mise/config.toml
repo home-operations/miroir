@@ -160,14 +160,29 @@ kubectl wait --for=condition=established --timeout=60s \
 kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//deploy/kubernetes/snapshot-controller?ref=$snap_ver"
 kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 
+# Topology is CR-first: CRDs, then the MiroirNode, then the chart — the
+# same order the upgrade guide mandates, so the agent boots straight into
+# storage mode instead of client-only + self-restart.
+echo "==> applying CRDs + MiroirNode for $node"
+kubectl apply -f charts/miroir/crds/
+kubectl apply -f - <<EOF
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+  name: ${node}
+spec:
+  pools:
+    - name: default
+      backend: lvmthin
+      lvmthin:
+        device: ${device}
+EOF
+
 echo "==> helm install miroir"
 helm upgrade --install miroir charts/miroir \
   --namespace miroir-system --create-namespace \
   --wait --timeout 5m \
-  -f deploy/e2e/values.yaml \
-  --set "nodes.${node}.spec.pools[0].name=default" \
-  --set "nodes.${node}.spec.pools[0].backend=lvmthin" \
-  --set "nodes.${node}.spec.pools[0].lvmthin.device=${device}"
+  -f deploy/e2e/values.yaml
 '''
 
 [tasks.e2e-run]

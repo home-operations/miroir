@@ -19,18 +19,22 @@ Snapshot classes:
 {{- end }}
 {{- end }}
 
-Before provisioning volumes, every storage node needs an entry under
-`nodes` in values.yaml — rendered as its MiroirNode CR, spec verbatim:
-  nodes:
-    <node-name>:
-      spec:
-        pools:
-          - name: default
-            backend: lvmthin              # lvmthin | zfs | loopfile
-            lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
-            # zfs: { dataset: pool/miroir }
-            # loopfile: { baseDir: /var/lib/miroir }  # reflink-capable FS
+Before provisioning volumes, every storage node needs a MiroirNode custom
+resource, applied separately from this chart (kubectl, GitOps, ...):
+  apiVersion: miroir.home-operations.com/v1alpha1
+  kind: MiroirNode
+  metadata:
+    name: <node-name>
+  spec:
+    pools:
+      - name: default
+        backend: lvmthin                # lvmthin | zfs | loopfile
+        lvmthin:
+          device: /dev/disk/by-partlabel/r-miroir
+        # zfs: { dataset: pool/miroir }
+        # loopfile: { baseDir: /var/lib/miroir }  # reflink-capable FS
+Agents on nodes without a MiroirNode serve client-only (RWX mounts) and
+switch to storage mode by themselves when their MiroirNode appears.
 StorageClasses select a pool with their `pool` knob (absent = "default").
 Inspect the topology with `kubectl get miroirnodes`.
 

@@ -5,35 +5,47 @@ node shutdown), then:
 
 ## 1. Pick a storage layout
 
-`nodes` declares which nodes hold storage and how. Each entry is
-rendered as a MiroirNode custom resource (its `spec` passed through
-verbatim and validated by the CRD), listing named storage `pools`
-(one is enough; call it `default`).
-`storageClasses` declares the classes to create (`replicas: 1` is
-node-local, `replicas: 2` is DRBD-replicated). Pods can mount miroir
-volumes from any schedulable node; only nodes in the map hold data.
+The storage topology is **MiroirNode custom resources**, one per
+storage node (named after it), applied and managed separately from the
+Helm chart — kubectl, GitOps, whatever applies your manifests. Each
+lists named storage `pools` (one is enough; call it `default`), and
+the CRD validates the spec (`kubectl explain miroirnode.spec`).
+The chart's `storageClasses` value declares the classes to create
+(`replicas: 1` is node-local, `replicas: 2` is DRBD-replicated). Pods
+can mount miroir volumes from any schedulable node; only nodes with a
+MiroirNode hold data.
 
 **Two nodes, a spare partition each.** The common pair: one local and
 one replicated class. Add a third storage node later and existing
 replicated volumes pick it up as a quorum tie-breaker automatically.
 
 ```yaml
-# values.yaml
-nodes:
-    node-a:
-        spec:
-            pools:
-                - name: default
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-    node-b:
-        spec:
-            pools:
-                - name: default
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
+# topology.yaml — one MiroirNode per storage node
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: node-a
+spec:
+    pools:
+        - name: default
+          backend: lvmthin
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+---
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: node-b
+spec:
+    pools:
+        - name: default
+          backend: lvmthin
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+```
+
+```yaml
+# values.yaml — the chart carries only the driver and its classes
 storageClasses:
     - name: miroir-local
       replicas: 1
@@ -43,44 +55,50 @@ volumeSnapshotClasses:
     - name: miroir-snap
 ```
 
-**Three nodes, mixed backends.** DRBD replicates whatever device each
-backend provides, so one volume can pair a ZFS zvol with an LVM thin
-LV. `zone` (optional) spreads replicas and the tie-breaker across
-failure domains; `address` (optional) pins replication to a dedicated
-storage NIC/VLAN, IPv4 or IPv6 (default: the node's `InternalIP`;
-applies to volumes created afterwards).
+**Mixed backends and failure domains.** DRBD replicates whatever
+device each backend provides, so one volume can pair a ZFS zvol with
+an LVM thin LV. `zone` (optional) spreads replicas and the
+tie-breaker across failure domains; `address` (optional) pins
+replication to a dedicated storage NIC/VLAN, IPv4 or IPv6 (default:
+the node's `InternalIP`; applies to volumes created afterwards).
 
 ```yaml
-nodes:
-    kharkiv:
-        spec:
-            zone: rack-a
-            address: 10.0.100.11
-            pools:
-                - name: default
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-    paris:
-        spec:
-            zone: rack-b
-            pools:
-                - name: default
-                  backend: zfs
-                  zfs:
-                      dataset: data-pool/miroir
-    le-havre:
-        spec:
-            zone: rack-c
-            pools:
-                - name: default
-                  backend: loopfile
-                  loopfile:
-                      baseDir: /var/lib/miroir
-storageClasses:
-    - name: miroir-replicated
-      replicas: 2
-      quorum: freeze
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: kharkiv
+spec:
+    zone: rack-a
+    address: 10.0.100.11
+    pools:
+        - name: default
+          backend: lvmthin
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+---
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: paris
+spec:
+    zone: rack-b
+    pools:
+        - name: default
+          backend: zfs
+          zfs:
+              dataset: data-pool/miroir
+---
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: le-havre
+spec:
+    zone: rack-c
+    pools:
+        - name: default
+          backend: loopfile
+          loopfile:
+              baseDir: /var/lib/miroir
 ```
 
 **Two tiers per node.** A pool name identifies the same tier across
@@ -89,29 +107,23 @@ none use `default`). Volumes never span pools: every replica of a
 volume lands in the class's pool on its node.
 
 ```yaml
-nodes:
-    node-a:
-        spec:
-            pools:
-                - name: default # bulk tier
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-                - name: fast # NVMe tier for latency-sensitive workloads
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-id/nvme-Micron_7450_XXXX
-    node-b: # identical
-        spec:
-            pools:
-                - name: default
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-                - name: fast
-                  backend: lvmthin
-                  lvmthin:
-                      device: /dev/disk/by-id/nvme-Micron_7450_YYYY
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: node-a
+spec:
+    pools:
+        - name: default # bulk tier
+          backend: lvmthin
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+        - name: fast # NVMe tier for latency-sensitive workloads
+          backend: lvmthin
+          lvmthin:
+              device: /dev/disk/by-id/nvme-Micron_7450_XXXX
+```
+
+```yaml
 storageClasses:
     - name: miroir-replicated
       replicas: 2
@@ -121,17 +133,26 @@ storageClasses:
 ```
 
 **One node, no dedicated disk.** Dev clusters: loopfile backs volumes
-with sparse files on an existing filesystem.
+with sparse files on an existing filesystem. Loopfile base
+directories must also be listed in the chart's
+`agent.loopfileBaseDirs` so the agent pod mounts them.
 
 ```yaml
-nodes:
-    solo:
-        spec:
-            pools:
-                - name: default
-                  backend: loopfile
-                  loopfile:
-                      baseDir: /var/lib/miroir
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: solo
+spec:
+    pools:
+        - name: default
+          backend: loopfile
+          loopfile:
+              baseDir: /var/lib/miroir
+```
+
+```yaml
+agent:
+    loopfileBaseDirs: [/var/lib/miroir]
 storageClasses:
     - name: miroir-local
       replicas: 1
@@ -154,14 +175,17 @@ and more.
 ```bash
 helm install miroir oci://ghcr.io/home-operations/charts/miroir \
   -n miroir-system --create-namespace -f values.yaml
+kubectl apply -f topology.yaml
 ```
 
-The chart deploys one `miroir-controller` Deployment, a
-`miroir-agent` DaemonSet on every schedulable node, and one
-MiroirNode object per `nodes` entry (`kubectl get miroirnodes`).
-Each agent provisions its pools at startup with idempotent setup
-(existing pools are reused), and restarts itself to re-run it when
-its MiroirNode's pool spec changes.
+The chart deploys one `miroir-controller` Deployment and a
+`miroir-agent` DaemonSet on every schedulable node (plus the CRDs, so
+the topology applies after the first install). Each agent provisions
+its node's pools with idempotent setup the moment its MiroirNode
+exists (existing pools are reused) — agents on nodes without one
+serve client-only and switch over by themselves — and restarts itself
+to re-run setup when the pool spec changes. Inspect the topology with
+`kubectl get miroirnodes`.
 
 ## 3. Claim a volume
 

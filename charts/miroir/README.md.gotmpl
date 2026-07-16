@@ -36,24 +36,27 @@ Version-specific steps live in the
 
 ## Storage topology
 
-Each entry under `nodes` is rendered as a MiroirNode custom resource;
-the `spec` is passed through verbatim and validated by the CRD (see
+The per-node storage topology is not a chart value: it lives in
+MiroirNode custom resources, applied and managed separately from the
+chart, one per storage node and validated by the CRD (see
 `kubectl explain miroirnode.spec`). For example, a ZFS pool with its
 optional zvol settings (`volBlockSize` `4K` through `128K`, default
 `4K`; `compression` default `lz4`, `inherit` for the parent dataset
 policy):
 
 ```yaml
-nodes:
-  node-a:
-    spec:
-      pools:
-        - name: default
-          backend: zfs
-          zfs:
-            dataset: tank/miroir
-            volBlockSize: 16K
-            compression: inherit
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+  name: node-a
+spec:
+  pools:
+    - name: default
+      backend: zfs
+      zfs:
+        dataset: tank/miroir
+        volBlockSize: 16K
+        compression: inherit
 ```
 
 Both settings apply only to newly created zvols. Existing volumes are not

@@ -41,7 +41,7 @@ metadata wiped, backing device reclaimed) and releases the finalizer
 itself. Until then, deleting an evicted volume waits for that node,
 the same behavior as deleting any volume whose replica node is down.
 If the node is gone for good, decommission it: remove it from the
-`nodes` map and strip its `miroir.home-operations.com/teardown-<node>`
+cluster (delete its MiroirNode) and strip its `miroir.home-operations.com/teardown-<node>`
 finalizers by hand, accepting that any leftover state on that hardware
 is yours to erase.
 
@@ -62,7 +62,7 @@ Auto-evict is deliberately timid. It stands down in any of these cases:
 It also needs a spare storage node with the volume's pool and room for
 the volume's full size; on a cluster with no spare node it does nothing.
 A node with known long outages can opt out with
-`nodes.<name>.spec.autoEvict: false`. Keep the threshold well above your
+`spec.autoEvict: false` on its MiroirNode. Keep the threshold well above your
 longest planned reboot or upgrade window, since eviction discards the
 dead node's copy of the data.
 
