@@ -18,6 +18,26 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
   --namespace miroir-system --create-namespace -f values.yaml
 ```
 
+## ZFS pool settings
+
+ZFS pools accept `zfsVolBlockSize` (`4K` through `128K`, default `4K`)
+and `zfsCompression` (default `lz4`; use `inherit` for the parent dataset
+policy):
+
+```yaml
+nodes:
+  node-a:
+    pools:
+      default:
+        backend: zfs
+        zfsDataset: tank/miroir
+        zfsVolBlockSize: 16K
+        zfsCompression: inherit
+```
+
+Both settings apply only to newly created zvols. Existing volumes are not
+mutated, and snapshot clones retain their source properties.
+
 ## Maintainers
 
 | Name | Email | Url |

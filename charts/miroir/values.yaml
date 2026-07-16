@@ -234,6 +234,10 @@ gateway:
 # pool `fast` needs a `fast` pool on 2 nodes. Per pool: `backend` (lvmthin /
 # zfs / loopfile) plus its location (`device`, `zfsDataset`, or `baseDir`)
 # and optional `thinPoolSize`.
+# ZFS pools optionally set `zfsVolBlockSize` (4K, 8K, 16K, 32K, 64K,
+# or 128K; default 4K) and `zfsCompression` (default lz4; `inherit` uses
+# the parent dataset). Both apply only to newly created zvols. Existing
+# volumes are unchanged, and snapshot clones retain their source properties.
 # Optional per-node `zone` (rack, host group, AZ): when set, the controller
 # spreads a volume's replicas across distinct zones; empty is unconstrained.
 # Optional per-node `address` (IPv4 or IPv6) pins DRBD replication to a
@@ -262,6 +266,8 @@ gateway:
 #       default:
 #         backend: zfs
 #         zfsDataset: data-pool/miroir
+#         # zfsVolBlockSize: 4K  # powers of two from 4K through 128K
+#         # zfsCompression: lz4  # use inherit for the parent dataset policy
 #   le-havre:
 #     pools:
 #       default:

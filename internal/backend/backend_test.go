@@ -169,6 +169,34 @@ func TestZFSCreate(t *testing.T) {
 	fe.calledWith(t, "zfs create -s -b 4096 -o compression=lz4 -V 10737418240 tank/miroir/pvc-1")
 }
 
+func TestZFSCreateCustomProperties(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
+	custom := cfg
+	custom.ZFSVolBlockSize = 16 << 10
+	custom.ZFSCompression = "zstd-3"
+	b := newZFS(custom, fe.run)
+
+	if _, err := b.Create(t.Context(), "pvc-1", 1_000_000_000); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "zfs create -s -b 16384 -o compression=zstd-3 -V 1000013824 tank/miroir/pvc-1")
+}
+
+func TestZFSCreateInheritsCompression(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
+	custom := cfg
+	custom.ZFSCompression = "inherit"
+	b := newZFS(custom, fe.run)
+
+	if _, err := b.Create(t.Context(), "pvc-1", 10<<30); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "zfs create -s -b 4096 -V 10737418240 tank/miroir/pvc-1")
+	fe.notCalledWith(t, "compression=")
+}
+
 func TestZFSSnapshotIdempotent(t *testing.T) {
 	fe := &fakeExec{} // list succeeds → snapshot exists
 	b := newZFS(cfg, fe.run)
@@ -182,7 +210,10 @@ func TestZFSSnapshotIdempotent(t *testing.T) {
 func TestZFSCreateFromSnapshot(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("zfs list -H tank/miroir/pvc-2", "", errors.New("dataset does not exist"))
-	b := newZFS(cfg, fe.run)
+	custom := cfg
+	custom.ZFSVolBlockSize = 16 << 10
+	custom.ZFSCompression = "zstd-3"
+	b := newZFS(custom, fe.run)
 
 	dev, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snap-1")
 	if err != nil {
@@ -192,6 +223,8 @@ func TestZFSCreateFromSnapshot(t *testing.T) {
 		t.Fatalf("unexpected device path %q", dev)
 	}
 	fe.calledWith(t, "zfs clone tank/miroir/pvc-1@snap-1 tank/miroir/pvc-2")
+	fe.notCalledWith(t, "compression=")
+	fe.notCalledWith(t, " -b ")
 }
 
 func TestLVMThinCloneReactivates(t *testing.T) {
@@ -436,18 +469,21 @@ func TestNewSelectsBackend(t *testing.T) {
 func TestZFSAlignsVolsize(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("zfs list -H tank/miroir/pvc-1", "", errors.New("dataset does not exist"))
-	fe.respond("zfs get -Hpo value volsize", "1000001536\n", nil)
-	b := newZFS(cfg, fe.run)
+	fe.respond("zfs get -Hpo value volsize,volblocksize", "1000013824\n32768\n", nil)
+	custom := cfg
+	custom.ZFSVolBlockSize = 16 << 10
+	b := newZFS(custom, fe.run)
 
 	if _, err := b.Create(t.Context(), "pvc-1", 1_000_000_000); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "-V 1000001536") // 10^9 rounded up to the 4096 boundary
+	fe.calledWith(t, "-V 1000013824") // 10^9 rounded up to the 16 KiB boundary
 
 	if err := b.Resize(t.Context(), "pvc-1", 2_000_000_000); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "volsize=2000003072")
+	fe.calledWith(t, "zfs get -Hpo value volsize,volblocksize tank/miroir/pvc-1")
+	fe.calledWith(t, "volsize=2000027648") // resize follows the zvol's actual 32 KiB block size
 }
 
 // Deleting a volume with restore clones promotes them, and zfs promote

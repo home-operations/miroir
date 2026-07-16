@@ -31,6 +31,32 @@ tests:
       - failedTemplate:
           errorMessagePattern: "nodes.node-a declares no pools"
 
+  - it: rejects an invalid zvol block size
+    set:
+      nodes:
+        node-a:
+          pools:
+            default:
+              backend: zfs
+              zfsDataset: tank/miroir
+              zfsVolBlockSize: 12K
+    asserts:
+      - failedTemplate:
+          errorMessagePattern: "zfsVolBlockSize must be one of"
+
+  - it: rejects an invalid ZFS compression value
+    set:
+      nodes:
+        node-a:
+          pools:
+            default:
+              backend: zfs
+              zfsDataset: tank/miroir
+              zfsCompression: snappy
+    asserts:
+      - failedTemplate:
+          errorMessagePattern: "zfsCompression is not a supported OpenZFS compression value"
+
   - it: renders the nodes ConfigMap and the drbd ConfigMap
     set:
       nodes:
@@ -85,6 +111,8 @@ tests:
             default:
               backend: zfs
               zfsDataset: data-pool/miroir
+              zfsVolBlockSize: 16K
+              zfsCompression: inherit
     documentIndex: 0
     asserts:
       - matchRegex:
@@ -99,6 +127,12 @@ tests:
       - matchRegex:
           path: data["nodes.yaml"]
           pattern: "zfsDataset: data-pool/miroir"
+      - matchRegex:
+          path: data["nodes.yaml"]
+          pattern: "zfsVolBlockSize: 16K"
+      - matchRegex:
+          path: data["nodes.yaml"]
+          pattern: "zfsCompression: inherit"
 
   - it: keeps the drbd global config to usage-count no and an empty common{}
     set:

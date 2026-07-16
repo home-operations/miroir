@@ -195,12 +195,14 @@ func poolBackendsFor(nodeName, nodesConfig string) (agent.Pools, error) {
 	pools := agent.Pools{}
 	for name, p := range entry.Pools {
 		be, err := backend.New(p.Backend, backend.Config{
-			VolumeGroup: volumeGroupFor(name),
-			ThinPool:    "thinpool",
-			Device:      p.Device,
-			Dataset:     p.ZFSDataset,
-			PoolSize:    p.ThinPoolSize,
-			BaseDir:     p.BaseDir,
+			VolumeGroup:     volumeGroupFor(name),
+			ThinPool:        "thinpool",
+			Device:          p.Device,
+			Dataset:         p.ZFSDataset,
+			ZFSVolBlockSize: p.ZFSVolBlockSizeBytes(),
+			ZFSCompression:  p.ZFSCompression,
+			PoolSize:        p.ThinPoolSize,
+			BaseDir:         p.BaseDir,
 		}, backend.RealExec)
 		if err != nil {
 			return nil, fmt.Errorf("backend for node %s pool %s: %w", nodeName, name, err)

@@ -100,7 +100,7 @@ func New(typ miroirv1alpha1.BackendType, cfg Config, exec Exec) (Backend, error)
 
 // Config carries the node-local pool locations, from agent flags.
 // Fields are partitioned by backend: VolumeGroup/ThinPool/Device/PoolSize
-// for lvmthin, Dataset for zfs, BaseDir for loopfile. New() reads only
+// for lvmthin, Dataset/ZFSVolBlockSize/ZFSCompression for zfs, BaseDir for
 // the relevant ones.
 type Config struct {
 	// VolumeGroup is the LVM VG holding the thin pool (lvmthin).
@@ -117,6 +117,13 @@ type Config struct {
 	PoolSize string
 	// Dataset is the parent ZFS dataset for zvols (zfs), e.g. "tank/miroir".
 	Dataset string
+	// ZFSVolBlockSize is the zvol block size in bytes (zfs). Zero preserves
+	// the historical 4 KiB default.
+	ZFSVolBlockSize int64
+	// ZFSCompression is the compression property for new zvols (zfs).
+	// Empty preserves the historical lz4 default; "inherit" omits the
+	// per-zvol property.
+	ZFSCompression string
 	// BaseDir is the directory on the node's existing filesystem under which
 	// the loopfile backend stores backing files, snapshots, and device
 	// symlinks (loopfile), e.g. "/var/lib/miroir". Must be reflink-capable.
