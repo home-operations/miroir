@@ -8,12 +8,21 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ $sc.name }}
+  {{- with $sc.labels }}
+  labels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   annotations:
-    storageclass.kubernetes.io/is-default-class: {{ $sc.isDefault | default false | quote }}
+    {{- /* merge: the isDefault knob wins over a conflicting user annotation. */}}
+    {{- toYaml (merge (dict "storageclass.kubernetes.io/is-default-class" ($sc.isDefault | default false | toString)) ($sc.annotations | default dict)) | nindent 4 }}
 provisioner: {{ include "miroir.csiDriverName" $ }}
-volumeBindingMode: WaitForFirstConsumer
+volumeBindingMode: {{ $sc.volumeBindingMode | default "WaitForFirstConsumer" }}
 allowVolumeExpansion: true
 reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
+{{- with $sc.mountOptions }}
+mountOptions:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 parameters:
   miroir.home-operations.com/replicas: {{ $replicas | quote }}
   {{- if $sc.pool }}
@@ -38,9 +47,17 @@ apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: {{ $vsc.name }}
+  {{- with $vsc.labels }}
+  labels:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- $annotations := $vsc.annotations | default dict }}
   {{- if $vsc.isDefault }}
+  {{- $annotations = merge (dict "snapshot.storage.kubernetes.io/is-default-class" "true") $annotations }}
+  {{- end }}
+  {{- with $annotations }}
   annotations:
-    snapshot.storage.kubernetes.io/is-default-class: "true"
+    {{- toYaml . | nindent 4 }}
   {{- end }}
 driver: {{ include "miroir.csiDriverName" $ }}
 deletionPolicy: {{ $vsc.deletionPolicy | default "Delete" }}

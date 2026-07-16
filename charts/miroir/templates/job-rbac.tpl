@@ -1,3 +1,6 @@
+{{- /* Rendered only when the uninstall hook is armed; the confirmation
+value itself is validated in uninstall-job.tpl. */}}
+{{- if eq .Values.uninstall.confirmation "yes-really-destroy-data" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -46,3 +49,4 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "miroir.uninstallServiceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -160,3 +160,64 @@ tests:
       - equal:
           path: spec.groups[1].rules[1].annotations.runbook_url
           value: https://example.com/runbooks/miroir
+
+  - it: an override can disable a single rule
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.overrides:
+        MiroirVolumeOutOfSync: { disabled: true }
+    asserts:
+      - lengthEqual:
+          path: spec.groups[0].rules
+          count: 8
+      # RemoteConsumer moves up into OutOfSync's slot.
+      - equal:
+          path: spec.groups[0].rules[7].alert
+          value: MiroirVolumeRemoteConsumer
+
+  - it: an override can replace a rule's wait period and reclassify severity
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.additionalRuleLabels:
+        team: platform
+      monitoring.prometheusRule.overrides:
+        MiroirVolumeDisconnected:
+          for: 30m
+          labels: { severity: info }
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[6].alert
+          value: MiroirVolumeDisconnected
+      - equal:
+          path: spec.groups[0].rules[6].for
+          value: 30m
+      - equal:
+          path: spec.groups[0].rules[6].labels.severity
+          value: info
+      # additionalRuleLabels still apply alongside the override.
+      - equal:
+          path: spec.groups[0].rules[6].labels.team
+          value: platform
+      # Other rules keep their defaults.
+      - equal:
+          path: spec.groups[0].rules[0].for
+          value: 1m
+      - equal:
+          path: spec.groups[0].rules[0].labels.severity
+          value: critical
+
+  - it: disabling a group's only rule drops the whole group
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.overrides:
+        MiroirAgentDown: { disabled: true }
+    asserts:
+      - lengthEqual:
+          path: spec.groups
+          count: 2
+      - equal:
+          path: spec.groups[0].name
+          value: miroir.volumes
+      - equal:
+          path: spec.groups[1].name
+          value: miroir.pools

@@ -209,6 +209,15 @@ CRDs and run the upgrade again.
   component from starting. The conflict is reported as an `AddressConflict`
   condition (plus a Warning event) on the offending nodes, which are excluded
   from new placement until it is resolved.
+- `helm uninstall` no longer destroys volume data by default. The pre-delete
+  hook that deletes every MiroirVolume/MiroirSnapshot is now rendered only
+  when `uninstall.confirmation` is set to `yes-really-destroy-data` — see
+  [Uninstall](uninstall.md). If your teardown automation relied on the old
+  behavior, set the confirmation.
+- The controller pod now tolerates `node.kubernetes.io/unreachable` for 5
+  seconds instead of Kubernetes' 300 default, so a dead node stops
+  provisioning for seconds rather than five minutes
+  (`unreachableNodeTolerationSeconds` restores the old value if you want it).
 
 ## 0.9.x → 0.10.0: named storage pools
 

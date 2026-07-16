@@ -116,6 +116,11 @@ leaderElection:
   # releases in one namespace never share a Lease. Keep it stable across
   # upgrades.
   id: ""
+# -- Seconds the controller pod stays bound to an unreachable node before
+# eviction. The Kubernetes default (300) leaves a single-replica controller
+# unable to provision, expand, or snapshot for five minutes after its node
+# dies; 5 reschedules it almost immediately (the controller is stateless).
+unreachableNodeTolerationSeconds: 5
 # -- Controller resources.
 resources:
   requests:
@@ -142,15 +147,36 @@ sidecars:
     # default; the driver returns DeadlineExceeded and the provisioner
     # retries, but a roomier timeout avoids churn.
     timeout: 120s
+    # -- Provisioner sidecar resources.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
   snapshotter:
     image: registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0
     # CreateSnapshot returns fast (readiness is polled), so the default
     # suffices; raise if snapshot RPCs are slow.
     timeout: 120s
+    # -- Snapshotter sidecar resources.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
   resizer:
     image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
     # Online grow can block on a rebooting node; keep >= provisionTimeout.
     timeout: 120s
+    # -- Resizer sidecar resources.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
   # external-health-monitor-controller: polls ControllerGetVolume and raises a
   # PVC event when a volume reports split-brain/degraded/disk-failed (the same
   # health the agents fold into status.phase). Off by default — the
@@ -160,6 +186,13 @@ sidecars:
     image: registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.18.0
     # How often the monitor re-checks every volume's condition.
     interval: 1m
+    # -- Health-monitor sidecar resources.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
 
 # =============================================================================
 # Agent (per-node DaemonSet: storage userland + CSI node service)
@@ -187,6 +220,13 @@ agent:
   # kubelet plugin-registration sidecar riding the agent DaemonSet.
   registrar:
     image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+    # -- Registrar sidecar resources.
+    resources:
+      requests:
+        cpu: 5m
+        memory: 16Mi
+      limits:
+        memory: 64Mi
   # -- Kubelet root on the nodes; CSI sockets and mounts hang off it.
   kubeletDir: /var/lib/kubelet
   resources:
@@ -322,6 +362,14 @@ nodes: {}
 #                 created: changing the class affects new volumes only.
 #   reclaimPolicy Delete | Retain, default Delete
 #   isDefault     set the cluster default-class annotation, default false
+#   volumeBindingMode
+#                 WaitForFirstConsumer (default) delays provisioning until a
+#                 pod schedules, so placement can prefer that pod's node;
+#                 Immediate provisions on PVC creation — reasonable for a
+#                 replicated class consumed remotely.
+#   mountOptions  mount options for the class's PVs (list of strings)
+#   annotations   extra annotations on the StorageClass
+#   labels        extra labels on the StorageClass
 # Example (coexisting with OpenEBS, which stays the cluster default):
 #   storageClasses:
 #     - name: miroir-local
@@ -339,6 +387,8 @@ storageClasses: []
 #   deletionPolicy Delete | Retain, default Delete
 #   isDefault      set the cluster default-snapshot-class annotation,
 #                  default false
+#   annotations    extra annotations on the VolumeSnapshotClass
+#   labels         extra labels on the VolumeSnapshotClass
 # Example:
 #   volumeSnapshotClasses:
 #     - name: miroir-snap
@@ -422,6 +472,23 @@ drbd:
     schedule: ""
     # -- Pause scheduled verify without dropping the schedule above.
     suspend: false
+  # Free-form escape hatch for DRBD options the chart has no knob for:
+  # verbatim option lines (semicolons included) appended inside the matching
+  # section of common{} in global_common.conf, inherited by every resource.
+  # Only validated when an agent next runs drbdadm adjust, and a bad line
+  # breaks every resource on the node — test on a throwaway cluster first.
+  extraConfig:
+    # -- Extra lines for the handlers {} section (e.g. fence handlers).
+    handlers: ""
+    # -- Extra lines for the startup {} section.
+    startup: ""
+    # -- Extra lines for the options {} section (resource options).
+    options: ""
+    # -- Extra lines for the disk {} section
+    # (e.g. "read-balancing least-pending;").
+    disk: ""
+    # -- Extra lines for the net {} section (e.g. "csums-alg crc32c;").
+    net: ""
 
 # =============================================================================
 # Monitoring
@@ -462,6 +529,16 @@ monitoring:
     additionalRuleLabels: {}
     # -- Extra annotations added to every alert rule.
     additionalRuleAnnotations: {}
+    # -- Per-alert overrides keyed by alert name. Per entry: `disabled: true`
+    # drops the rule, `for` replaces the rule's wait period, and `labels`
+    # merge over the rule's own (set `severity` here to reclassify one
+    # alert). Example:
+    #   overrides:
+    #     MiroirVolumeOutOfSync: { disabled: true }
+    #     MiroirVolumeDisconnected:
+    #       for: 30m
+    #       labels: { severity: info }
+    overrides: {}
     # -- Days since the last completed scheduled verify before
     # MiroirVolumeVerifyStale fires. Size it to just over the schedule
     # period (a weekly `drbd.verify.schedule` → 8). The rule is only
@@ -492,7 +569,18 @@ monitoring:
 # =============================================================================
 # Uninstall hook
 # =============================================================================
-# Pre-delete hook Job: deletes miroirsnapshots/miroirvolumes (so the agent
-# tears down DRBD/LVM) before the CRDs are released. Needs only `kubectl`.
+# `helm uninstall` data handling. By default the release is removed but every
+# MiroirVolume/MiroirSnapshot — and the data on the nodes — is left in place
+# (the CRDs, installed from crds/, survive uninstall too, so a reinstall
+# re-adopts everything). Destroying the data is opt-in via `confirmation`.
 uninstall:
+  # -- Consent to destroy all volume data on `helm uninstall`: set to the
+  # literal "yes-really-destroy-data" to render the pre-delete hook Job that
+  # deletes every MiroirSnapshot and MiroirVolume — the agents then tear down
+  # each DRBD resource and backing device, including volumes whose PV
+  # reclaimPolicy is Retain. Hooks are baked into the release at
+  # install/upgrade time, so set this with a `helm upgrade` *before* running
+  # `helm uninstall`. Any other non-empty value fails the render.
+  confirmation: ""
+  # -- Image for the uninstall hook Job (needs only `kubectl`).
   image: registry.k8s.io/kubectl:v1.36.2

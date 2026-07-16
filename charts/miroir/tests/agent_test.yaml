@@ -442,3 +442,14 @@ tests:
     asserts:
       - failedTemplate:
           errorMessage: "drbd.verify.schedule requires drbd.verify.algorithm — a scheduled verify is meaningless without an arming verify-alg"
+
+  - it: registrar resources come from values
+    set:
+      agent.registrar.resources:
+        requests: { cpu: 20m, memory: 64Mi }
+        limits: { memory: 256Mi }
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[?(@.name == "node-driver-registrar")].resources.limits.memory
+          value: 256Mi

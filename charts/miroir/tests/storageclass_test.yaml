@@ -187,3 +187,69 @@ tests:
       - documentSelector: { path: metadata.name, value: miroir-snap }
         isKind:
           of: VolumeSnapshotClass
+
+  - it: renders per-class metadata, binding mode, and mount options
+    set:
+      storageClasses:
+        - name: miroir-replicated
+          replicas: 2
+          isDefault: true
+          volumeBindingMode: Immediate
+          mountOptions: [noatime, discard]
+          annotations:
+            argocd.argoproj.io/sync-wave: "1"
+          labels:
+            tier: fast
+    documentSelector: { path: metadata.name, value: miroir-replicated }
+    asserts:
+      - equal:
+          path: volumeBindingMode
+          value: Immediate
+      - equal:
+          path: mountOptions
+          value: [noatime, discard]
+      - equal:
+          path: metadata.labels.tier
+          value: fast
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-wave"]
+          value: "1"
+      # The isDefault knob still wins the default-class annotation.
+      - equal:
+          path: metadata.annotations["storageclass.kubernetes.io/is-default-class"]
+          value: "true"
+
+  - it: defaults to WaitForFirstConsumer with no mount options or labels
+    set:
+      storageClasses:
+        - name: miroir-local
+    documentSelector: { path: metadata.name, value: miroir-local }
+    asserts:
+      - equal:
+          path: volumeBindingMode
+          value: WaitForFirstConsumer
+      - notExists:
+          path: mountOptions
+      - notExists:
+          path: metadata.labels
+
+  - it: renders snapshot-class labels and merges annotations with isDefault
+    set:
+      volumeSnapshotClasses:
+        - name: miroir-snap
+          isDefault: true
+          annotations:
+            k10.kasten.io/is-snapshot-class: "true"
+          labels:
+            team: platform
+    documentSelector: { path: metadata.name, value: miroir-snap }
+    asserts:
+      - equal:
+          path: metadata.labels.team
+          value: platform
+      - equal:
+          path: metadata.annotations["k10.kasten.io/is-snapshot-class"]
+          value: "true"
+      - equal:
+          path: metadata.annotations["snapshot.storage.kubernetes.io/is-default-class"]
+          value: "true"

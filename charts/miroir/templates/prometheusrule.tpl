@@ -1,10 +1,32 @@
-{{- /* Per-rule labels: severity plus the user's additionalRuleLabels. */}}
+{{- /* Per-rule labels: severity, then the user's additionalRuleLabels
+(severity wins), then the per-alert override labels (which win over both,
+so an override can reclassify one alert's severity). */}}
 {{- define "miroir.alertRuleLabels" -}}
 {{- $labels := dict "severity" .severity -}}
 {{- with .root.Values.monitoring.prometheusRule.additionalRuleLabels -}}
 {{- $labels = merge $labels . -}}
 {{- end -}}
+{{- $ov := default dict (get .root.Values.monitoring.prometheusRule.overrides .alert) -}}
+{{- $labels = mergeOverwrite $labels (default dict (get $ov "labels")) -}}
 {{- toYaml $labels -}}
+{{- end -}}
+{{- /* Empty when the alert is dropped via overrides.<alert>.disabled. */}}
+{{- define "miroir.alertEnabled" -}}
+{{- $ov := default dict (get .root.Values.monitoring.prometheusRule.overrides .alert) -}}
+{{- if not (get $ov "disabled") }}true{{- end -}}
+{{- end -}}
+{{- /* The rule's wait period: the per-alert override, else the default. */}}
+{{- define "miroir.alertRuleFor" -}}
+{{- $ov := default dict (get .root.Values.monitoring.prometheusRule.overrides .alert) -}}
+{{- default (.for | default "") (get $ov "for") -}}
+{{- end -}}
+{{- /* Non-empty when at least one of .alerts survives the overrides —
+a rule group must not render empty. */}}
+{{- define "miroir.anyAlertEnabled" -}}
+{{- $root := .root -}}
+{{- range .alerts -}}
+{{- include "miroir.alertEnabled" (dict "root" $root "alert" .) -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.monitoring.prometheusRule.enabled }}
 apiVersion: monitoring.coreos.com/v1
@@ -23,13 +45,23 @@ metadata:
   {{- end }}
 spec:
   groups:
+    {{- /* Keep in sync with the rules below. */}}
+    {{- $volumeAlerts := list "MiroirVolumeSplitBrain" "MiroirVolumeQuorumLost" "MiroirVolumeSuspendedBarrier" "MiroirVolumeTeardownWedged" "MiroirVolumeDiskFailed" "MiroirVolumeNotUpToDate" "MiroirVolumeDisconnected" "MiroirVolumeOutOfSync" "MiroirVolumeRemoteConsumer" }}
+    {{- if .Values.drbd.verify.schedule }}
+    {{- $volumeAlerts = append $volumeAlerts "MiroirVolumeVerifyStale" }}
+    {{- end }}
+    {{- if include "miroir.anyAlertEnabled" (dict "root" $ "alerts" $volumeAlerts) }}
     - name: miroir.volumes
       rules:
+        {{- $rule := dict "root" $ "alert" "MiroirVolumeSplitBrain" "severity" "critical" "for" "1m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeSplitBrain
           expr: miroir_volume_split_brain == 1
-          for: 1m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }}
@@ -42,12 +74,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeQuorumLost" "severity" "critical" "for" "2m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeQuorumLost
           expr: miroir_volume_quorum == 0
-          for: 2m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }}
@@ -62,12 +99,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeSuspendedBarrier" "severity" "critical" "for" "10m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeSuspendedBarrier
           expr: miroir_volume_suspended == 1
-          for: 10m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }}
@@ -81,12 +123,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeTeardownWedged" "severity" "critical" "for" "1m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeTeardownWedged
           expr: miroir_volume_wedged == 1
-          for: 1m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }} teardown is wedged
@@ -99,12 +146,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeDiskFailed" "severity" "warning" "for" "5m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeDiskFailed
           expr: miroir_volume_disk_failed == 1
-          for: 5m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Backing disk failed for volume
@@ -118,12 +170,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeNotUpToDate" "severity" "warning" "for" "15m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeNotUpToDate
           expr: miroir_volume_up_to_date == 0
-          for: 15m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Replica of {{ "{{" }} $labels.volume {{ "}}" }}
@@ -136,12 +193,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeDisconnected" "severity" "warning" "for" "10m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeDisconnected
           expr: miroir_volume_connected == 0
-          for: 10m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }}
@@ -153,12 +215,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeOutOfSync" "severity" "warning" "for" "1h" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeOutOfSync
           expr: miroir_volume_out_of_sync_bytes > 0
-          for: 1h
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }}
@@ -173,12 +240,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeRemoteConsumer" "severity" "info" "for" "30m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirVolumeRemoteConsumer
           expr: miroir_volume_diskless_primary == 1
-          for: 30m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "info") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }} is consumed remotely
@@ -191,14 +263,19 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-        {{- if .Values.drbd.verify.schedule }}
+        {{- end }}
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeVerifyStale" "severity" "warning" }}
+        {{- if and .Values.drbd.verify.schedule (include "miroir.alertEnabled" $rule) }}
 
         - alert: MiroirVolumeVerifyStale
           expr: >-
             time() - miroir_volume_verify_last_timestamp_seconds
             > {{ .Values.monitoring.prometheusRule.verifyStaleDays }} * 86400
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Volume {{ "{{" }} $labels.volume {{ "}}" }}
@@ -214,14 +291,20 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
         {{- end }}
+    {{- end }}
 
+    {{- if include "miroir.anyAlertEnabled" (dict "root" $ "alerts" (list "MiroirPoolUsageHigh" "MiroirPoolMetaUsageHigh")) }}
     - name: miroir.pools
       rules:
+        {{- $rule := dict "root" $ "alert" "MiroirPoolUsageHigh" "severity" "warning" "for" "15m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirPoolUsageHigh
           expr: miroir_pool_allocated_bytes / miroir_pool_capacity_bytes > 0.80
-          for: 15m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Storage pool {{ "{{" }} $labels.pool {{ "}}" }} on
@@ -234,12 +317,17 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
 
+        {{- $rule = dict "root" $ "alert" "MiroirPoolMetaUsageHigh" "severity" "warning" "for" "15m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirPoolMetaUsageHigh
           expr: miroir_pool_meta_used_ratio > 0.80
-          for: 15m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "warning") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               Thin-pool metadata of pool {{ "{{" }} $labels.pool {{ "}}" }} on
@@ -252,15 +340,20 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
+    {{- end }}
 
-    {{- if .Values.gateway.enabled }}
+    {{- $rule := dict "root" $ "alert" "MiroirExportUnavailable" "severity" "critical" "for" "5m" }}
+    {{- if and .Values.gateway.enabled (include "miroir.alertEnabled" $rule) }}
     - name: miroir.exports
       rules:
         - alert: MiroirExportUnavailable
           expr: miroir_export_ready == 0
-          for: 5m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               RWX export for volume {{ "{{" }} $labels.volume {{ "}}" }}
@@ -275,13 +368,17 @@ spec:
             {{- end }}
     {{- end }}
 
+    {{- $rule = dict "root" $ "alert" "MiroirAgentDown" "severity" "critical" "for" "10m" }}
+    {{- if include "miroir.alertEnabled" $rule }}
     - name: miroir.agents
       rules:
         - alert: MiroirAgentDown
           expr: up{container="agent", namespace="{{ .Release.Namespace }}"} == 0
-          for: 10m
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
           labels:
-            {{- include "miroir.alertRuleLabels" (dict "root" $ "severity" "critical") | nindent 12 }}
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
               miroir agent on {{ "{{" }} $labels.node {{ "}}" }} is down —
@@ -296,4 +393,5 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+    {{- end }}
 {{- end }}

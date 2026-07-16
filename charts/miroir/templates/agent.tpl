@@ -124,9 +124,7 @@ spec:
           args:
             - --csi-address=/csi/csi.sock
             - --kubelet-registration-path={{ .Values.agent.kubeletDir }}/plugins/miroir.home-operations.com/csi.sock
-          resources:
-            requests: { cpu: 5m, memory: 16Mi }
-            limits: { memory: 64Mi }
+          resources: {{- toYaml .Values.agent.registrar.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
