@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.4](https://github.com/home-operations/miroir/compare/0.10.3...0.10.4) (2026-07-16)
+
+
+### Bug Fixes
+
+* **agent:** bound the snapshot reconciler's DRBD calls (issue [#222](https://github.com/home-operations/miroir/issues/222)) ([#226](https://github.com/home-operations/miroir/issues/226)) ([7d3ec76](https://github.com/home-operations/miroir/commit/7d3ec768f0d5339102e63d9bd79e8fdfdffaf802))
+* **agent:** clear the diskless-primary metric when a leg becomes diskful ([#225](https://github.com/home-operations/miroir/issues/225)) ([5e6bce6](https://github.com/home-operations/miroir/commit/5e6bce6d12cd8d44711fe0e86a3b65eb46d23d3a))
+* **csi:** recover panics in CSI gRPC handlers ([#224](https://github.com/home-operations/miroir/issues/224)) ([14935c6](https://github.com/home-operations/miroir/commit/14935c6ae54b738009706a17591ca86657ee9e9f))
+* **deps:** update module google.golang.org/grpc (v1.82.0 → v1.82.1) ([#220](https://github.com/home-operations/miroir/issues/220)) ([91933c1](https://github.com/home-operations/miroir/commit/91933c1cbd0d7a49a61a7b9da1bda290b3e6926b))
+
 ## [0.10.3](https://github.com/home-operations/miroir/compare/0.10.2...0.10.3) (2026-07-16)
 
 
