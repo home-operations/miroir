@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.5](https://github.com/home-operations/miroir/compare/0.10.4...0.10.5) (2026-07-16)
+
+
+### Features
+
+* **zfs:** expose zvol creation settings ([#229](https://github.com/home-operations/miroir/issues/229)) ([9135b47](https://github.com/home-operations/miroir/commit/9135b4788a3328947953f7c07e69f77e6038999b))
+
 ## [0.10.4](https://github.com/home-operations/miroir/compare/0.10.3...0.10.4) (2026-07-16)
 
 
