@@ -40,7 +40,10 @@ func TestLoopfileCreateAttachesNewFile(t *testing.T) {
 	if dev != "/var/lib/miroir/dev/pvc-1" {
 		t.Fatalf("unexpected device path %q", dev)
 	}
-	fe.calledWith(t, "truncate -s 10737418240 /var/lib/miroir/volumes/pvc-1.img")
+	// Temp path + rename: a crash between truncate's open and ftruncate
+	// must never leave a 0-byte image the retry's exists() accepts.
+	fe.calledWith(t, "truncate -s 10737418240 /var/lib/miroir/volumes/pvc-1.img.tmp")
+	fe.calledWith(t, "mv /var/lib/miroir/volumes/pvc-1.img.tmp /var/lib/miroir/volumes/pvc-1.img")
 	fe.calledWith(t, "losetup --find --show /var/lib/miroir/volumes/pvc-1.img")
 	fe.calledWith(t, "losetup --direct-io=on /dev/loop0")
 	fe.calledWith(t, "ln -sfn /dev/loop0 /var/lib/miroir/dev/pvc-1")
@@ -146,16 +149,36 @@ func TestLoopfileDeleteDetachesAndRemoves(t *testing.T) {
 	fe.calledWith(t, "rm -f /var/lib/miroir/volumes/pvc-1.img")
 }
 
-func TestLoopfileDeleteBusyWhenAttached(t *testing.T) {
+// A held loop device must be detected BEFORE losetup -d: on modern
+// kernels detaching a held device does not fail — it sets lazy AUTOCLEAR
+// and returns success — so an error-based guard never fires and Delete
+// would destroy an in-use volume's backing file.
+func TestLoopfileDeleteBusyWhenStacked(t *testing.T) {
 	fe := &fakeExec{} // stat succeeds → file exists
 	fe.respond("losetup -j", "/dev/loop3\n", nil)
-	fe.respond("losetup -d /dev/loop3", "",
-		errors.New("losetup: /dev/loop3: detach failed: Device or resource busy"))
+	// A DRBD attach shows as a stacked child of the loop device.
+	fe.respond("lsblk -rno NAME,MOUNTPOINT /dev/loop3", "loop3\ndrbd1000\n", nil)
 	b := newLoopfile(lcfg, fe.run)
 
 	if err := b.Delete(t.Context(), "pvc-1"); !errors.Is(err, ErrBusy) {
-		t.Fatalf("want ErrBusy while the loop device is attached, got %v", err)
+		t.Fatalf("want ErrBusy while a stacked device holds the loop, got %v", err)
 	}
+	fe.notCalledWith(t, "losetup -d")
+	fe.notCalledWith(t, "rm -f")
+}
+
+func TestLoopfileDeleteBusyWhenMounted(t *testing.T) {
+	fe := &fakeExec{} // stat succeeds → file exists
+	fe.respond("losetup -j", "/dev/loop3\n", nil)
+	fe.respond("lsblk -rno NAME,MOUNTPOINT /dev/loop3",
+		"loop3 /var/lib/kubelet/plugins/miroir/staging/pvc-1\n", nil)
+	b := newLoopfile(lcfg, fe.run)
+
+	if err := b.Delete(t.Context(), "pvc-1"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("want ErrBusy while the loop device is mounted, got %v", err)
+	}
+	fe.notCalledWith(t, "losetup -d")
+	fe.notCalledWith(t, "rm -f")
 }
 
 func TestLoopfileDeleteAbsentIsNoop(t *testing.T) {
@@ -168,7 +191,8 @@ func TestLoopfileDeleteAbsentIsNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "losetup -d")
-	fe.notCalledWith(t, "rm -f /var/lib/miroir/volumes/pvc-1.img")
+	// Only the crash-leftover .tmp is reaped; the backing file is gone.
+	fe.calledWith(t, "rm -f /var/lib/miroir/volumes/pvc-1.img.tmp")
 }
 
 func TestLoopfileSetupProbesReflink(t *testing.T) {

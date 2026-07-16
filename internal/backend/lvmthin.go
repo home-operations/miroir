@@ -52,6 +52,14 @@ func (l *lvmThin) Setup(ctx context.Context) error {
 			return fmt.Errorf("check thin pool %s/%s: %w", l.vg, l.pool, perr)
 		}
 		if ok {
+			// Talos does not activate LVs at boot: after a reboot of a node
+			// holding no miroir volumes (nothing else runs lvchange), an
+			// inactive pool reports empty kernel-status fields and every
+			// Stats tick fails until the first volume lands here.
+			// Idempotent on an active pool.
+			if _, err := l.lvm(ctx, "lvchange", "--activate", "y", l.ref(l.pool)); err != nil {
+				return fmt.Errorf("activate thin pool %s/%s: %w", l.vg, l.pool, err)
+			}
 			return nil
 		}
 	} else if !strings.Contains(err.Error(), "not found") {
@@ -60,7 +68,7 @@ func (l *lvmThin) Setup(ctx context.Context) error {
 		// failing pvcreate against an in-use device.
 		return fmt.Errorf("vgs %s: %w", l.vg, err)
 	} else if l.device == "" {
-		return fmt.Errorf("VG %s absent and no --lvm-device configured to create it", l.vg)
+		return fmt.Errorf("VG %s absent and the pool declares no lvmthin.device to create it from", l.vg)
 	} else {
 		if _, err := l.lvm(ctx, "pvcreate", l.device); err != nil &&
 			!strings.Contains(err.Error(), "already") {
