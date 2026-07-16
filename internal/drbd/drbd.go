@@ -299,6 +299,21 @@ func virginMetadata(dump, name string) bool {
 // removes — keep in sync with everything Apply and ensureMetadata write.
 var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"}
 
+// listStatus runs `drbdsetup status --json [name]` and parses the result —
+// the one fetch every kernel-view consumer shares.
+func (d *Driver) listStatus(ctx context.Context, name ...string) ([]jsonStatus, error) {
+	args := append([]string{"status", "--json"}, name...)
+	out, err := d.Exec(ctx, "drbdsetup", args...)
+	if err != nil {
+		return nil, fmt.Errorf("status: %w", err)
+	}
+	var parsed []jsonStatus
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		return nil, fmt.Errorf("parse status: %w", err)
+	}
+	return parsed, nil
+}
+
 // SweepOrphans tears down kernel resources and rendered config files with
 // no owning volume on this node — leftovers of an agent crash between up
 // and down, which would otherwise hold backing devices open forever. Best
@@ -306,15 +321,13 @@ var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"
 // strand the rest. An unreadable kernel view aborts the whole sweep,
 // files included — without it a live resource is indistinguishable from a
 // stale file, and stripping its config is the state this sweep's own
-// stuck-guard exists to prevent.
+// stuck-guard exists to prevent. The sweep runs once per agent start: an
+// orphan skipped as wedged (or mid-detach, which wears the same
+// signature) stays configured and is retried at the next restart.
 func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool) error {
-	out, err := d.Exec(ctx, "drbdsetup", "status", "--json")
+	parsed, err := d.listStatus(ctx)
 	if err != nil {
-		return fmt.Errorf("status: %w", err)
-	}
-	var parsed []jsonStatus
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		return fmt.Errorf("parse status: %w", err)
+		return err
 	}
 	var errs []error
 	stuck := map[string]bool{}
@@ -354,6 +367,12 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 				errs = append(errs, err)
 			}
 		}
+		// The orphaned volume never comes back to Down on this node, so
+		// its minor.assign entry would leak — and permanently burn a
+		// minor — for the StateDir's lifetime.
+		if err := d.releaseMinor(name); err != nil {
+			errs = append(errs, fmt.Errorf("release minor of orphan %s: %w", name, err))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -361,18 +380,13 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 // DownSecondaries brings down every resource this node holds Secondary,
 // releasing its backing device so the backend pool can export on shutdown.
 // Primary (open) resources are skipped: drbdsetup down refuses an open
-// device, and downing a leg a workload still holds — here, or on a peer this
-// node feeds as SyncSource — would drop live redundancy. Rendered config
-// stays so the successor re-ups. Best effort: errors are joined so one stuck
-// resource cannot strand the rest.
+// device, and a local Primary is a leg a workload here still holds.
+// Rendered config stays so the successor re-ups. Best effort: errors are
+// joined so one stuck resource cannot strand the rest.
 func (d *Driver) DownSecondaries(ctx context.Context) error {
-	out, err := d.Exec(ctx, "drbdsetup", "status", "--json")
+	parsed, err := d.listStatus(ctx)
 	if err != nil {
-		return fmt.Errorf("status: %w", err)
-	}
-	var parsed []jsonStatus
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		return fmt.Errorf("parse status: %w", err)
+		return err
 	}
 	var errs []error
 	for _, res := range parsed {
@@ -761,12 +775,8 @@ func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32)
 // Empty/false when the resource is down or the status is unreadable
 // (nothing to disconnect).
 func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []int32, wedged bool) {
-	out, err := d.Exec(ctx, "drbdsetup", "status", "--json", name)
+	parsed, err := d.listStatus(ctx, name)
 	if err != nil {
-		return nil, false
-	}
-	var parsed []jsonStatus
-	if json.Unmarshal([]byte(out), &parsed) != nil {
 		return nil, false
 	}
 	for _, res := range parsed {
@@ -856,6 +866,9 @@ const diskDetaching = "Detaching"
 // reconnecting to. drbdsetup disconnect refuses it (-9), so a StandAlone
 // entry can linger in status through every teardown attempt.
 const connStandAlone = "StandAlone"
+
+// connConnected is the fully established connection state.
+const connConnected = "Connected"
 
 // rolePrimary is the DRBD role of a node that holds the device open.
 const rolePrimary = "Primary"
@@ -974,13 +987,9 @@ func (s jsonStatus) peerIDs() []int32 {
 
 // Status parses `drbdsetup status --json <res>`.
 func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
-	out, err := d.Exec(ctx, "drbdsetup", "status", "--json", name)
+	parsed, err := d.listStatus(ctx, name)
 	if err != nil {
-		return Status{}, fmt.Errorf("status %s: %w", name, err)
-	}
-	var parsed []jsonStatus
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		return Status{}, fmt.Errorf("parse status %s: %w", name, err)
+		return Status{}, fmt.Errorf("%s: %w", name, err)
 	}
 	if len(parsed) == 0 {
 		return Status{}, fmt.Errorf("resource %s not in status output", name)
@@ -1022,8 +1031,8 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		if len(c.PeerDevices) > 0 {
 			s.PeerDiskState[c.PeerNodeID] = c.PeerDevices[0].PeerDiskState
 		}
-		s.PeerConnected[c.PeerNodeID] = c.ConnectionState == "Connected"
-		if c.ConnectionState == "StandAlone" {
+		s.PeerConnected[c.PeerNodeID] = c.ConnectionState == connConnected
+		if c.ConnectionState == connStandAlone {
 			s.SplitBrain = true
 		}
 	}
@@ -1113,13 +1122,9 @@ func (d *Driver) DiscardGranularity(ctx context.Context, dev string) (int64, err
 // kernel is the authority here: a crash between suspend-io and the status
 // patch leaves a frozen device that no snapshot status records.
 func (d *Driver) UserSuspended(ctx context.Context) ([]string, error) {
-	out, err := d.Exec(ctx, "drbdsetup", "status", "--json")
+	parsed, err := d.listStatus(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("status: %w", err)
-	}
-	var parsed []jsonStatus
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
-		return nil, fmt.Errorf("parse status: %w", err)
+		return nil, err
 	}
 	var names []string
 	for _, r := range parsed {

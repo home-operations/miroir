@@ -116,7 +116,7 @@ func TestDownReleasesMinorAssignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A fresh volume reclaims the freed minor instead of advancing past it.
-	reused, err := d.AllocateMinor("pvc-2")
+	reused, err := d.AllocateMinor(volPvc2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,5 +162,35 @@ func TestAllocateMinorSkipsMinorsUsedInResFiles(t *testing.T) {
 	}
 	if got != minorBase+2 {
 		t.Errorf("minor = %d, want %d (must skip 1000/1001 held by legacy.res)", got, minorBase+2)
+	}
+}
+
+// The orphan sweep is the last owner of a crash leftover's minor: the
+// volume never comes back to Down on this node, so the sweep must release
+// the assignment or the minor is burned for the StateDir's lifetime.
+func TestSweepOrphansReleasesMinorAssignment(t *testing.T) {
+	dir := t.TempDir()
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"pvc-1","role":"Secondary","connections":[]}]`,
+	}}
+	d := &Driver{StateDir: dir, Exec: fe.run, Mknod: fakeMknod}
+
+	first, err := d.AllocateMinor("pvc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.SweepOrphans(t.Context(), func(string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	reused, err := d.AllocateMinor(volPvc2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != first {
+		t.Fatalf("swept orphan's minor %d must be reused, got %d", first, reused)
 	}
 }
