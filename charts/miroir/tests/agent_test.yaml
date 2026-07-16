@@ -328,6 +328,20 @@ tests:
           path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
           value: "true"
 
+  - it: stamps a node-map checksum so a topology edit rolls the agent
+    set:
+      nodes:
+        node-a:
+          pools:
+            default:
+              backend: lvmthin
+              device: /dev/disk/by-partlabel/r-miroir
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/nodes"]
+          pattern: "^[0-9a-f]{64}$"
+
   - it: omits --verify-schedule by default
     set:
       nodes:

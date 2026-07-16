@@ -422,6 +422,13 @@ tests:
           path: spec.template.metadata.annotations["reloader.stakater.com/auto"]
           value: "true"
 
+  - it: stamps a node-map checksum so a topology edit rolls the controller
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: spec.template.metadata.annotations["checksum/nodes"]
+          pattern: "^[0-9a-f]{64}$"
+
   - it: leaves the provisioner without capacity flags by default
     documentIndex: 0
     asserts:

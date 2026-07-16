@@ -26,10 +26,14 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- /* The controller loads the node map once at startup and places
+        replicas from it; without this a topology edit sits unread until the
+        pod happens to restart. */}}
+        checksum/nodes: {{ .Values.nodes | toYaml | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.controllerName" . }}
       {{- include "miroir.imagePullSecrets" . | nindent 6 }}

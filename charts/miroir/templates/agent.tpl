@@ -35,10 +35,16 @@ spec:
         {{- with .Values.agent.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.agent.podAnnotations }}
       annotations:
+        {{- /* nodemap.Load reads nodes.yaml once at startup, so a topology
+        edit would otherwise sit unread until something unrelated restarted
+        the pod — kubelet syncs the mounted ConfigMap in place. Only the
+        nodes map is hashed: global_common.conf is read by drbdadm on every
+        invocation, so it needs no restart. */}}
+        checksum/nodes: {{ .Values.nodes | toYaml | sha256sum }}
+        {{- with .Values.agent.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
     spec:
       serviceAccountName: {{ include "miroir.agentName" . }}
       hostNetwork: true

@@ -167,6 +167,11 @@ const (
 	DefaultZFSCompression  = "lz4"
 )
 
+// Both rules are mirrored by the `nodes` @schema block in
+// charts/miroir/values.yaml, which is what a Helm install trips first —
+// keep the two in step. Helm cannot see this package, so the chart cannot
+// derive them; these stay the real enforcement (non-Helm installs, and the
+// case-folding the schema's enum/pattern cannot express).
 var (
 	zfsVolBlockSizes = map[string]int64{
 		"4K": 4 << 10, "8K": 8 << 10, "16K": 16 << 10,

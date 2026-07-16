@@ -286,6 +286,23 @@ gateway:
 #         # into the agent at the same path.
 #         backend: loopfile
 #         baseDir: /var/lib/miroir
+# @schema
+# type: object
+# additionalProperties:
+#   type: object
+#   properties:
+#     pools:
+#       type: object
+#       additionalProperties:
+#         type: object
+#         properties:
+#           zfsVolBlockSize:
+#             type: [string, "null"]
+#             enum: ["4K", "8K", "16K", "32K", "64K", "128K", "", null]
+#           zfsCompression:
+#             type: [string, "null"]
+#             pattern: ^(inherit|on|off|lz4|lzjb|zle|gzip(-[1-9])?|zstd(-([1-9]|1[0-9]))?|zstd-fast(-(10|[1-9]|[2-9]0|100|500|1000))?)?$
+# @schema
 nodes: {}
 
 # =============================================================================
