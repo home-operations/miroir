@@ -206,6 +206,17 @@ func (m Map) Pool(node, pool string) (Pool, bool) {
 	return p, ok
 }
 
+// Placeable reports whether a node may receive new legs: it is in the
+// topology and its replication endpoint is unambiguous (no address
+// conflict). Every candidate enumeration — place, GetCapacity, PickSpare —
+// flows through this one predicate so exclusion reasons cannot drift
+// between them; ReplicationAddress refuses conflicted nodes separately
+// because client legs on nodes outside the topology still resolve there.
+func (m Map) Placeable(node string) bool {
+	n, ok := m[node]
+	return ok && !n.AddressConflict
+}
+
 // AutoEvictAllowed reports whether auto-evict may re-place the node's
 // legs: the node is in the map and has not opted out.
 func (m Map) AutoEvictAllowed(node string) bool {
@@ -249,7 +260,7 @@ func (m Map) TieBreakerNode(replicas []miroirv1alpha1.Replica) string {
 func (m Map) PickSpare(usedNodes, usedZones map[string]bool, keep func(node string) bool) string {
 	spare := make([]string, 0, len(m))
 	for n := range m {
-		if !usedNodes[n] && !m[n].AddressConflict && (keep == nil || keep(n)) {
+		if !usedNodes[n] && m.Placeable(n) && (keep == nil || keep(n)) {
 			spare = append(spare, n)
 		}
 	}

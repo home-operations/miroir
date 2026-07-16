@@ -123,6 +123,15 @@ func TestFromNodesMarksAddressConflicts(t *testing.T) {
 	if _, err := m.ReplicationAddress(t.Context(), nil, nodeA); !errors.Is(err, ErrAddressConflict) {
 		t.Fatalf("ReplicationAddress must refuse a conflicted node with ErrAddressConflict, got %v", err)
 	}
+	if m.Placeable(nodeA) || m.Placeable(nodeB) {
+		t.Fatal("conflicted nodes must not be placeable")
+	}
+	if !m.Placeable(nodeC) {
+		t.Fatal("a unique-address node must be placeable")
+	}
+	if m.Placeable("absent") {
+		t.Fatal("a node outside the topology must not be placeable")
+	}
 }
 
 // A non-IP address string is reachable only through a stale CRD (no isIP
