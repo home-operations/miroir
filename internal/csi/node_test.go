@@ -19,7 +19,9 @@ package csi
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -464,5 +466,98 @@ func TestDevicePathDisklessStaleSplitSlotIgnored(t *testing.T) {
 	n := newNode(t, v, fakeDRBDStatus{st: healthyRemoteStatus()})
 	if _, _, err := n.devicePath(t.Context(), volPvc1); err != nil {
 		t.Fatalf("live diskless leg must stage despite a stale slot: %v", err)
+	}
+}
+
+// A client-only node (no MiroirNode, no reconciler) must refuse remote
+// staging instead of adding a client leg nothing would ever realize —
+// the entry would burn one of two client slots and its finalizer would
+// block the volume's deletion forever.
+func TestDevicePathClientOnlyNodeRefuses(t *testing.T) {
+	n := newNode(t, remoteVolume(), fakeDRBDStatus{})
+	n.ClientOnly = true
+
+	_, _, err := n.devicePath(t.Context(), volPvc1)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("client-only node must refuse remote access, got %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.Clients) != 0 {
+		t.Fatalf("refusal must not pollute the spec: %+v", got.Spec.Clients)
+	}
+}
+
+// The NFS staging mount options are load-bearing: hard keeps a gateway
+// failover from surfacing EIO into the app, noresvport lets the mount
+// survive the Service endpoint moving to the replacement pod.
+func TestStageNFSMountOptions(t *testing.T) {
+	v := remoteVolume()
+	v.Spec.Export = &miroirv1alpha1.ExportSpec{FSType: "ext4"}
+	v.Status.Export = &miroirv1alpha1.ExportStatus{Address: "10.96.0.10"}
+	n := newNode(t, v, fakeDRBDStatus{})
+	fm := mount.NewFakeMounter(nil)
+	n.Mounter = mount.NewSafeFormatAndMount(fm, utilexec.New())
+
+	if _, err := n.NodeStageVolume(t.Context(), &csi.NodeStageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: filepath.Join(t.TempDir(), "staging"),
+		VolumeCapability:  mountCap(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	log := fm.GetLog()
+	if len(log) != 1 || log[0].Action != mount.FakeActionMount {
+		t.Fatalf("expected one mount, got %+v", log)
+	}
+	if log[0].FSType != "nfs4" {
+		t.Fatalf("fstype = %q, want nfs4", log[0].FSType)
+	}
+	mounted, err := fm.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opt := range []string{"hard", "noresvport"} {
+		if !slices.Contains(mounted[0].Opts, opt) {
+			t.Fatalf("mount options must include %q: %v", opt, mounted[0].Opts)
+		}
+	}
+	if mounted[0].Device != "10.96.0.10:/"+volPvc1 {
+		t.Fatalf("source = %q", mounted[0].Device)
+	}
+}
+
+// forceFakeMounter records that the deadline-bounded unmount was taken —
+// the path that cannot hang on a dead-gateway hard NFS mount.
+type forceFakeMounter struct {
+	*mount.FakeMounter
+	forced bool
+}
+
+func (f *forceFakeMounter) UnmountWithForce(target string, _ time.Duration) error {
+	f.forced = true
+	return f.Unmount(target)
+}
+
+// Unstage takes the forced (deadline-bounded) unmount whenever the
+// mounter supports it — even when the MiroirVolume is already gone, the
+// case where the old CR-gated path fell back to a hangable plain unmount.
+func TestNodeUnstageForcesWhenVolumeGone(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).Build() // no volume
+	target := t.TempDir()
+	fm := &forceFakeMounter{FakeMounter: mount.NewFakeMounter([]mount.MountPoint{{Path: target}})}
+	n := &Node{Client: c, NodeName: nodeA,
+		Mounter: mount.NewSafeFormatAndMount(fm, utilexec.New())}
+
+	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: target,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !fm.forced {
+		t.Fatal("unstage must take the deadline-bounded force path")
 	}
 }

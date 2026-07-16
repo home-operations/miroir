@@ -38,11 +38,14 @@ Trade-offs to understand:
   (DRBD's diskless default is a 512-byte fiction dm-thin would
   silently drop), so in-pod `fstrim` and `-o discard` free thin-pool
   space as if the pod ran on a replica node.
-- **Consumers must run on nodes listed in `nodes`.** Agents only
-  start on mapped nodes, so a pod scheduled onto an unmapped node has
-  no CSI driver and wedges in `ContainerCreating`. Keep every
-  schedulable node in the map (a `loopfile` entry with a few spare GB
-  is enough) or set `allowRemoteVolumeAccess: "false"`.
+- **Consumers must run on nodes listed in `nodes`.** On an unmapped
+  node the agent runs only a client-only CSI service (for RWX/NFS
+  mounts) with no reconciler to realize a DRBD client leg, so staging
+  refuses with a clear `FailedPrecondition` and the pod stays in
+  `ContainerCreating` until it is rescheduled. Keep every schedulable
+  node in the map (a `loopfile` entry with a few spare GB is enough)
+  or set `allowRemoteVolumeAccess: "false"` so the PV's node affinity
+  keeps pods on replica nodes in the first place.
 - **A lost node can strand its client leg.** Its `spec.clients` entry
   blocks volume deletion until the node returns or the entry is
   removed by hand (it holds no quorum vote, so the volume itself

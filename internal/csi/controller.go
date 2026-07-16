@@ -168,7 +168,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	snapID := req.GetVolumeContentSource().GetSnapshot().GetSnapshotId()
+	snapID, err := snapshotSourceID(req)
+	if err != nil {
+		return nil, err
+	}
 	source, srcReplicas, sourceFormatted, err := c.resolveSource(ctx, snapID, sizeBytes, replicas, params.pool)
 	if err != nil {
 		return nil, err
@@ -756,6 +759,59 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 	return nil
 }
 
+// snapshotSourceID extracts the snapshot id from the request's content
+// source ("" when none), refusing the unimplemented volume-clone type:
+// only snapshot sources are advertised, and falling through would
+// provision a blank volume under a clone's name — then block a corrected
+// retry on AlreadyExists.
+func snapshotSourceID(req *csi.CreateVolumeRequest) (string, error) {
+	if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() == nil {
+		return "", status.Error(codes.InvalidArgument,
+			"unsupported volume content source: only snapshot sources are supported")
+	}
+	return req.GetVolumeContentSource().GetSnapshot().GetSnapshotId(), nil
+}
+
+// expandWithinHeadroom applies CreateVolume's capacity guardrails to a
+// grow: expansion otherwise bypasses them entirely, and one PVC grown past
+// the pool ENOSPCs every thin volume sharing it — surfacing as DRBD I/O
+// errors and detached legs, not a clean refusal. Same accounting as
+// place(): the volume's own current size is excluded, its projected whole
+// size must fit; a node without fresh stats admits. Not under allocMu —
+// this is a guardrail against runaway growth, not an exact admission (a
+// concurrent CreateVolume can overshoot by one request, the same window
+// expansion always had).
+func (c *Controller) expandWithinHeadroom(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, newSize int64) error {
+	stats, err := c.poolStats(ctx)
+	if err != nil {
+		return err
+	}
+	list := &miroirv1alpha1.MiroirVolumeList{}
+	if err := c.Client.List(ctx, list); err != nil {
+		return status.Errorf(codes.Internal, "list MiroirVolumes: %v", err)
+	}
+	provisioned := provisionedPerPool(list.Items, vol.Name)
+	pool := nodemap.PoolOrDefault("")
+	if first := vol.Spec.FirstDiskfulReplica(); first != nil {
+		pool = nodemap.PoolOrDefault(first.Pool)
+	}
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Diskless {
+			continue
+		}
+		room, known := c.poolHeadroom(stats[rep.Node].Pool(pool), provisioned[nodePool{rep.Node, pool}])
+		if !known || newSize <= room {
+			continue
+		}
+		overcommit, freeSpace := c.ratios()
+		return status.Errorf(codes.ResourceExhausted,
+			"pool %q on node %s has room for %d of the requested %d bytes "+
+				"(capacity×%g overcommit, free×%g free-space)",
+			pool, rep.Node, room, newSize, overcommit, freeSpace)
+	}
+	return nil
+}
+
 // errVolumeFailed marks a hard provisioning failure reported by an agent,
 // as opposed to "not ready yet".
 type errVolumeFailed struct{ detail string }
@@ -824,6 +880,9 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	// block volume needs no filesystem grow — neither triggers node expansion.
 	nodeExpansion := req.GetVolumeCapability().GetBlock() == nil && vol.Spec.Export == nil
 	if newSize > vol.Spec.SizeBytes {
+		if err := c.expandWithinHeadroom(ctx, vol, newSize); err != nil {
+			return nil, err
+		}
 		base := vol.DeepCopy()
 		vol.Spec.SizeBytes = newSize
 		if err := c.Client.Patch(ctx, vol, client.MergeFrom(base)); err != nil {

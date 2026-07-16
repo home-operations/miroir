@@ -562,11 +562,16 @@ func main() {
 				msg = "MiroirNode declares no pools; running client-only node service"
 			}
 			setupLog.Info(msg, "node", nodeName)
-			// Client legs get DRBD configs rendered here too, so the
-			// kernel floor binds on client-only nodes as well.
+			// No volume reconciler runs here, so a client leg could never
+			// be realized: the node service refuses RWO remote-access
+			// staging outright (ClientOnly) — RWX/NFS staging needs no
+			// DRBD leg and still works. No kernel-floor probe either: with
+			// client legs refused nothing touches DRBD on this node, and
+			// the probe's fatal below-floor exit would crash-loop a
+			// consumer-only node over a check that protects nothing here.
 			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
-			probeDRBD(clientDRBD)
 			node := csi.NewNode(mgr.GetClient(), nodeName, clientDRBD)
+			node.ClientOnly = true
 			serveCSI(mgr, csiSocket, identity, nil, node)
 			break
 		}
