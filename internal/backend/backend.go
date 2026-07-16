@@ -101,7 +101,7 @@ func New(typ miroirv1alpha1.BackendType, cfg Config, exec Exec) (Backend, error)
 // Config carries the node-local pool locations, from agent flags.
 // Fields are partitioned by backend: VolumeGroup/ThinPool/Device/PoolSize
 // for lvmthin, Dataset/ZFSVolBlockSize/ZFSCompression for zfs, BaseDir for
-// the relevant ones.
+// loopfile. New() reads only the relevant ones.
 type Config struct {
 	// VolumeGroup is the LVM VG holding the thin pool (lvmthin).
 	VolumeGroup string

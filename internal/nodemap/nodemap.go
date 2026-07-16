@@ -228,7 +228,9 @@ func Load(path string) (Map, error) {
 
 // validatePools checks one node's pools: valid names and backends, the
 // per-backend required field, and no two pools sharing a backing location
-// (one device/dataset/dir belongs to exactly one pool).
+// (one device/dataset/dir belongs to exactly one pool). It also writes the
+// zfs settings back canonicalized (defaulted, and cased as OpenZFS spells
+// them) so callers hand zfs(8) property values it accepts verbatim.
 func validatePools(node string, pools map[string]Pool) error {
 	backingOwner := map[string]string{}
 	for poolName, p := range pools {

@@ -57,6 +57,19 @@ tests:
       - failedTemplate:
           errorMessagePattern: "zfsCompression is not a supported OpenZFS compression value"
 
+  - it: takes the ZFS defaults when the settings are present but empty
+    set:
+      nodes:
+        node-a:
+          pools:
+            default:
+              backend: zfs
+              zfsDataset: tank/miroir
+              zfsVolBlockSize: null
+              zfsCompression: null
+    asserts:
+      - notFailedTemplate: {}
+
   - it: renders the nodes ConfigMap and the drbd ConfigMap
     set:
       nodes:

@@ -127,6 +127,31 @@ node-a:
 	}
 }
 
+// Load canonicalizes the zfs settings' casing: the block size has to match
+// a zfsVolBlockSizes key, and the compression value reaches `zfs create -o`
+// verbatim, which OpenZFS accepts only in its own lowercase spelling.
+func TestZFSSettingsCanonicalizeCase(t *testing.T) {
+	m, err := Load(writeMap(t, `
+node-a:
+  pools:
+    default:
+      backend: zfs
+      zfsDataset: tank/miroir
+      zfsVolBlockSize: 16k
+      zfsCompression: ZSTD-3
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := m[nodeA].Pools[miroirv1alpha1.DefaultPoolName]
+	if p.ZFSVolBlockSizeBytes() != 16<<10 {
+		t.Fatalf("zfsVolBlockSizeBytes = %d, want %d", p.ZFSVolBlockSizeBytes(), 16<<10)
+	}
+	if p.ZFSCompression != "zstd-3" {
+		t.Fatalf("zfsCompression = %q, want %q", p.ZFSCompression, "zstd-3")
+	}
+}
+
 // autoEvict: false parses (UnmarshalStrict rejects unknown fields, so
 // this guards the schema) and flips AutoEvictAllowed; absence and
 // unmapped nodes resolve as documented.

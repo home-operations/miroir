@@ -10,11 +10,11 @@
 {{- end }}
 {{- range $poolName, $pool := $node.pools }}
 {{- if eq (toString $pool.backend) "zfs" }}
-{{- $blockSize := upper (toString (dig "zfsVolBlockSize" "4K" $pool)) }}
+{{- $blockSize := upper (toString (default "4K" (dig "zfsVolBlockSize" "" $pool))) }}
 {{- if not (has $blockSize (list "4K" "8K" "16K" "32K" "64K" "128K")) }}
 {{- fail (printf "nodes.%s.pools.%s.zfsVolBlockSize must be one of 4K, 8K, 16K, 32K, 64K, or 128K" $name $poolName) }}
 {{- end }}
-{{- $compression := lower (toString (dig "zfsCompression" "lz4" $pool)) }}
+{{- $compression := lower (toString (default "lz4" (dig "zfsCompression" "" $pool))) }}
 {{- if and (ne $compression "inherit") (not (regexMatch "^(on|off|lz4|lzjb|zle|gzip(-[1-9])?|zstd(-([1-9]|1[0-9]))?|zstd-fast(-(10|[1-9]|[2-9]0|100|500|1000))?)$" $compression)) }}
 {{- fail (printf "nodes.%s.pools.%s.zfsCompression is not a supported OpenZFS compression value" $name $poolName) }}
 {{- end }}
