@@ -9,3 +9,8 @@ charts/miroir/crds/
 config/crd/bases/
 config/rbac/role.yaml
 config/webhook/manifests.yaml
+
+# Docs site (MkDocs); leave authored Markdown untouched by oxfmt. It re-indents
+# fenced YAML away from the 2-space form the examples are copied from, and
+# strips the indentation `!!!`-style admonitions need.
+docs/

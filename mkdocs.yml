@@ -75,12 +75,13 @@ theme:
 
 markdown_extensions:
   # Admonitions use the pymdownx "blocks" syntax (/// note | Title ... ///)
-  # rather than the indented `!!! note` form ON PURPOSE: the repo's pre-commit
-  # hook runs `oxfmt` over markdown, and oxfmt (a CommonMark formatter) strips
-  # the 4-space body indentation that `!!! note` requires, silently breaking
-  # every admonition. The blocks form keeps its body at column 0, so oxfmt
-  # leaves it intact. (Convention: keep a blank line before the closing /// so
-  # oxfmt doesn't fold it into a preceding list item.)
+  # rather than the indented `!!! note` form. docs/ is now excluded from oxfmt
+  # (.prettierignore + .lefthook.toml), but the blocks form stays: it is the
+  # only one registered below (the `admonition` extension is not enabled), and
+  # it is proof against a stray oxfmt run — oxfmt strips the 4-space body
+  # indentation `!!! note` needs and silently breaks every admonition, while
+  # the blocks form keeps its body at column 0. (Convention: keep a blank line
+  # before the closing /// so it is not folded into a preceding list item.)
   - pymdownx.blocks.admonition:
       # The blocks extension only activates for the type names registered here
       # (its built-in default list does NOT include `info`). Each name doubles
