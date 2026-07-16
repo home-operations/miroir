@@ -42,7 +42,7 @@ tests:
               zfsVolBlockSize: 12K
     asserts:
       - failedTemplate:
-          errorMessagePattern: "zfsVolBlockSize must be one of"
+          errorMessagePattern: "zfsVolBlockSize.*value must be one of"
 
   - it: rejects an invalid ZFS compression value
     set:
@@ -55,7 +55,7 @@ tests:
               zfsCompression: snappy
     asserts:
       - failedTemplate:
-          errorMessagePattern: "zfsCompression is not a supported OpenZFS compression value"
+          errorMessagePattern: "zfsCompression.*does not match pattern"
 
   - it: takes the ZFS defaults when the settings are present but empty
     set:
