@@ -148,6 +148,7 @@ nav:
       - Disk failures, rebuilds, and verification: resilience.md
   - User guide:
       - ReadWriteMany (RWX): rwx.md
+      - Upgrading miroir: upgrading.md
       - Node maintenance and upgrades: maintenance.md
       - Monitoring: monitoring.md
       - Helm chart values: configuration.md
