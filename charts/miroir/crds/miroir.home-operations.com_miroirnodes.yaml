@@ -224,24 +224,6 @@ spec:
               MiroirNodeStatus is the pool capacity this node's agent publishes for
               capacity-aware placement and overcommit guardrails.
             properties:
-              allocatedBytes:
-                description: |-
-                  AllocatedBytes is the pre-multi-pool twin of CapacityBytes.
-
-                  Deprecated: superseded by Pools.
-                format: int64
-                type: integer
-              capacityBytes:
-                description: |-
-                  CapacityBytes is the pre-multi-pool single-pool figure. Kept in the
-                  schema so a mixed-version rollout (new controller, old agent) does
-                  not prune the old agent's stats into "fresh but empty" — Pool()
-                  folds these into the default pool entry. Never written by current
-                  agents; drop after one release.
-
-                  Deprecated: superseded by Pools.
-                format: int64
-                type: integer
               conditions:
                 description: |-
                   Conditions follow the standard Kubernetes condition conventions;
@@ -308,13 +290,6 @@ spec:
                   module ships with the host, not the agent image, so this is the
                   per-node view that makes mixed clusters visible mid-upgrade.
                 type: string
-              metaUsedPercent:
-                description: |-
-                  MetaUsedPercent is the pre-multi-pool twin of CapacityBytes.
-
-                  Deprecated: superseded by Pools.
-                format: int32
-                type: integer
               observedAt:
                 description: |-
                   ObservedAt is when these figures were last sampled; the controller

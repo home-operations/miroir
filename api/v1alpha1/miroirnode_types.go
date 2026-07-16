@@ -152,25 +152,6 @@ type MiroirNodeStatus struct {
 	// +listType=map
 	// +listMapKey=name
 	Pools []MiroirNodePoolStatus `json:"pools,omitempty"`
-	// CapacityBytes is the pre-multi-pool single-pool figure. Kept in the
-	// schema so a mixed-version rollout (new controller, old agent) does
-	// not prune the old agent's stats into "fresh but empty" — Pool()
-	// folds these into the default pool entry. Never written by current
-	// agents; drop after one release.
-	//
-	// Deprecated: superseded by Pools.
-	// +optional
-	CapacityBytes int64 `json:"capacityBytes,omitempty"`
-	// AllocatedBytes is the pre-multi-pool twin of CapacityBytes.
-	//
-	// Deprecated: superseded by Pools.
-	// +optional
-	AllocatedBytes int64 `json:"allocatedBytes,omitempty"`
-	// MetaUsedPercent is the pre-multi-pool twin of CapacityBytes.
-	//
-	// Deprecated: superseded by Pools.
-	// +optional
-	MetaUsedPercent int32 `json:"metaUsedPercent,omitempty"`
 	// DRBDVersion is the DRBD kernel module version the agent probed at
 	// startup (e.g. "9.3.2"); absent on nodes without the module. The
 	// module ships with the host, not the agent image, so this is the
@@ -189,8 +170,6 @@ type MiroirNodeStatus struct {
 
 // Pool returns the named pool's capacity entry, or nil. Empty means the
 // default pool, matching the CRD adoption rule for pre-multi-pool objects.
-// A status still published in the pre-multi-pool flat shape (an agent not
-// yet rolled to this release) reads as the default pool.
 func (s MiroirNodeStatus) Pool(name string) *MiroirNodePoolStatus {
 	if name == "" {
 		name = DefaultPoolName
@@ -198,14 +177,6 @@ func (s MiroirNodeStatus) Pool(name string) *MiroirNodePoolStatus {
 	for i := range s.Pools {
 		if s.Pools[i].Name == name {
 			return &s.Pools[i]
-		}
-	}
-	if name == DefaultPoolName && len(s.Pools) == 0 && s.CapacityBytes > 0 {
-		return &MiroirNodePoolStatus{
-			Name:            DefaultPoolName,
-			CapacityBytes:   s.CapacityBytes,
-			AllocatedBytes:  s.AllocatedBytes,
-			MetaUsedPercent: s.MetaUsedPercent,
 		}
 	}
 	return nil

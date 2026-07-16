@@ -31,22 +31,6 @@ import (
 type MiroirNodeStatusApplyConfiguration struct {
 	// Pools carries one capacity entry per storage pool on this node.
 	Pools []MiroirNodePoolStatusApplyConfiguration `json:"pools,omitempty"`
-	// CapacityBytes is the pre-multi-pool single-pool figure. Kept in the
-	// schema so a mixed-version rollout (new controller, old agent) does
-	// not prune the old agent's stats into "fresh but empty" — Pool()
-	// folds these into the default pool entry. Never written by current
-	// agents; drop after one release.
-	//
-	// Deprecated: superseded by Pools.
-	CapacityBytes *int64 `json:"capacityBytes,omitempty"`
-	// AllocatedBytes is the pre-multi-pool twin of CapacityBytes.
-	//
-	// Deprecated: superseded by Pools.
-	AllocatedBytes *int64 `json:"allocatedBytes,omitempty"`
-	// MetaUsedPercent is the pre-multi-pool twin of CapacityBytes.
-	//
-	// Deprecated: superseded by Pools.
-	MetaUsedPercent *int32 `json:"metaUsedPercent,omitempty"`
 	// DRBDVersion is the DRBD kernel module version the agent probed at
 	// startup (e.g. "9.3.2"); absent on nodes without the module. The
 	// module ships with the host, not the agent image, so this is the
@@ -76,30 +60,6 @@ func (b *MiroirNodeStatusApplyConfiguration) WithPools(values ...*MiroirNodePool
 		}
 		b.Pools = append(b.Pools, *values[i])
 	}
-	return b
-}
-
-// WithCapacityBytes sets the CapacityBytes field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the CapacityBytes field is set to the value of the last call.
-func (b *MiroirNodeStatusApplyConfiguration) WithCapacityBytes(value int64) *MiroirNodeStatusApplyConfiguration {
-	b.CapacityBytes = &value
-	return b
-}
-
-// WithAllocatedBytes sets the AllocatedBytes field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the AllocatedBytes field is set to the value of the last call.
-func (b *MiroirNodeStatusApplyConfiguration) WithAllocatedBytes(value int64) *MiroirNodeStatusApplyConfiguration {
-	b.AllocatedBytes = &value
-	return b
-}
-
-// WithMetaUsedPercent sets the MetaUsedPercent field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the MetaUsedPercent field is set to the value of the last call.
-func (b *MiroirNodeStatusApplyConfiguration) WithMetaUsedPercent(value int32) *MiroirNodeStatusApplyConfiguration {
-	b.MetaUsedPercent = &value
 	return b
 }
 

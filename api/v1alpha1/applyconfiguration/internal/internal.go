@@ -157,12 +157,6 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeStatus
   map:
     fields:
-    - name: allocatedBytes
-      type:
-        scalar: numeric
-    - name: capacityBytes
-      type:
-        scalar: numeric
     - name: conditions
       type:
         list:
@@ -172,9 +166,6 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: drbdVersion
       type:
         scalar: string
-    - name: metaUsedPercent
-      type:
-        scalar: numeric
     - name: observedAt
       type:
         namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time

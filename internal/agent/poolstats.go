@@ -142,10 +142,6 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 			}
 			cur.Status.Pools = append(cur.Status.Pools, entry)
 		}
-		// Clear the deprecated pre-multi-pool figures a not-yet-rolled
-		// agent may have written: the pools list supersedes them, and
-		// stale flat values frozen in status would mislead readers.
-		cur.Status.CapacityBytes, cur.Status.AllocatedBytes, cur.Status.MetaUsedPercent = 0, 0, 0 //nolint:staticcheck // deliberately clears the deprecated skew-compat fields
 		cur.Status.DRBDVersion = p.DRBDVersion
 		now := metav1.Now()
 		cur.Status.ObservedAt = &now

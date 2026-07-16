@@ -88,7 +88,7 @@ spec:
                     membership reconciler like a replica, removed at unstage. Unlike a
                     diskless tie-breaker it is not placed for quorum, and it is rendered
                     with "tiebreaker no" so DRBD never counts its vote — attach/detach
-                    leaves the majority threshold alone (see README).
+                    leaves the majority threshold alone (docs: remote-consumers).
                   properties:
                     addedAt:
                       description: |-

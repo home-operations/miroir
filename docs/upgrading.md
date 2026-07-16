@@ -218,6 +218,12 @@ CRDs and run the upgrade again.
   seconds instead of Kubernetes' 300 default, so a dead node stops
   provisioning for seconds rather than five minutes
   (`unreachableNodeTolerationSeconds` restores the old value if you want it).
+- The deprecated flat `MiroirNode.status.capacityBytes` /
+  `status.allocatedBytes` / `status.metaUsedPercent` fields are gone from
+  the schema, along with the controller's fold of them into the default
+  pool. They existed for the 0.9→0.10 rollout skew; 0.10 agents already
+  publish (and read) only `status.pools`. Anything scraping the flat paths
+  directly has been broken since 0.10 — use `status.pools[*]`.
 
 ## 0.9.x → 0.10.0: named storage pools
 
