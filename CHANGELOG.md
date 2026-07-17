@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.11.0](https://github.com/home-operations/miroir/compare/0.10.5...0.11.0) (2026-07-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* topology UX overhaul — CR-first manifests, node groups, block-implied backend ([#255](https://github.com/home-operations/miroir/issues/255))
+* **api:** drop the deprecated flat MiroirNodeStatus capacity fields ([#254](https://github.com/home-operations/miroir/issues/254))
+* **chart:** render MiroirNode CRs from the chart; watch-driven topology ([#237](https://github.com/home-operations/miroir/issues/237))
+
+### Features
+
+* **api:** drop the deprecated flat MiroirNodeStatus capacity fields ([#254](https://github.com/home-operations/miroir/issues/254)) ([b889c70](https://github.com/home-operations/miroir/commit/b889c70537f98c71d4764595965f946e6af564d3))
+* **chart:** render MiroirNode CRs from the chart; watch-driven topology ([#237](https://github.com/home-operations/miroir/issues/237)) ([efc2180](https://github.com/home-operations/miroir/commit/efc21808abda4301ef31cf75063aad58b6e3057f))
+* **chart:** uninstall data-destruction gate and rook-inspired UX knobs ([#246](https://github.com/home-operations/miroir/issues/246)) ([af565e0](https://github.com/home-operations/miroir/commit/af565e0d3e9c27f97f136ef1d1143eaf9ab8e4d1))
+* topology UX overhaul — CR-first manifests, node groups, block-implied backend ([#255](https://github.com/home-operations/miroir/issues/255)) ([5de436d](https://github.com/home-operations/miroir/commit/5de436dee78d10354f1e5cb547ab5d488ced1e1a))
+
+
+### Bug Fixes
+
+* **agent:** close two startup edges around a vanished or pool-less MiroirNode ([#244](https://github.com/home-operations/miroir/issues/244)) ([71e45c5](https://github.com/home-operations/miroir/commit/71e45c5269bdc5495141b37c39bc735b39fcce4b))
+* **agent:** gate snapshot rounds on peer disk states and the kernel barrier ([#248](https://github.com/home-operations/miroir/issues/248)) ([f2af9f5](https://github.com/home-operations/miroir/commit/f2af9f5af5817cdd8d1a23fbfb13af0e3136e948))
+* **backend:** loopfile crash-safety and lvmthin pool activation ([#250](https://github.com/home-operations/miroir/issues/250)) ([428c15e](https://github.com/home-operations/miroir/commit/428c15e6a6b3b92a97aed4a8cc96aa4cb51e6b16))
+* **csi:** expansion guardrails, forced NFS cleanup, and client-leg refusals ([#251](https://github.com/home-operations/miroir/issues/251)) ([47a08c2](https://github.com/home-operations/miroir/commit/47a08c2c3f40a80973d2f4bfdeb57792c4283274))
+* **csi:** name the address-conflict exclusion in placement refusals ([#243](https://github.com/home-operations/miroir/issues/243)) ([7a5ce61](https://github.com/home-operations/miroir/commit/7a5ce615ccf6349b3c31f5b150a5abad5be65025))
+* **drbd:** release swept orphans' minors, dedupe status fetches ([#252](https://github.com/home-operations/miroir/issues/252)) ([9a871c1](https://github.com/home-operations/miroir/commit/9a871c115825e8bcc9b2a131f03966ef0fdd0426))
+* **image:** reject NBD devices in the lvm global_filter ([#257](https://github.com/home-operations/miroir/issues/257)) ([1d72a7f](https://github.com/home-operations/miroir/commit/1d72a7f485a0950aa7a839670eeaeebd1220b464))
+* **membership:** auto-evict liveness gates and tie-breaker client handling ([#249](https://github.com/home-operations/miroir/issues/249)) ([07fac29](https://github.com/home-operations/miroir/commit/07fac2950d321f1741c9a13b6156227357682841))
+
+
+### Performance Improvements
+
+* **agent:** scope the MiroirNode informer to the node's own object ([#245](https://github.com/home-operations/miroir/issues/245)) ([eb48b98](https://github.com/home-operations/miroir/commit/eb48b985b0ea55f827848dbf1af0355000ba71ac))
+* **controller:** trim redundant topology folds and watch fan-out ([#247](https://github.com/home-operations/miroir/issues/247)) ([68065d5](https://github.com/home-operations/miroir/commit/68065d5224c9aee1fbcd1fb538bd80a4f6cbd76e))
+
+
+### Documentation
+
+* add an upgrading guide with the 0.9/0.10 migrations ([#235](https://github.com/home-operations/miroir/issues/235)) ([7afa383](https://github.com/home-operations/miroir/commit/7afa383b9ec0d99ed79aa8b6dc72a0b9b7a66827))
+* remove em-dashes, tighten prose, and add admonitions ([#238](https://github.com/home-operations/miroir/issues/238)) ([e910b73](https://github.com/home-operations/miroir/commit/e910b735378cda2c16ada616ae2833f823c85b56))
+
+
+### Miscellaneous Chores
+
+* **release:** add the helm chart section to the release-please config ([9f13e52](https://github.com/home-operations/miroir/commit/9f13e52e791905f87b2064e5743e2142106b564a))
+* sixth-cycle polish — stale comments, DRY, docs, and named test gaps ([#253](https://github.com/home-operations/miroir/issues/253)) ([52bbcb2](https://github.com/home-operations/miroir/commit/52bbcb254a6a1e4a1cc0908070671f77af1e9db0))
+
 ## [0.10.5](https://github.com/home-operations/miroir/compare/0.10.4...0.10.5) (2026-07-16)
 
 
