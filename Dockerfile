@@ -73,9 +73,10 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
     rm -rf /var/lib/apt/lists/*
 # No udevd is reachable from the container: stop libdevmapper from waiting
 # on udev cookies and lvm from querying udev for the device list.
-# global_filter rejects DRBD devices: lvm's device scan would block in D
-# state on a suspended one, wedging the reconciler and then pod shutdown.
-RUN printf 'activation { udev_sync = 0\nudev_rules = 0 }\ndevices { obtain_device_list_from_udev = 0\nglobal_filter = [ "r|^/dev/drbd|" ] }\n' \
+# global_filter rejects DRBD and NBD devices: lvm's device scan would block
+# in D state on a suspended DRBD leg or a dead NBD device, wedging the
+# reconciler and then pod shutdown.
+RUN printf 'activation { udev_sync = 0\nudev_rules = 0 }\ndevices { obtain_device_list_from_udev = 0\nglobal_filter = [ "r|^/dev/drbd|", "r|^/dev/nbd|" ] }\n' \
     > /etc/lvm/lvmlocal.conf
 COPY --from=build /miroir /usr/local/bin/miroir
 ENTRYPOINT ["/usr/local/bin/miroir"]
