@@ -260,26 +260,54 @@ func (z *zfsBackend) promoteClones(ctx context.Context, vol string) error {
 	return nil
 }
 
-func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error {
-	// The snapshot may have migrated: deleting a volume with restore
-	// clones promotes them, and zfs promote reparents every snapshot
-	// at-or-older than the clone's origin onto the clone. Snapshot names
-	// are CR names — cluster-unique — so match by @suffix anywhere under
-	// the parent dataset; without this, a migrated snapshot's deletion
-	// false-succeeds and the leftover blocks its clone's destroy forever.
+// snapshotsMatching lists every snapshot under the parent dataset whose
+// name ends in "@"+snap. The snapshot may have migrated: deleting a volume
+// with restore clones promotes them, and zfs promote reparents every
+// snapshot at-or-older than the clone's origin onto the clone. Snapshot
+// names are CR names — cluster-unique — so matching by @suffix anywhere
+// under the dataset finds the migrated copy; without this, a migrated
+// snapshot's deletion false-succeeds and the leftover blocks its clone's
+// destroy forever.
+func (z *zfsBackend) snapshotsMatching(ctx context.Context, snap string) ([]string, error) {
 	out, err := z.exec(ctx, "zfs", "list", "-Hpo", "name", "-t", "snapshot", "-r", z.dataset)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for line := range strings.SplitSeq(out, "\n") {
+		name := strings.TrimSpace(line)
+		if strings.HasSuffix(name, "@"+snap) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error {
+	names, err := z.snapshotsMatching(ctx, snap)
 	if err != nil {
 		return err
 	}
-	for line := range strings.SplitSeq(out, "\n") {
-		name := strings.TrimSpace(line)
-		if !strings.HasSuffix(name, "@"+snap) {
-			continue
-		}
+	for _, name := range names {
 		// -d defers destruction while restore clones still reference the
 		// snapshot (ZFS removes it with the last clone); immediate otherwise.
-		if _, err := z.exec(ctx, "zfs", "destroy", "-d", name); err != nil {
+		_, destroyErr := z.exec(ctx, "zfs", "destroy", "-d", name)
+		if destroyErr == nil {
+			continue
+		}
+		// The listed name can be stale by destroy time: a concurrent clone
+		// teardown removes a deferred snapshot with its last clone, and a
+		// concurrent promote reparents it under the clone. Re-list to tell
+		// gone (the contract's "succeeds if already absent") from migrated:
+		// a survivor means the destroy genuinely failed or the snapshot
+		// lives under a new name, so surface the error and let the retry
+		// find it.
+		still, err := z.snapshotsMatching(ctx, snap)
+		if err != nil {
 			return err
+		}
+		if len(still) > 0 {
+			return destroyErr
 		}
 	}
 	return nil
