@@ -37,14 +37,14 @@ parent dataset policy):
 
 ```yaml
 nodes:
-    node-a:
-        spec:
-            pools:
-                - name: default
-                  zfs:
-                      dataset: tank/miroir
-                      volBlockSize: 16K
-                      compression: inherit
+  node-a:
+    spec:
+      pools:
+        - name: default
+          zfs:
+            dataset: tank/miroir
+            volBlockSize: 16K
+            compression: inherit
 ```
 
 Both settings apply only to newly created zvols. Existing volumes are not

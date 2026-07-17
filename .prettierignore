@@ -5,6 +5,8 @@ CHANGELOG.md
 # README.md by helm-docs, values.schema.json by helm-schema.
 charts/miroir/README.md
 charts/miroir/values.schema.json
+charts/miroir-config/README.md
+charts/miroir-config/values.schema.json
 charts/miroir/crds/
 config/crd/bases/
 config/rbac/role.yaml
