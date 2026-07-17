@@ -290,6 +290,35 @@ DRBD briefly holds writes (a "write barrier"), so the two snapshots
 are taken at the same instant and are consistent with each other,
 not whichever leg happened to finish first.
 
+### Clone a PVC
+
+Point a new PVC directly at an existing one to copy it without an
+intermediate VolumeSnapshot:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+    name: my-data-copy
+spec:
+    storageClassName: miroir-local
+    dataSource:
+        name: my-data
+        kind: PersistentVolumeClaim
+    accessModes: [ReadWriteOnce]
+    resources:
+        requests:
+            storage: 10Gi
+```
+
+Under the hood miroir cuts a hidden snapshot of the source volume
+(same write barrier as above) and restores from it, so the clone is
+a cheap copy-on-write copy that lands on the same nodes and pool as
+the source. That brings the same rules as a snapshot restore: the
+clone's StorageClass must ask for the source's replica count and
+pool, and its size must be at least the source's. The hidden
+snapshot is cleaned up when the clone is deleted.
+
 ### Group snapshots
 
 Snapshot several PVCs as one crash-consistent set (a database and

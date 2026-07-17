@@ -60,6 +60,10 @@ const (
 	volSrc     = "pvc-src"
 	volNew     = "pvc-new"
 	snapSnap1  = "snap-1"
+	// Replica addresses captured at the source volume's creation; the
+	// restore path re-resolves them against the live Nodes.
+	staleAddrA = "10.0.0.1"
+	staleAddrB = "10.0.0.2"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -741,9 +745,9 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
 			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
 				// node-b joined after creation: FullSync stuck in the spec.
-				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2", FullSync: true},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: staleAddrB, FullSync: true},
 			},
 		},
 	}
@@ -923,8 +927,8 @@ func TestCreateVolumeFromSnapshotFullSyncsPostSnapshotReplica(t *testing.T) {
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
 			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
 			Replicas: []miroirv1alpha1.Replica{
-				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: "10.0.0.1"},
-				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: "10.0.0.2"},
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: staleAddrB},
 			},
 		},
 	}
@@ -1457,24 +1461,6 @@ func TestControllerExpandAdmitsWithoutStats(t *testing.T) {
 
 // A Volume-type content source (PVC clone) is not implemented; silently
 // ignoring it would provision a blank volume under a clone's name.
-func TestCreateVolumeRejectsVolumeContentSource(t *testing.T) {
-	s := newScheme(t)
-	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
-
-	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
-		Name:               volPvc1,
-		VolumeCapabilities: volCaps(),
-		VolumeContentSource: &csi.VolumeContentSource{
-			Type: &csi.VolumeContentSource_Volume{
-				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "pvc-0"},
-			},
-		},
-	})
-	if status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("a volume content source must be InvalidArgument, got %v", err)
-	}
-}
-
 // CreateSnapshot idempotency: a same-name retry with the same source
 // returns the existing snapshot; the same name for a different source is
 // AlreadyExists.
@@ -1606,5 +1592,280 @@ func TestCreateVolumeStampsPVCRefLabels(t *testing.T) {
 	}
 	if len(vol.Labels) != 0 {
 		t.Fatalf("volume without PVC metadata must stay unlabeled: %v", vol.Labels)
+	}
+}
+
+// cloneReadyClient simulates the agents for the clone path: volumes flip
+// Ready and snapshots flip ReadyToUse (every diskful leg Done, size and
+// formatted flag captured from the source volume) on Get.
+func cloneReadyClient(s *runtime.Scheme, objs ...client.Object) client.WithWatch {
+	return fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(objs...).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				switch o := obj.(type) {
+				case *miroirv1alpha1.MiroirVolume:
+					o.Status.Phase = miroirv1alpha1.VolumeReady
+				case *miroirv1alpha1.MiroirSnapshot:
+					vol := &miroirv1alpha1.MiroirVolume{}
+					if err := c.Get(ctx, client.ObjectKey{Name: o.Spec.VolumeName}, vol); err != nil {
+						return nil //nolint:nilerr // volume gone: leave the snapshot untouched
+					}
+					o.Status.ReadyToUse = true
+					o.Status.SizeBytes = vol.Spec.SizeBytes
+					o.Status.SourceFormatted = vol.Status.Formatted
+					if o.Status.PerNode == nil {
+						o.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{}
+					}
+					for _, rep := range vol.Spec.DiskfulReplicas() {
+						o.Status.PerNode[rep.Node] = miroirv1alpha1.SnapshotDone
+					}
+				}
+				return nil
+			},
+		}).
+		Build()
+}
+
+// A volume content source rides the snapshot-restore path through an
+// internal clone-source snapshot: deterministic name, owner reference to
+// the source volume, and a response echoing the volume source.
+func TestCreateVolumeCloneCutsInternalSnapshot(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS, NodeID: 1, Address: staleAddrB},
+			},
+		},
+	}
+	cl := cloneReadyClient(s, srcVol, nodeObj(nodeA, addrA), nodeObj(nodeB, addrB))
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: volSrc},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Volume.ContentSource.GetVolume().GetVolumeId(); got != volSrc {
+		t.Fatalf("response must echo the volume content source, got %+v", resp.Volume.ContentSource)
+	}
+
+	snapName := constants.CloneSnapshotPrefix + volNew
+	snap := &miroirv1alpha1.MiroirSnapshot{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: snapName}, snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.Spec.VolumeName != volSrc {
+		t.Fatalf("internal snapshot must capture the source volume, got %q", snap.Spec.VolumeName)
+	}
+	if len(snap.OwnerReferences) != 1 || snap.OwnerReferences[0].Name != volSrc ||
+		snap.OwnerReferences[0].Kind != "MiroirVolume" {
+		t.Fatalf("internal snapshot must be owned by the source volume: %+v", snap.OwnerReferences)
+	}
+
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volNew}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if vol.Spec.Source == nil || vol.Spec.Source.SnapshotName != snapName {
+		t.Fatalf("clone must restore from the internal snapshot: %+v", vol.Spec.Source)
+	}
+	nodes := map[string]bool{}
+	for _, rep := range vol.Spec.Replicas {
+		nodes[rep.Node] = true
+		if rep.FullSync {
+			t.Fatalf("clone legs restore from local snapshots, not FullSync: %+v", rep)
+		}
+	}
+	if !nodes[nodeA] || !nodes[nodeB] {
+		t.Fatalf("clone placement must follow the source, got %+v", vol.Spec.Replicas)
+	}
+}
+
+func TestCreateVolumeCloneIdempotent(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
+		},
+	}
+	c := &Controller{Client: cloneReadyClient(s, srcVol), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+	req := &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: volSrc},
+			},
+		},
+	}
+
+	if _, err := c.CreateVolume(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateVolume(t.Context(), req); err != nil {
+		t.Fatalf("identical clone retry must succeed: %v", err)
+	}
+}
+
+// The clone shape checks run before anything is cut: a class that can
+// never match the source must not leave an internal snapshot behind.
+func TestCreateVolumeCloneShapeChecksRunBeforeCut(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
+		},
+	}
+
+	cases := []struct {
+		name   string
+		source string
+		size   int64
+		params map[string]string
+		want   codes.Code
+	}{
+		{name: "replica count mismatch", source: volSrc, size: 5 << 30,
+			params: map[string]string{constants.ParamReplicas: "2"}, want: codes.InvalidArgument},
+		{name: "smaller than source", source: volSrc, size: 1 << 30, want: codes.InvalidArgument},
+		{name: "cross pool", source: volSrc, size: 5 << 30,
+			params: map[string]string{constants.ParamPool: poolFast}, want: codes.InvalidArgument},
+		{name: "missing source volume", source: "pvc-missing", size: 5 << 30, want: codes.NotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cl := cloneReadyClient(s, srcVol.DeepCopy())
+			c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+			_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+				Name:               volNew,
+				VolumeCapabilities: volCaps(),
+				CapacityRange:      &csi.CapacityRange{RequiredBytes: tc.size},
+				Parameters:         tc.params,
+				VolumeContentSource: &csi.VolumeContentSource{
+					Type: &csi.VolumeContentSource_Volume{
+						Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: tc.source},
+					},
+				},
+			})
+			if status.Code(err) != tc.want {
+				t.Fatalf("want %v, got %v", tc.want, err)
+			}
+			snaps := &miroirv1alpha1.MiroirSnapshotList{}
+			if err := cl.List(t.Context(), snaps); err != nil {
+				t.Fatal(err)
+			}
+			if len(snaps.Items) != 0 {
+				t.Fatalf("a refused clone must not cut a snapshot: %+v", snaps.Items)
+			}
+		})
+	}
+}
+
+func TestCreateVolumeRejectsEmptyVolumeSourceID(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: volCaps(),
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{},
+			},
+		},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("an empty volume source id must be InvalidArgument, got %v", err)
+	}
+}
+
+// DeleteVolume of a clone also deletes its internal source snapshot; a
+// non-clone volume's delete leaves user snapshots alone.
+func TestDeleteVolumeCleansCloneSourceSnapshot(t *testing.T) {
+	s := newScheme(t)
+	vol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volNew},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Source:    &miroirv1alpha1.VolumeSource{SnapshotName: constants.CloneSnapshotPrefix + volNew},
+		},
+	}
+	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+	}
+	userSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volNew},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vol, cloneSnap, userSnap).Build()
+	c := &Controller{Client: cl}
+
+	if _, err := c.DeleteVolume(t.Context(), &csi.DeleteVolumeRequest{VolumeId: volNew}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: cloneSnap.Name}, &miroirv1alpha1.MiroirSnapshot{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the internal clone-source snapshot must die with the clone: %v", err)
+	}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, &miroirv1alpha1.MiroirSnapshot{}); err != nil {
+		t.Fatalf("user snapshots must survive the volume delete: %v", err)
+	}
+}
+
+func TestCreateSnapshotRejectsReservedPrefix(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).Build()}
+
+	_, err := c.CreateSnapshot(t.Context(), &csi.CreateSnapshotRequest{
+		Name: constants.CloneSnapshotPrefix + "x", SourceVolumeId: volPvc1,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("the clone- prefix is reserved, got %v", err)
+	}
+}
+
+func TestListSnapshotsHidesCloneSourceSnapshots(t *testing.T) {
+	s := newScheme(t)
+	userSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+	}
+	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+	}
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(userSnap, cloneSnap).Build()}
+
+	resp, err := c.ListSnapshots(t.Context(), &csi.ListSnapshotsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Entries) != 1 || resp.Entries[0].Snapshot.SnapshotId != snapSnap1 {
+		t.Fatalf("internal clone-source snapshots must stay hidden: %+v", resp.Entries)
 	}
 }

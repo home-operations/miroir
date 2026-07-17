@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -116,6 +117,7 @@ const (
 func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
 	caps := []csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
+		csi.ControllerServiceCapability_RPC_CLONE_VOLUME,
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
 		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 		csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
@@ -169,7 +171,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	snapID, err := snapshotSourceID(req)
+	snapID, cloneSrc, err := c.resolveContentSource(ctx, req, sizeBytes, replicas, params.pool)
 	if err != nil {
 		return nil, err
 	}
@@ -270,9 +272,29 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	var contentSource *csi.VolumeContentSource
+	return &csi.CreateVolumeResponse{
+		Volume: &csi.Volume{
+			VolumeId:           vol.Name,
+			CapacityBytes:      sizeBytes,
+			AccessibleTopology: accessibleTopology(vol),
+			ContentSource:      responseContentSource(cloneSrc, source),
+		},
+	}, nil
+}
+
+// responseContentSource echoes the request's content source: the source
+// volume for a clone (its internal snapshot is an implementation
+// detail), else the snapshot the volume was restored from, else nil.
+func responseContentSource(cloneSrc string, source *miroirv1alpha1.VolumeSource) *csi.VolumeContentSource {
+	if cloneSrc != "" {
+		return &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: cloneSrc},
+			},
+		}
+	}
 	if source != nil && source.SnapshotName != "" {
-		contentSource = &csi.VolumeContentSource{
+		return &csi.VolumeContentSource{
 			Type: &csi.VolumeContentSource_Snapshot{
 				Snapshot: &csi.VolumeContentSource_SnapshotSource{
 					SnapshotId: source.SnapshotName,
@@ -280,14 +302,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			},
 		}
 	}
-	return &csi.CreateVolumeResponse{
-		Volume: &csi.Volume{
-			VolumeId:           vol.Name,
-			CapacityBytes:      sizeBytes,
-			AccessibleTopology: accessibleTopology(vol),
-			ContentSource:      contentSource,
-		},
-	}, nil
+	return nil
 }
 
 // DeleteVolume removes the MiroirVolume; agents tear down local state via
@@ -301,6 +316,17 @@ func (c *Controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 	}
 	if err := c.Client.Delete(ctx, vol); err != nil && !apierrors.IsNotFound(err) {
 		return nil, status.Errorf(codes.Internal, "delete MiroirVolume: %v", err)
+	}
+	// A clone's internal source snapshot dies with the clone. Its name is
+	// deterministic and the prefix reserved, so the blind delete touches
+	// nothing on non-clone volumes and stays idempotent when the volume CR
+	// is already gone. The backends order the teardown themselves (ZFS
+	// defers the snapshot's destruction until the clone zvol goes).
+	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + req.GetVolumeId()},
+	}
+	if err := c.Client.Delete(ctx, cloneSnap); err != nil && !apierrors.IsNotFound(err) {
+		return nil, status.Errorf(codes.Internal, "delete clone-source MiroirSnapshot: %v", err)
 	}
 	return &csi.DeleteVolumeResponse{}, nil
 }
@@ -795,17 +821,104 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 	return nil
 }
 
-// snapshotSourceID extracts the snapshot id from the request's content
-// source ("" when none), refusing the unimplemented volume-clone type:
-// only snapshot sources are advertised, and falling through would
-// provision a blank volume under a clone's name — then block a corrected
-// retry on AlreadyExists.
-func snapshotSourceID(req *csi.CreateVolumeRequest) (string, error) {
-	if src := req.GetVolumeContentSource(); src != nil && src.GetSnapshot() == nil {
-		return "", status.Error(codes.InvalidArgument,
-			"unsupported volume content source: only snapshot sources are supported")
+// resolveContentSource maps the request's content source onto the
+// snapshot the volume restores from: the named snapshot as-is, or for a
+// volume clone the internal snapshot this call cuts on the source
+// volume (waiting until every leg holds it). cloneSrc is the clone's
+// source volume id, "" for snapshot and blank sources.
+func (c *Controller) resolveContentSource(ctx context.Context, req *csi.CreateVolumeRequest, sizeBytes int64, replicas int, pool string) (snapID, cloneSrc string, err error) {
+	snapID, cloneSrc, err = contentSourceIDs(req)
+	if err != nil || cloneSrc == "" {
+		return snapID, cloneSrc, err
 	}
-	return req.GetVolumeContentSource().GetSnapshot().GetSnapshotId(), nil
+	snapID, err = c.ensureCloneSnapshot(ctx, cloneSrc, req.GetName(), sizeBytes, replicas, pool)
+	return snapID, cloneSrc, err
+}
+
+// contentSourceIDs extracts the request's content source ids. An empty
+// id or an unrecognized source type is refused: falling through would
+// provision a blank volume under the requested name and then block a
+// corrected retry on AlreadyExists.
+func contentSourceIDs(req *csi.CreateVolumeRequest) (snapID, cloneVolID string, err error) {
+	switch src := req.GetVolumeContentSource(); {
+	case src == nil:
+		return "", "", nil
+	case src.GetSnapshot() != nil:
+		if src.GetSnapshot().GetSnapshotId() == "" {
+			return "", "", status.Error(codes.InvalidArgument, "snapshot content source needs a snapshot id")
+		}
+		return src.GetSnapshot().GetSnapshotId(), "", nil
+	case src.GetVolume() != nil:
+		if src.GetVolume().GetVolumeId() == "" {
+			return "", "", status.Error(codes.InvalidArgument, "volume content source needs a volume id")
+		}
+		return "", src.GetVolume().GetVolumeId(), nil
+	default:
+		return "", "", status.Error(codes.InvalidArgument,
+			"unsupported volume content source: only snapshot and volume sources are supported")
+	}
+}
+
+// ensureCloneSnapshot realizes a volume-clone content source as an
+// internal snapshot of the source volume, so the clone rides the whole
+// snapshot-restore path (local CoW clone per leg, placement following
+// the source). The name is deterministic (clone-<cloneVolumeID>): retries
+// converge on one snapshot and DeleteVolume cleans it up by name alone.
+// The shape checks run before the cut — a clone whose class can never
+// match the source must fail without freezing the source volume for a
+// snapshot round it would then leak.
+func (c *Controller) ensureCloneSnapshot(ctx context.Context, srcVolID, cloneVolID string, sizeBytes int64, replicas int, pool string) (string, error) {
+	srcVol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: srcVolID}, srcVol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", status.Errorf(codes.NotFound, "clone source volume %s not found", srcVolID)
+		}
+		return "", status.Errorf(codes.Internal, "get clone source volume: %v", err)
+	}
+	if sizeBytes < srcVol.Spec.SizeBytes {
+		return "", status.Errorf(codes.InvalidArgument,
+			"requested %d below clone source volume size %d", sizeBytes, srcVol.Spec.SizeBytes)
+	}
+	if got := len(srcVol.Spec.DiskfulReplicas()); got != replicas {
+		return "", status.Errorf(codes.InvalidArgument,
+			"clone replica count %d must match source diskful replicas %d", replicas, got)
+	}
+	for _, rep := range srcVol.Spec.DiskfulReplicas() {
+		if src := nodemap.PoolOrDefault(rep.Pool); src != pool {
+			return "", status.Errorf(codes.InvalidArgument,
+				"clone must stay in the source volume's pool %q (CoW clones cannot cross pools); the class requests pool %q",
+				src, pool)
+		}
+	}
+	snapName := constants.CloneSnapshotPrefix + cloneVolID
+	if _, err := c.ensureSnapshot(ctx, snapName, srcVol, true); err != nil {
+		return "", err
+	}
+	if err := c.waitSnapshotReady(ctx, snapName); err != nil {
+		return "", err
+	}
+	return snapName, nil
+}
+
+// waitSnapshotReady blocks until the clone-source snapshot is cut on
+// every leg. DeadlineExceeded keeps the provisioner retrying: the
+// snapshot round continues in the background and the retry finds it
+// ready (or still converging).
+func (c *Controller) waitSnapshotReady(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, cmp.Or(c.ProvisionTimeout, defaultProvisionTimeout))
+	defer cancel()
+	err := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true,
+		func(ctx context.Context) (bool, error) {
+			snap := &miroirv1alpha1.MiroirSnapshot{}
+			if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, snap); err != nil {
+				return false, client.IgnoreNotFound(err) // cache lag → retry
+			}
+			return snap.Status.ReadyToUse, nil
+		})
+	if err != nil {
+		return status.Errorf(codes.DeadlineExceeded, "clone-source snapshot %s not ready: %v", name, err)
+	}
+	return nil
 }
 
 // expandWithinHeadroom applies CreateVolume's capacity guardrails to a
@@ -969,6 +1082,12 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 	if req.GetName() == "" || req.GetSourceVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "snapshot name and source volume are required")
 	}
+	if strings.HasPrefix(req.GetName(), constants.CloneSnapshotPrefix) {
+		// Reserved so DeleteVolume's blind clone-<volumeID> delete can
+		// never hit a user snapshot.
+		return nil, status.Errorf(codes.InvalidArgument,
+			"snapshot name prefix %q is reserved for clone-source snapshots", constants.CloneSnapshotPrefix)
+	}
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetSourceVolumeId()}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -976,10 +1095,32 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 		}
 		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
 	}
+	snap, err := c.ensureSnapshot(ctx, req.GetName(), vol, false)
+	if err != nil {
+		return nil, err
+	}
+	// Report the size captured at snapshot time once known; the live
+	// volume may have been expanded since.
+	size := cmp.Or(snap.Status.SizeBytes, vol.Spec.SizeBytes)
+	return &csi.CreateSnapshotResponse{Snapshot: csiSnapshot(snap, size)}, nil
+}
 
+// ensureSnapshot creates a MiroirSnapshot of vol, idempotent by name:
+// AlreadyExists resolves to the existing object when it captures the
+// same volume and is a terminal error otherwise. owned marks an
+// internal clone-source snapshot: it must not outlive its source
+// volume, and an abandoned provisioning (PVC deleted before
+// CreateVolume ever succeeded) never reaches DeleteVolume's cleanup —
+// the owner reference has garbage collection reap it with the source.
+func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroirv1alpha1.MiroirVolume, owned bool) (*miroirv1alpha1.MiroirSnapshot, error) {
 	snap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: req.GetSourceVolumeId()},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: vol.Name},
+	}
+	if owned {
+		snap.OwnerReferences = []metav1.OwnerReference{
+			*metav1.NewControllerRef(vol, miroirv1alpha1.GroupVersion.WithKind("MiroirVolume")),
+		}
 	}
 	for _, rep := range vol.Spec.Replicas {
 		snap.Finalizers = append(snap.Finalizers, constants.FinalizerPrefix+rep.Node)
@@ -989,20 +1130,17 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 			return nil, status.Errorf(codes.Internal, "create MiroirSnapshot: %v", err)
 		}
 		existing := &miroirv1alpha1.MiroirSnapshot{}
-		if err := c.reader().Get(ctx, types.NamespacedName{Name: req.GetName()}, existing); err != nil {
+		if err := c.reader().Get(ctx, types.NamespacedName{Name: name}, existing); err != nil {
 			// Cache may lag the just-created object; retryable, not terminal.
 			return nil, status.Errorf(codes.Unavailable, "get existing snapshot: %v", err)
 		}
-		if existing.Spec.VolumeName != req.GetSourceVolumeId() {
+		if existing.Spec.VolumeName != vol.Name {
 			return nil, status.Errorf(codes.AlreadyExists,
-				"snapshot %s exists for volume %s", req.GetName(), existing.Spec.VolumeName)
+				"snapshot %s exists for volume %s", name, existing.Spec.VolumeName)
 		}
 		snap = existing
 	}
-	// Report the size captured at snapshot time once known; the live
-	// volume may have been expanded since.
-	size := cmp.Or(snap.Status.SizeBytes, vol.Spec.SizeBytes)
-	return &csi.CreateSnapshotResponse{Snapshot: csiSnapshot(snap, size)}, nil
+	return snap, nil
 }
 
 // DeleteSnapshot removes the MiroirSnapshot; agents drop the backend
@@ -1039,6 +1177,12 @@ func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRe
 	resp := &csi.ListSnapshotsResponse{}
 	for i := range snaps.Items {
 		s := &snaps.Items[i]
+		// Internal clone-source snapshots are an implementation detail of
+		// volume clones; listing them would invite the snapshotter to
+		// adopt objects whose lifecycle DeleteVolume owns.
+		if strings.HasPrefix(s.Name, constants.CloneSnapshotPrefix) {
+			continue
+		}
 		if req.GetSnapshotId() != "" && s.Name != req.GetSnapshotId() {
 			continue
 		}
