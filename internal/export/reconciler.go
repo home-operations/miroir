@@ -91,7 +91,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// Serving means a gateway pod is up and the address consumers mount is
 	// published; the owned-Deployment watch re-runs this on availability
 	// flips, so the gauge tracks failovers without polling.
-	recordExportReady(vol.Name, available && addr != "")
+	recordExportReady(vol, available && addr != "")
 	log.Info("reconciled RWX gateway", "volume", vol.Name, "address", addr, "available", available)
 	return ctrl.Result{}, nil
 }

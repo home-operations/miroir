@@ -120,6 +120,7 @@ spec:
             - --timeout={{ .Values.sidecars.provisioner.timeout }}
             - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
             - --default-fstype=ext4
+            - --extra-create-metadata
             {{- if .Values.storageCapacity.enabled }}
             - --enable-capacity
             - --capacity-ownerref-level=2

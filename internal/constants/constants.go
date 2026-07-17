@@ -59,4 +59,36 @@ const (
 	// replica of a volume lands in this pool on its node. Absent means the
 	// default pool (v1alpha1.DefaultPoolName).
 	ParamPool = "miroir.home-operations.com/pool"
+
+	// LabelPVCName and LabelPVCNamespace record on a MiroirVolume the PVC
+	// it was provisioned for: CreateVolume stamps them from the
+	// provisioner's --extra-create-metadata parameters, the membership
+	// reconciler backfills older volumes from their PV's claimRef, and the
+	// agents surface them as the pvc / pvc_namespace metric labels.
+	LabelPVCName      = "miroir.home-operations.com/pvc-name"
+	LabelPVCNamespace = "miroir.home-operations.com/pvc-namespace"
 )
+
+// PVCRef reads a volume's PVC-ref labels back for its metric series,
+// falling back to the CR name (and an empty namespace) when they are
+// absent so legends never go blank on unlabeled volumes.
+func PVCRef(volumeName string, labels map[string]string) (pvc, namespace string) {
+	if v := labels[LabelPVCName]; v != "" {
+		return v, labels[LabelPVCNamespace]
+	}
+	return volumeName, ""
+}
+
+// PVCRefLabels builds the PVC-ref label pair, or nil when the reference
+// is incomplete or the PVC name cannot be a label value (RFC 1123 allows
+// 253-char PVC names; label values cap at 63). A volume left unlabeled
+// falls back to its CR name in the metric labels.
+func PVCRefLabels(name, namespace string) map[string]string {
+	if name == "" || namespace == "" || len(name) > 63 {
+		return nil
+	}
+	return map[string]string{
+		LabelPVCName:      name,
+		LabelPVCNamespace: namespace,
+	}
+}

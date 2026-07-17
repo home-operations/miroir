@@ -1562,3 +1562,49 @@ func TestListVolumesPagination(t *testing.T) {
 		}
 	}
 }
+
+// CreateVolume stamps the PVC-ref labels from the provisioner's
+// --extra-create-metadata parameters; without them the CR stays unlabeled
+// (the membership reconciler backfills from the PV instead).
+func TestCreateVolumeStampsPVCRefLabels(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client:           readyOnGet(s, nodeObj(nodeA, addrA), nodeObj(nodeB, "192.168.1.42")),
+		Nodes:            testNodes,
+		ProvisionTimeout: 2 * time.Second,
+	}
+
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               "pvc-labeled",
+		VolumeCapabilities: volCaps(),
+		Parameters: map[string]string{
+			constants.ParamReplicas: "2",
+			paramPVCName:            "config-jellyfin",
+			paramPVCNamespace:       "media",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-labeled"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if vol.Labels[constants.LabelPVCName] != "config-jellyfin" ||
+		vol.Labels[constants.LabelPVCNamespace] != "media" {
+		t.Fatalf("PVC-ref labels not stamped: %v", vol.Labels)
+	}
+
+	if _, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               "pvc-unlabeled",
+		VolumeCapabilities: volCaps(),
+		Parameters:         map[string]string{constants.ParamReplicas: "2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-unlabeled"}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if len(vol.Labels) != 0 {
+		t.Fatalf("volume without PVC metadata must stay unlabeled: %v", vol.Labels)
+	}
+}

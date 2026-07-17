@@ -93,7 +93,7 @@ func init() {
 func setupMembership(mgr ctrl.Manager, nodes nodemap.Source, autoTieBreaker bool,
 	autoDiskfulAfter, autoEvictAfter time.Duration,
 ) error {
-	r := &membership.Reconciler{Client: mgr.GetClient(), Nodes: nodes}
+	r := &membership.Reconciler{Client: mgr.GetClient(), Nodes: nodes, PVs: mgr.GetAPIReader()}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("membership reconciler: %w", err)
 	}
@@ -926,7 +926,12 @@ func probeDRBD(driver *drbd.Driver) (version string, ready bool) {
 			"version", v, "floor", drbd.KernelFloor)
 		os.Exit(1)
 	}
-	agent.RecordDRBDKernelVersion(v)
+	utils, err := driver.UtilsVersion(context.Background())
+	if err != nil {
+		// Informational only: an empty label beats refusing a working node.
+		setupLog.Error(err, "cannot read drbd-utils version")
+	}
+	agent.RecordDRBDVersions(v, utils)
 	return v, true
 }
 

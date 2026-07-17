@@ -17,8 +17,16 @@ health to a pool (the shipped dashboard's `pool` variable does
 exactly that). `miroir_volume_diskless_primary` and
 `miroir_volume_wedged` are the exceptions: a diskless leg holds no
 backing device in any pool, and a wedged teardown's pool can be
-unknowable, so both stay volume-only. The agent exports, per volume
-on that node:
+unknowable, so both carry no pool label.
+
+Every volume series also carries `pvc` and `pvc_namespace`: the
+PersistentVolumeClaim the volume serves, so dashboards and alerts
+read the claim's name instead of the opaque `pvc-<uuid>` volume
+name (which stays available as the `volume` label). The pair is
+recorded on the `MiroirVolume` at provisioning time and backfilled
+onto pre-existing volumes from their PV; a volume whose claim is
+unknown falls back to its volume name in `pvc`, with an empty
+`pvc_namespace`. The agent exports, per volume on that node:
 
 | Metric                                        | Meaning                                                                                                                                   |
 | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -42,8 +50,9 @@ Each agent additionally exports its pool capacities
 `pool` label), the same sample that feeds capacity-aware placement
 and the `PoolUsageHigh` condition. Pool exhaustion is alertable,
 and two pools on one node stay distinguishable, not just an Event.
-It also exports `miroir_node_drbd_kernel_info` (always 1, `version`
-label): the DRBD kernel module version probed at startup, from
+It also exports `miroir_node_drbd_kernel_info` (always 1): the DRBD
+kernel module version probed at startup (`version` label) plus the
+agent image's drbd-utils version (`utils_version` label), from
 client-only nodes too (which have no `MiroirNode` status). Query it
 for fleet version skew before a release raises the kernel floor.
 

@@ -181,7 +181,7 @@ func (v *VerifyScheduler) verifyVolume(ctx context.Context, vol *miroirv1alpha1.
 // per-node slot apply.
 func (v *VerifyScheduler) recordResult(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, oosBytes int64) error {
 	now := metav1.Now()
-	recordVerifyMetrics(vol.Name, volumePoolOn(vol, v.NodeName), now.Time, oosBytes)
+	recordVerifyMetrics(vol, volumePoolOn(vol, v.NodeName), now.Time, oosBytes)
 	if oosBytes > 0 && v.Recorder != nil {
 		v.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "VerifyOutOfSync", "Verify",
 			"online verify found %d out-of-sync bytes; a disconnect/connect cycle is needed to resync", oosBytes)

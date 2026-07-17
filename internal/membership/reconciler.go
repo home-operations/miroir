@@ -28,8 +28,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -51,6 +53,10 @@ type Reconciler struct {
 	// Nodes yields the storage topology — the same map CreateVolume
 	// places from — folded from the MiroirNode CRs per reconcile.
 	Nodes nodemap.Source
+	// PVs reads PersistentVolumes uncached (the manager's APIReader):
+	// the PVC-ref backfill needs one PV per unlabeled volume, once, not
+	// a cluster-wide PV informer.
+	PVs client.Reader
 }
 
 // Reconcile fills in NodeID/Address/FullSync for incomplete replica
@@ -62,7 +68,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, vol); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !vol.DeletionTimestamp.IsZero() || vol.Spec.DRBD == nil {
+	if !vol.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	if err := r.ensurePVCRef(ctx, vol); err != nil {
+		return ctrl.Result{}, err
+	}
+	if vol.Spec.DRBD == nil {
 		// Unreplicated volumes cannot change membership: DRBD internal
 		// metadata cannot be slipped under a live filesystem (the CRD
 		// validation rule already blocks such edits).
@@ -133,6 +145,36 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // (unknown node, duplicate), as opposed to a transient one (Node not
 // registered yet) that must be retried.
 var errBadPlacement = errors.New("replica placement is invalid")
+
+// ensurePVCRef stamps the PVC-ref labels on volumes created before the
+// provisioner passed PVC metadata: the bound PV shares the volume's name
+// and carries the claim in its claimRef. New volumes are labeled by
+// CreateVolume itself, so this reads at most one PV per legacy volume. A
+// missing PV, a foreign one, or an empty claimRef leaves the volume
+// unlabeled — nothing to requeue on, metrics fall back to the CR name.
+func (r *Reconciler) ensurePVCRef(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+	if vol.Labels[constants.LabelPVCName] != "" {
+		return nil
+	}
+	pv := &corev1.PersistentVolume{}
+	if err := r.PVs.Get(ctx, types.NamespacedName{Name: vol.Name}, pv); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if pv.Spec.CSI == nil || pv.Spec.CSI.Driver != constants.DriverName ||
+		pv.Spec.CSI.VolumeHandle != vol.Name || pv.Spec.ClaimRef == nil {
+		return nil
+	}
+	labels := constants.PVCRefLabels(pv.Spec.ClaimRef.Name, pv.Spec.ClaimRef.Namespace)
+	if labels == nil {
+		return nil
+	}
+	patch := client.MergeFrom(vol.DeepCopy())
+	if vol.Labels == nil {
+		vol.Labels = map[string]string{}
+	}
+	maps.Copy(vol.Labels, labels)
+	return r.Patch(ctx, vol, patch)
+}
 
 // complete fills one added entry in place. NodeID takes the lowest id not
 // used by the other entries — freed ids may be reused; the joiner's

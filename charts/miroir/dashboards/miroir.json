@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "miroir — DRBD-replicated local storage: volume health, replication, pools, and operator activity.",
+  "description": "miroir \u2014 DRBD-replicated local storage: volume health, replication, pools, and operator activity.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -83,7 +83,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Volumes DRBD refuses to reconnect after divergence — manual resolution required.",
+      "description": "Volumes DRBD refuses to reconnect after divergence \u2014 manual resolution required.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -144,7 +144,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Freeze-policy legs that lost quorum and refuse writes — workloads on them are seeing I/O errors.",
+      "description": "Freeze-policy legs that lost quorum and refuse writes \u2014 workloads on them are seeing I/O errors.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -205,7 +205,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Legs latched failed after a backing-disk I/O error — replace the disk, then remove and re-add.",
+      "description": "Legs latched failed after a backing-disk I/O error \u2014 replace the disk, then remove and re-add.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -266,7 +266,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Diskful legs below UpToDate — resyncing, detached, or disconnected.",
+      "description": "Diskful legs below UpToDate \u2014 resyncing, detached, or disconnected.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -449,9 +449,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (volume) ((1 - miroir_volume_up_to_date{volume=~\"$volume\", pool=~\"$pool\"}) OR (1 - miroir_volume_connected{volume=~\"$volume\", pool=~\"$pool\"}))",
+          "expr": "sum by (volume, pvc, pvc_namespace) ((1 - miroir_volume_up_to_date{pvc=~\"$pvc\", pool=~\"$pool\"}) OR (1 - miroir_volume_connected{pvc=~\"$pvc\", pool=~\"$pool\"}))",
           "refId": "A",
-          "legendFormat": "{{volume}}"
+          "legendFormat": "{{pvc_namespace}}/{{pvc}}"
         }
       ],
       "title": "Unhealthy legs",
@@ -512,9 +512,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "min by (volume) (miroir_volume_resync_ratio{volume=~\"$volume\", pool=~\"$pool\"})",
+          "expr": "min by (volume, pvc, pvc_namespace) (miroir_volume_resync_ratio{pvc=~\"$pvc\", pool=~\"$pool\"})",
           "refId": "A",
-          "legendFormat": "{{volume}}"
+          "legendFormat": "{{pvc_namespace}}/{{pvc}}"
         }
       ],
       "title": "Resync progress",
@@ -525,7 +525,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Worst per-peer out-of-sync amount — exposure if the healthiest peer is lost; also counts online-verify findings.",
+      "description": "Worst per-peer out-of-sync amount \u2014 exposure if the healthiest peer is lost; also counts online-verify findings.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -573,9 +573,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (volume) (miroir_volume_out_of_sync_bytes{volume=~\"$volume\", pool=~\"$pool\"})",
+          "expr": "max by (volume, pvc, pvc_namespace) (miroir_volume_out_of_sync_bytes{pvc=~\"$pvc\", pool=~\"$pool\"})",
           "refId": "A",
-          "legendFormat": "{{volume}}"
+          "legendFormat": "{{pvc_namespace}}/{{pvc}}"
         }
       ],
       "title": "Out-of-sync bytes",
@@ -634,18 +634,18 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_volume_quorum{volume=~\"$volume\", pool=~\"$pool\"} == 0",
+          "expr": "miroir_volume_quorum{pvc=~\"$pvc\", pool=~\"$pool\"} == 0",
           "refId": "A",
-          "legendFormat": "quorum lost: {{volume}} on {{node}}"
+          "legendFormat": "quorum lost: {{pvc_namespace}}/{{pvc}} on {{node}}"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "miroir_volume_disk_failed{volume=~\"$volume\", pool=~\"$pool\"} == 1",
+          "expr": "miroir_volume_disk_failed{pvc=~\"$pvc\", pool=~\"$pool\"} == 1",
           "refId": "B",
-          "legendFormat": "disk failed: {{volume}} on {{node}}"
+          "legendFormat": "disk failed: {{pvc_namespace}}/{{pvc}} on {{node}}"
         }
       ],
       "title": "Quorum / disk-failed legs",
@@ -704,9 +704,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (volume) (miroir_volume_diskless_primary{volume=~\"$volume\"})",
+          "expr": "max by (volume, pvc, pvc_namespace) (miroir_volume_diskless_primary{pvc=~\"$pvc\"})",
           "refId": "A",
-          "legendFormat": "{{volume}}"
+          "legendFormat": "{{pvc_namespace}}/{{pvc}}"
         }
       ],
       "title": "Remote consumers (diskless Primary)",
@@ -839,9 +839,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "time() - max by (volume) (miroir_volume_verify_last_timestamp_seconds{volume=~\"$volume\", pool=~\"$pool\"})",
+          "expr": "time() - max by (volume, pvc, pvc_namespace) (miroir_volume_verify_last_timestamp_seconds{pvc=~\"$pvc\", pool=~\"$pool\"})",
           "refId": "A",
-          "legendFormat": "{{volume}}"
+          "legendFormat": "{{pvc_namespace}}/{{pvc}}"
         }
       ],
       "title": "Last verify age",
@@ -900,9 +900,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (volume) (miroir_volume_verify_out_of_sync_bytes{volume=~\"$volume\", pool=~\"$pool\"})",
+          "expr": "max by (volume, pvc, pvc_namespace) (miroir_volume_verify_out_of_sync_bytes{pvc=~\"$pvc\", pool=~\"$pool\"})",
           "refId": "A",
-          "legendFormat": "{{volume}}"
+          "legendFormat": "{{pvc_namespace}}/{{pvc}}"
         }
       ],
       "title": "Verify findings",
@@ -983,7 +983,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Exports without a serving gateway — their NFS clients are hanging right now.",
+      "description": "Exports without a serving gateway \u2014 their NFS clients are hanging right now.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1044,7 +1044,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "1 while the volume's NFS gateway is serving (pod available, address published); dips are failovers — clients hang until the line returns to 1.",
+      "description": "1 while the volume's NFS gateway is serving (pod available, address published); dips are failovers \u2014 clients hang until the line returns to 1.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1094,9 +1094,9 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "min by (volume) (miroir_export_ready{volume=~\"$volume\"})",
+          "expr": "min by (volume, pvc, pvc_namespace) (miroir_export_ready{pvc=~\"$pvc\"})",
           "refId": "A",
-          "legendFormat": "{{volume}}"
+          "legendFormat": "{{pvc_namespace}}/{{pvc}}"
         }
       ],
       "title": "Export availability",
@@ -1329,7 +1329,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Agent pods failing scrapes — every miroir_* series from those nodes is absent, so the per-volume panels and alerts are blind there. A crash-loop after a node change usually means the DRBD kernel module is below the agent's floor.",
+      "description": "Agent pods failing scrapes \u2014 every miroir_* series from those nodes is absent, so the per-volume panels and alerts are blind there. A crash-loop after a node change usually means the DRBD kernel module is below the agent's floor.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1390,7 +1390,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "DRBD kernel module version probed at each agent's startup. Mixed versions mean a partially upgraded fleet; a node missing here has no reporting agent (down, or no DRBD module). The agent refuses to start below its kernel floor.",
+      "description": "DRBD kernel module and drbd-utils versions probed at each agent's startup. Mixed versions mean a partially upgraded fleet; a node missing here has no reporting agent (down, or no DRBD module). The agent refuses to start below its kernel floor.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1454,12 +1454,13 @@
             },
             "renameByName": {
               "node": "Node",
-              "version": "DRBD kernel"
+              "version": "DRBD kernel",
+              "utils_version": "drbd-utils"
             }
           }
         }
       ],
-      "title": "DRBD kernel module by node",
+      "title": "DRBD versions by node",
       "type": "table"
     },
     {
@@ -1541,7 +1542,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "A sustained error rate means a wedged reconcile — check the owning pod's logs.",
+      "description": "A sustained error rate means a wedged reconcile \u2014 check the owning pod's logs.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1645,7 +1646,7 @@
         "sort": 1
       },
       {
-        "name": "volume",
+        "name": "pvc",
         "type": "query",
         "datasource": {
           "type": "prometheus",
@@ -1653,7 +1654,7 @@
         },
         "query": {
           "qryType": 1,
-          "query": "label_values(miroir_volume_up_to_date{pool=~\"$pool\"}, volume)",
+          "query": "label_values(miroir_volume_up_to_date{pool=~\"$pool\"}, pvc)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "current": {},
@@ -1674,7 +1675,7 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "miroir — replicated storage",
+  "title": "miroir \u2014 replicated storage",
   "uid": "miroir-overview",
   "version": 1,
   "weekStart": ""

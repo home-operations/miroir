@@ -18,6 +18,7 @@ package membership
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -130,7 +131,7 @@ func TestCompletesAddedReplicaInheritsVolumePool(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: {Pools: map[string]nodemap.Pool{
 			poolDefault: {Backend: miroirv1alpha1.BackendLVMThin},
 			poolFast:    {Backend: miroirv1alpha1.BackendZFS},
@@ -154,7 +155,7 @@ func TestCompleteRejectsCrossPoolReplica(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: {Pools: map[string]nodemap.Pool{
 			poolDefault: {Backend: miroirv1alpha1.BackendLVMThin},
 			poolFast:    {Backend: miroirv1alpha1.BackendZFS},
@@ -177,7 +178,7 @@ func TestCompleteRejectsUnknownPool(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: storageNode(miroirv1alpha1.BackendLVMThin), // default pool only
 	}}
 
@@ -192,7 +193,7 @@ func TestCompletesAddedReplica(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(replicatedVol(), node(nodeC, addrC)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: storageNode(miroirv1alpha1.BackendLVMThin),
 	}}
 
@@ -222,7 +223,7 @@ func TestCompletesAddedReplicaWithAddressOverride(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(replicatedVol()). // no node-c Node object
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: storageNodeAt(miroirv1alpha1.BackendLVMThin, "10.0.100.43"),
 	}}
 
@@ -239,7 +240,7 @@ func TestReusesLowestFreeNodeID(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: storageNode(miroirv1alpha1.BackendZFS),
 	}}
 
@@ -258,7 +259,7 @@ func TestCompletesDisklessReplica(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: storageNode(miroirv1alpha1.BackendZFS),
 	}}
 
@@ -280,7 +281,7 @@ func TestUnknownNodeLeavesSpecUntouched(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(replicatedVol()).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{}} // node-c not a storage node
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{}} // node-c not a storage node
 
 	reconcile(t, r, "pvc-1")
 
@@ -296,7 +297,7 @@ func TestConflictedNodeStopsWithoutRequeue(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(replicatedVol()).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: {
 			Address:         "10.0.100.9",
 			AddressConflict: true,
@@ -331,7 +332,7 @@ func TestRequeuesWhenNodeNotReady(t *testing.T) {
 			}
 			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 				WithObjects(objs...).Build()
-			r := &Reconciler{Client: c, Nodes: nodemap.Map{
+			r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 				nodeC: storageNode(miroirv1alpha1.BackendZFS),
 			}}
 
@@ -352,7 +353,7 @@ func TestIgnoresUnreplicatedVolume(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: storageNode(miroirv1alpha1.BackendZFS),
 	}}
 
@@ -373,7 +374,7 @@ func TestCompletesClientLeg(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeBergen, addrBergen)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{}} // bergen is not a storage node
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{}} // bergen is not a storage node
 
 	reconcile(t, r, "pvc-1")
 
@@ -397,7 +398,7 @@ func TestClientLegNodeIDSkipsReplicaIDs(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeBergen, addrBergen)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{}}
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{}}
 
 	reconcile(t, r, "pvc-1")
 
@@ -414,7 +415,7 @@ func TestCompletesReplicaAndClientWithDistinctIDs(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(v, node(nodeC, addrC), node(nodeBergen, addrBergen)).
 		Build()
-	r := &Reconciler{Client: c, Nodes: nodemap.Map{
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{
 		nodeC: storageNode(miroirv1alpha1.BackendZFS),
 	}}
 
@@ -427,5 +428,70 @@ func TestCompletesReplicaAndClientWithDistinctIDs(t *testing.T) {
 	}
 	if rep.NodeID == cl.NodeID {
 		t.Fatalf("legs completed in one pass must get distinct node ids, both got %d", rep.NodeID)
+	}
+}
+
+// boundPV is the PV the provisioner created for a volume of the same
+// name, bound to a claim.
+func boundPV(volName, ns, claim string) *corev1.PersistentVolume {
+	return &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volName},
+		Spec: corev1.PersistentVolumeSpec{
+			ClaimRef: &corev1.ObjectReference{Namespace: ns, Name: claim},
+			PersistentVolumeSource: corev1.PersistentVolumeSource{
+				CSI: &corev1.CSIPersistentVolumeSource{
+					Driver:       constants.DriverName,
+					VolumeHandle: volName,
+				},
+			},
+		},
+	}
+}
+
+// A volume created before the provisioner passed PVC metadata gets its
+// PVC-ref labels backfilled from the PV's claimRef — unreplicated volumes
+// too, so the backfill must run before the membership gate.
+func TestBackfillsPVCRefFromPV(t *testing.T) {
+	v := replicatedVol()
+	v.Spec.DRBD = nil
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, boundPV("pvc-1", "media", "config-jellyfin")).
+		Build()
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{}}
+
+	reconcile(t, r, "pvc-1")
+
+	got := get(t, r, "pvc-1")
+	if got.Labels[constants.LabelPVCName] != "config-jellyfin" ||
+		got.Labels[constants.LabelPVCNamespace] != "media" {
+		t.Fatalf("PVC-ref labels not backfilled from the PV claimRef: %v", got.Labels)
+	}
+}
+
+// No PV, a foreign driver's PV, or a claim name that overflows a label
+// value all leave the volume unlabeled without erroring the reconcile.
+func TestBackfillSkipsUnusablePVs(t *testing.T) {
+	foreign := boundPV("pvc-1", "media", "config-jellyfin")
+	foreign.Spec.CSI.Driver = "other.example.com"
+	long := boundPV("pvc-1", "media", strings.Repeat("x", 64))
+	for name, pv := range map[string]*corev1.PersistentVolume{
+		"missing PV": nil, "foreign driver": foreign, "overlong claim name": long,
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := replicatedVol()
+			v.Spec.DRBD = nil
+			b := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(v)
+			if pv != nil {
+				b = b.WithObjects(pv)
+			}
+			c := b.Build()
+			r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{}}
+
+			reconcile(t, r, "pvc-1")
+
+			if labels := get(t, r, "pvc-1").Labels; len(labels) != 0 {
+				t.Fatalf("volume must stay unlabeled: %v", labels)
+			}
+		})
 	}
 }

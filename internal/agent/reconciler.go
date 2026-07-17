@@ -223,7 +223,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			// resyncRatio 1 and quorum true, not the zero values: an
 			// unreplicated volume is fully in sync with itself and has no
 			// quorum to lose — zeros would perma-fire the alerts.
-			recordVolumeMetrics(vol.Name, poolName, miroirReplicaView{
+			recordVolumeMetrics(vol, poolName, miroirReplicaView{
 				upToDate: true, connected: true, quorum: true, resyncRatio: 1,
 			})
 			if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
@@ -300,9 +300,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	splitActive := r.handleSplitBrain(ctx, vol, resource, st, connected)
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
-		recordVolumeMetrics(vol.Name, poolName, replicaView(st, vol, r.NodeName, localDiskless))
+		recordVolumeMetrics(vol, poolName, replicaView(st, vol, r.NodeName, localDiskless))
 	} else {
-		recordDisklessMetrics(vol.Name, st.Primary)
+		recordDisklessMetrics(vol, st.Primary)
 	}
 	statusPool := poolName
 	if localDiskless {
@@ -353,7 +353,7 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		return false, ctrl.Result{}
 	}
 	if !entry.replicated {
-		recordVolumeMetrics(vol.Name, volumePoolOn(vol, r.NodeName), miroirReplicaView{
+		recordVolumeMetrics(vol, volumePoolOn(vol, r.NodeName), miroirReplicaView{
 			upToDate: true, connected: true, quorum: true, resyncRatio: 1,
 		})
 		// Same drift net as the full pass: nothing else wakes an
@@ -379,9 +379,9 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		return false, ctrl.Result{}
 	}
 	if !localDiskless {
-		recordVolumeMetrics(vol.Name, volumePoolOn(vol, r.NodeName), replicaView(st, vol, r.NodeName, localDiskless))
+		recordVolumeMetrics(vol, volumePoolOn(vol, r.NodeName), replicaView(st, vol, r.NodeName, localDiskless))
 	} else {
-		recordDisklessMetrics(vol.Name, st.Primary)
+		recordDisklessMetrics(vol, st.Primary)
 	}
 	return true, ctrl.Result{RequeueAfter: drbdPollInterval}
 }
@@ -931,7 +931,7 @@ func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1
 			"DRBD cannot tear down %s: device stuck Detaching with connections gone (LINBIT/drbd#137); reboot node %s to clear it",
 			vol.Name, r.NodeName)
 	}
-	metricWedged.WithLabelValues(vol.Name).Set(1)
+	recordWedged(vol)
 	return r.parkWithMessage(ctx, vol, cause, wedgedRequeue)
 }
 
@@ -961,7 +961,7 @@ func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv
 	// Any other outcome means a previously reported wedge is gone — e.g.
 	// the reboot happened and the device is now merely held open — so the
 	// critical alert must stop paging for it.
-	metricWedged.DeleteLabelValues(vol.Name)
+	clearWedged(vol.Name)
 	if errors.Is(err, backend.ErrBusy) {
 		// A still-staged (or force-deleted) pod holds the device open;
 		// NodeUnstage releases it once the consumer moves off this node.

@@ -384,6 +384,13 @@ func TestKernelVersion(t *testing.T) {
 	if v != "9.3.2" {
 		t.Fatalf("version = %q, want 9.3.2", v)
 	}
+	u, err := d.UtilsVersion(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u != "9.34.3" {
+		t.Fatalf("utils version = %q, want 9.34.3 (must not match DRBDADM_VERSION_CODE)", u)
+	}
 
 	fe = &fakeExec{responses: map[string]string{cmdAdmVersion: "DRBDADM_VERSION=9.34.3\n"}}
 	d = &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
