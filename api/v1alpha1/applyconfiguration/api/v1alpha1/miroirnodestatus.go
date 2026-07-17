@@ -36,6 +36,11 @@ type MiroirNodeStatusApplyConfiguration struct {
 	// module ships with the host, not the agent image, so this is the
 	// per-node view that makes mixed clusters visible mid-upgrade.
 	DRBDVersion *string `json:"drbdVersion,omitempty"`
+	// DRBDUtilsVersion is the drbd-utils userland version the agent
+	// probed at startup (e.g. "9.34.3"). Unlike the kernel module the
+	// utils ship in the agent image, so this varies per agent rollout
+	// rather than per host.
+	DRBDUtilsVersion *string `json:"drbdUtilsVersion,omitempty"`
 	// ObservedAt is when these figures were last sampled; the controller
 	// ignores stats older than a few poll intervals as unknown.
 	ObservedAt *v1.Time `json:"observedAt,omitempty"`
@@ -68,6 +73,14 @@ func (b *MiroirNodeStatusApplyConfiguration) WithPools(values ...*MiroirNodePool
 // If called multiple times, the DRBDVersion field is set to the value of the last call.
 func (b *MiroirNodeStatusApplyConfiguration) WithDRBDVersion(value string) *MiroirNodeStatusApplyConfiguration {
 	b.DRBDVersion = &value
+	return b
+}
+
+// WithDRBDUtilsVersion sets the DRBDUtilsVersion field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the DRBDUtilsVersion field is set to the value of the last call.
+func (b *MiroirNodeStatusApplyConfiguration) WithDRBDUtilsVersion(value string) *MiroirNodeStatusApplyConfiguration {
+	b.DRBDUtilsVersion = &value
 	return b
 }
 

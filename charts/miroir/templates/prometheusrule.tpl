@@ -64,7 +64,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) is split-brain on
               {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
@@ -87,7 +87,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) lost quorum on
               {{ "{{" }} $labels.node {{ "}}" }} — writes are failing
             description: >-
@@ -112,7 +112,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) IO has been
               suspended for 10m on {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
@@ -136,7 +136,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} teardown is wedged
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }} teardown is wedged
               in the DRBD kernel module on {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
               The kernel can no longer tear down this volume's DRBD resource
@@ -160,7 +160,7 @@ spec:
           annotations:
             summary: >-
               Backing disk failed for volume
-              {{ "{{" }} $labels.volume {{ "}}" }}
+              {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) on
               {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
@@ -183,7 +183,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Replica of {{ "{{" }} $labels.volume {{ "}}" }}
+              Replica of {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) on
               {{ "{{" }} $labels.node {{ "}}" }} is not UpToDate
             description: >-
@@ -206,7 +206,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) replication links
               down from {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
@@ -228,7 +228,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) has
               {{ "{{" }} $value | humanize1024 {{ "}}" }}B out of sync on
               {{ "{{" }} $labels.node {{ "}}" }}
@@ -253,7 +253,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }} is consumed remotely
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }} is consumed remotely
               from {{ "{{" }} $labels.node {{ "}}" }}
             description: >-
               The pod runs on a diskless DRBD leg at replication-network
@@ -278,7 +278,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              Volume {{ "{{" }} $labels.volume {{ "}}" }}
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               (pool {{ "{{" }} $labels.pool {{ "}}" }}) has not completed
               an online verify in {{ "{{" }} $value | humanizeDuration {{ "}}" }}
             description: >-
@@ -356,7 +356,7 @@ spec:
             {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
           annotations:
             summary: >-
-              RWX export for volume {{ "{{" }} $labels.volume {{ "}}" }}
+              RWX export for volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
               is unavailable — NFS clients are hanging
             description: >-
               The NFS gateway has no available pod (or no published export

@@ -156,6 +156,12 @@ type MiroirNodeStatus struct {
 	// per-node view that makes mixed clusters visible mid-upgrade.
 	// +optional
 	DRBDVersion string `json:"drbdVersion,omitempty"`
+	// DRBDUtilsVersion is the drbd-utils userland version the agent
+	// probed at startup (e.g. "9.34.3"). Unlike the kernel module the
+	// utils ship in the agent image, so this varies per agent rollout
+	// rather than per host.
+	// +optional
+	DRBDUtilsVersion string `json:"drbdUtilsVersion,omitempty"`
 	// ObservedAt is when these figures were last sampled; the controller
 	// ignores stats older than a few poll intervals as unknown.
 	// +optional
@@ -188,6 +194,7 @@ func (s MiroirNodeStatus) Pool(name string) *MiroirNodePoolStatus {
 // +kubebuilder:printcolumn:name="Capacity",type=string,JSONPath=`.status.pools[*].capacityBytes`
 // +kubebuilder:printcolumn:name="Allocated",type=string,JSONPath=`.status.pools[*].allocatedBytes`
 // +kubebuilder:printcolumn:name="DRBD",type=string,JSONPath=`.status.drbdVersion`
+// +kubebuilder:printcolumn:name="DRBD-Utils",type=string,JSONPath=`.status.drbdUtilsVersion`,priority=1
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MiroirNode declares one storage node's topology and publishes its pool

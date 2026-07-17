@@ -69,6 +69,10 @@ type PoolStatsPublisher struct {
 	// empty on nodes without the module. A module change means a node
 	// reboot and thus an agent restart, so startup is current enough.
 	DRBDVersion string
+	// DRBDUtilsVersion is the drbd-utils userland version probed at the
+	// same startup; it ships in the agent image, so it only changes with
+	// an agent rollout (which also restarts the publisher).
+	DRBDUtilsVersion string
 }
 
 // Start publishes once promptly, then on the interval until ctx is done.
@@ -143,6 +147,7 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 			cur.Status.Pools = append(cur.Status.Pools, entry)
 		}
 		cur.Status.DRBDVersion = p.DRBDVersion
+		cur.Status.DRBDUtilsVersion = p.DRBDUtilsVersion
 		now := metav1.Now()
 		cur.Status.ObservedAt = &now
 

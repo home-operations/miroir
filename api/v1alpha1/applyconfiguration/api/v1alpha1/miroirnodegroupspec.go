@@ -30,6 +30,9 @@ import (
 type MiroirNodeGroupSpecApplyConfiguration struct {
 	// NodeSelector picks the member nodes by label. An empty selector
 	// matches every node in the cluster (the Kubernetes convention).
+	// The expression rule mirrors what LabelSelectorAsSelector enforces at
+	// runtime — the LabelSelector schema alone admits combinations that
+	// would otherwise fail every reconcile.
 	NodeSelector *v1.LabelSelectorApplyConfiguration `json:"nodeSelector,omitempty"`
 	// Template is the MiroirNode spec applied to every member, with two
 	// per-node facts resolved from the Node object: an empty zone
