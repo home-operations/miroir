@@ -184,7 +184,22 @@ kubectl annotate $classes helm.sh/resource-policy=keep --overwrite
 (After step 3 you can remove it again —
 `kubectl annotate $classes helm.sh/resource-policy-` — so that
 dropping a class from miroir-config values deletes it as usual.
-MiroirNodes need no shielding: the 0.10 chart never rendered them.)
+MiroirNodes need no shielding: the 0.10 chart never rendered them.
+Clusters tracking unreleased main are the one exception — a
+development-window chart briefly rendered MiroirNodes without `keep`,
+so include `$(kubectl get miroirnodes -o name)` in the annotate loop
+above before upgrading such a cluster.)
+
+Declaring the fleet as a `nodeGroups` entry instead of per-node
+`nodes`? The existing agent-created MiroirNodes carry no group label,
+so the group reports them as Conflict and touches nothing (a direct
+MiroirNode always wins). Hand them over explicitly — the group then
+converges each spec to its template:
+
+```bash
+kubectl label miroirnodes --all \
+  miroir.home-operations.com/node-group=<group-name>
+```
 
 Loopfile users: also set the driver chart's `agent.loopfileBaseDirs`
 to every `loopfile.baseDir` in use — the agent pod's hostPath mounts

@@ -17,18 +17,19 @@ limitations under the License.
 package topology
 
 import (
+	"context"
+	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
@@ -39,18 +40,6 @@ const (
 	poolDefault  = "default"
 	partLabelDev = "/dev/disk/by-partlabel/r-miroir"
 )
-
-func groupScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	s := runtime.NewScheme()
-	if err := clientgoscheme.AddToScheme(s); err != nil {
-		t.Fatal(err)
-	}
-	if err := miroirv1alpha1.AddToScheme(s); err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
 
 func k8sNode(name string, labels map[string]string, annotations map[string]string) *corev1.Node {
 	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{
@@ -88,18 +77,11 @@ func reconcileGroup(t *testing.T, c client.Client, name string) *miroirv1alpha1.
 	return g
 }
 
-func groupClient(t *testing.T, objs ...client.Object) client.Client {
-	t.Helper()
-	return fake.NewClientBuilder().WithScheme(groupScheme(t)).
-		WithStatusSubresource(&miroirv1alpha1.MiroirNodeGroup{}).
-		WithObjects(objs...).Build()
-}
-
 // One group + labels = the whole fleet: a MiroirNode per matching node,
 // provenance-labeled, per-node facts resolved from the Node object.
 func TestNodeGroupMaterializesMatchingNodes(t *testing.T) {
-	c := groupClient(t, nvmeGroup(),
-		k8sNode(nodeA, map[string]string{classLabel: classNVMe, zoneLabel: "rack-1"}, nil),
+	c := newClient(t, nvmeGroup(),
+		k8sNode(nodeA, map[string]string{classLabel: classNVMe, corev1.LabelTopologyZone: "rack-1"}, nil),
 		k8sNode(nodeB, map[string]string{classLabel: classNVMe},
 			map[string]string{miroirv1alpha1.NodeAddressAnnotation: "10.0.100.12"}),
 		k8sNode(nodeC, map[string]string{classLabel: "hdd"}, nil))
@@ -136,7 +118,7 @@ func TestNodeGroupMaterializesMatchingNodes(t *testing.T) {
 // Managed means managed: hand-edits to a materialized spec revert, and
 // template edits converge every member.
 func TestNodeGroupRevertsManagedDrift(t *testing.T) {
-	c := groupClient(t, nvmeGroup(),
+	c := newClient(t, nvmeGroup(),
 		k8sNode(nodeA, map[string]string{classLabel: classNVMe}, nil))
 	reconcileGroup(t, c, classNVMe)
 
@@ -167,7 +149,7 @@ func TestNodeGroupSkipsDirectMiroirNode(t *testing.T) {
 			Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, ZFS: &miroirv1alpha1.ZFSPool{Dataset: "tank/miroir"}}},
 		},
 	}
-	c := groupClient(t, nvmeGroup(), direct,
+	c := newClient(t, nvmeGroup(), direct,
 		k8sNode(nodeA, map[string]string{classLabel: classNVMe}, nil))
 
 	g := reconcileGroup(t, c, classNVMe)
@@ -191,7 +173,7 @@ func TestNodeGroupSkipsDirectMiroirNode(t *testing.T) {
 // A node leaving the selector orphans its MiroirNode in place — topology
 // is never deleted out from under live volumes.
 func TestNodeGroupOrphansOnUnlabel(t *testing.T) {
-	c := groupClient(t, nvmeGroup(),
+	c := newClient(t, nvmeGroup(),
 		k8sNode(nodeA, map[string]string{classLabel: classNVMe}, nil))
 	reconcileGroup(t, c, classNVMe)
 
@@ -223,7 +205,7 @@ func TestNodeGroupOrphansOnUnlabel(t *testing.T) {
 func TestNodeGroupConflictBetweenGroups(t *testing.T) {
 	second := nvmeGroup()
 	second.Name = "zz-late"
-	c := groupClient(t, nvmeGroup(), second,
+	c := newClient(t, nvmeGroup(), second,
 		k8sNode(nodeA, map[string]string{classLabel: classNVMe}, nil))
 
 	reconcileGroup(t, c, classNVMe)
@@ -242,5 +224,48 @@ func TestNodeGroupConflictBetweenGroups(t *testing.T) {
 	}
 	if mn.Labels[miroirv1alpha1.NodeGroupLabel] != classNVMe {
 		t.Fatalf("first manager must keep the node: %v", mn.Labels)
+	}
+}
+
+// One failing node must not block the rest of the fleet or the status
+// report: the other members materialize, status is patched, and the error
+// still surfaces for the requeue.
+func TestNodeGroupOneBadNodeDoesNotBlockTheFleet(t *testing.T) {
+	base := newClient(t, nvmeGroup(),
+		k8sNode(nodeA, map[string]string{classLabel: classNVMe}, nil),
+		k8sNode(nodeB, map[string]string{classLabel: classNVMe}, nil),
+		k8sNode(nodeC, map[string]string{classLabel: classNVMe}, nil))
+	// The fake client runs no CEL, so stand in for the API server
+	// rejecting one node's object (a bad address annotation, a webhook).
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if obj.GetName() == nodeB {
+				return errors.New("admission refused: address must be a plain IPv4 or IPv6 address")
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+	})
+
+	r := &NodeGroupReconciler{Client: c}
+	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: classNVMe}})
+	if err == nil || !strings.Contains(err.Error(), nodeB) {
+		t.Fatalf("the per-node failure must surface with the node named, got %v", err)
+	}
+
+	g := &miroirv1alpha1.MiroirNodeGroup{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: classNVMe}, g); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(g.Status.Nodes, []string{nodeA, nodeC}) {
+		t.Fatalf("healthy members must materialize and be reported despite the bad node: %v", g.Status.Nodes)
+	}
+	mn := &miroirv1alpha1.MiroirNode{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: nodeC}, mn); err != nil {
+		t.Fatal("node after the failing one must still be materialized")
+	}
+	// The failing node is an error, not an orphan or a conflict.
+	cond := meta.FindStatusCondition(g.Status.Conditions, miroirv1alpha1.ConditionGroupOrphaned)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("a failed converge must not be reported as an orphan: %+v", cond)
 	}
 }

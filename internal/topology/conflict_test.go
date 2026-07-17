@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,14 +39,17 @@ const (
 	nodeC = "node-c"
 )
 
-func newClient(t *testing.T, objs ...client.Object) client.Client {
+func newClient(t *testing.T, objs ...client.Object) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
 	if err := miroirv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
 	return fake.NewClientBuilder().WithScheme(scheme).
-		WithStatusSubresource(&miroirv1alpha1.MiroirNode{}).
+		WithStatusSubresource(&miroirv1alpha1.MiroirNode{}, &miroirv1alpha1.MiroirNodeGroup{}).
 		WithObjects(objs...).Build()
 }
 

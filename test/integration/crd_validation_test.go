@@ -17,6 +17,8 @@ limitations under the License.
 package integration
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -463,5 +465,21 @@ var _ = Describe("MiroirNodeGroup CEL rules", func() {
 		}
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, blockless))).To(BeTrue(),
 			"the pool oneOf rule must apply inside group templates too")
+	})
+
+	It("rejects a name longer than a label value — it becomes the provenance label", func() {
+		group := &miroirv1alpha1.MiroirNodeGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("g", 64)},
+			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
+				NodeSelector: metav1.LabelSelector{},
+				Template: miroirv1alpha1.MiroirNodeSpec{
+					Pools: []miroirv1alpha1.MiroirNodePool{lvmthinPool(poolDefault)},
+				},
+			},
+		}
+		err := k8sClient.Create(ctx, group)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+			"a 64-character group name must be rejected (cluster-scoped CR names otherwise allow 253), got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("63 characters"))
 	})
 })

@@ -19,7 +19,7 @@ tests:
               device: /dev/disk/by-partlabel/r-miroir
     asserts:
       - failedTemplate:
-          errorMessagePattern: "nodes.node-a: the node must be declared under `spec:`"
+          errorPattern: "nodes.node-a: the node must be declared under `spec:`"
 
   - it: fails with the migration pointer on a null node entry (no raw nil-pointer error)
     set:
@@ -27,7 +27,7 @@ tests:
         node-a:
     asserts:
       - failedTemplate:
-          errorMessagePattern: "nodes.node-a: the node must be declared under `spec:`"
+          errorPattern: "nodes.node-a: the node must be declared under `spec:`"
 
   - it: fails on an unknown spec field instead of letting the API server prune it
     set:

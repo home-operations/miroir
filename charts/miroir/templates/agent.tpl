@@ -4,7 +4,7 @@
        cannot see at render time, but hostPath mounts are pod spec — so
        loopfile users list their baseDirs here. DirectoryOrCreate is
        harmless on nodes that don't use the loopfile backend. */ -}}
-{{- $loopDirs := .Values.agent.loopfileBaseDirs | uniq }}
+{{- $loopDirs := .Values.agent.loopfileBaseDirs | default list | uniq }}
 {{- if and .Values.drbd.verify.schedule (not .Values.drbd.verify.algorithm) }}
 {{- fail "drbd.verify.schedule requires drbd.verify.algorithm — a scheduled verify is meaningless without an arming verify-alg" }}
 {{- end }}

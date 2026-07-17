@@ -235,6 +235,24 @@ func volumeGroupFor(pool string) string {
 	return "vg-miroir-" + pool
 }
 
+// clientOnlyReason explains why this node's agent serves client-only, or
+// returns "" when the MiroirNode carries usable pools.
+func clientOnlyReason(found bool, miroirNode *miroirv1alpha1.MiroirNode, flat nodemap.Node) string {
+	switch {
+	case !found:
+		return "no MiroirNode for this node; running client-only node service"
+	case len(flat.Pools) > 0:
+		return ""
+	case len(miroirNode.Spec.Pools) > 0:
+		// Pools exist in the spec but none flattened: block-less entries,
+		// which only a pre-0.11 stored object can carry.
+		return "MiroirNode pools carry no backend block (a pre-0.11 stored object?): " +
+			"apply this node's MiroirNode manifest; running client-only node service"
+	default:
+		return "MiroirNode declares no usable pools; running client-only node service"
+	}
+}
+
 // agentTopology reads this node's MiroirNode (with the startup retry
 // budget) and arms the watcher that restarts the agent when the pool spec
 // drifts from this snapshot — or appears at all — so a chart-applied pool
@@ -570,17 +588,18 @@ func main() {
 		// The DaemonSet's chart-side scope is every schedulable node, but
 		// only storage nodes run agent-backed backends. A node with no
 		// MiroirNode holds no volumes and runs a client-only node service so
-		// pods there can still mount RWX (NFS) volumes. A MiroirNode with no
-		// pools (unwritable under the current CRD, but a pre-0.11 stored
-		// object survives revalidation) holds no storage either and gets the
-		// same treatment — setupAgentPools would read zero pools as "every
-		// pool failed" and crash-loop.
+		// pods there can still mount RWX (NFS) volumes. A MiroirNode whose
+		// pools flatten to nothing (none declared, or only block-less
+		// entries from a pre-0.11 stored object that survives revalidation)
+		// holds no storage either and gets the same treatment —
+		// setupAgentPools would read zero pools as "every pool failed" and
+		// crash-loop.
 		miroirNode, found := agentTopology(mgr, nodeName, stop)
-		if !found || len(miroirNode.Spec.Pools) == 0 {
-			msg := "no MiroirNode for this node; running client-only node service"
-			if found {
-				msg = "MiroirNode declares no pools; running client-only node service"
-			}
+		var flat nodemap.Node
+		if found {
+			flat = nodemap.FromSpec(miroirNode.Spec)
+		}
+		if msg := clientOnlyReason(found, miroirNode, flat); msg != "" {
 			setupLog.Info(msg, "node", nodeName)
 			// No volume reconciler runs here, so a client leg could never
 			// be realized: the node service refuses RWO remote-access
@@ -595,7 +614,7 @@ func main() {
 			serveCSI(mgr, csiSocket, identity, nil, node)
 			break
 		}
-		pools, err := poolBackendsFor(nodeName, nodemap.FromSpec(miroirNode.Spec))
+		pools, err := poolBackendsFor(nodeName, flat)
 		if err != nil {
 			setupLog.Error(err, "unable to build the node's backends")
 			os.Exit(1)

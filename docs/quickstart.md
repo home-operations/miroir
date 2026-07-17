@@ -179,8 +179,10 @@ switch over by themselves — and restarts itself to re-run setup when
 the pool spec changes. Uninstalling (or shrinking) miroir-config never
 deletes MiroirNodes out from under live volumes: they carry
 `helm.sh/resource-policy: keep`, and decommissioning a node stays an
-explicit `kubectl delete miroirnode <name>`. Inspect the topology with
-`kubectl get miroirnodes`.
+explicit `kubectl delete miroirnode <name>` — for a group member, first
+take the node out of the selector (remove its class label), or the
+group recreates the MiroirNode within seconds. Inspect the topology
+with `kubectl get miroirnodes`.
 
 ## 3. Claim a volume
 

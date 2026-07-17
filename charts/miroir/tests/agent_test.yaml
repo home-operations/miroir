@@ -165,6 +165,17 @@ tests:
               path: /srv/miroir
               type: DirectoryOrCreate
 
+  # A parent values layer can null the key to reset it; that is a legal
+  # spelling of "no loopfile dirs", not a render crash.
+  - it: renders with a null loopfileBaseDirs
+    set:
+      agent.loopfileBaseDirs: null
+    documentIndex: 0
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 8
+
   - it: dedups duplicate loopfile base dirs
     set:
       agent.loopfileBaseDirs: [/var/lib/miroir, /var/lib/miroir]

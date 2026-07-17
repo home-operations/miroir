@@ -126,7 +126,9 @@ func (m Map) Map(context.Context) (Map, error) { return m, nil }
 
 // FromSpec flattens one MiroirNode spec into the internal node shape. The
 // backend is the configuration block that is present; the CRD guarantees
-// exactly one is set.
+// exactly one is set on every write, but a pre-0.11 stored object survives
+// revalidation with block-less entries (its old flat fields are pruned on
+// read), so those are skipped rather than flattened into an empty backend.
 func FromSpec(spec miroirv1alpha1.MiroirNodeSpec) Node {
 	n := Node{
 		Zone:      spec.Zone,
@@ -155,6 +157,8 @@ func FromSpec(spec miroirv1alpha1.MiroirNodeSpec) Node {
 				Backend: miroirv1alpha1.BackendLoopfile,
 				BaseDir: p.Loopfile.BaseDir,
 			}
+		default:
+			continue
 		}
 		n.Pools[p.Name] = pool
 	}

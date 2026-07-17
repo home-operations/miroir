@@ -80,6 +80,7 @@ type MiroirNodeGroupStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Members",type=string,JSONPath=`.status.nodes`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63",message="the group name becomes a label value on materialized MiroirNodes: 63 characters maximum"
 
 // MiroirNodeGroup materializes one MiroirNode per label-matched node, so a
 // fleet sharing a storage layout (a device-path convention, a common ZFS

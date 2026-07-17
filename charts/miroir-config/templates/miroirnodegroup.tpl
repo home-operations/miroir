@@ -4,8 +4,8 @@
        the API server silently PRUNES unknown fields, so a typo would
        apply cleanly and misconfigure the fleet. */ -}}
 {{- $groupKeys := list "nodeSelector" "template" }}
-{{- $specKeys := list "zone" "address" "autoEvict" "pools" }}
-{{- $poolKeys := list "name" "lvmthin" "zfs" "loopfile" }}
+{{- $specKeys := list "zone" "autoEvict" "pools" }}
+{{- $selectorKeys := list "matchLabels" "matchExpressions" }}
 {{- range $name, $group := .Values.nodeGroups }}
 {{- $spec := dict }}
 {{- if kindIs "map" $group }}
@@ -19,20 +19,28 @@
 {{- fail (printf "nodeGroups.%s.spec.%s: unknown field (the API server would silently drop it); valid fields: %s" $name $key (join ", " $groupKeys)) }}
 {{- end }}
 {{- end }}
-{{- range $key, $_ := ($spec.template | default dict) }}
+{{- /* A pruned selector key leaves an empty selector, and an empty
+       selector matches EVERY node — the worst possible typo. */ -}}
+{{- if kindIs "map" $spec.nodeSelector }}
+{{- range $key, $_ := $spec.nodeSelector }}
+{{- if not (has $key $selectorKeys) }}
+{{- fail (printf "nodeGroups.%s.spec.nodeSelector.%s: unknown field (the API server would silently drop it, leaving an empty selector that matches every node in the cluster); valid fields: %s" $name $key (join ", " $selectorKeys)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $template := dict }}
+{{- if kindIs "map" $spec.template }}
+{{- $template = $spec.template }}
+{{- end }}
+{{- if hasKey $template "address" }}
+{{- fail (printf "nodeGroups.%s.spec.template.address: an address is a per-node fact the CRD rejects in a template — annotate each Node with miroir.home-operations.com/address instead, or author a direct MiroirNode" $name) }}
+{{- end }}
+{{- range $key, $_ := $template }}
 {{- if not (has $key $specKeys) }}
 {{- fail (printf "nodeGroups.%s.spec.template.%s: unknown field (the API server would silently drop it); valid fields: %s" $name $key (join ", " $specKeys)) }}
 {{- end }}
 {{- end }}
-{{- range $i, $pool := (($spec.template | default dict).pools | default list) }}
-{{- if kindIs "map" $pool }}
-{{- range $key, $_ := $pool }}
-{{- if not (has $key $poolKeys) }}
-{{- fail (printf "nodeGroups.%s.spec.template.pools[%d].%s: unknown field (the API server would silently drop it); valid fields: %s" $name $i $key (join ", " $poolKeys)) }}
-{{- end }}
-{{- end }}
-{{- end }}
-{{- end }}
+{{- include "miroir-config.validatePools" (dict "path" (printf "nodeGroups.%s.spec.template.pools" $name) "pools" $template.pools) }}
 ---
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNodeGroup

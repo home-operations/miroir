@@ -18,27 +18,24 @@ package topology
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
-
-// zoneLabel is the standard failure-domain label the group resolves an
-// empty template zone from.
-const zoneLabel = "topology.kubernetes.io/zone"
 
 // NodeGroupReconciler materializes one MiroirNode per node matching a
 // MiroirNodeGroup's selector, so a fleet with a shared storage layout is
@@ -56,7 +53,10 @@ type NodeGroupReconciler struct {
 }
 
 // Reconcile converges one group: materialize matching nodes, revert
-// drifted managed specs, and report membership/conflicts/orphans.
+// drifted managed specs, and report membership/conflicts/orphans. One
+// failing node (a bad address annotation, an API hiccup) must not block
+// the rest of the fleet or the status report, so per-node errors are
+// collected and joined after the pass.
 func (r *NodeGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -70,8 +70,10 @@ func (r *NodeGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// CRD-validated shapes cannot fail here; guard anyway.
 		return ctrl.Result{}, fmt.Errorf("invalid nodeSelector: %w", err)
 	}
+	// Read-only pass over the cached Nodes (only name/labels/annotations
+	// are consumed), so skip the informer deep copies.
 	nodes := &corev1.NodeList{}
-	if err := r.List(ctx, nodes, client.MatchingLabelsSelector{Selector: selector}); err != nil {
+	if err := r.List(ctx, nodes, client.MatchingLabelsSelector{Selector: selector}, client.UnsafeDisableDeepCopy); err != nil {
 		return ctrl.Result{}, err
 	}
 	existing := &miroirv1alpha1.MiroirNodeList{}
@@ -84,13 +86,19 @@ func (r *NodeGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	var members, conflicts []string
+	var errs []error
+	memberSet := make(map[string]struct{}, len(nodes.Items))
+	errNodes := make(map[string]struct{})
 	for i := range nodes.Items {
 		node := &nodes.Items[i]
-		switch outcome, err := r.materialize(ctx, group, node, byName[node.Name]); {
+		member, err := r.materialize(ctx, group, node, byName[node.Name])
+		switch {
 		case err != nil:
-			return ctrl.Result{}, err
-		case outcome == memberOutcome:
+			errs = append(errs, fmt.Errorf("node %s: %w", node.Name, err))
+			errNodes[node.Name] = struct{}{}
+		case member:
 			members = append(members, node.Name)
+			memberSet[node.Name] = struct{}{}
 		default:
 			conflicts = append(conflicts, node.Name)
 		}
@@ -99,11 +107,19 @@ func (r *NodeGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Provenance-labeled MiroirNodes no longer matching the selector:
 	// deliberately left in place, surfaced instead of silently drifting.
+	// Nodes whose converge just failed are errors, not orphans.
 	var orphans []string
 	for name, mn := range byName {
-		if mn.Labels[miroirv1alpha1.NodeGroupLabel] == group.Name && !slices.Contains(members, name) {
-			orphans = append(orphans, name)
+		if mn.Labels[miroirv1alpha1.NodeGroupLabel] != group.Name {
+			continue
 		}
+		if _, ok := memberSet[name]; ok {
+			continue
+		}
+		if _, ok := errNodes[name]; ok {
+			continue
+		}
+		orphans = append(orphans, name)
 	}
 	slices.Sort(orphans)
 	slices.Sort(conflicts)
@@ -112,20 +128,17 @@ func (r *NodeGroupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		log.Info("node group skipped nodes with another manager",
 			"group", group.Name, "nodes", conflicts)
 	}
-	return ctrl.Result{}, r.patchStatus(ctx, group, members, conflicts, orphans)
+	if err := r.patchStatus(ctx, group, members, conflicts, orphans); err != nil {
+		errs = append(errs, err)
+	}
+	return ctrl.Result{}, errors.Join(errs...)
 }
 
-// materializeOutcome classifies one node's reconciliation.
-type materializeOutcome int
-
-const (
-	memberOutcome materializeOutcome = iota
-	conflictOutcome
-)
-
-// materialize creates or converges one member's MiroirNode. A MiroirNode
-// managed by nobody (direct-authored) or by another group is not touched.
-func (r *NodeGroupReconciler) materialize(ctx context.Context, group *miroirv1alpha1.MiroirNodeGroup, node *corev1.Node, current *miroirv1alpha1.MiroirNode) (materializeOutcome, error) {
+// materialize creates or converges one member's MiroirNode, reporting
+// member=false for a node whose MiroirNode has another manager. A
+// MiroirNode managed by nobody (direct-authored) or by another group is
+// not touched.
+func (r *NodeGroupReconciler) materialize(ctx context.Context, group *miroirv1alpha1.MiroirNodeGroup, node *corev1.Node, current *miroirv1alpha1.MiroirNode) (bool, error) {
 	desired := r.desiredSpec(group, node)
 	if current == nil {
 		mn := &miroirv1alpha1.MiroirNode{
@@ -135,30 +148,29 @@ func (r *NodeGroupReconciler) materialize(ctx context.Context, group *miroirv1al
 			},
 			Spec: desired,
 		}
+		// AlreadyExists is cache lag (often our own creation from the
+		// previous pass): surfacing it requeues, and the next pass
+		// classifies the object by its label instead of reporting a
+		// phantom conflict.
 		if err := r.Create(ctx, mn); err != nil {
-			// A concurrent creation (another group, a direct apply): the
-			// next pass classifies it by its label.
-			if apierrors.IsAlreadyExists(err) {
-				return conflictOutcome, nil
-			}
-			return conflictOutcome, err
+			return false, err
 		}
-		return memberOutcome, nil
+		return true, nil
 	}
 	if current.Labels[miroirv1alpha1.NodeGroupLabel] != group.Name {
-		return conflictOutcome, nil
+		return false, nil
 	}
 	if equality.Semantic.DeepEqual(current.Spec, desired) {
-		return memberOutcome, nil
+		return true, nil
 	}
 	// Managed means managed: template edits and node-fact changes (zone
 	// label, address annotation) converge the spec; hand-edits revert.
 	base := current.DeepCopy()
 	current.Spec = desired
 	if err := r.Patch(ctx, current, client.MergeFrom(base)); err != nil {
-		return conflictOutcome, err
+		return false, err
 	}
-	return memberOutcome, nil
+	return true, nil
 }
 
 // desiredSpec resolves the template against one node's per-node facts: an
@@ -168,7 +180,7 @@ func (r *NodeGroupReconciler) materialize(ctx context.Context, group *miroirv1al
 func (r *NodeGroupReconciler) desiredSpec(group *miroirv1alpha1.MiroirNodeGroup, node *corev1.Node) miroirv1alpha1.MiroirNodeSpec {
 	spec := *group.Spec.Template.DeepCopy()
 	if spec.Zone == "" {
-		spec.Zone = node.Labels[zoneLabel]
+		spec.Zone = node.Labels[corev1.LabelTopologyZone]
 	}
 	spec.Address = node.Annotations[miroirv1alpha1.NodeAddressAnnotation]
 	return spec
@@ -202,18 +214,21 @@ func (r *NodeGroupReconciler) patchStatus(ctx context.Context, group *miroirv1al
 		orphanCond.Message = "materialized MiroirNodes no longer match the selector and were left in place " +
 			"(decommission with kubectl delete miroirnode): " + strings.Join(orphans, ", ")
 	}
-	changedA := meta.SetStatusCondition(&group.Status.Conditions, conflictCond)
-	changedB := meta.SetStatusCondition(&group.Status.Conditions, orphanCond)
-	if !changedA && !changedB && equality.Semantic.DeepEqual(base.Status.Nodes, group.Status.Nodes) &&
-		base.Status.ObservedGeneration == group.Status.ObservedGeneration {
+	meta.SetStatusCondition(&group.Status.Conditions, conflictCond)
+	meta.SetStatusCondition(&group.Status.Conditions, orphanCond)
+	if equality.Semantic.DeepEqual(base.Status, group.Status) {
 		return nil
 	}
 	return r.Status().Patch(ctx, group, client.MergeFrom(base))
 }
 
-// SetupWithManager registers the reconciler. Node label/annotation changes
-// re-run every group (memberships may shift either way); managed
-// MiroirNode edits re-run their manager so drift reverts.
+// SetupWithManager registers the reconciler. Node changes re-run every
+// group, but only for the two node facts the reconciler consumes: labels
+// (selectors, zone) and the replication-address annotation. MiroirNode
+// events also re-run every group — an unlabeled object appearing, being
+// deleted, or a stripped provenance label can start or end a conflict for
+// any group claiming that node, and the events are rare (spec generation
+// and label changes only).
 func (r *NodeGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	enqueueAllGroups := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, _ client.Object) []ctrl.Request {
@@ -229,18 +244,21 @@ func (r *NodeGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			return reqs
 		})
+	// Node annotations churn under unrelated controllers (ttl, CNI, cloud
+	// providers); only the replication address matters here. Create and
+	// delete events pass through (predicate.Funcs defaults).
+	addressChanged := predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectOld.GetAnnotations()[miroirv1alpha1.NodeAddressAnnotation] !=
+				e.ObjectNew.GetAnnotations()[miroirv1alpha1.NodeAddressAnnotation]
+		},
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirNodeGroup{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Node{}, enqueueAllGroups, builder.WithPredicates(
-			predicate.Or(predicate.LabelChangedPredicate{}, predicate.AnnotationChangedPredicate{}))).
-		Watches(&miroirv1alpha1.MiroirNode{}, handler.EnqueueRequestsFromMapFunc(
-			func(_ context.Context, obj client.Object) []ctrl.Request {
-				owner := obj.GetLabels()[miroirv1alpha1.NodeGroupLabel]
-				if owner == "" {
-					return nil
-				}
-				return []ctrl.Request{{NamespacedName: client.ObjectKey{Name: owner}}}
-			}), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			predicate.Or(predicate.LabelChangedPredicate{}, addressChanged))).
+		Watches(&miroirv1alpha1.MiroirNode{}, enqueueAllGroups, builder.WithPredicates(
+			predicate.Or(predicate.GenerationChangedPredicate{}, predicate.LabelChangedPredicate{}))).
 		Named("nodegroup").
 		Complete(r)
 }

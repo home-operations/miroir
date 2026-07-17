@@ -337,6 +337,10 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: 'the group name becomes a label value on materialized MiroirNodes:
+            63 characters maximum'
+          rule: size(self.metadata.name) <= 63
     served: true
     storage: true
     subresources:

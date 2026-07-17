@@ -9,11 +9,6 @@
        and misconfigure the pool. The backend is the block that is present
        (lvmthin/zfs/loopfile); the CRD enforces exactly one. */ -}}
 {{- $specKeys := list "zone" "address" "autoEvict" "pools" }}
-{{- $poolKeys := list "name" "lvmthin" "zfs" "loopfile" }}
-{{- $backendKeys := dict
-      "lvmthin" (list "device" "poolSize")
-      "zfs" (list "dataset" "compression" "volBlockSize")
-      "loopfile" (list "baseDir") }}
 {{- range $name, $node := .Values.nodes }}
 {{- $spec := dict }}
 {{- if kindIs "map" $node }}
@@ -30,26 +25,7 @@
 {{- fail (printf "nodes.%s.spec.%s: unknown field (the API server would silently drop it); valid fields: %s" $name $key (join ", " $specKeys)) }}
 {{- end }}
 {{- end }}
-{{- $pools := list }}
-{{- if kindIs "slice" $spec.pools }}
-{{- $pools = $spec.pools }}
-{{- end }}
-{{- range $i, $pool := $pools }}
-{{- if kindIs "map" $pool }}
-{{- range $key, $block := $pool }}
-{{- if not (has $key $poolKeys) }}
-{{- fail (printf "nodes.%s.spec.pools[%d].%s: unknown field (the API server would silently drop it); valid fields: %s" $name $i $key (join ", " $poolKeys)) }}
-{{- end }}
-{{- if and (hasKey $backendKeys $key) (kindIs "map" $block) }}
-{{- range $bkey, $_ := $block }}
-{{- if not (has $bkey (get $backendKeys $key)) }}
-{{- fail (printf "nodes.%s.spec.pools[%d].%s.%s: unknown field (the API server would silently drop it); valid fields: %s" $name $i $key $bkey (join ", " (get $backendKeys $key))) }}
-{{- end }}
-{{- end }}
-{{- end }}
-{{- end }}
-{{- end }}
-{{- end }}
+{{- include "miroir-config.validatePools" (dict "path" (printf "nodes.%s.spec.pools" $name) "pools" $spec.pools) }}
 ---
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode

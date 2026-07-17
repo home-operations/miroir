@@ -37,6 +37,7 @@ const (
 	nodeBergen = "bergen"
 
 	poolDefault = "default"
+	poolFast    = "fast"
 	zoneRack1   = "rack-1"
 	volBlock16K = "16K"
 	datasetTank = "tank/miroir"
@@ -55,7 +56,7 @@ func TestFromSpecFlattensBackendBlocks(t *testing.T) {
 		Pools: []miroirv1alpha1.MiroirNodePool{
 			{Name: poolDefault,
 				LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/disk/by-partlabel/r-miroir", PoolSize: "400g"}},
-			{Name: "fast",
+			{Name: poolFast,
 				ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, Compression: "inherit", VolBlockSize: volBlock16K}},
 			{Name: "scratch",
 				Loopfile: &miroirv1alpha1.LoopfilePool{BaseDir: "/var/lib/miroir"}},
@@ -69,7 +70,7 @@ func TestFromSpecFlattensBackendBlocks(t *testing.T) {
 		def.Device != "/dev/disk/by-partlabel/r-miroir" || def.ThinPoolSize != "400g" {
 		t.Fatalf("lvmthin pool flattened wrong: %+v", def)
 	}
-	zfs := n.Pools["fast"]
+	zfs := n.Pools[poolFast]
 	if zfs.Backend != miroirv1alpha1.BackendZFS ||
 		zfs.ZFSDataset != datasetTank || zfs.ZFSCompression != "inherit" ||
 		zfs.ZFSVolBlockSize != volBlock16K || zfs.ZFSVolBlockSizeBytes() != 16<<10 {
@@ -81,26 +82,32 @@ func TestFromSpecFlattensBackendBlocks(t *testing.T) {
 	}
 }
 
+// A pre-0.11 stored object survives CRD revalidation with block-less pool
+// entries (its flat fields are pruned on read). Those must vanish from the
+// flattened map — an empty-backend Pool would crash-loop the agent through
+// backend.New("") — so consumers treat the pool as absent until the node's
+// real MiroirNode manifest is applied.
+func TestFromSpecSkipsBlocklessPools(t *testing.T) {
+	n := FromSpec(miroirv1alpha1.MiroirNodeSpec{
+		Pools: []miroirv1alpha1.MiroirNodePool{
+			{Name: poolDefault},
+			{Name: poolFast, ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank}},
+		},
+	})
+	if _, ok := n.Pools[poolDefault]; ok {
+		t.Fatalf("block-less pool must be skipped, got %+v", n.Pools[poolDefault])
+	}
+	if n.Pools[poolFast].Backend != miroirv1alpha1.BackendZFS {
+		t.Fatalf("sibling pool must still flatten: %+v", n.Pools[poolFast])
+	}
+}
+
 // The CRD defaults compression/volBlockSize on write, but a spec read
 // before defaulting (or built by hand) must still resolve sane values.
 func TestZFSVolBlockSizeDefaults(t *testing.T) {
 	p := Pool{Backend: miroirv1alpha1.BackendZFS}
 	if p.ZFSVolBlockSizeBytes() != 4<<10 {
 		t.Fatalf("empty volBlockSize should default to 4K, got %d bytes", p.ZFSVolBlockSizeBytes())
-	}
-}
-
-// A pool whose backend block is missing (an old object written before the
-// CRD required it, mid-upgrade) folds to an empty-config pool instead of
-// panicking; the agent's backend setup reports the missing config.
-func TestFromSpecToleratesMissingBlock(t *testing.T) {
-	// Unreachable through the CRD (exactly one block is required), but a
-	// stored pre-validation object must fold to an empty pool, not panic.
-	n := FromSpec(miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{
-		{Name: poolDefault},
-	}})
-	if p := n.Pools[poolDefault]; p.Backend != "" || p.ZFSDataset != "" {
-		t.Fatalf("missing block should fold empty, got %+v", p)
 	}
 }
 
@@ -213,12 +220,12 @@ func TestAutoEvictOptOut(t *testing.T) {
 func TestPoolLookup(t *testing.T) {
 	m := Map{nodeA: {Pools: map[string]Pool{
 		"default": {Backend: miroirv1alpha1.BackendLVMThin},
-		"fast":    {Backend: miroirv1alpha1.BackendZFS},
+		poolFast:  {Backend: miroirv1alpha1.BackendZFS},
 	}}}
 	if p, ok := m.Pool(nodeA, ""); !ok || p.Backend != miroirv1alpha1.BackendLVMThin {
 		t.Fatalf("empty pool name should resolve the default pool, got %+v %t", p, ok)
 	}
-	if p, ok := m.Pool(nodeA, "fast"); !ok || p.Backend != miroirv1alpha1.BackendZFS {
+	if p, ok := m.Pool(nodeA, poolFast); !ok || p.Backend != miroirv1alpha1.BackendZFS {
 		t.Fatalf("named pool lookup wrong: %+v %t", p, ok)
 	}
 	if _, ok := m.Pool(nodeA, "absent"); ok {

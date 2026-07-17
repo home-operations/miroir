@@ -70,7 +70,9 @@ nodes: {}
 # annotation on the Node (never the template). Direct `nodes` entries
 # and hand-authored MiroirNodes always win over groups, and a node
 # leaving the selector orphans its MiroirNode in place — decommissioning
-# stays an explicit `kubectl delete miroirnode <name>`.
+# a member is unlabeling its node first, then the explicit
+# `kubectl delete miroirnode <name>` (deleting while the node still
+# matches just makes the group recreate it).
 # nodeGroups:
 #   workers:
 #     spec:

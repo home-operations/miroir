@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // loopfile provisions volumes as sparse files on a node's existing
@@ -51,6 +52,33 @@ func newLoopfile(cfg Config, e Exec) *loopfile {
 	return &loopfile{baseDir: cfg.BaseDir, exec: e}
 }
 
+// hostMounted reports whether path lives on a different filesystem than
+// the container root. The chart cannot derive the agent's hostPath mounts
+// from MiroirNode CRs at render time, so a baseDir missing from
+// agent.loopfileBaseDirs is a silent trap: mkdir creates it on the
+// container's own writable layer, the reflink probe can still pass there
+// (overlayfs passes FICLONE through to an XFS/btrfs upper), and volumes
+// land in storage that vanishes with the pod. A hostPath bind is by
+// construction a different superblock than the container rootfs, so a
+// device comparison is the fs-type-agnostic test. Swappable for tests
+// that fake the exec layer on arbitrary filesystems.
+var hostMounted = func(path string) (bool, error) {
+	pathInfo, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	rootInfo, err := os.Stat("/")
+	if err != nil {
+		return false, err
+	}
+	pathStat, okP := pathInfo.Sys().(*syscall.Stat_t)
+	rootStat, okR := rootInfo.Sys().(*syscall.Stat_t)
+	if !okP || !okR {
+		return false, fmt.Errorf("stat %s: no unix stat data", path)
+	}
+	return pathStat.Dev != rootStat.Dev, nil
+}
+
 func (lf *loopfile) volDir() string  { return filepath.Join(lf.baseDir, "volumes") }
 func (lf *loopfile) snapDir() string { return filepath.Join(lf.baseDir, "snapshots") }
 func (lf *loopfile) devDir() string  { return filepath.Join(lf.baseDir, "dev") }
@@ -72,6 +100,14 @@ func (lf *loopfile) Setup(ctx context.Context) error {
 		if _, err := lf.exec(ctx, "mkdir", "-p", d); err != nil {
 			return fmt.Errorf("mkdir %s: %w", d, err)
 		}
+	}
+	switch onHost, err := hostMounted(lf.baseDir); {
+	case err != nil:
+		return fmt.Errorf("stat %s: %w", lf.baseDir, err)
+	case !onHost:
+		return fmt.Errorf("base dir %s is on the agent container's own filesystem, not a host mount: "+
+			"list it in the miroir chart's agent.loopfileBaseDirs so the kubelet mounts it "+
+			"(volumes created here would vanish with the pod)", lf.baseDir)
 	}
 	// Loop numbers are kernel-assigned per boot, but the volume symlinks
 	// live on the persistent base filesystem: after a reboot a stale link
