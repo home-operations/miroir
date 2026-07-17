@@ -31,7 +31,7 @@ tie-breaker fixes.
 ## The diskless tie-breaker
 
 When a 2-replica `freeze` volume is created and a third storage node
-in the `nodes` map holds neither leg, the controller adds that node
+in the topology holds neither leg, the controller adds that node
 as a diskless tie-breaker: a DRBD peer configured with `disk none` that
 joins quorum voting but stores nothing; no backing device, no
 capacity used, no part in snapshots or CSI topology. With 3 votes,
@@ -44,7 +44,7 @@ Behavior and knobs:
   leg occupies is preferred (`nodes.<node>.spec.zone`); ties break by
   node name.
 - **Existing volumes are retrofitted.** Adding a third node to
-  `nodes` appends a tie-breaker to every 2-replica `freeze` volume
+  the topology (applying its MiroirNode) appends a tie-breaker to every 2-replica `freeze` volume
   that lacks one — the controller follows MiroirNode changes live, no
   restart involved.
   Editing a volume's `spec.quorumPolicy` from `last-man-standing` to

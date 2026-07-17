@@ -1,0 +1,21 @@
+# Storage classes for the single-node kind e2e: plain manifests, exactly
+# what the docs tell users to author. The topology (a MiroirNodeGroup)
+# is applied by the e2e-provision task, which knows the loop device.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: miroir-local
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  miroir.home-operations.com/replicas: "1"
+  csi.storage.k8s.io/fstype: ext4
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: miroir-snap
+driver: miroir.home-operations.com
+deletionPolicy: Delete

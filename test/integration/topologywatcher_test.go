@@ -50,7 +50,7 @@ var _ = Describe("TopologyWatcher boot event", func() {
 			Client:   mgr.GetClient(),
 			NodeName: "boot-race-node", // no MiroirNode of this name exists
 			BootedPools: []miroirv1alpha1.MiroirNodePool{{
-				Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+				Name:    poolDefault,
 				LVMThin: &miroirv1alpha1.LVMThinPool{Device: deviceSDB},
 			}},
 			Stop: func() { once.Do(func() { close(stopped) }) },

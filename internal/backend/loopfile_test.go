@@ -20,10 +20,35 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 var lcfg = Config{BaseDir: "/var/lib/miroir"}
+
+// The unit tests fake the exec layer against paths that do not exist on
+// the test machine, so the real host-mount stat cannot run; the guard has
+// its own test below.
+func TestMain(m *testing.M) {
+	hostMounted = func(string) (bool, error) { return true, nil }
+	os.Exit(m.Run())
+}
+
+func TestLoopfileSetupRejectsContainerFS(t *testing.T) {
+	orig := hostMounted
+	hostMounted = func(string) (bool, error) { return false, nil }
+	t.Cleanup(func() { hostMounted = orig })
+	fe := &fakeExec{}
+	b := newLoopfile(lcfg, fe.run)
+
+	err := b.Setup(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "agent.loopfileBaseDirs") {
+		t.Fatalf("the host-mount guard must fail Setup with a pointer at the chart value, got %v", err)
+	}
+	// Refuse before probing: a reflink probe on the container's own
+	// filesystem could succeed and mask the misconfiguration.
+	fe.notCalledWith(t, "truncate")
+}
 
 func TestLoopfileCreateAttachesNewFile(t *testing.T) {
 	fe := &fakeExec{}

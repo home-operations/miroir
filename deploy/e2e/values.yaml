@@ -1,7 +1,6 @@
-# Helm values for the single-node kind e2e (mise run test-e2e). `nodes` is
-# injected with --set by the e2e-provision task (the node name and loop device
-# path are only known after the cluster is up). Local backend only — kind has
-# no DRBD, so the replicated class is omitted.
+# Driver-chart values for the single-node kind e2e (mise run test-e2e).
+# Topology and classes are plain manifests (deploy/e2e/classes.yaml + the
+# MiroirNodeGroup the e2e-provision task applies with the loop device).
 image:
   repository: miroir-controller
   tag: e2e
@@ -12,16 +11,3 @@ agent:
     repository: miroir-agent
     tag: e2e
     pullPolicy: IfNotPresent
-
-# Local backend only — kind has no DRBD, so no replicated class. Default
-# class so a PVC with no storageClassName still resolves to miroir.
-storageClasses:
-  - name: miroir-local
-    replicas: 1
-    isDefault: true
-    fsType: ext4
-    reclaimPolicy: Delete
-
-volumeSnapshotClasses:
-  - name: miroir-snap
-    deletionPolicy: Delete

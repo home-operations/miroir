@@ -18,31 +18,25 @@ limitations under the License.
 
 package v1alpha1
 
-import (
-	apiv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
-)
-
 // MiroirNodePoolApplyConfiguration represents a declarative configuration of the MiroirNodePool type for use
 // with apply.
 //
-// MiroirNodePool is one named storage pool on a node: the backend
-// implementation plus that backend's configuration block. Pool names are
-// cluster-wide identities — a StorageClass selects a pool by name and the
-// controller places each replica on a node carrying that pool.
+// MiroirNodePool is one named storage pool on a node. The backend is the
+// configuration block that is present — exactly one of lvmthin/zfs/
+// loopfile, even when it has nothing to say (lvmthin: {} when the VG
+// already exists). Pool names are cluster-wide identities — a
+// StorageClass selects a pool by name and the controller places each
+// replica on a node carrying that pool.
 type MiroirNodePoolApplyConfiguration struct {
 	// Name is the pool name ("default" for the pre-multi-pool single
 	// pool). It becomes an LVM VG name suffix, a metric label value, and a
 	// StorageClass parameter, so it stays a short lowercase identifier.
 	Name *string `json:"name,omitempty"`
-	// Backend is the storage implementation backing this pool. An explicit
-	// discriminator (not inferred from the block below): it is also
-	// persisted per Replica, beyond pool config.
-	Backend *apiv1alpha1.BackendType `json:"backend,omitempty"`
-	// LVMThin configures the pool when backend is lvmthin.
+	// LVMThin makes this an lvmthin pool.
 	LVMThin *LVMThinPoolApplyConfiguration `json:"lvmthin,omitempty"`
-	// ZFS configures the pool when backend is zfs.
+	// ZFS makes this a zfs pool.
 	ZFS *ZFSPoolApplyConfiguration `json:"zfs,omitempty"`
-	// Loopfile configures the pool when backend is loopfile.
+	// Loopfile makes this a loopfile pool.
 	Loopfile *LoopfilePoolApplyConfiguration `json:"loopfile,omitempty"`
 }
 
@@ -57,14 +51,6 @@ func MiroirNodePool() *MiroirNodePoolApplyConfiguration {
 // If called multiple times, the Name field is set to the value of the last call.
 func (b *MiroirNodePoolApplyConfiguration) WithName(value string) *MiroirNodePoolApplyConfiguration {
 	b.Name = &value
-	return b
-}
-
-// WithBackend sets the Backend field in the declarative configuration to the given value
-// and returns the receiver, so that objects can be built by chaining "With" function invocations.
-// If called multiple times, the Backend field is set to the value of the last call.
-func (b *MiroirNodePoolApplyConfiguration) WithBackend(value apiv1alpha1.BackendType) *MiroirNodePoolApplyConfiguration {
-	b.Backend = &value
 	return b
 }
 

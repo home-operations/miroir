@@ -202,8 +202,9 @@ jobs:
             echo "pinned ${comp} -> ${digest}"
           done
 
-      - name: Package Helm chart
-        run: helm package charts/miroir --version "${VERSION}" --app-version "${VERSION}"
+      - name: Package Helm charts
+        run: |
+          helm package charts/miroir --version "${VERSION}" --app-version "${VERSION}"
 
       - name: Log in to Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -212,8 +213,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish Helm chart to GHCR (OCI)
-        run: helm push "miroir-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+      - name: Publish Helm charts to GHCR (OCI)
+        run: |
+          helm push "miroir-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
 
-      - name: Sign the published chart with Cosign
-        run: cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/miroir:${VERSION}"
+      - name: Sign the published charts with Cosign
+        run: |
+          cosign sign --yes "ghcr.io/${{ github.repository_owner }}/charts/miroir:${VERSION}"

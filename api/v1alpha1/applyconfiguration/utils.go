@@ -44,6 +44,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1alpha1.LVMThinPoolApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNode"):
 		return &apiv1alpha1.MiroirNodeApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNodeGroup"):
+		return &apiv1alpha1.MiroirNodeGroupApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNodeGroupSpec"):
+		return &apiv1alpha1.MiroirNodeGroupSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNodeGroupStatus"):
+		return &apiv1alpha1.MiroirNodeGroupStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNodePool"):
 		return &apiv1alpha1.MiroirNodePoolApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirNodePoolStatus"):

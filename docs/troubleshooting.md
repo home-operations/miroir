@@ -16,7 +16,7 @@
   (see [Requirements](requirements.md)); the agent refuses to start
   rather than render options the module rejects. The agent log names
   the probed version and the floor.
-- **PVC stays `Pending`**: every node in your `nodes` map is missing
+- **PVC stays `Pending`**: every node with a MiroirNode is missing
   or full. `kubectl describe pvc` shows the controller's reason.
 - **Replicated volume stuck in `Degraded`**: one leg isn't
   `UpToDate`. `kubectl describe miroirvolume <name>` shows per-node

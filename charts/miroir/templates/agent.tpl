@@ -1,18 +1,10 @@
-{{- /* Distinct loopfile base directories across nodes, identity-mounted
-       (host path == container path) so losetup/reflink see the same path
-       the agent reads from its MiroirNode spec. DirectoryOrCreate is
-       harmless on nodes that don't use the loopfile backend. This is the
-       chart's cross-cutting wiring over the pass-through node specs, not
-       validation. */ -}}
-{{- $loopDirs := list }}
-{{- range $name, $node := .Values.nodes }}
-{{-   range $pool := ($node.spec).pools }}
-{{-     if $pool.loopfile }}
-{{-       $loopDirs = append $loopDirs $pool.loopfile.baseDir }}
-{{-     end }}
-{{-   end }}
-{{- end }}
-{{- $loopDirs = $loopDirs | uniq }}
+{{- /* Loopfile base directories, identity-mounted (host path == container
+       path) so losetup/reflink see the same path the agent reads from its
+       MiroirNode spec. The topology lives in MiroirNode CRs the chart
+       cannot see at render time, but hostPath mounts are pod spec — so
+       loopfile users list their baseDirs here. DirectoryOrCreate is
+       harmless on nodes that don't use the loopfile backend. */ -}}
+{{- $loopDirs := .Values.agent.loopfileBaseDirs | default list | uniq }}
 {{- if and .Values.drbd.verify.schedule (not .Values.drbd.verify.algorithm) }}
 {{- fail "drbd.verify.schedule requires drbd.verify.algorithm — a scheduled verify is meaningless without an arming verify-alg" }}
 {{- end }}

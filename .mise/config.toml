@@ -62,8 +62,8 @@ run = "helm unittest charts/miroir"
 description = "Verify chart README + values.schema.json are in sync with values.yaml"
 run = '''
 helm-docs --chart-search-root=charts --log-level=warn
-helm-schema --chart-search-root charts/miroir --skip-auto-generation required,additionalProperties --append-newline
-git diff --exit-code charts/miroir/README.md charts/miroir/values.schema.json
+helm-schema --chart-search-root charts --skip-auto-generation required,additionalProperties --append-newline
+git diff --exit-code charts/*/README.md charts/*/values.schema.json
 '''
 
 [tasks.helm-docs]
@@ -73,7 +73,7 @@ helm-docs --chart-search-root=charts --log-level=warn
 # required/additionalProperties are skipped so the schema stays permissive: values.yaml
 # supplies every default and the free-form maps stay open. --append-newline gives a
 # clean EOF; the file is .prettierignore'd (a generated artifact), so oxfmt skips it.
-helm-schema --chart-search-root charts/miroir --skip-auto-generation required,additionalProperties --append-newline
+helm-schema --chart-search-root charts --skip-auto-generation required,additionalProperties --append-newline
 """
 
 [tasks.helm-crds]
@@ -160,14 +160,40 @@ kubectl wait --for=condition=established --timeout=60s \
 kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//deploy/kubernetes/snapshot-controller?ref=$snap_ver"
 kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 
+# Config is CR-first: CRDs, then the topology + class manifests, then
+# the driver — the same order the upgrade guide mandates, so the agent
+# boots straight into storage mode instead of client-only + self-restart.
+# The topology goes through a labeled MiroirNodeGroup, which is the group
+# controller's end-to-end coverage: label → group → materialized
+# MiroirNode → agent.
+echo "==> applying CRDs + storage manifests for $node"
+kubectl apply -f charts/miroir/crds/
+kubectl wait --for=condition=established --timeout=60s \
+  crd/miroirnodes.miroir.home-operations.com \
+  crd/miroirnodegroups.miroir.home-operations.com
+kubectl label node "$node" storage.miroir.home-operations.com/class=e2e --overwrite
+kubectl apply -f deploy/e2e/classes.yaml
+kubectl apply -f - <<EOF
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNodeGroup
+metadata:
+  name: e2e
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.miroir.home-operations.com/class: e2e
+  template:
+    pools:
+      - name: default
+        lvmthin:
+          device: ${device}
+EOF
+
 echo "==> helm install miroir"
 helm upgrade --install miroir charts/miroir \
   --namespace miroir-system --create-namespace \
   --wait --timeout 5m \
-  -f deploy/e2e/values.yaml \
-  --set "nodes.${node}.spec.pools[0].name=default" \
-  --set "nodes.${node}.spec.pools[0].backend=lvmthin" \
-  --set "nodes.${node}.spec.pools[0].lvmthin.device=${device}"
+  -f deploy/e2e/values.yaml
 '''
 
 [tasks.e2e-run]

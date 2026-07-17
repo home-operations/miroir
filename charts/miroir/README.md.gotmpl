@@ -34,31 +34,13 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
 Version-specific steps live in the
 [upgrade guide](https://miroir.home-operations.com/upgrading/).
 
-## Storage topology
+## Storage configuration
 
-Each entry under `nodes` is rendered as a MiroirNode custom resource;
-the `spec` is passed through verbatim and validated by the CRD (see
-`kubectl explain miroirnode.spec`). For example, a ZFS pool with its
-optional zvol settings (`volBlockSize` `4K` through `128K`, default
-`4K`; `compression` default `lz4`, `inherit` for the parent dataset
-policy):
-
-```yaml
-nodes:
-  node-a:
-    spec:
-      pools:
-        - name: default
-          backend: zfs
-          zfs:
-            dataset: tank/miroir
-            volBlockSize: 16K
-            compression: inherit
-```
-
-Both settings apply only to newly created zvols. Existing volumes are not
-mutated, and snapshot clones retain their source properties.
-
+This chart installs only the driver. The node topology
+(MiroirNode/MiroirNodeGroup custom resources), StorageClasses, and
+VolumeSnapshotClasses are plain manifests — see the
+[quickstart](https://miroir.home-operations.com/quickstart/) for the
+layouts.
 
 {{ template "chart.maintainersSection" . }}
 

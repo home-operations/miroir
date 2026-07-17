@@ -48,10 +48,13 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
 
 ## 0.10.x → 0.11.0: node topology becomes MiroirNode CRs
 
-The per-node storage topology moves out of the Helm-rendered ConfigMap and
-into `MiroirNode` custom resources. The chart still renders them from `nodes`
-in your values (one reviewed document, as before), but the values are now a
-pass-through of the CRD spec and the CRD schema is what validates them.
+The storage configuration moves out of the miroir chart entirely: the
+node topology becomes `MiroirNode` custom resources (or a
+`MiroirNodeGroup` materializing them from a label selector) and,
+together with the StorageClasses and VolumeSnapshotClasses, is now
+plain manifests you apply and version yourself — the miroir chart
+installs only the driver. The CRD schema is what validates the
+topology, and `kubectl apply` rejects unknown fields outright.
 Alongside the move:
 
 - Pool options are grouped under a per-backend block (`lvmthin`, `zfs`, or
@@ -76,45 +79,28 @@ kubectl apply --server-side -f -` for plain Helm.
 
 Doing this first is what makes the rest of the upgrade safe: the new schema
 refuses the partial topology writes 0.10 agents make while the rollout is in
-flight (see step 4). Skip it and the old schema instead prunes the new pool
-fields from the chart's apply. The prune is quiet, and the agents then fail
-on configuration you can plainly see in your values.
+flight (see step 3). Skip it and the old schema instead prunes the new pool
+fields from your manifests. The prune is quiet, and the agents then fail
+on configuration you can plainly see in your files.
 
 ///
 
-### 2. Adopt the existing MiroirNode objects into the release
+### 2. Move the storage configuration to manifests
 
-Your cluster already has one `MiroirNode` per storage node; the 0.10 agents
-created them to publish pool capacity. In 0.11 the chart renders these
-objects, and Helm refuses to overwrite resources it does not own. Mark them
-as release-owned before upgrading (adjust the release name and namespace if
-yours differ):
+The `nodes`, `storageClasses`, and `volumeSnapshotClasses` values
+become plain manifests. For `nodes`, each entry becomes a `MiroirNode`
+object of the same name (the old values are the CR spec, reshaped):
+`pools` becomes a list of named entries, and each pool's options move
+under its backend's block:
 
-```bash
-for n in $(kubectl get miroirnodes -o name); do
-  kubectl annotate "$n" \
-    meta.helm.sh/release-name=miroir \
-    meta.helm.sh/release-namespace=miroir-system --overwrite
-  kubectl label "$n" app.kubernetes.io/managed-by=Helm --overwrite
-done
-```
-
-Skipping this fails the `helm upgrade` with `invalid ownership metadata`
-naming the first un-adopted MiroirNode; adopting and re-running is the fix.
-
-### 3. Rewrite the `nodes` values
-
-Each node gains a `spec:` wrapper (the values are the CR spec verbatim),
-`pools` becomes a list of named entries, and each pool's options move under
-its backend's block:
-
-| 0.10.x                          | 0.11.0                        |
+| 0.10.x values                   | MiroirNode manifest           |
 | ------------------------------- | ----------------------------- |
-| `nodes.<n>.zone`                | `nodes.<n>.spec.zone`         |
-| `nodes.<n>.address`             | `nodes.<n>.spec.address`      |
-| `nodes.<n>.autoEvict`           | `nodes.<n>.spec.autoEvict`    |
-| `nodes.<n>.pools.<p>` (map key) | `nodes.<n>.spec.pools[].name` |
-| `...pools.<p>.backend`          | `...pools[].backend`          |
+| `nodes.<n>` (map key)           | `metadata.name`               |
+| `nodes.<n>.zone`                | `spec.zone`                   |
+| `nodes.<n>.address`             | `spec.address`                |
+| `nodes.<n>.autoEvict`           | `spec.autoEvict`              |
+| `nodes.<n>.pools.<p>` (map key) | `spec.pools[].name`           |
+| `...pools.<p>.backend`          | (implied by the block below)  |
 | `...pools.<p>.device`           | `...pools[].lvmthin.device`   |
 | `...pools.<p>.thinPoolSize`     | `...pools[].lvmthin.poolSize` |
 | `...pools.<p>.zfsDataset`       | `...pools[].zfs.dataset`      |
@@ -122,10 +108,23 @@ its backend's block:
 | `...pools.<p>.zfsVolBlockSize`  | `...pools[].zfs.volBlockSize` |
 | `...pools.<p>.baseDir`          | `...pools[].loopfile.baseDir` |
 
-The selected backend's block is required, even when it has nothing to say: an
-lvmthin pool whose VG already exists still writes `lvmthin: {}`.
+There is no `backend` field any more: the block that is present IS the
+backend, so exactly one of `lvmthin`/`zfs`/`loopfile` is required even
+when it has nothing to say — an lvmthin pool whose VG already exists
+still writes `lvmthin: {}`. A homogeneous fleet can become one
+`MiroirNodeGroup` instead of per-node objects
+([Quickstart](quickstart.md) shows the layout).
 
-Before:
+Each `storageClasses` entry becomes a standard StorageClass manifest:
+the chart's knobs map to `parameters`
+([the full table](configuration.md#storageclass-parameters)), and what
+the chart used to default now needs writing —
+`volumeBindingMode: WaitForFirstConsumer`, `allowVolumeExpansion: true`,
+and the `storageclass.kubernetes.io/is-default-class` annotation where
+`isDefault` was used. `volumeSnapshotClasses` entries become
+VolumeSnapshotClass manifests (`driver` + `deletionPolicy`).
+
+Before (0.10 miroir values):
 
 ```yaml
 nodes:
@@ -136,55 +135,95 @@ nodes:
         backend: lvmthin
         device: /dev/disk/by-partlabel/r-miroir
         thinPoolSize: 400g
-  k8s-1:
-    zone: rack-2
-    pools:
-      default:
-        backend: zfs
-        zfsDataset: tank/miroir
-        zfsVolBlockSize: 16K
+storageClasses:
+  - name: miroir-replicated
+    replicas: 2
 ```
 
-After:
+After (plain manifests):
 
 ```yaml
-nodes:
-  k8s-0:
-    spec:
-      zone: rack-1
-      pools:
-        - name: default
-          backend: lvmthin
-          lvmthin:
-            device: /dev/disk/by-partlabel/r-miroir
-            poolSize: 400g
-  k8s-1:
-    spec:
-      zone: rack-2
-      pools:
-        - name: default
-          backend: zfs
-          zfs:
-            dataset: tank/miroir
-            volBlockSize: 16K
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+  name: k8s-0
+spec:
+  zone: rack-1
+  pools:
+    - name: default
+      lvmthin:
+        device: /dev/disk/by-partlabel/r-miroir
+        poolSize: 400g
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: miroir-replicated
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  miroir.home-operations.com/replicas: "2"
+  csi.storage.k8s.io/fstype: ext4
 ```
 
-The chart fails fast on the pre-0.11 shape with a pointer at this page, so a
-missed node is a template error rather than a broken cluster.
+Apply the MiroirNode manifests **before** upgrading the driver chart,
+so the rolled agents boot straight into storage mode. Your cluster
+already has one `MiroirNode` per storage node (the 0.10 agents created
+them to publish pool capacity); `kubectl apply` over them just works —
+the spec becomes yours, the status stays the agents'. Declaring the
+fleet as a MiroirNodeGroup instead? The existing MiroirNodes carry no
+group label, so the group reports them as Conflict and touches nothing
+(a direct MiroirNode always wins). Hand them over explicitly — the
+group then converges each spec to its template:
 
-### 4. Upgrade and let the agents roll
+```bash
+kubectl label miroirnodes --all \
+  miroir.home-operations.com/node-group=<group-name>
+```
 
-Run the upgrade as usual. While the agent DaemonSet rolls node by node, the
-not-yet-rolled 0.10 agents keep trying to write their old, partial pool
-topology into the MiroirNode spec; the new CRD schema rejects those writes.
-That is by design (it stops an old agent from wiping the pool configuration
-the chart just rendered), and the visible cost is small: a node's
-pool-capacity heartbeat pauses until its agent rolls, so `status.observedAt`
-on some MiroirNodes goes stale for the duration of the rollout, and 0.10
-agents log rejected MiroirNode updates. Both clear on their own as the
-rollout completes.
+The classes need one extra step. The 0.10 miroir release's manifest
+still lists your StorageClass/VolumeSnapshotClass objects, and a Helm
+upgrade deletes objects that dropped out of the manifest by name; the
+one thing it respects is a `helm.sh/resource-policy: keep` annotation
+on the live object. **Shield them before step 3**:
 
-### 5. Verify
+```bash
+classes="$(kubectl get storageclasses -o jsonpath='{range .items[?(@.provisioner=="miroir.home-operations.com")]}storageclass.storage.k8s.io/{.metadata.name} {end}')
+$(kubectl get volumesnapshotclasses -o jsonpath='{range .items[?(@.driver=="miroir.home-operations.com")]}volumesnapshotclass.snapshot.storage.k8s.io/{.metadata.name} {end}' 2>/dev/null)"
+kubectl annotate $classes helm.sh/resource-policy=keep --overwrite
+```
+
+After step 3 they are plain, unowned objects — the manifests you
+authored above are their source of truth from then on (apply them over
+the live objects, and drop the keep annotation if you like:
+`kubectl annotate $classes helm.sh/resource-policy-`). MiroirNodes need
+no shielding: the 0.10 chart never rendered them. Clusters tracking
+unreleased main are the one exception — a development-window chart
+briefly rendered MiroirNodes — so there, extend the annotate command
+with `$(kubectl get miroirnodes -o name)`.
+
+Loopfile users: also set the driver chart's `agent.loopfileBaseDirs`
+to every `loopfile.baseDir` in use — the agent pod's hostPath mounts
+are pod spec, which the driver chart cannot derive from objects it
+does not render.
+
+### 3. Upgrade the driver chart and let the agents roll
+
+Remove `nodes`, `storageClasses`, and `volumeSnapshotClasses` from the
+miroir chart's values (it fails fast with a pointer at this page if any
+is still set) and run the upgrade as usual. While the
+agent DaemonSet rolls node by node, the not-yet-rolled 0.10 agents keep
+trying to write their old, partial pool topology into the MiroirNode
+spec; the new CRD schema rejects those writes. That is by design (it
+stops an old agent from wiping the pool configuration you just
+applied), and the visible cost is small: a node's pool-capacity
+heartbeat pauses until its agent rolls, so `status.observedAt` on some
+MiroirNodes goes stale for the duration of the rollout, and 0.10 agents
+log rejected MiroirNode updates. Both clear on their own as the rollout
+completes.
+
+### 4. Verify
 
 ```bash
 kubectl get miroirnodes
@@ -192,9 +231,9 @@ kubectl get miroirnode <node> -o yaml
 ```
 
 `spec.pools` on every storage node should show the per-backend blocks from
-your values (`lvmthin.device`, `zfs.dataset`, ...). If a block is missing,
-the CRD update in step 1 was skipped and the old schema pruned it: apply the
-CRDs and run the upgrade again.
+your configuration (`lvmthin.device`, `zfs.dataset`, ...). If a block is
+missing, the CRD update in step 1 was skipped and the old schema pruned it:
+apply the CRDs and then your manifests again.
 
 ### Also breaking, but unlikely to affect you
 

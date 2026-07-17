@@ -125,8 +125,10 @@ func (s *CRSource) Map(ctx context.Context) (Map, error) {
 func (m Map) Map(context.Context) (Map, error) { return m, nil }
 
 // FromSpec flattens one MiroirNode spec into the internal node shape. The
-// backend discriminator selects which block is read; the CRD guarantees
-// the matching block is the one set.
+// backend is the configuration block that is present; the CRD guarantees
+// exactly one is set on every write, but a pre-0.11 stored object survives
+// revalidation with block-less entries (its old flat fields are pruned on
+// read), so those are skipped rather than flattened into an empty backend.
 func FromSpec(spec miroirv1alpha1.MiroirNodeSpec) Node {
 	n := Node{
 		Zone:      spec.Zone,
@@ -135,23 +137,28 @@ func FromSpec(spec miroirv1alpha1.MiroirNodeSpec) Node {
 		Pools:     make(map[string]Pool, len(spec.Pools)),
 	}
 	for _, p := range spec.Pools {
-		pool := Pool{Backend: p.Backend}
-		switch p.Backend {
-		case miroirv1alpha1.BackendLVMThin:
-			if p.LVMThin != nil {
-				pool.Device = p.LVMThin.Device
-				pool.ThinPoolSize = p.LVMThin.PoolSize
+		var pool Pool
+		switch {
+		case p.LVMThin != nil:
+			pool = Pool{
+				Backend:      miroirv1alpha1.BackendLVMThin,
+				Device:       p.LVMThin.Device,
+				ThinPoolSize: p.LVMThin.PoolSize,
 			}
-		case miroirv1alpha1.BackendZFS:
-			if p.ZFS != nil {
-				pool.ZFSDataset = p.ZFS.Dataset
-				pool.ZFSCompression = p.ZFS.Compression
-				pool.ZFSVolBlockSize = p.ZFS.VolBlockSize
+		case p.ZFS != nil:
+			pool = Pool{
+				Backend:         miroirv1alpha1.BackendZFS,
+				ZFSDataset:      p.ZFS.Dataset,
+				ZFSCompression:  p.ZFS.Compression,
+				ZFSVolBlockSize: p.ZFS.VolBlockSize,
 			}
-		case miroirv1alpha1.BackendLoopfile:
-			if p.Loopfile != nil {
-				pool.BaseDir = p.Loopfile.BaseDir
+		case p.Loopfile != nil:
+			pool = Pool{
+				Backend: miroirv1alpha1.BackendLoopfile,
+				BaseDir: p.Loopfile.BaseDir,
 			}
+		default:
+			continue
 		}
 		n.Pools[p.Name] = pool
 	}

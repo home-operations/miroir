@@ -1,8 +1,9 @@
 # Remote consumers and auto-diskful
 
 A pod does not have to run on a node that holds a copy of its
-volume. Replicated volumes are consumable from any node by default
-(matching LINSTOR): the PV carries no node affinity, so the
+volume. Replicated volumes are consumable from any node with a
+MiroirNode by default (matching LINSTOR; see the trade-offs below for
+the unmapped-node case): the PV carries no node affinity, so the
 scheduler is free to place the pod anywhere. When the pod lands on a
 node without a replica, it reads and writes the volume over the
 replication network through an ephemeral **diskless client leg**, a
@@ -38,7 +39,7 @@ Trade-offs to understand:
   (DRBD's diskless default is a 512-byte fiction dm-thin would
   silently drop), so in-pod `fstrim` and `-o discard` free thin-pool
   space as if the pod ran on a replica node.
-- **Consumers must run on nodes listed in `nodes`.** On an unmapped
+- **Consumers must run on nodes with a MiroirNode.** On an unmapped
   node the agent runs only a client-only CSI service (for RWX/NFS
   mounts) with no reconciler to realize a DRBD client leg, so staging
   refuses with a clear `FailedPrecondition` and the pod stays in
@@ -60,14 +61,14 @@ it gets a local replica and stops paying network I/O: the entry moves
 from `spec.clients` to `spec.replicas`, and the node's agent attaches
 a fresh backing device to the live volume and full-syncs it while the
 pod keeps running. Conversion requires the client's node to be in the
-`nodes` map with recent capacity data and room for the volume's full
+topology (a MiroirNode) with recent capacity data and room for the volume's full
 size, and the volume to be Ready; a 2+1 volume's
 tie-breaker is replaced by the third data copy (three diskful votes
 need no tie-breaker). Volumes already at 3 diskful replicas are left
 alone; evicting a replica is an operator decision. Empty (the
 default) disables it.
 
-On a fully-mapped cluster (every node in `nodes`) the volume's
+On a fully-mapped cluster (every node has a MiroirNode) the volume's
 non-replica node is its tie-breaker, so a settled consumer stages
 through that leg and no client leg ever exists. Auto-diskful covers
 this too: a tie-breaker leg whose device has been held Primary past

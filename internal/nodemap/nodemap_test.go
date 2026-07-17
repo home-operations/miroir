@@ -37,6 +37,7 @@ const (
 	nodeBergen = "bergen"
 
 	poolDefault = "default"
+	poolFast    = "fast"
 	zoneRack1   = "rack-1"
 	volBlock16K = "16K"
 	datasetTank = "tank/miroir"
@@ -53,11 +54,11 @@ func TestFromSpecFlattensBackendBlocks(t *testing.T) {
 		Address:   "10.0.100.1",
 		AutoEvict: &autoEvict,
 		Pools: []miroirv1alpha1.MiroirNodePool{
-			{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+			{Name: poolDefault,
 				LVMThin: &miroirv1alpha1.LVMThinPool{Device: "/dev/disk/by-partlabel/r-miroir", PoolSize: "400g"}},
-			{Name: "fast", Backend: miroirv1alpha1.BackendZFS,
+			{Name: poolFast,
 				ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank, Compression: "inherit", VolBlockSize: volBlock16K}},
-			{Name: "scratch", Backend: miroirv1alpha1.BackendLoopfile,
+			{Name: "scratch",
 				Loopfile: &miroirv1alpha1.LoopfilePool{BaseDir: "/var/lib/miroir"}},
 		},
 	})
@@ -69,13 +70,35 @@ func TestFromSpecFlattensBackendBlocks(t *testing.T) {
 		def.Device != "/dev/disk/by-partlabel/r-miroir" || def.ThinPoolSize != "400g" {
 		t.Fatalf("lvmthin pool flattened wrong: %+v", def)
 	}
-	zfs := n.Pools["fast"]
-	if zfs.ZFSDataset != datasetTank || zfs.ZFSCompression != "inherit" ||
+	zfs := n.Pools[poolFast]
+	if zfs.Backend != miroirv1alpha1.BackendZFS ||
+		zfs.ZFSDataset != datasetTank || zfs.ZFSCompression != "inherit" ||
 		zfs.ZFSVolBlockSize != volBlock16K || zfs.ZFSVolBlockSizeBytes() != 16<<10 {
 		t.Fatalf("zfs pool flattened wrong: %+v", zfs)
 	}
-	if n.Pools["scratch"].BaseDir != "/var/lib/miroir" {
-		t.Fatalf("loopfile pool flattened wrong: %+v", n.Pools["scratch"])
+	loop := n.Pools["scratch"]
+	if loop.Backend != miroirv1alpha1.BackendLoopfile || loop.BaseDir != "/var/lib/miroir" {
+		t.Fatalf("loopfile pool flattened wrong: %+v", loop)
+	}
+}
+
+// A pre-0.11 stored object survives CRD revalidation with block-less pool
+// entries (its flat fields are pruned on read). Those must vanish from the
+// flattened map — an empty-backend Pool would crash-loop the agent through
+// backend.New("") — so consumers treat the pool as absent until the node's
+// real MiroirNode manifest is applied.
+func TestFromSpecSkipsBlocklessPools(t *testing.T) {
+	n := FromSpec(miroirv1alpha1.MiroirNodeSpec{
+		Pools: []miroirv1alpha1.MiroirNodePool{
+			{Name: poolDefault},
+			{Name: poolFast, ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank}},
+		},
+	})
+	if _, ok := n.Pools[poolDefault]; ok {
+		t.Fatalf("block-less pool must be skipped, got %+v", n.Pools[poolDefault])
+	}
+	if n.Pools[poolFast].Backend != miroirv1alpha1.BackendZFS {
+		t.Fatalf("sibling pool must still flatten: %+v", n.Pools[poolFast])
 	}
 }
 
@@ -88,23 +111,11 @@ func TestZFSVolBlockSizeDefaults(t *testing.T) {
 	}
 }
 
-// A pool whose backend block is missing (an old object written before the
-// CRD required it, mid-upgrade) folds to an empty-config pool instead of
-// panicking; the agent's backend setup reports the missing config.
-func TestFromSpecToleratesMissingBlock(t *testing.T) {
-	n := FromSpec(miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{
-		{Name: poolDefault, Backend: miroirv1alpha1.BackendZFS},
-	}})
-	if p := n.Pools[poolDefault]; p.Backend != miroirv1alpha1.BackendZFS || p.ZFSDataset != "" {
-		t.Fatalf("missing block should fold empty, got %+v", p)
-	}
-}
-
 // FromNodes marks every node sharing a replication address, keyed by the
 // parsed form so IPv6 zero-compression variants still collide, and
 // PickSpare / ReplicationAddress both refuse conflicted nodes.
 func TestFromNodesMarksAddressConflicts(t *testing.T) {
-	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
 	m := FromNodes([]miroirv1alpha1.MiroirNode{
 		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Address: "fd00:1::2", Pools: pools}),
@@ -139,7 +150,7 @@ func TestFromNodesMarksAddressConflicts(t *testing.T) {
 // ambiguous endpoint never reaches persisted replica specs, and empty
 // addresses (the InternalIP fallback) must never conflict with each other.
 func TestFromNodesConflictsNonIPDuplicates(t *testing.T) {
-	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
 	m := FromNodes([]miroirv1alpha1.MiroirNode{
 		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Address: "storage-vlan", Pools: pools}),
@@ -155,7 +166,7 @@ func TestFromNodesConflictsNonIPDuplicates(t *testing.T) {
 }
 
 func TestFromNodesEmptyAddressesNeverConflict(t *testing.T) {
-	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendLVMThin,
+	pools := []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 		LVMThin: &miroirv1alpha1.LVMThinPool{}}}
 	m := FromNodes([]miroirv1alpha1.MiroirNode{
 		miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{Pools: pools}),
@@ -173,7 +184,7 @@ func TestCRSourceFoldsMiroirNodes(t *testing.T) {
 	}
 	node := miroirNode(nodeA, miroirv1alpha1.MiroirNodeSpec{
 		Zone: zoneRack1,
-		Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, Backend: miroirv1alpha1.BackendZFS,
+		Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault,
 			ZFS: &miroirv1alpha1.ZFSPool{Dataset: datasetTank}}},
 	})
 	src := &CRSource{Reader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(&node).Build()}
@@ -209,12 +220,12 @@ func TestAutoEvictOptOut(t *testing.T) {
 func TestPoolLookup(t *testing.T) {
 	m := Map{nodeA: {Pools: map[string]Pool{
 		"default": {Backend: miroirv1alpha1.BackendLVMThin},
-		"fast":    {Backend: miroirv1alpha1.BackendZFS},
+		poolFast:  {Backend: miroirv1alpha1.BackendZFS},
 	}}}
 	if p, ok := m.Pool(nodeA, ""); !ok || p.Backend != miroirv1alpha1.BackendLVMThin {
 		t.Fatalf("empty pool name should resolve the default pool, got %+v %t", p, ok)
 	}
-	if p, ok := m.Pool(nodeA, "fast"); !ok || p.Backend != miroirv1alpha1.BackendZFS {
+	if p, ok := m.Pool(nodeA, poolFast); !ok || p.Backend != miroirv1alpha1.BackendZFS {
 		t.Fatalf("named pool lookup wrong: %+v %t", p, ok)
 	}
 	if _, ok := m.Pool(nodeA, "absent"); ok {

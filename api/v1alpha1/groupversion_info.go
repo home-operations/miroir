@@ -33,6 +33,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&MiroirSnapshotList{},
 		&MiroirNode{},
 		&MiroirNodeList{},
+		&MiroirNodeGroup{},
+		&MiroirNodeGroupList{},
 	)
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil

@@ -27,12 +27,20 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status"]
     verbs: ["get", "update", "patch"]
+  {{- /* create/patch: the node-group reconciler materializes MiroirNodes
+      (never deletes — orphaning is the contract). */}}
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "patch"]
   {{- /* The AddressConflict condition (cross-object topology rule). */}}
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirnodes/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["miroir.home-operations.com"]
+    resources: ["miroirnodegroups"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["miroir.home-operations.com"]
+    resources: ["miroirnodegroups/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["nodes"]

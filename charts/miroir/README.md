@@ -34,30 +34,13 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
 Version-specific steps live in the
 [upgrade guide](https://miroir.home-operations.com/upgrading/).
 
-## Storage topology
+## Storage configuration
 
-Each entry under `nodes` is rendered as a MiroirNode custom resource;
-the `spec` is passed through verbatim and validated by the CRD (see
-`kubectl explain miroirnode.spec`). For example, a ZFS pool with its
-optional zvol settings (`volBlockSize` `4K` through `128K`, default
-`4K`; `compression` default `lz4`, `inherit` for the parent dataset
-policy):
-
-```yaml
-nodes:
-  node-a:
-    spec:
-      pools:
-        - name: default
-          backend: zfs
-          zfs:
-            dataset: tank/miroir
-            volBlockSize: 16K
-            compression: inherit
-```
-
-Both settings apply only to newly created zvols. Existing volumes are not
-mutated, and snapshot clones retain their source properties.
+This chart installs only the driver. The node topology
+(MiroirNode/MiroirNodeGroup custom resources), StorageClasses, and
+VolumeSnapshotClasses are plain manifests — see the
+[quickstart](https://miroir.home-operations.com/quickstart/) for the
+layouts.
 
 ## Maintainers
 
@@ -84,6 +67,7 @@ Kubernetes: `>=1.31.0`
 | agent.image.repository | string | `"ghcr.io/home-operations/miroir-agent"` |  |
 | agent.image.tag | string | `""` |  |
 | agent.kubeletDir | string | `"/var/lib/kubelet"` | Kubelet root on the nodes; CSI sockets and mounts hang off it. |
+| agent.loopfileBaseDirs | list | `[]` | Loopfile base directories to hostPath-mount into the agent (identity-mounted: host path == container path). Must list every `loopfile.baseDir` your MiroirNode specs use — the topology lives in CRs the chart cannot read at render time, but the mounts are pod spec. Harmless on nodes without a loopfile pool. |
 | agent.podAnnotations | object | `{}` | Extra annotations on the agent pods. |
 | agent.podLabels | object | `{}` | Extra labels on the agent pods. |
 | agent.poolStatsInterval | string | `"60s"` |  |
@@ -93,8 +77,8 @@ Kubernetes: `>=1.31.0`
 | agent.resources.requests.cpu | string | `"10m"` |  |
 | agent.resources.requests.memory | string | `"32Mi"` |  |
 | agent.volumeWorkers | int | `4` | Concurrent volume reconciles per agent. Per-volume work is serialized by controller-runtime regardless; this bounds how many distinct volumes one agent works at once. |
-| autoDiskfulAfter | string | `""` | Convert a diskless leg (client or tie-breaker) that has stayed DRBD Primary past this duration into a local diskful replica on its node, so a settled consumer stops paying network I/O (LINSTOR's auto-diskful; Go duration, e.g. "10m"). Conversion needs the leg's node in `nodes` with fresh pool stats and room for the volume's full size. Empty disables it. See the root README, "Auto-diskful". |
-| autoEvictAfter | string | `""` | Re-place a dead storage node's legs once its heartbeat (MiroirNode status, refreshed ~60s) has been stale this long (LINSTOR's auto-evict; Go duration, e.g. "60m" — keep it well above any reboot or upgrade window). Each affected volume gets one atomic swap: the dead entry out, a fresh replica in (full sync follows). The dead node keeps its teardown finalizer as the record of its never-cleaned leg: deleting an evicted volume still waits for that node, and when the node returns its agent tears the leftover leg down through the normal removal flow. It never acts when more than one node looks dead, when a survivor still sees the node's DRBD links up, when the remaining legs are not clean, or when snapshots pin the volume. Needs a spare storage node carrying the volume's pool; per-node opt-out via `nodes.<name>.spec.autoEvict: false`. Empty disables it (the default: eviction discards the dead node's data). |
+| autoDiskfulAfter | string | `""` | Convert a diskless leg (client or tie-breaker) that has stayed DRBD Primary past this duration into a local diskful replica on its node, so a settled consumer stops paying network I/O (LINSTOR's auto-diskful; Go duration, e.g. "10m"). Conversion needs a MiroirNode for the leg's node with fresh pool stats and room for the volume's full size. Empty disables it. See the root README, "Auto-diskful". |
+| autoEvictAfter | string | `""` | Re-place a dead storage node's legs once its heartbeat (MiroirNode status, refreshed ~60s) has been stale this long (LINSTOR's auto-evict; Go duration, e.g. "60m" — keep it well above any reboot or upgrade window). Each affected volume gets one atomic swap: the dead entry out, a fresh replica in (full sync follows). The dead node keeps its teardown finalizer as the record of its never-cleaned leg: deleting an evicted volume still waits for that node, and when the node returns its agent tears the leftover leg down through the normal removal flow. It never acts when more than one node looks dead, when a survivor still sees the node's DRBD links up, when the remaining legs are not clean, or when snapshots pin the volume. Needs a spare storage node carrying the volume's pool; per-node opt-out via `spec.autoEvict: false` on its MiroirNode. Empty disables it (the default: eviction discards the dead node's data). |
 | autoTieBreaker | bool | `true` | Add a diskless tie-breaker replica to 2-replica freeze volumes when a spare storage node exists, so majority quorum survives a single node loss. Also retrofits existing freeze volumes at controller startup. |
 | drbd.alExtents | string | `""` | al-extents, the DRBD activity-log size (number of 4 MiB extents kept "hot"). DRBD's default (1237) forces frequent metadata updates under a scattered random-write workload; raising it (e.g. 6007) cuts that write amplification at the cost of a longer resync of the active region after a crash. Empty leaves DRBD's default. Must be a prime below 65534. |
 | drbd.extraConfig.disk | string | `""` | Extra lines for the disk {} section (e.g. "read-balancing least-pending;"). |
@@ -159,7 +143,6 @@ Kubernetes: `>=1.31.0`
 | monitoring.prometheusRule.overrides | object | `{}` | Per-alert overrides keyed by alert name. Per entry: `disabled: true` drops the rule, `for` replaces the rule's wait period, and `labels` merge over the rule's own (set `severity` here to reclassify one alert). Example:   overrides:     MiroirVolumeOutOfSync: { disabled: true }     MiroirVolumeDisconnected:       for: 30m       labels: { severity: info } |
 | monitoring.prometheusRule.verifyStaleDays | int | `8` | Days since the last completed scheduled verify before MiroirVolumeVerifyStale fires. Size it to just over the schedule period (a weekly `drbd.verify.schedule` → 8). The rule is only rendered when `drbd.verify.schedule` is set. |
 | nameOverride | string | `""` | Override the chart name used in labels and default object names. |
-| nodes | object | `{}` |  |
 | overcommitRatio | int | `2` | Thin-provisioning overcommit guardrail: CreateVolume is refused when a node's provisioned total would exceed capacity × this ratio. 2× is the classic CoW headroom; raise it only if you trust your usage to stay sparse, lower it toward 1 to provision conservatively. |
 | podAnnotations | object | `{}` | Extra annotations on the controller pod. |
 | podLabels | object | `{}` | Extra labels on the controller pod. |
@@ -181,11 +164,9 @@ Kubernetes: `>=1.31.0`
 | sidecars.snapshotter.resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Snapshotter sidecar resources. |
 | sidecars.snapshotter.timeout | string | `"120s"` |  |
 | storageCapacity.enabled | bool | `false` |  |
-| storageClasses | list | `[]` | StorageClasses to create. Empty by default: declare the classes you want. One local + one replicated is the common pair (see the example below). Per entry:   name          (required) the StorageClass name   replicas      replica count, default 1; >1 makes it DRBD-replicated   quorum        freeze or last-man-standing (replicated only, default                 freeze). freeze never diverges but halts writes without a                 peer majority; last-man-standing keeps the survivor                 writable at the risk of split-brain. See the root README,                 "Replication and quorum".   fsType        ext4 or xfs, default ext4   pool          named storage pool the class provisions from, default                 "default". Every replica of a volume lands in this pool                 on its node, so the pool must exist (under nodes.<name>                 .pools) on at least `replicas` nodes.   allowRemoteVolumeAccess                 true or false (replicated only; the controller defaults                 absent to true, matching LINSTOR): pods on nodes without                 a replica consume the volume through an ephemeral                 diskless DRBD leg at replication-network speed. Set                 false to pin pods to replica nodes for local reads. See                 the root README, "Remote consumers".   bitmapGranularity                 DRBD bitmap block size in bytes (replicated only): a                 power of two, 4096–1048576, default absent (DRBD's 4096).                 Each dirty bit tracks this many bytes — coarser cuts                 bitmap RAM proportionally (65536 ≈ 1/16th) but resyncs                 more per dirty bit; worth considering for classes holding                 large volumes. Fixed when a replica's metadata is                 created: changing the class affects new volumes only.   reclaimPolicy Delete or Retain, default Delete   isDefault     set the cluster default-class annotation, default false   volumeBindingMode                 WaitForFirstConsumer (default) delays provisioning until a                 pod schedules, so placement can prefer that pod's node;                 Immediate provisions on PVC creation — reasonable for a                 replicated class consumed remotely.   mountOptions  mount options for the class's PVs (list of strings)   annotations   extra annotations on the StorageClass   labels        extra labels on the StorageClass Example (coexisting with OpenEBS, which stays the cluster default):   storageClasses:     - name: miroir-local       replicas: 1     - name: miroir-replicated       replicas: 2       quorum: freeze |
 | uninstall.confirmation | string | `""` | Consent to destroy all volume data on `helm uninstall`: set to the literal "yes-really-destroy-data" to render the pre-delete hook Job that deletes every MiroirSnapshot and MiroirVolume — the agents then tear down each DRBD resource and backing device, including volumes whose PV reclaimPolicy is Retain. Hooks are baked into the release at install/upgrade time, so set this with a `helm upgrade` *before* running `helm uninstall`. Any other non-empty value fails the render. |
 | uninstall.image | string | `"registry.k8s.io/kubectl:v1.36.2"` | Image for the uninstall hook Job (needs only `kubectl`). |
 | unreachableNodeTolerationSeconds | int | `5` | Seconds the controller pod stays bound to an unreachable node before eviction. The Kubernetes default (300) leaves a single-replica controller unable to provision, expand, or snapshot for five minutes after its node dies; 5 reschedules it almost immediately (the controller is stateless). |
-| volumeSnapshotClasses | list | `[]` | VolumeSnapshotClasses to create (requires the snapshot-controller + CRDs, deployed separately). Empty by default. Per entry:   name           (required) the VolumeSnapshotClass name   deletionPolicy Delete or Retain, default Delete   isDefault      set the cluster default-snapshot-class annotation,                  default false   annotations    extra annotations on the VolumeSnapshotClass   labels         extra labels on the VolumeSnapshotClass Example:   volumeSnapshotClasses:     - name: miroir-snap       deletionPolicy: Delete |
 
 ---
 
