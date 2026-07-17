@@ -261,7 +261,8 @@ spec:
             x-kubernetes-validations:
             - message: 'address is a per-node fact: annotate the Node with miroir.home-operations.com/address,
                 or author a direct MiroirNode'
-              rule: '!has(self.template.address) || self.template.address == '''''
+              rule: '!has(self.template.address) || size(self.template.address) ==
+                0'
           status:
             description: MiroirNodeGroupStatus reports the group's materialized membership.
             properties:

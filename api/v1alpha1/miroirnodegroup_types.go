@@ -35,7 +35,7 @@ const NodeAddressAnnotation = "miroir.home-operations.com/address"
 
 // MiroirNodeGroupSpec selects a set of nodes and the MiroirNode spec they
 // share.
-// +kubebuilder:validation:XValidation:rule="!has(self.template.address) || self.template.address == ''",message="address is a per-node fact: annotate the Node with miroir.home-operations.com/address, or author a direct MiroirNode"
+// +kubebuilder:validation:XValidation:rule="!has(self.template.address) || size(self.template.address) == 0",message="address is a per-node fact: annotate the Node with miroir.home-operations.com/address, or author a direct MiroirNode"
 type MiroirNodeGroupSpec struct {
 	// NodeSelector picks the member nodes by label. An empty selector
 	// matches every node in the cluster (the Kubernetes convention).
