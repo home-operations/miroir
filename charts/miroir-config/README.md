@@ -27,6 +27,14 @@ volumes — decommissioning a node stays an explicit
 
 ## Storage topology
 
+Each entry under `nodeGroups` is rendered as a MiroirNodeGroup custom
+resource: one MiroirNode is materialized per label-matched node, so a
+fleet sharing a storage layout is one entry and joining it is labeling
+the node (per-node facts resolve from the Node object — zone from
+`topology.kubernetes.io/zone`, a dedicated replication address from a
+`miroir.home-operations.com/address` annotation). Members leaving the
+selector are orphaned in place, never deleted.
+
 Each entry under `nodes` is rendered as a MiroirNode custom resource;
 the `spec` is passed through verbatim and validated by the CRD (see
 `kubectl explain miroirnode.spec`). The backend is the block a pool
@@ -69,6 +77,7 @@ Kubernetes: `>=1.31.0`
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | commonLabels | object | `{}` | Labels stamped on every rendered object. |
+| nodeGroups | object | `{}` |  |
 | nodes | object | `{}` |  |
 | storageClasses | list | `[]` | StorageClasses to create. Empty by default: declare the classes you want. One local + one replicated is the common pair (see the example below). Per entry:   name          (required) the StorageClass name   replicas      replica count, default 1; >1 makes it DRBD-replicated   quorum        freeze or last-man-standing (replicated only, default                 freeze). freeze never diverges but halts writes without a                 peer majority; last-man-standing keeps the survivor                 writable at the risk of split-brain. See the root README,                 "Replication and quorum".   fsType        ext4 or xfs, default ext4   pool          named storage pool the class provisions from, default                 "default". Every replica of a volume lands in this pool                 on its node, so the pool must exist (in the MiroirNode                 specs) on at least `replicas` nodes.   allowRemoteVolumeAccess                 true or false (replicated only; the controller defaults                 absent to true, matching LINSTOR): pods on nodes without                 a replica consume the volume through an ephemeral                 diskless DRBD leg at replication-network speed. Set                 false to pin pods to replica nodes for local reads. See                 the root README, "Remote consumers".   bitmapGranularity                 DRBD bitmap block size in bytes (replicated only): a                 power of two, 4096–1048576, default absent (DRBD's 4096).                 Each dirty bit tracks this many bytes — coarser cuts                 bitmap RAM proportionally (65536 ≈ 1/16th) but resyncs                 more per dirty bit; worth considering for classes holding                 large volumes. Fixed when a replica's metadata is                 created: changing the class affects new volumes only.   reclaimPolicy Delete or Retain, default Delete   isDefault     set the cluster default-class annotation, default false   volumeBindingMode                 WaitForFirstConsumer (default) delays provisioning until a                 pod schedules, so placement can prefer that pod's node;                 Immediate provisions on PVC creation — reasonable for a                 replicated class consumed remotely.   mountOptions  mount options for the class's PVs (list of strings)   annotations   extra annotations on the StorageClass   labels        extra labels on the StorageClass Example (coexisting with OpenEBS, which stays the cluster default):   storageClasses:     - name: miroir-local       replicas: 1     - name: miroir-replicated       replicas: 2       quorum: freeze |
 | volumeSnapshotClasses | list | `[]` | VolumeSnapshotClasses to create (requires the snapshot-controller + CRDs, deployed separately). Empty by default. Per entry:   name           (required) the VolumeSnapshotClass name   deletionPolicy Delete or Retain, default Delete   isDefault      set the cluster default-snapshot-class annotation,                  default false   annotations    extra annotations on the VolumeSnapshotClass   labels         extra labels on the VolumeSnapshotClass Example:   volumeSnapshotClasses:     - name: miroir-snap       deletionPolicy: Delete |

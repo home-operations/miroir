@@ -163,15 +163,18 @@ kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 # Config is CR-first: CRDs, then the miroir-config chart (topology +
 # classes), then the driver — the same order the upgrade guide mandates,
 # so the agent boots straight into storage mode instead of
-# client-only + self-restart. Installing miroir-config here is also its
-# end-to-end coverage.
+# client-only + self-restart. The topology goes through a labeled
+# MiroirNodeGroup, which is the group controller's end-to-end coverage:
+# label → group → materialized MiroirNode → agent.
 echo "==> applying CRDs + installing miroir-config for $node"
 kubectl apply -f charts/miroir/crds/
+kubectl label node "$node" storage.miroir.home-operations.com/class=e2e --overwrite
 helm upgrade --install miroir-config charts/miroir-config \
   --namespace miroir-system --create-namespace \
   -f deploy/e2e/config-values.yaml \
-  --set "nodes.${node}.spec.pools[0].name=default" \
-  --set "nodes.${node}.spec.pools[0].lvmthin.device=${device}"
+  --set "nodeGroups.e2e.spec.nodeSelector.matchLabels.storage\.miroir\.home-operations\.com/class=e2e" \
+  --set "nodeGroups.e2e.spec.template.pools[0].name=default" \
+  --set "nodeGroups.e2e.spec.template.pools[0].lvmthin.device=${device}"
 
 echo "==> helm install miroir"
 helm upgrade --install miroir charts/miroir \

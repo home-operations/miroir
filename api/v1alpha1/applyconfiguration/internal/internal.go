@@ -98,6 +98,51 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: status
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeStatus
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeGroup
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+    - name: spec
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeGroupSpec
+    - name: status
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeGroupStatus
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeGroupSpec
+  map:
+    fields:
+    - name: nodeSelector
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: template
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeSpec
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodeGroupStatus
+  map:
+    fields:
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+          elementRelationship: atomic
+    - name: nodes
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+    - name: observedGeneration
+      type:
+        scalar: numeric
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirNodePool
   map:
     fields:
@@ -452,6 +497,38 @@ var schemaYAML = typed.YAMLObject(`types:
         elementType:
           namedType: __untyped_deduced_
         elementRelationship: separable
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+  map:
+    fields:
+    - name: matchExpressions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement
+          elementRelationship: atomic
+    - name: matchLabels
+      type:
+        map:
+          elementType:
+            scalar: string
+    elementRelationship: atomic
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorOperator
+  scalar: string
+- name: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorRequirement
+  map:
+    fields:
+    - name: key
+      type:
+        scalar: string
+    - name: operator
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelectorOperator
+    - name: values
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
 - name: io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry
   map:
     fields:

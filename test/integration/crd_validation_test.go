@@ -421,3 +421,47 @@ var _ = Describe("MiroirNode CEL validation", func() {
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, node))).To(BeTrue())
 	})
 })
+
+var _ = Describe("MiroirNodeGroup CEL rules", func() {
+	It("rejects an address in the template — it is a per-node fact", func() {
+		group := &miroirv1alpha1.MiroirNodeGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "grp-addr"},
+			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
+				NodeSelector: metav1.LabelSelector{},
+				Template: miroirv1alpha1.MiroirNodeSpec{
+					Address: "10.0.100.1",
+					Pools:   []miroirv1alpha1.MiroirNodePool{lvmthinPool(poolDefault)},
+				},
+			},
+		}
+		err := k8sClient.Create(ctx, group)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "template address must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("per-node fact"))
+	})
+
+	It("accepts a template with pools and an empty selector, and validates the pool oneOf", func() {
+		group := &miroirv1alpha1.MiroirNodeGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "grp-valid"},
+			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
+				NodeSelector: metav1.LabelSelector{},
+				Template: miroirv1alpha1.MiroirNodeSpec{
+					Pools: []miroirv1alpha1.MiroirNodePool{lvmthinPool(poolDefault)},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, group)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, group)).To(Succeed()) })
+
+		blockless := &miroirv1alpha1.MiroirNodeGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "grp-blockless"},
+			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
+				NodeSelector: metav1.LabelSelector{},
+				Template: miroirv1alpha1.MiroirNodeSpec{
+					Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault}},
+				},
+			},
+		}
+		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, blockless))).To(BeTrue(),
+			"the pool oneOf rule must apply inside group templates too")
+	})
+})

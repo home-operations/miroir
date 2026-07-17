@@ -128,6 +128,27 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Source, autoTieBreaker bool
 	return nil
 }
 
+// setupTopology registers the cross-object topology reconcilers: the
+// conflict pass (duplicate replication addresses reported as MiroirNode
+// conditions — a CRD validates one object at a time, and placement
+// already refuses conflicted nodes) and the node-group materializer (one
+// MiroirNode per label-matched node, so a homogeneous fleet is one object
+// and joining it is labeling the node).
+func setupTopology(mgr ctrl.Manager) error {
+	if err := (&topology.ConflictReconciler{
+		Client:   mgr.GetClient(),
+		Recorder: mgr.GetEventRecorder("miroir-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("conflict reconciler: %w", err)
+	}
+	if err := (&topology.NodeGroupReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("node group reconciler: %w", err)
+	}
+	return nil
+}
+
 // setupExport registers the RWX gateway reconciler, which maintains the
 // per-volume NFS-Ganesha Deployment and Service. It is skipped when no
 // gateway image is configured — RWX is off until the chart wires one.
@@ -531,14 +552,8 @@ func main() {
 			setupLog.Error(err, "unable to set up membership reconcilers")
 			os.Exit(1)
 		}
-		// Cross-object topology rules (duplicate replication address) are
-		// reported as MiroirNode conditions — a CRD validates one object at
-		// a time, and placement already refuses conflicted nodes.
-		if err := (&topology.ConflictReconciler{
-			Client:   mgr.GetClient(),
-			Recorder: mgr.GetEventRecorder("miroir-controller"),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to set up topology conflict reconciler")
+		if err := setupTopology(mgr); err != nil {
+			setupLog.Error(err, "unable to set up topology reconcilers")
 			os.Exit(1)
 		}
 		if err := setupExport(mgr, podNamespace, gatewayImage, gatewaySA); err != nil {

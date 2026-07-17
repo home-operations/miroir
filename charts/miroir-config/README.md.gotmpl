@@ -27,6 +27,14 @@ volumes — decommissioning a node stays an explicit
 
 ## Storage topology
 
+Each entry under `nodeGroups` is rendered as a MiroirNodeGroup custom
+resource: one MiroirNode is materialized per label-matched node, so a
+fleet sharing a storage layout is one entry and joining it is labeling
+the node (per-node facts resolve from the Node object — zone from
+`topology.kubernetes.io/zone`, a dedicated replication address from a
+`miroir.home-operations.com/address` annotation). Members leaving the
+selector are orphaned in place, never deleted.
+
 Each entry under `nodes` is rendered as a MiroirNode custom resource;
 the `spec` is passed through verbatim and validated by the CRD (see
 `kubectl explain miroirnode.spec`). The backend is the block a pool

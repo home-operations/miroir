@@ -16,25 +16,26 @@ directly instead; the chart is convenience, not a requirement. Pods can
 mount miroir volumes from any schedulable node; only nodes with a
 MiroirNode hold data.
 
-**Two nodes, a spare partition each.** The common pair: one local and
-one replicated class. Add a third storage node later and existing
-replicated volumes pick it up as a quorum tie-breaker automatically.
+**A fleet with a path convention.** The common case: every storage node
+carries the same partition label, so the whole fleet is ONE node group —
+a MiroirNode is materialized per label-matched node, and **adding a
+storage node is labeling it** (`kubectl label node node-c
+storage.miroir.home-operations.com/class=std`). Existing replicated
+volumes pick a third node up as a quorum tie-breaker automatically.
 
 ```yaml
 # config-values.yaml (the miroir-config chart)
-nodes:
-    node-a:
+nodeGroups:
+    std:
         spec:
-            pools:
-                - name: default
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-    node-b:
-        spec:
-            pools:
-                - name: default
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
+            nodeSelector:
+                matchLabels:
+                    storage.miroir.home-operations.com/class: std
+            template:
+                pools:
+                    - name: default
+                      lvmthin:
+                          device: /dev/disk/by-partlabel/r-miroir
 storageClasses:
     - name: miroir-local
       replicas: 1
@@ -44,9 +45,18 @@ volumeSnapshotClasses:
     - name: miroir-snap
 ```
 
-**Mixed backends and failure domains.** DRBD replicates whatever
-device each backend provides, so one volume can pair a ZFS zvol with
-an LVM thin LV. `zone` (optional) spreads replicas and the
+Group members inherit per-node facts from the Node object: an empty
+template `zone` takes the node's `topology.kubernetes.io/zone` label,
+and a dedicated replication NIC comes from a
+`miroir.home-operations.com/address` annotation on the Node. A node
+leaving the selector orphans its MiroirNode in place (never deleted
+under live volumes); explicit `nodes` entries and hand-authored
+MiroirNodes always win over groups — use them for odd-one-out boxes.
+
+**Mixed backends and failure domains.** Heterogeneous nodes are
+per-node `nodes` entries (or label-partitioned groups per disk class).
+DRBD replicates whatever device each backend provides, so one volume
+can pair a ZFS zvol with an LVM thin LV. `zone` (optional) spreads replicas and the
 tie-breaker across failure domains; `address` (optional) pins
 replication to a dedicated storage NIC/VLAN, IPv4 or IPv6 (default:
 the node's `InternalIP`; applies to volumes created afterwards).

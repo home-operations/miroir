@@ -8,10 +8,12 @@ exist and where their behavior is explained.
 
 Two charts: **miroir** carries the driver and the values below;
 **miroir-config** carries the storage configuration — the node topology
-(`nodes`, rendered as MiroirNode custom resources; `kubectl explain
-miroirnode.spec`), `storageClasses`, and `volumeSnapshotClasses` — as
-one reviewed document ([Quickstart](quickstart.md) shows the layouts).
-Plain MiroirNode/StorageClass manifests work identically.
+(`nodeGroups` for label-matched fleets and `nodes` for per-node entries,
+rendered as MiroirNodeGroup/MiroirNode custom resources; `kubectl
+explain miroirnode.spec`), `storageClasses`, and
+`volumeSnapshotClasses` — as one reviewed document
+([Quickstart](quickstart.md) shows the layouts). Plain manifests work
+identically.
 
 - **miroir-config `storageClasses`**: the classes to create.
   `replicas`, `quorum` policy

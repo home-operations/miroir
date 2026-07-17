@@ -60,6 +60,30 @@ commonLabels: {}
 #             baseDir: /var/lib/miroir
 nodes: {}
 
+# Node groups materialize one MiroirNode per label-matched node, so a
+# fleet sharing a storage layout (a device-path convention, a common ZFS
+# dataset) is ONE entry and joining it is labeling the node. `template`
+# is the MiroirNode spec (same shape as nodes.<name>.spec above), with
+# two per-node facts resolved from the Node object: an empty zone
+# inherits the node's topology.kubernetes.io/zone label, and the
+# replication address comes from a miroir.home-operations.com/address
+# annotation on the Node (never the template). Direct `nodes` entries
+# and hand-authored MiroirNodes always win over groups, and a node
+# leaving the selector orphans its MiroirNode in place — decommissioning
+# stays an explicit `kubectl delete miroirnode <name>`.
+# nodeGroups:
+#   workers:
+#     spec:
+#       nodeSelector:
+#         matchLabels:
+#           storage.miroir.home-operations.com/class: nvme
+#       template:
+#         pools:
+#           - name: default
+#             lvmthin:
+#               device: /dev/disk/by-partlabel/r-miroir
+nodeGroups: {}
+
 # =============================================================================
 # Storage classes
 # =============================================================================

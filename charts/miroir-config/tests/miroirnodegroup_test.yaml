@@ -1,0 +1,60 @@
+suite: test miroirnodegroup
+templates:
+  - miroirnodegroup.tpl
+release:
+  name: miroir-config
+  namespace: miroir-system
+tests:
+  - it: renders nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: renders one MiroirNodeGroup per entry, spec verbatim
+    set:
+      nodeGroups:
+        workers:
+          spec:
+            nodeSelector:
+              matchLabels:
+                storage.miroir.home-operations.com/class: nvme
+            template:
+              pools:
+                - name: default
+                  lvmthin:
+                    device: /dev/disk/by-partlabel/r-miroir
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: MiroirNodeGroup
+      - equal:
+          path: metadata.name
+          value: workers
+      - equal:
+          path: spec.nodeSelector.matchLabels["storage.miroir.home-operations.com/class"]
+          value: nvme
+      - equal:
+          path: spec.template.pools[0].lvmthin.device
+          value: /dev/disk/by-partlabel/r-miroir
+
+  - it: fails on an unknown template field instead of letting the API server prune it
+    set:
+      nodeGroups:
+        workers:
+          spec:
+            nodeSelector: {}
+            template:
+              pool: []
+    asserts:
+      - failedTemplate:
+          errorMessage: "nodeGroups.workers.spec.template.pool: unknown field (the API server would silently drop it); valid fields: zone, address, autoEvict, pools"
+
+  - it: fails without the spec wrapper
+    set:
+      nodeGroups:
+        workers:
+          nodeSelector: {}
+    asserts:
+      - failedTemplate:
+          errorPattern: must be declared under
