@@ -1,8 +1,10 @@
 # Helm chart values
 
-Every chart value is documented value-by-value in the generated
-[chart README](https://github.com/home-operations/miroir/blob/main/charts/miroir/README.md)
-(kept in sync with `values.yaml` by helm-docs; CI fails if it goes
+Every chart value is documented value-by-value in the generated chart
+READMEs
+([miroir](https://github.com/home-operations/miroir/blob/main/charts/miroir/README.md),
+[miroir-config](https://github.com/home-operations/miroir/blob/main/charts/miroir-config/README.md);
+kept in sync with each `values.yaml` by helm-docs; CI fails if they go
 stale). This page is the orientation layer: which groups of values
 exist and where their behavior is explained.
 
@@ -62,7 +64,6 @@ nodes:
         spec:
             pools:
                 - name: default
-                  backend: zfs
                   zfs:
                       dataset: data-pool/miroir
                       volBlockSize: 16K
@@ -75,10 +76,18 @@ source properties.
 
 ## The complete values.yaml
 
-The block below is the chart's real `charts/miroir/values.yaml`,
-pulled in at build time (MkDocs snippets), so the documented defaults
-can never drift from the file Helm actually renders.
+The blocks below are the charts' real values files, pulled in at build
+time (MkDocs snippets), so the documented defaults can never drift from
+the files Helm actually renders.
+
+### miroir (the driver)
 
 ```yaml
 --8<-- "charts/miroir/values.yaml"
+```
+
+### miroir-config (topology and classes)
+
+```yaml
+--8<-- "charts/miroir-config/values.yaml"
 ```

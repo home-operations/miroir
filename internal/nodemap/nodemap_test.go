@@ -70,12 +70,14 @@ func TestFromSpecFlattensBackendBlocks(t *testing.T) {
 		t.Fatalf("lvmthin pool flattened wrong: %+v", def)
 	}
 	zfs := n.Pools["fast"]
-	if zfs.ZFSDataset != datasetTank || zfs.ZFSCompression != "inherit" ||
+	if zfs.Backend != miroirv1alpha1.BackendZFS ||
+		zfs.ZFSDataset != datasetTank || zfs.ZFSCompression != "inherit" ||
 		zfs.ZFSVolBlockSize != volBlock16K || zfs.ZFSVolBlockSizeBytes() != 16<<10 {
 		t.Fatalf("zfs pool flattened wrong: %+v", zfs)
 	}
-	if n.Pools["scratch"].BaseDir != "/var/lib/miroir" {
-		t.Fatalf("loopfile pool flattened wrong: %+v", n.Pools["scratch"])
+	loop := n.Pools["scratch"]
+	if loop.Backend != miroirv1alpha1.BackendLoopfile || loop.BaseDir != "/var/lib/miroir" {
+		t.Fatalf("loopfile pool flattened wrong: %+v", loop)
 	}
 }
 

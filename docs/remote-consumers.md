@@ -1,8 +1,9 @@
 # Remote consumers and auto-diskful
 
 A pod does not have to run on a node that holds a copy of its
-volume. Replicated volumes are consumable from any node by default
-(matching LINSTOR): the PV carries no node affinity, so the
+volume. Replicated volumes are consumable from any node with a
+MiroirNode by default (matching LINSTOR; see the trade-offs below for
+the unmapped-node case): the PV carries no node affinity, so the
 scheduler is free to place the pod anywhere. When the pod lands on a
 node without a replica, it reads and writes the volume over the
 replication network through an ephemeral **diskless client leg**, a

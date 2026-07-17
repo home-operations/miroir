@@ -219,6 +219,12 @@ agent:
   # serialized by controller-runtime regardless; this bounds how many
   # distinct volumes one agent works at once.
   volumeWorkers: 4
+  # @schema
+  # type: array
+  # items:
+  #   type: string
+  #   pattern: ^/
+  # @schema
   # -- Loopfile base directories to hostPath-mount into the agent
   # (identity-mounted: host path == container path). Must list every
   # `loopfile.baseDir` your MiroirNode specs use — the topology lives in

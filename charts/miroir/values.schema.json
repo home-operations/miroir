@@ -59,7 +59,8 @@
         "loopfileBaseDirs": {
           "description": "Loopfile base directories to hostPath-mount into the agent\n(identity-mounted: host path == container path). Must list every\n`loopfile.baseDir` your MiroirNode specs use — the topology lives in\nCRs the chart cannot read at render time, but the mounts are pod spec.\nHarmless on nodes without a loopfile pool.",
           "items": {
-            "required": []
+            "pattern": "^/",
+            "type": "string"
           },
           "title": "loopfileBaseDirs",
           "type": "array"

@@ -168,6 +168,9 @@ kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 # label → group → materialized MiroirNode → agent.
 echo "==> applying CRDs + installing miroir-config for $node"
 kubectl apply -f charts/miroir/crds/
+kubectl wait --for=condition=established --timeout=60s \
+  crd/miroirnodes.miroir.home-operations.com \
+  crd/miroirnodegroups.miroir.home-operations.com
 kubectl label node "$node" storage.miroir.home-operations.com/class=e2e --overwrite
 helm upgrade --install miroir-config charts/miroir-config \
   --namespace miroir-system --create-namespace \

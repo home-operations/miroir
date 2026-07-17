@@ -13,8 +13,11 @@ is DRBD-replicated), and `volumeSnapshotClasses` — one reviewed
 document where pool names and the classes that select them sit side by
 side. Prefer plain manifests? Apply MiroirNode/StorageClass YAML
 directly instead; the chart is convenience, not a requirement. Pods can
-mount miroir volumes from any schedulable node; only nodes with a
-MiroirNode hold data.
+mount miroir volumes from any node with a MiroirNode — data lives only
+on nodes whose pools hold replicas; the rest consume remotely
+([Remote consumers](remote-consumers.md)). Keep every schedulable node
+in the map, or set `allowRemoteVolumeAccess: false` on the class so
+pods stay on replica nodes.
 
 **A fleet with a path convention.** The common case: every storage node
 carries the same partition label, so the whole fleet is ONE node group —

@@ -174,3 +174,13 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: moved to the miroir-config chart
+
+  # Presence is the signal, not truthiness: an explicitly-empty leftover
+  # is still a leftover.
+  - it: fails loudly when a pre-split value is set but empty
+    set:
+      nodes: {}
+      volumeSnapshotClasses: []
+    asserts:
+      - failedTemplate:
+          errorPattern: moved to the miroir-config chart

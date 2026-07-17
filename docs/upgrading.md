@@ -154,18 +154,37 @@ helm install miroir-config oci://ghcr.io/home-operations/charts/miroir-config \
 ```
 
 Your cluster already has one `MiroirNode` per storage node (the 0.10
-agents created them to publish pool capacity). miroir-config adopts
-them on install — run the upgrade with `--take-ownership` (Helm ≥ 3.17)
-or annotate them first:
+agents created them to publish pool capacity), and the 0.10 miroir
+release owns your StorageClass/VolumeSnapshotClass objects.
+miroir-config adopts all of them on install — run it with
+`--take-ownership` (Helm ≥ 3.17) or move the ownership metadata first:
 
 ```bash
-for n in $(kubectl get miroirnodes -o name); do
-  kubectl annotate "$n" \
+classes="$(kubectl get storageclasses -o jsonpath='{range .items[?(@.provisioner=="miroir.home-operations.com")]}storageclass.storage.k8s.io/{.metadata.name} {end}')
+$(kubectl get volumesnapshotclasses -o jsonpath='{range .items[?(@.driver=="miroir.home-operations.com")]}volumesnapshotclass.snapshot.storage.k8s.io/{.metadata.name} {end}' 2>/dev/null)"
+for obj in $(kubectl get miroirnodes -o name) $classes; do
+  kubectl annotate "$obj" \
     meta.helm.sh/release-name=miroir-config \
     meta.helm.sh/release-namespace=miroir-system --overwrite
-  kubectl label "$n" app.kubernetes.io/managed-by=Helm --overwrite
+  kubectl label "$obj" app.kubernetes.io/managed-by=Helm --overwrite
 done
 ```
+
+Either way, **also shield the classes before step 3**: the old miroir
+release's manifest still lists them, and a Helm upgrade deletes objects
+that dropped out of the manifest by name — it never checks who owns
+them now (`--take-ownership` does not protect against this); the one
+thing it respects is a `helm.sh/resource-policy: keep` annotation on
+the live object:
+
+```bash
+kubectl annotate $classes helm.sh/resource-policy=keep --overwrite
+```
+
+(After step 3 you can remove it again —
+`kubectl annotate $classes helm.sh/resource-policy-` — so that
+dropping a class from miroir-config values deletes it as usual.
+MiroirNodes need no shielding: the 0.10 chart never rendered them.)
 
 Loopfile users: also set the driver chart's `agent.loopfileBaseDirs`
 to every `loopfile.baseDir` in use — the agent pod's hostPath mounts

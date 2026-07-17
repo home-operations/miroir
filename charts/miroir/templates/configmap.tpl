@@ -2,7 +2,7 @@
 {{- fail "drbd.verifyAlg was renamed to drbd.verify.algorithm" }}
 {{- end }}
 {{- range $key := list "nodes" "storageClasses" "volumeSnapshotClasses" }}
-{{- if index $.Values $key }}
+{{- if hasKey $.Values $key }}
 {{- fail (printf "the `%s` value moved to the miroir-config chart (or plain manifests) — the miroir chart installs only the driver; see https://miroir.home-operations.com/upgrading/" $key) }}
 {{- end }}
 {{- end }}
