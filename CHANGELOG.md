@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.1](https://github.com/home-operations/miroir/compare/0.11.0...0.11.1) (2026-07-17)
+
+
+### Features
+
+* **metrics:** label volume series with their PVC and report the drbd-utils version ([#259](https://github.com/home-operations/miroir/issues/259)) ([b614b0a](https://github.com/home-operations/miroir/commit/b614b0aff76a44667232771615043987b1ea8278))
+
+
+### Bug Fixes
+
+* **backend:** treat a mid-delete vanished zfs snapshot as success ([#264](https://github.com/home-operations/miroir/issues/264)) ([0f104ac](https://github.com/home-operations/miroir/commit/0f104ac42e8d3dedfadd3cdb2b0ca6ed964d873e))
+* **csi:** pin only the scheduler-selected node, rank the rest by headroom ([#260](https://github.com/home-operations/miroir/issues/260)) ([6261441](https://github.com/home-operations/miroir/commit/62614410e13c38256c85c67e834513b113777d0b))
+
 ## [0.11.0](https://github.com/home-operations/miroir/compare/0.10.5...0.11.0) (2026-07-17)
 
 
