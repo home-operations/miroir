@@ -580,6 +580,61 @@ func TestZFSDeleteSnapshotFindsMigratedSnapshot(t *testing.T) {
 	fe.calledWith(t, "zfs destroy -d tank/miroir/pvc-clone@snap-1")
 }
 
+// A deferred snapshot listed by DeleteSnapshot can be auto-removed by ZFS
+// before the destroy runs (its last restore clone went away concurrently).
+// The contract says "succeeds if already absent", so the not-found destroy
+// must map to success, not a permanent reconcile error (#263).
+func TestZFSDeleteSnapshotVanishedMidCallIsSuccess(t *testing.T) {
+	lists := 0
+	run := func(_ context.Context, name string, args ...string) (string, error) {
+		line := name + " " + strings.Join(args, " ")
+		if strings.Contains(line, "zfs list") {
+			lists++
+			if lists == 1 {
+				return "tank/miroir/pvc-1@snap-1\n", nil
+			}
+			return "", nil // gone by the re-check
+		}
+		if strings.Contains(line, "zfs destroy -d") {
+			return "", errors.New("could not find any snapshots to destroy; check snapshot names.")
+		}
+		return "", nil
+	}
+	b := newZFS(cfg, run)
+
+	if err := b.DeleteSnapshot(t.Context(), "pvc-1", "snap-1"); err != nil {
+		t.Fatalf("vanished snapshot must be success, got %v", err)
+	}
+}
+
+// The same not-found destroy is NOT success when the snapshot merely
+// migrated (a concurrent promote reparented it under the clone between the
+// list and the destroy): swallowing it would leak the snapshot and block
+// the clone's destroy forever. The error must surface so the retry finds
+// the snapshot at its new name.
+func TestZFSDeleteSnapshotMigratedMidCallSurfacesError(t *testing.T) {
+	lists := 0
+	run := func(_ context.Context, name string, args ...string) (string, error) {
+		line := name + " " + strings.Join(args, " ")
+		if strings.Contains(line, "zfs list") {
+			lists++
+			if lists == 1 {
+				return "tank/miroir/pvc-src@snap-1\n", nil
+			}
+			return "tank/miroir/pvc-clone@snap-1\n", nil // reparented, not gone
+		}
+		if strings.Contains(line, "zfs destroy -d") {
+			return "", errors.New("could not find any snapshots to destroy; check snapshot names.")
+		}
+		return "", nil
+	}
+	b := newZFS(cfg, run)
+
+	if err := b.DeleteSnapshot(t.Context(), "pvc-src", "snap-1"); err == nil {
+		t.Fatal("a migrated snapshot's failed destroy must surface, not false-succeed")
+	}
+}
+
 func TestZFSDeleteSnapshotAbsentIsNoop(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("zfs list -Hpo name -t snapshot -r tank/miroir",
