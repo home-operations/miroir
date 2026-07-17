@@ -17,6 +17,7 @@ limitations under the License.
 package csi
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -751,5 +752,111 @@ func TestGetCapacityReplicatedNeedsAllLegs(t *testing.T) {
 	if resp.GetAvailableCapacity() != 0 {
 		t.Fatalf("2-replica class with one full peer must report 0, got %d",
 			resp.GetAvailableCapacity())
+	}
+}
+
+// rotatedTopology mimics the external-provisioner without
+// --strict-topology: requisite carries every node's segment, preferred
+// the same list rotated so the scheduler-selected node leads it.
+func rotatedTopology(selected string, all ...string) *csi.TopologyRequirement {
+	i := slices.Index(all, selected)
+	order := append(slices.Clone(all[i:]), all[:i]...)
+	req := &csi.TopologyRequirement{}
+	for _, n := range all {
+		req.Requisite = append(req.Requisite,
+			&csi.Topology{Segments: map[string]string{constants.TopologyKey: n}})
+	}
+	for _, n := range order {
+		req.Preferred = append(req.Preferred,
+			&csi.Topology{Segments: map[string]string{constants.TopologyKey: n}})
+	}
+	return req
+}
+
+// threeEqualNodes is a 3-node topology with one default lvmthin pool each.
+func threeEqualNodes() nodemap.Map {
+	return nodemap.Map{
+		nodeA: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/a"}),
+		nodeB: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/b"}),
+		nodeC: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/c"}),
+	}
+}
+
+// Only the head of the provisioner's preferred list is scheduler intent —
+// the entries behind it are the rotation of every remaining node. Pinning
+// them all replayed the rotation verbatim: the second replica always
+// landed on selected+1 and the emptiest node lost every placement it
+// should have won, no matter what its stats said (#258).
+func TestPlaceSecondReplicaByCapacityNotRotation(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeA, 100*gib, 0), // empty pool: the #258 starved node
+			miroirNodeObj(nodeB, 100*gib, 5*gib),
+			miroirNodeObj(nodeC, 100*gib, 5*gib),
+			nodeObj(nodeA, addrA),
+			nodeObj(nodeB, addrB),
+			nodeObj(nodeC, addrC),
+		),
+		Nodes: threeEqualNodes(),
+	}
+
+	// Consumer on node-b: the provisioner sends [b, c, a].
+	got, err := c.place(t.Context(), placeNodes(t, c), rotatedTopology(nodeB, nodeA, nodeB, nodeC),
+		2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Node != nodeB {
+		t.Fatalf("the scheduler-selected node must stay pinned first, got %+v", got)
+	}
+	if got[1].Node != nodeA {
+		t.Fatalf("second replica must go to the emptiest node (node-a), not the rotation's next (node-c): %+v", got)
+	}
+}
+
+// A burst of volumes for consumers on one node must spread its second
+// replicas: each committed volume's provisioned bytes count immediately
+// (under allocMu), long before the ~minutely pool stats tick shows any
+// thin allocation.
+func TestPlaceBurstSpreadsSecondReplicas(t *testing.T) {
+	s := newScheme(t)
+	cl := placementClient(s,
+		miroirNodeObj(nodeA, 100*gib, 0),
+		miroirNodeObj(nodeB, 100*gib, 0),
+		miroirNodeObj(nodeC, 100*gib, 0),
+		nodeObj(nodeA, addrA),
+		nodeObj(nodeB, addrB),
+		nodeObj(nodeC, addrC),
+	)
+	c := &Controller{Client: cl, Nodes: threeEqualNodes()}
+	rotation := rotatedTopology(nodeB, nodeA, nodeB, nodeC)
+
+	seconds := make([]string, 0, 4)
+	for i := range 4 {
+		name := fmt.Sprintf("pvc-burst-%d", i)
+		got, err := c.place(t.Context(), placeNodes(t, c), rotation,
+			2, 5*gib, name, placementVols(t, cl), false, poolDefault)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got[0].Node != nodeB {
+			t.Fatalf("volume %d: selected node not pinned: %+v", i, got)
+		}
+		seconds = append(seconds, got[1].Node)
+		vol := &miroirv1alpha1.MiroirVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: miroirv1alpha1.MiroirVolumeSpec{
+				SizeBytes: 5 * gib,
+				Replicas:  []miroirv1alpha1.Replica{{Node: got[0].Node}, {Node: got[1].Node}},
+			},
+		}
+		if err := cl.Create(t.Context(), vol); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slices.Sort(seconds)
+	if !slices.Equal(seconds, []string{nodeA, nodeA, nodeC, nodeC}) {
+		t.Fatalf("burst must alternate second replicas between node-a and node-c, got %v", seconds)
 	}
 }

@@ -438,31 +438,53 @@ func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.Top
 		}
 		return sizeBytes > room
 	}
-	// freeBytes is the pool headroom used to rank candidates; 0 (sorts
-	// last) when stats are unknown.
-	freeBytes := func(node string) int64 {
+	// headroom ranks candidates by the same allowance the admission guard
+	// computes: provisioned counts volumes committed moments ago under
+	// allocMu, so a burst spreads across nodes instead of piling onto
+	// whichever one the ~minutely pool stats still call emptiest. Unknown
+	// stats rank last (0) but stay admitted.
+	headroom := func(node string) int64 {
+		room, known := c.poolHeadroom(stats[node].Pool(pool), provisioned[nodePool{node, pool}])
+		if !known {
+			return 0
+		}
+		return room
+	}
+	// physicalFree breaks headroom ties: the virtual overcommit bound
+	// usually binds first on freshly provisioned pools, flattening real
+	// free-space differences that should still steer placement.
+	physicalFree := func(node string) int64 {
 		st := stats[node].Pool(pool)
 		if st == nil {
 			return 0
 		}
-		if free := st.CapacityBytes - st.AllocatedBytes; free > 0 {
-			return free
-		}
-		return 0
+		return max(0, st.CapacityBytes-st.AllocatedBytes)
 	}
 
+	// Pin only the scheduler-selected node: with delayed binding the
+	// provisioner sends the whole cluster topology rotated so the selected
+	// node leads the preferred list — everything behind it is rotation
+	// artifact, not scheduler intent. Honoring the full list replayed the
+	// rotation verbatim: every second replica landed on selected+1 and the
+	// capacity ranking below never ran, starving the rotation's tail node
+	// (#258). The pinned node is kept even if it later fails the
+	// overcommit guard, so a topology-pinned volume refuses rather than
+	// silently landing on a node the pod can't reach.
 	ordered := make([]string, 0, len(candidates))
-	// Scheduler-selected topology first — kept in place even if it later
-	// fails the overcommit guard, so a topology-pinned volume refuses
-	// rather than silently landing on a node the pod can't reach.
+	topologyMatched := false
 	for _, t := range append(reqs.GetPreferred(), reqs.GetRequisite()...) {
-		if n, ok := t.GetSegments()[constants.TopologyKey]; ok {
-			if _, ok := candidates[n]; ok && !slices.Contains(ordered, n) {
-				ordered = append(ordered, n)
-			}
+		n, ok := t.GetSegments()[constants.TopologyKey]
+		if !ok {
+			continue
 		}
+		if _, ok := candidates[n]; !ok {
+			continue
+		}
+		topologyMatched = true
+		ordered = append(ordered, n)
+		break
 	}
-	if reqs != nil && len(reqs.GetRequisite()) > 0 && len(ordered) == 0 && !remoteAccess {
+	if reqs != nil && len(reqs.GetRequisite()) > 0 && !topologyMatched && !remoteAccess {
 		// On a remote-access volume the scheduler may pick a non-storage
 		// node for the first consumer (the PV will carry no affinity);
 		// fall through to capacity-ranked placement — the pod attaches
@@ -471,7 +493,9 @@ func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.Top
 		return nil, status.Errorf(codes.ResourceExhausted,
 			"no node carrying storage pool %q satisfies the requested topology", pool)
 	}
-	// Remaining eligible nodes, most free space first (ties by name).
+	// Remaining eligible nodes, largest headroom first; ties break by
+	// physical free space, then least provisioned (all a node has before
+	// its first stats publish), then name.
 	rest := make([]string, 0, len(candidates))
 	for n := range candidates {
 		if slices.Contains(ordered, n) || overcommitted(n) {
@@ -480,7 +504,13 @@ func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.Top
 		rest = append(rest, n)
 	}
 	slices.SortFunc(rest, func(a, b string) int {
-		if d := cmp.Compare(freeBytes(b), freeBytes(a)); d != 0 {
+		if d := cmp.Compare(headroom(b), headroom(a)); d != 0 {
+			return d
+		}
+		if d := cmp.Compare(physicalFree(b), physicalFree(a)); d != 0 {
+			return d
+		}
+		if d := cmp.Compare(provisioned[nodePool{a, pool}], provisioned[nodePool{b, pool}]); d != 0 {
 			return d
 		}
 		return cmp.Compare(a, b)
