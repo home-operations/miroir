@@ -186,7 +186,7 @@ func TestVerifyHappyPathRecordsCleanResult(t *testing.T) {
 	if st.LastVerifyOutOfSyncBytes == nil || *st.LastVerifyOutOfSyncBytes != 0 {
 		t.Fatalf("clean verify must record 0 out-of-sync bytes, got %v", st.LastVerifyOutOfSyncBytes)
 	}
-	if v := testutil.ToFloat64(metricVerifyOutOfSyncBytes.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 0 {
+	if v := testutil.ToFloat64(metricVerifyOutOfSyncBytes.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName, volPvc1, "")); v != 0 {
 		t.Fatalf("verify oos gauge = %v, want 0", v)
 	}
 	select {
@@ -211,7 +211,7 @@ func TestVerifyOutOfSyncRecordsAndEvents(t *testing.T) {
 	if st.LastVerifyOutOfSyncBytes == nil || *st.LastVerifyOutOfSyncBytes != 256*1024 {
 		t.Fatalf("verify must record 256 KiB out of sync, got %v", st.LastVerifyOutOfSyncBytes)
 	}
-	if v := testutil.ToFloat64(metricVerifyOutOfSyncBytes.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 256*1024 {
+	if v := testutil.ToFloat64(metricVerifyOutOfSyncBytes.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName, volPvc1, "")); v != 256*1024 {
 		t.Fatalf("verify oos gauge = %v, want %d", v, 256*1024)
 	}
 	select {

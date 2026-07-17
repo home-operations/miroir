@@ -227,7 +227,7 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	}
 	// No peers means fully in sync: the zero value would perma-fire any
 	// <1 resync alert for every unreplicated volume.
-	if ratio := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); ratio != 1 {
+	if ratio := testutil.ToFloat64(metricResyncRatio.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName, volPvc1, "")); ratio != 1 {
 		t.Fatalf("unreplicated resync_ratio = %v, want 1", ratio)
 	}
 }
@@ -1224,7 +1224,7 @@ func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 	default:
 		t.Fatal("want a TeardownWedged warning event")
 	}
-	if got := testutil.ToFloat64(metricWedged.WithLabelValues(volPvc1)); got != 1 {
+	if got := testutil.ToFloat64(metricWedged.WithLabelValues(volPvc1, volPvc1, "")); got != 1 {
 		t.Fatalf("wedged gauge = %v, want 1", got)
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
@@ -1259,7 +1259,7 @@ func TestReconcileVolumeGoneDropsMetrics(t *testing.T) {
 	s := newScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend())}
-	metricWedged.WithLabelValues(volPvc1).Set(1)
+	metricWedged.WithLabelValues(volPvc1, volPvc1, "").Set(1)
 	t.Cleanup(func() { dropVolumeMetrics(volPvc1) })
 
 	if _, err := r.Reconcile(t.Context(),
@@ -1356,7 +1356,7 @@ func TestReconcileLatchedDiskSkipsReAttach(t *testing.T) {
 		t.Fatalf("latch must stay set while the leg is Diskless: %+v", st)
 	}
 	// The latch is the actionable hardware-failure alert signal.
-	if v := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 1 {
+	if v := testutil.ToFloat64(metricDiskFailed.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName, volPvc1, "")); v != 1 {
 		t.Fatalf("miroir_volume_disk_failed = %v, want 1", v)
 	}
 }
@@ -1415,11 +1415,11 @@ func TestReconcileQuorumLostExportsGauge(t *testing.T) {
 
 	reconcile(t, r, volPvc1)
 
-	if v := testutil.ToFloat64(metricQuorum.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 0 {
+	if v := testutil.ToFloat64(metricQuorum.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName, volPvc1, "")); v != 0 {
 		t.Fatalf("miroir_volume_quorum = %v, want 0 on quorum loss", v)
 	}
 	// Local disk is fine — up_to_date must stay 1 (quorum is the signal).
-	if v := testutil.ToFloat64(metricUpToDate.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName)); v != 1 {
+	if v := testutil.ToFloat64(metricUpToDate.WithLabelValues(volPvc1, miroirv1alpha1.DefaultPoolName, volPvc1, "")); v != 1 {
 		t.Fatalf("miroir_volume_up_to_date = %v, want 1", v)
 	}
 }
@@ -2641,7 +2641,7 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 	if st.DevicePath == "" {
 		t.Fatal("client slot must record the DRBD device path for staging")
 	}
-	if v := testutil.ToFloat64(metricDisklessPrimary.WithLabelValues(volPvc1)); v != 0 {
+	if v := testutil.ToFloat64(metricDisklessPrimary.WithLabelValues(volPvc1, volPvc1, "")); v != 0 {
 		t.Fatalf("diskless_primary = %v, want 0 while Secondary", v)
 	}
 
@@ -2652,7 +2652,7 @@ func TestReconcileClientLegRealizesDiskless(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
 		"connections":[{"peer-node-id":0,"connection-state":"Connected"},{"peer-node-id":1,"connection-state":"Connected"}]}]`
 	reconcile(t, r, volPvc1)
-	if v := testutil.ToFloat64(metricDisklessPrimary.WithLabelValues(volPvc1)); v != 1 {
+	if v := testutil.ToFloat64(metricDisklessPrimary.WithLabelValues(volPvc1, volPvc1, "")); v != 1 {
 		t.Fatalf("diskless_primary = %v, want 1 while Primary", v)
 	}
 }

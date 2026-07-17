@@ -32,6 +32,10 @@ spec:
     - jsonPath: .status.drbdVersion
       name: DRBD
       type: string
+    - jsonPath: .status.drbdUtilsVersion
+      name: DRBD-Utils
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -273,6 +277,13 @@ spec:
                   - type
                   type: object
                 type: array
+              drbdUtilsVersion:
+                description: |-
+                  DRBDUtilsVersion is the drbd-utils userland version the agent
+                  probed at startup (e.g. "9.34.3"). Unlike the kernel module the
+                  utils ship in the agent image, so this varies per agent rollout
+                  rather than per host.
+                type: string
               drbdVersion:
                 description: |-
                   DRBDVersion is the DRBD kernel module version the agent probed at

@@ -205,6 +205,9 @@ var schemaYAML = typed.YAMLObject(`types:
           elementType:
             namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
           elementRelationship: atomic
+    - name: drbdUtilsVersion
+      type:
+        scalar: string
     - name: drbdVersion
       type:
         scalar: string

@@ -214,7 +214,12 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		}
 	}
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: req.GetName(),
+			Labels: constants.PVCRefLabels(
+				req.GetParameters()[paramPVCName],
+				req.GetParameters()[paramPVCNamespace]),
+		},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: sizeBytes,
 			Replicas:  placed,
@@ -1384,6 +1389,14 @@ func parseAllowRemoteAccess(params map[string]string, replicas int) (bool, error
 	}
 	return enabled, nil
 }
+
+// The external-provisioner injects these parameters when it runs with
+// --extra-create-metadata (the chart always passes it); they identify the
+// PVC a CreateVolume serves.
+const (
+	paramPVCName      = "csi.storage.k8s.io/pvc/name"
+	paramPVCNamespace = "csi.storage.k8s.io/pvc/namespace"
+)
 
 // classParams is the StorageClass-driven shape of a CreateVolume request.
 type classParams struct {

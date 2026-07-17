@@ -85,7 +85,7 @@ func TestTieBreakerRetrofitsAndMembershipCompletes(t *testing.T) {
 
 	tbReconcile(t, tb)
 
-	mr := &Reconciler{Client: c, Nodes: nodes}
+	mr := &Reconciler{Client: c, PVs: c, Nodes: nodes}
 	got := get(t, mr, volTB)
 	if len(got.Spec.Replicas) != 3 {
 		t.Fatalf("tie-breaker not added: %+v", got.Spec.Replicas)
@@ -139,7 +139,7 @@ func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
 	if res.RequeueAfter == 0 {
 		t.Fatal("must requeue: the finalizer release does not bump the generation")
 	}
-	got := get(t, &Reconciler{Client: c}, volTB)
+	got := get(t, &Reconciler{Client: c, PVs: c}, volTB)
 	if len(got.Spec.Replicas) != 2 {
 		t.Fatalf("no tie-breaker may be added mid-removal: %+v", got.Spec.Replicas)
 	}
@@ -198,7 +198,7 @@ func TestTieBreakerSkips(t *testing.T) {
 
 			tbReconcile(t, tb)
 
-			got := get(t, &Reconciler{Client: c}, volTB)
+			got := get(t, &Reconciler{Client: c, PVs: c}, volTB)
 			if len(got.Spec.Replicas) != want {
 				t.Fatalf("replicas must stay unchanged: %+v", got.Spec.Replicas)
 			}
@@ -226,7 +226,7 @@ func TestTieBreakerRetrofitWithClientLeg(t *testing.T) {
 
 	tbReconcile(t, r)
 
-	got := get(t, &Reconciler{Client: c}, volTB)
+	got := get(t, &Reconciler{Client: c, PVs: c}, volTB)
 	idx := slices.IndexFunc(got.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
 		return rep.Node == nodeC
 	})
@@ -256,7 +256,7 @@ func TestTieBreakerSkipsClientNode(t *testing.T) {
 
 	tbReconcile(t, r)
 
-	got := get(t, &Reconciler{Client: c}, volTB)
+	got := get(t, &Reconciler{Client: c, PVs: c}, volTB)
 	if len(got.Spec.Replicas) != 2 {
 		t.Fatalf("the client's node must not receive the tie-breaker: %+v", got.Spec.Replicas)
 	}

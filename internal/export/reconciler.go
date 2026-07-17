@@ -91,7 +91,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// Serving means a gateway pod is up and the address consumers mount is
 	// published; the owned-Deployment watch re-runs this on availability
 	// flips, so the gauge tracks failovers without polling.
-	recordExportReady(vol.Name, available && addr != "")
+	recordExportReady(vol, available && addr != "")
 	log.Info("reconciled RWX gateway", "volume", vol.Name, "address", addr, "available", available)
 	return ctrl.Result{}, nil
 }
@@ -162,13 +162,19 @@ func (r *Reconciler) publishAddress(ctx context.Context, vol *miroirv1alpha1.Mir
 	return r.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
-// SetupWithManager registers the reconciler. Generation-filtered on the
-// volume (status churn from agents carries nothing this reconciler reads),
-// and it owns its Deployment/Service so drift on those heals.
+// SetupWithManager registers the reconciler. The volume watch passes
+// generation changes (status churn from agents carries nothing this
+// reconciler reads) and label changes — the PVC-ref backfill is a
+// label-only patch, and without it an existing RWX volume's
+// miroir_export_ready series would keep its fallback pvc label until an
+// unrelated workload event. It owns its Deployment/Service so drift on
+// those heals.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{},
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			builder.WithPredicates(predicate.Or[client.Object](
+				predicate.GenerationChangedPredicate{},
+				predicate.LabelChangedPredicate{}))).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Named("export").

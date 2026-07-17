@@ -1063,16 +1063,30 @@ const KernelFloor = "9.3.1"
 // KernelAvailable: with no module loaded drbdadm falls back to a
 // compile-time guess.
 func (d *Driver) KernelVersion(ctx context.Context) (string, error) {
+	return d.admVersionField(ctx, "DRBD_KERNEL_VERSION")
+}
+
+// UtilsVersion reports the drbd-utils userland version via drbdadm's
+// DRBDADM_VERSION. Unlike the kernel module, the utils ship in the agent
+// image, so this is the container's toolchain version, not the host's.
+func (d *Driver) UtilsVersion(ctx context.Context) (string, error) {
+	return d.admVersionField(ctx, "DRBDADM_VERSION")
+}
+
+// admVersionField pulls one KEY=value line out of drbdadm --version. The
+// "=" is part of the match so DRBDADM_VERSION never picks up the
+// DRBDADM_VERSION_CODE line.
+func (d *Driver) admVersionField(ctx context.Context, key string) (string, error) {
 	out, err := d.Exec(ctx, "drbdadm", "--version")
 	if err != nil {
 		return "", fmt.Errorf("drbdadm --version: %w", err)
 	}
 	for line := range strings.SplitSeq(out, "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "DRBD_KERNEL_VERSION="); ok {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
 			return strings.TrimSpace(v), nil
 		}
 	}
-	return "", errors.New("no DRBD_KERNEL_VERSION in drbdadm --version output")
+	return "", fmt.Errorf("no %s in drbdadm --version output", key)
 }
 
 // kernelFloor is KernelFloor pre-parsed for comparisons.
