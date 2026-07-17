@@ -269,3 +269,33 @@ func TestNodeGroupOneBadNodeDoesNotBlockTheFleet(t *testing.T) {
 		t.Fatalf("a failed converge must not be reported as an orphan: %+v", cond)
 	}
 }
+
+// Deleting the direct MiroirNode is the documented way to hand a
+// conflicted node to a group: the next pass must take it over.
+func TestNodeGroupTakesOverAfterDirectDelete(t *testing.T) {
+	direct := &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
+		Spec: miroirv1alpha1.MiroirNodeSpec{
+			Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, ZFS: &miroirv1alpha1.ZFSPool{Dataset: "tank/miroir"}}},
+		},
+	}
+	c := newClient(t, nvmeGroup(), direct,
+		k8sNode(nodeA, map[string]string{classLabel: classNVMe}, nil))
+	reconcileGroup(t, c, classNVMe)
+
+	if err := c.Delete(t.Context(), direct); err != nil {
+		t.Fatal(err)
+	}
+
+	g := reconcileGroup(t, c, classNVMe)
+	if !slices.Equal(g.Status.Nodes, []string{nodeA}) {
+		t.Fatalf("the group must claim the node once the direct object is gone: %v", g.Status.Nodes)
+	}
+	mn := &miroirv1alpha1.MiroirNode{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: nodeA}, mn); err != nil {
+		t.Fatal(err)
+	}
+	if mn.Labels[miroirv1alpha1.NodeGroupLabel] != classNVMe || mn.Spec.Pools[0].LVMThin == nil {
+		t.Fatalf("takeover must materialize the group's template: %v %+v", mn.Labels, mn.Spec.Pools)
+	}
+}

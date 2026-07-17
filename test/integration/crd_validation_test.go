@@ -467,6 +467,25 @@ var _ = Describe("MiroirNodeGroup CEL rules", func() {
 			"the pool oneOf rule must apply inside group templates too")
 	})
 
+	It("rejects a selector expression the reconciler could not compile", func() {
+		group := &miroirv1alpha1.MiroirNodeGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "grp-badexpr"},
+			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
+				NodeSelector: metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key:      "storage.miroir.home-operations.com/class",
+					Operator: metav1.LabelSelectorOpExists,
+					Values:   []string{"nvme"},
+				}}},
+				Template: miroirv1alpha1.MiroirNodeSpec{
+					Pools: []miroirv1alpha1.MiroirNodePool{lvmthinPool(poolDefault)},
+				},
+			},
+		}
+		err := k8sClient.Create(ctx, group)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+			"Exists with values must be rejected at admission, not hot-loop the reconciler, got: %v", err)
+	})
+
 	It("rejects a name longer than a label value — it becomes the provenance label", func() {
 		group := &miroirv1alpha1.MiroirNodeGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("g", 64)},

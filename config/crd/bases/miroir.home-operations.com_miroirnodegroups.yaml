@@ -59,6 +59,9 @@ spec:
                 description: |-
                   NodeSelector picks the member nodes by label. An empty selector
                   matches every node in the cluster (the Kubernetes convention).
+                  The expression rule mirrors what LabelSelectorAsSelector enforces at
+                  runtime — the LabelSelector schema alone admits combinations that
+                  would otherwise fail every reconcile.
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -103,6 +106,13 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-map-type: atomic
+                x-kubernetes-validations:
+                - message: 'matchExpressions: In/NotIn require values; Exists/DoesNotExist
+                    forbid them'
+                  rule: '!has(self.matchExpressions) || self.matchExpressions.all(e,
+                    ((e.operator == ''In'' || e.operator == ''NotIn'') && has(e.values)
+                    && size(e.values) > 0) || ((e.operator == ''Exists'' || e.operator
+                    == ''DoesNotExist'') && (!has(e.values) || size(e.values) == 0)))'
               template:
                 description: |-
                   Template is the MiroirNode spec applied to every member, with two

@@ -39,6 +39,10 @@ const NodeAddressAnnotation = "miroir.home-operations.com/address"
 type MiroirNodeGroupSpec struct {
 	// NodeSelector picks the member nodes by label. An empty selector
 	// matches every node in the cluster (the Kubernetes convention).
+	// The expression rule mirrors what LabelSelectorAsSelector enforces at
+	// runtime — the LabelSelector schema alone admits combinations that
+	// would otherwise fail every reconcile.
+	// +kubebuilder:validation:XValidation:rule="!has(self.matchExpressions) || self.matchExpressions.all(e, ((e.operator == 'In' || e.operator == 'NotIn') && has(e.values) && size(e.values) > 0) || ((e.operator == 'Exists' || e.operator == 'DoesNotExist') && (!has(e.values) || size(e.values) == 0)))",message="matchExpressions: In/NotIn require values; Exists/DoesNotExist forbid them"
 	NodeSelector metav1.LabelSelector `json:"nodeSelector"`
 	// Template is the MiroirNode spec applied to every member, with two
 	// per-node facts resolved from the Node object: an empty zone

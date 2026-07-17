@@ -176,10 +176,17 @@ tests:
           errorPattern: moved to the miroir-config chart
 
   # Presence is the signal, not truthiness: an explicitly-empty leftover
-  # is still a leftover.
-  - it: fails loudly when a pre-split value is set but empty
+  # is still a leftover. One test per key — the guard fails on the first
+  # hit, so a combined test would only exercise one of them.
+  - it: fails loudly when a pre-split map value is set but empty
     set:
       nodes: {}
+    asserts:
+      - failedTemplate:
+          errorPattern: moved to the miroir-config chart
+
+  - it: fails loudly when a pre-split list value is set but empty
+    set:
       volumeSnapshotClasses: []
     asserts:
       - failedTemplate:
