@@ -42,44 +42,50 @@ agent image. Details, including the Talos and Debian/Ubuntu node
 setup and the graceful-node-shutdown requirement:
 [Requirements](https://miroir.home-operations.com/requirements/).
 
-Storage configuration lives in the **miroir-config** chart, separate
-from the driver: the node topology (MiroirNode custom resources — one
-per storage node, named storage pools validated by the CRD), the
-StorageClasses, and the VolumeSnapshotClasses, side by side in one
-values document. A StorageClass picks a pool with `pool` (default: the
-pool named `default`); `replicas: 1` is node-local, `replicas: 2` is
-DRBD-replicated. Plain MiroirNode/StorageClass manifests work
-identically. The common two-node pair:
+Storage configuration is plain manifests, separate from the driver
+chart: the node topology (MiroirNode custom resources — one per storage
+node, named storage pools validated by the CRD — or a MiroirNodeGroup
+materializing them from a node-label selector), the StorageClasses, and
+the VolumeSnapshotClasses. A StorageClass picks a pool with the `pool`
+parameter (default: the pool named `default`); `replicas: "1"` is
+node-local, `replicas: "2"` is DRBD-replicated. The common two-node
+pair:
 
 ```yaml
-# config-values.yaml
-nodes:
-    node-a:
-        spec:
-            pools:
-                - name: default
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-    node-b:
-        spec:
-            pools:
-                - name: default
-                  lvmthin:
-                      device: /dev/disk/by-partlabel/r-miroir
-storageClasses:
-    - name: miroir-local
-      replicas: 1
-    - name: miroir-replicated
-      replicas: 2
-volumeSnapshotClasses:
-    - name: miroir-snap
+# topology.yaml
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+    name: node-a # node-b is identical
+spec:
+    pools:
+        - name: default
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+    name: miroir-replicated
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+    miroir.home-operations.com/replicas: "2"
+    csi.storage.k8s.io/fstype: ext4
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+    name: miroir-snap
+driver: miroir.home-operations.com
+deletionPolicy: Delete
 ```
 
 ```bash
 helm install miroir oci://ghcr.io/home-operations/charts/miroir \
   -n miroir-system --create-namespace
-helm install miroir-config oci://ghcr.io/home-operations/charts/miroir-config \
-  -n miroir-system -f config-values.yaml
+kubectl apply -f topology.yaml
 ```
 
 Then claim volumes through the created StorageClasses as usual.

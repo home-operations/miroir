@@ -49,11 +49,13 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
 ## 0.10.x → 0.11.0: node topology becomes MiroirNode CRs
 
 The storage configuration moves out of the miroir chart entirely: the
-node topology becomes `MiroirNode` custom resources and, together with
-the StorageClasses and VolumeSnapshotClasses, now lives in the new
-**miroir-config** chart (or plain manifests) — the miroir chart
+node topology becomes `MiroirNode` custom resources (or a
+`MiroirNodeGroup` materializing them from a label selector) and,
+together with the StorageClasses and VolumeSnapshotClasses, is now
+plain manifests you apply and version yourself — the miroir chart
 installs only the driver. The CRD schema is what validates the
-topology. Alongside the move:
+topology, and `kubectl apply` rejects unknown fields outright.
+Alongside the move:
 
 - Pool options are grouped under a per-backend block (`lvmthin`, `zfs`, or
   `loopfile`) instead of prefixed flat keys.
@@ -83,21 +85,21 @@ on configuration you can plainly see in your files.
 
 ///
 
-### 2. Move the storage configuration to the miroir-config chart
+### 2. Move the storage configuration to manifests
 
-The `nodes`, `storageClasses`, and `volumeSnapshotClasses` values move
-verbatim to the new **miroir-config** chart (or to plain manifests, if
-you prefer authoring MiroirNode/StorageClass YAML directly). For
-`nodes`, each entry gains a `spec:` wrapper (the values are the CR spec
-verbatim), `pools` becomes a list of named entries, and each pool's
-options move under its backend's block:
+The `nodes`, `storageClasses`, and `volumeSnapshotClasses` values
+become plain manifests. For `nodes`, each entry becomes a `MiroirNode`
+object of the same name (the old values are the CR spec, reshaped):
+`pools` becomes a list of named entries, and each pool's options move
+under its backend's block:
 
-| 0.10.x values                   | miroir-config values          |
+| 0.10.x values                   | MiroirNode manifest           |
 | ------------------------------- | ----------------------------- |
-| `nodes.<n>.zone`                | `nodes.<n>.spec.zone`         |
-| `nodes.<n>.address`             | `nodes.<n>.spec.address`      |
-| `nodes.<n>.autoEvict`           | `nodes.<n>.spec.autoEvict`    |
-| `nodes.<n>.pools.<p>` (map key) | `...spec.pools[].name`        |
+| `nodes.<n>` (map key)           | `metadata.name`               |
+| `nodes.<n>.zone`                | `spec.zone`                   |
+| `nodes.<n>.address`             | `spec.address`                |
+| `nodes.<n>.autoEvict`           | `spec.autoEvict`              |
+| `nodes.<n>.pools.<p>` (map key) | `spec.pools[].name`           |
 | `...pools.<p>.backend`          | (implied by the block below)  |
 | `...pools.<p>.device`           | `...pools[].lvmthin.device`   |
 | `...pools.<p>.thinPoolSize`     | `...pools[].lvmthin.poolSize` |
@@ -109,8 +111,18 @@ options move under its backend's block:
 There is no `backend` field any more: the block that is present IS the
 backend, so exactly one of `lvmthin`/`zfs`/`loopfile` is required even
 when it has nothing to say — an lvmthin pool whose VG already exists
-still writes `lvmthin: {}`. `storageClasses` and
-`volumeSnapshotClasses` move unchanged.
+still writes `lvmthin: {}`. A homogeneous fleet can become one
+`MiroirNodeGroup` instead of per-node objects
+([Quickstart](quickstart.md) shows the layout).
+
+Each `storageClasses` entry becomes a standard StorageClass manifest:
+the chart's knobs map to `parameters`
+([the full table](configuration.md#storageclass-parameters)), and what
+the chart used to default now needs writing —
+`volumeBindingMode: WaitForFirstConsumer`, `allowVolumeExpansion: true`,
+and the `storageclass.kubernetes.io/is-default-class` annotation where
+`isDefault` was used. `volumeSnapshotClasses` entries become
+VolumeSnapshotClass manifests (`driver` + `deletionPolicy`).
 
 Before (0.10 miroir values):
 
@@ -128,78 +140,68 @@ storageClasses:
     replicas: 2
 ```
 
-After (miroir-config values):
+After (plain manifests):
 
 ```yaml
-nodes:
-  k8s-0:
-    spec:
-      zone: rack-1
-      pools:
-        - name: default
-          lvmthin:
-            device: /dev/disk/by-partlabel/r-miroir
-            poolSize: 400g
-storageClasses:
-  - name: miroir-replicated
-    replicas: 2
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNode
+metadata:
+  name: k8s-0
+spec:
+  zone: rack-1
+  pools:
+    - name: default
+      lvmthin:
+        device: /dev/disk/by-partlabel/r-miroir
+        poolSize: 400g
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: miroir-replicated
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  miroir.home-operations.com/replicas: "2"
+  csi.storage.k8s.io/fstype: ext4
 ```
 
-Install miroir-config **before** upgrading the driver chart, so the
-rolled agents boot straight into storage mode:
-
-```bash
-helm install miroir-config oci://ghcr.io/home-operations/charts/miroir-config \
-  -n miroir-system -f config-values.yaml
-```
-
-Your cluster already has one `MiroirNode` per storage node (the 0.10
-agents created them to publish pool capacity), and the 0.10 miroir
-release owns your StorageClass/VolumeSnapshotClass objects.
-miroir-config adopts all of them on install — run it with
-`--take-ownership` (Helm ≥ 3.17) or move the ownership metadata first:
-
-```bash
-classes="$(kubectl get storageclasses -o jsonpath='{range .items[?(@.provisioner=="miroir.home-operations.com")]}storageclass.storage.k8s.io/{.metadata.name} {end}')
-$(kubectl get volumesnapshotclasses -o jsonpath='{range .items[?(@.driver=="miroir.home-operations.com")]}volumesnapshotclass.snapshot.storage.k8s.io/{.metadata.name} {end}' 2>/dev/null)"
-for obj in $(kubectl get miroirnodes -o name) $classes; do
-  kubectl annotate "$obj" \
-    meta.helm.sh/release-name=miroir-config \
-    meta.helm.sh/release-namespace=miroir-system --overwrite
-  kubectl label "$obj" app.kubernetes.io/managed-by=Helm --overwrite
-done
-```
-
-Either way, **also shield the classes before step 3**: the old miroir
-release's manifest still lists them, and a Helm upgrade deletes objects
-that dropped out of the manifest by name — it never checks who owns
-them now (`--take-ownership` does not protect against this); the one
-thing it respects is a `helm.sh/resource-policy: keep` annotation on
-the live object:
-
-```bash
-kubectl annotate $classes helm.sh/resource-policy=keep --overwrite
-```
-
-(After step 3 you can remove it again —
-`kubectl annotate $classes helm.sh/resource-policy-` — so that
-dropping a class from miroir-config values deletes it as usual.
-MiroirNodes need no shielding: the 0.10 chart never rendered them.
-Clusters tracking unreleased main are the one exception — a
-development-window chart briefly rendered MiroirNodes without `keep`,
-so include `$(kubectl get miroirnodes -o name)` in the annotate loop
-above before upgrading such a cluster.)
-
-Declaring the fleet as a `nodeGroups` entry instead of per-node
-`nodes`? The existing agent-created MiroirNodes carry no group label,
-so the group reports them as Conflict and touches nothing (a direct
-MiroirNode always wins). Hand them over explicitly — the group then
-converges each spec to its template:
+Apply the MiroirNode manifests **before** upgrading the driver chart,
+so the rolled agents boot straight into storage mode. Your cluster
+already has one `MiroirNode` per storage node (the 0.10 agents created
+them to publish pool capacity); `kubectl apply` over them just works —
+the spec becomes yours, the status stays the agents'. Declaring the
+fleet as a MiroirNodeGroup instead? The existing MiroirNodes carry no
+group label, so the group reports them as Conflict and touches nothing
+(a direct MiroirNode always wins). Hand them over explicitly — the
+group then converges each spec to its template:
 
 ```bash
 kubectl label miroirnodes --all \
   miroir.home-operations.com/node-group=<group-name>
 ```
+
+The classes need one extra step. The 0.10 miroir release's manifest
+still lists your StorageClass/VolumeSnapshotClass objects, and a Helm
+upgrade deletes objects that dropped out of the manifest by name; the
+one thing it respects is a `helm.sh/resource-policy: keep` annotation
+on the live object. **Shield them before step 3**:
+
+```bash
+classes="$(kubectl get storageclasses -o jsonpath='{range .items[?(@.provisioner=="miroir.home-operations.com")]}storageclass.storage.k8s.io/{.metadata.name} {end}')
+$(kubectl get volumesnapshotclasses -o jsonpath='{range .items[?(@.driver=="miroir.home-operations.com")]}volumesnapshotclass.snapshot.storage.k8s.io/{.metadata.name} {end}' 2>/dev/null)"
+kubectl annotate $classes helm.sh/resource-policy=keep --overwrite
+```
+
+After step 3 they are plain, unowned objects — the manifests you
+authored above are their source of truth from then on (apply them over
+the live objects, and drop the keep annotation if you like:
+`kubectl annotate $classes helm.sh/resource-policy-`). MiroirNodes need
+no shielding: the 0.10 chart never rendered them. Clusters tracking
+unreleased main are the one exception — a development-window chart
+briefly rendered MiroirNodes — so there, extend the annotate command
+with `$(kubectl get miroirnodes -o name)`.
 
 Loopfile users: also set the driver chart's `agent.loopfileBaseDirs`
 to every `loopfile.baseDir` in use — the agent pod's hostPath mounts
@@ -231,7 +233,7 @@ kubectl get miroirnode <node> -o yaml
 `spec.pools` on every storage node should show the per-backend blocks from
 your configuration (`lvmthin.device`, `zfs.dataset`, ...). If a block is
 missing, the CRD update in step 1 was skipped and the old schema pruned it:
-apply the CRDs and upgrade miroir-config again.
+apply the CRDs and then your manifests again.
 
 ### Also breaking, but unlikely to affect you
 

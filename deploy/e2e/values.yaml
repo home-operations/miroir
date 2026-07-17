@@ -1,6 +1,6 @@
 # Driver-chart values for the single-node kind e2e (mise run test-e2e).
-# Topology and classes come from the miroir-config chart (see
-# config-values.yaml + the e2e-provision task's --set for the node).
+# Topology and classes are plain manifests (deploy/e2e/classes.yaml + the
+# MiroirNodeGroup the e2e-provision task applies with the loop device).
 image:
   repository: miroir-controller
   tag: e2e

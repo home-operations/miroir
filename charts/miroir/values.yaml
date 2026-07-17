@@ -287,12 +287,12 @@ gateway:
 # Storage configuration (NOT chart values)
 # =============================================================================
 # This chart installs only the driver. The per-node storage topology
-# (MiroirNode custom resources), StorageClasses, and VolumeSnapshotClasses
-# live in the sibling miroir-config chart — one reviewed document where
-# pool names and the classes that select them sit side by side — or in
-# plain manifests, whichever your tooling prefers. Agents on nodes without
-# a MiroirNode run a client-only CSI service and switch to storage mode by
-# themselves when their MiroirNode appears.
+# (MiroirNode/MiroirNodeGroup custom resources), StorageClasses, and
+# VolumeSnapshotClasses are plain manifests you apply and version like any
+# other Kubernetes object — kubectl rejects unknown fields outright, and
+# the CRDs validate the rest. Agents on nodes without a MiroirNode run a
+# client-only CSI service and switch to storage mode by themselves when
+# their MiroirNode appears.
 # See https://miroir.home-operations.com/quickstart/
 
 # =============================================================================

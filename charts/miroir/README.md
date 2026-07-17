@@ -36,10 +36,11 @@ Version-specific steps live in the
 
 ## Storage configuration
 
-This chart installs only the driver. The node topology (MiroirNode
-custom resources), StorageClasses, and VolumeSnapshotClasses live in the
-sibling [miroir-config](https://github.com/home-operations/miroir/tree/main/charts/miroir-config)
-chart — or in plain manifests, whichever your tooling prefers.
+This chart installs only the driver. The node topology
+(MiroirNode/MiroirNodeGroup custom resources), StorageClasses, and
+VolumeSnapshotClasses are plain manifests — see the
+[quickstart](https://miroir.home-operations.com/quickstart/) for the
+layouts.
 
 ## Maintainers
 

@@ -3,7 +3,7 @@
 {{- end }}
 {{- range $key := list "nodes" "storageClasses" "volumeSnapshotClasses" }}
 {{- if hasKey $.Values $key }}
-{{- fail (printf "the `%s` value moved to the miroir-config chart (or plain manifests) — the miroir chart installs only the driver; see https://miroir.home-operations.com/upgrading/" $key) }}
+{{- fail (printf "the `%s` value is gone — topology and classes are plain manifests now (MiroirNode/MiroirNodeGroup CRs, StorageClasses) and the miroir chart installs only the driver; see https://miroir.home-operations.com/upgrading/" $key) }}
 {{- end }}
 {{- end }}
 apiVersion: v1

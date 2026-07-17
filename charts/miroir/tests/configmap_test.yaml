@@ -165,7 +165,7 @@ tests:
             pools: []
     asserts:
       - failedTemplate:
-          errorPattern: moved to the miroir-config chart
+          errorPattern: topology and classes are plain manifests now
 
   - it: fails loudly when the pre-split storageClasses value is still set
     set:
@@ -173,7 +173,7 @@ tests:
         - name: miroir-local
     asserts:
       - failedTemplate:
-          errorPattern: moved to the miroir-config chart
+          errorPattern: topology and classes are plain manifests now
 
   # Presence is the signal, not truthiness: an explicitly-empty leftover
   # is still a leftover. One test per key — the guard fails on the first
@@ -183,11 +183,11 @@ tests:
       nodes: {}
     asserts:
       - failedTemplate:
-          errorPattern: moved to the miroir-config chart
+          errorPattern: topology and classes are plain manifests now
 
   - it: fails loudly when a pre-split list value is set but empty
     set:
       volumeSnapshotClasses: []
     asserts:
       - failedTemplate:
-          errorPattern: moved to the miroir-config chart
+          errorPattern: topology and classes are plain manifests now

@@ -52,11 +52,11 @@ run = "golangci-lint run --fix"
 
 [tasks.helm-lint]
 description = "Run helm lint"
-run = "helm lint charts/miroir charts/miroir-config"
+run = "helm lint charts/miroir"
 
 [tasks.helm-test]
 description = "Run helm-unittest against the chart templates"
-run = "helm unittest charts/miroir charts/miroir-config"
+run = "helm unittest charts/miroir"
 
 [tasks.helm-docs-check]
 description = "Verify chart README + values.schema.json are in sync with values.yaml"
@@ -160,28 +160,38 @@ kubectl wait --for=condition=established --timeout=60s \
 kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//deploy/kubernetes/snapshot-controller?ref=$snap_ver"
 kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 
-# Config is CR-first: CRDs, then the miroir-config chart (topology +
-# classes), then the driver — the same order the upgrade guide mandates,
-# so the agent boots straight into storage mode instead of
-# client-only + self-restart. The topology goes through a labeled
-# MiroirNodeGroup, which is the group controller's end-to-end coverage:
-# label → group → materialized MiroirNode → agent.
-echo "==> applying CRDs + installing miroir-config for $node"
+# Config is CR-first: CRDs, then the topology + class manifests, then
+# the driver — the same order the upgrade guide mandates, so the agent
+# boots straight into storage mode instead of client-only + self-restart.
+# The topology goes through a labeled MiroirNodeGroup, which is the group
+# controller's end-to-end coverage: label → group → materialized
+# MiroirNode → agent.
+echo "==> applying CRDs + storage manifests for $node"
 kubectl apply -f charts/miroir/crds/
 kubectl wait --for=condition=established --timeout=60s \
   crd/miroirnodes.miroir.home-operations.com \
   crd/miroirnodegroups.miroir.home-operations.com
 kubectl label node "$node" storage.miroir.home-operations.com/class=e2e --overwrite
-helm upgrade --install miroir-config charts/miroir-config \
-  --namespace miroir-system --create-namespace \
-  -f deploy/e2e/config-values.yaml \
-  --set "nodeGroups.e2e.spec.nodeSelector.matchLabels.storage\.miroir\.home-operations\.com/class=e2e" \
-  --set "nodeGroups.e2e.spec.template.pools[0].name=default" \
-  --set "nodeGroups.e2e.spec.template.pools[0].lvmthin.device=${device}"
+kubectl apply -f deploy/e2e/classes.yaml
+kubectl apply -f - <<EOF
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNodeGroup
+metadata:
+  name: e2e
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.miroir.home-operations.com/class: e2e
+  template:
+    pools:
+      - name: default
+        lvmthin:
+          device: ${device}
+EOF
 
 echo "==> helm install miroir"
 helm upgrade --install miroir charts/miroir \
-  --namespace miroir-system \
+  --namespace miroir-system --create-namespace \
   --wait --timeout 5m \
   -f deploy/e2e/values.yaml
 '''

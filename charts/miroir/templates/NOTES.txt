@@ -6,12 +6,11 @@ Workloads:
   controller  Deployment/{{ include "miroir.controllerName" . }}        1 replica
   agent       DaemonSet/{{ include "miroir.agentName" . }}            one per schedulable node
 
-Before provisioning volumes, install the storage configuration — the
-node topology (MiroirNodes), StorageClasses, and VolumeSnapshotClasses —
-via the sibling miroir-config chart (one reviewed document) or plain
-manifests:
-  helm install miroir-config oci://ghcr.io/home-operations/charts/miroir-config \
-    -f config-values.yaml
+Before provisioning volumes, apply the storage configuration — the node
+topology (MiroirNode or MiroirNodeGroup custom resources), StorageClasses,
+and VolumeSnapshotClasses — as plain manifests:
+  kubectl apply -f topology.yaml
+(see https://miroir.home-operations.com/quickstart/ for the manifests).
 Agents on nodes without a MiroirNode serve client-only (RWX mounts) and
 switch to storage mode by themselves when their MiroirNode appears.
 Inspect the topology with `kubectl get miroirnodes`.
