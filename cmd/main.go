@@ -30,6 +30,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -897,6 +898,35 @@ func resumeStaleBarriers(driver *drbd.Driver, freezer *agent.Freezer, nodeName s
 		if s.Status.IOSuspended && s.Status.SuspendedAt != nil &&
 			time.Since(s.Status.SuspendedAt.Time) < agent.SuspendDeadline {
 			fresh[s.Spec.VolumeName] = true
+		}
+	}
+	// A group round's ioSuspended lives on the group object, not on its
+	// member snapshots — without this, every volume of a live group round
+	// reads as stale and the sweep resumes (and thaws) mid-cut. Member
+	// volumes come from the member snapshots; perLeg slot keys
+	// ("<volume>/<node>") cover a member already torn out of the list.
+	groups := &miroirv1alpha1.MiroirSnapshotGroupList{}
+	if err := listWithRetry(c, groups, apiBudget); err != nil {
+		return err
+	}
+	snapVol := map[string]string{}
+	for _, s := range snaps.Items {
+		snapVol[s.Name] = s.Spec.VolumeName
+	}
+	for _, g := range groups.Items {
+		if !g.Status.IOSuspended || g.Status.SuspendedAt == nil ||
+			time.Since(g.Status.SuspendedAt.Time) >= agent.SuspendDeadline {
+			continue
+		}
+		for _, name := range g.Spec.SnapshotNames {
+			if vol := snapVol[name]; vol != "" {
+				fresh[vol] = true
+			}
+		}
+		for key := range g.Status.PerLeg {
+			if vol, _, ok := strings.Cut(key, "/"); ok {
+				fresh[vol] = true
+			}
 		}
 	}
 	suspended, err := driver.UserSuspended(context.Background())
