@@ -62,6 +62,11 @@ VolumeSnapshotClasses need only `driver: miroir.home-operations.com`
 and a `deletionPolicy`
 ([Quickstart](quickstart.md#4-snapshot-and-restore) has the manifest;
 the snapshot-controller and its CRDs deploy separately).
+VolumeGroupSnapshotClasses take exactly the same two fields, but the
+feature is off by default: it needs `groupSnapshots.enabled: true` in
+the chart plus the cluster-side group snapshot CRDs and feature gate —
+[Quickstart → Group snapshots](quickstart.md#group-snapshots) lists
+all three switches.
 
 ## ZFS zvol settings
 
