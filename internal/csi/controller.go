@@ -318,17 +318,42 @@ func (c *Controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 		return nil, status.Errorf(codes.Internal, "delete MiroirVolume: %v", err)
 	}
 	// A clone's internal source snapshot dies with the clone. Its name is
-	// deterministic and the prefix reserved, so the blind delete touches
-	// nothing on non-clone volumes and stays idempotent when the volume CR
-	// is already gone. The backends order the teardown themselves (ZFS
-	// defers the snapshot's destruction until the clone zvol goes).
-	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + req.GetVolumeId()},
-	}
-	if err := c.Client.Delete(ctx, cloneSnap); err != nil && !apierrors.IsNotFound(err) {
-		return nil, status.Errorf(codes.Internal, "delete clone-source MiroirSnapshot: %v", err)
+	// deterministic, so no volume read is needed even on an idempotent
+	// retry whose volume CR is already gone; the ownership guard keeps a
+	// legacy user snapshot that merely wears the prefix (created before
+	// the reservation) out of reach. The backends order the on-disk
+	// teardown themselves (ZFS defers the snapshot's destruction until
+	// the clone zvol goes).
+	cloneSnap := &miroirv1alpha1.MiroirSnapshot{}
+	err := c.Client.Get(ctx, types.NamespacedName{Name: constants.CloneSnapshotPrefix + req.GetVolumeId()}, cloneSnap)
+	switch {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return nil, status.Errorf(codes.Internal, "get clone-source MiroirSnapshot: %v", err)
+	case isCloneSourceSnapshot(cloneSnap):
+		if err := c.Client.Delete(ctx, cloneSnap); err != nil && !apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.Internal, "delete clone-source MiroirSnapshot: %v", err)
+		}
 	}
 	return &csi.DeleteVolumeResponse{}, nil
+}
+
+// isCloneSourceSnapshot reports whether the snapshot is an internal
+// clone-source snapshot: the reserved name prefix AND the MiroirVolume
+// owner reference stamped at creation. The prefix alone is not proof —
+// a user snapshot named clone-<x> can predate the prefix reservation,
+// and treating it as internal would delete or hide user data.
+func isCloneSourceSnapshot(snap *miroirv1alpha1.MiroirSnapshot) bool {
+	if !strings.HasPrefix(snap.Name, constants.CloneSnapshotPrefix) {
+		return false
+	}
+	for _, ref := range snap.OwnerReferences {
+		if ref.Kind == "MiroirVolume" &&
+			strings.HasPrefix(ref.APIVersion, miroirv1alpha1.GroupVersion.Group) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateVolumeCapabilities confirms RWO/RWOP mount and block support.
@@ -1160,6 +1185,13 @@ func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroi
 			return nil, status.Errorf(codes.AlreadyExists,
 				"snapshot %s exists for volume %s", name, existing.Spec.VolumeName)
 		}
+		if owned && !isCloneSourceSnapshot(existing) {
+			// A pre-reservation user snapshot occupying the reserved name:
+			// adopting it would clone whatever it captured back then
+			// instead of cutting fresh source data.
+			return nil, status.Errorf(codes.AlreadyExists,
+				"snapshot %s exists and is not an internal clone-source snapshot", name)
+		}
 		snap = existing
 	}
 	return snap, nil
@@ -1201,8 +1233,9 @@ func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRe
 		s := &snaps.Items[i]
 		// Internal clone-source snapshots are an implementation detail of
 		// volume clones; listing them would invite the snapshotter to
-		// adopt objects whose lifecycle DeleteVolume owns.
-		if strings.HasPrefix(s.Name, constants.CloneSnapshotPrefix) {
+		// adopt objects whose lifecycle DeleteVolume owns. Legacy user
+		// snapshots that merely wear the prefix stay listed.
+		if isCloneSourceSnapshot(s) {
 			continue
 		}
 		if req.GetSnapshotId() != "" && s.Name != req.GetSnapshotId() {

@@ -1816,8 +1816,11 @@ func TestDeleteVolumeCleansCloneSourceSnapshot(t *testing.T) {
 		},
 	}
 	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            constants.CloneSnapshotPrefix + volNew,
+			OwnerReferences: []metav1.OwnerReference{volumeOwnerRef(volSrc)},
+		},
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
 	userSnap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
@@ -1856,17 +1859,30 @@ func TestListSnapshotsHidesCloneSourceSnapshots(t *testing.T) {
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
 	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            constants.CloneSnapshotPrefix + volNew,
+			OwnerReferences: []metav1.OwnerReference{volumeOwnerRef(volSrc)},
+		},
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+	}
+	// Named like an internal snapshot but created before the prefix
+	// reservation: no owner reference, so it is the user's.
+	legacySnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + "legacy"},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
-	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(userSnap, cloneSnap).Build()}
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(userSnap, cloneSnap, legacySnap).Build()}
 
 	resp, err := c.ListSnapshots(t.Context(), &csi.ListSnapshotsRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Entries) != 1 || resp.Entries[0].Snapshot.SnapshotId != snapSnap1 {
-		t.Fatalf("internal clone-source snapshots must stay hidden: %+v", resp.Entries)
+	listed := map[string]bool{}
+	for _, e := range resp.Entries {
+		listed[e.Snapshot.SnapshotId] = true
+	}
+	if len(listed) != 2 || !listed[snapSnap1] || !listed[legacySnap.Name] {
+		t.Fatalf("only the owned internal snapshot must stay hidden: %+v", resp.Entries)
 	}
 }
 
@@ -1912,5 +1928,74 @@ func TestCreateVolumeCloneNameCollisionCutsNothing(t *testing.T) {
 	}
 	if len(snaps.Items) != 0 {
 		t.Fatalf("the refused clone must not cut a snapshot: %+v", snaps.Items)
+	}
+}
+
+// volumeOwnerRef is the marker an internal clone-source snapshot wears:
+// the owner reference ensureSnapshot stamps for garbage collection.
+func volumeOwnerRef(volume string) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: miroirv1alpha1.GroupVersion.String(),
+		Kind:       "MiroirVolume",
+		Name:       volume,
+		UID:        "uid-" + types.UID(volume),
+	}
+}
+
+// A user snapshot that merely wears the clone- prefix (created before
+// the reservation) must survive the deletion of a volume whose derived
+// internal name collides with it.
+func TestDeleteVolumeSparesLegacyPrefixedSnapshot(t *testing.T) {
+	s := newScheme(t)
+	vol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volNew},
+		Spec:       miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 5 << 30},
+	}
+	legacySnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vol, legacySnap).Build()
+	c := &Controller{Client: cl}
+
+	if _, err := c.DeleteVolume(t.Context(), &csi.DeleteVolumeRequest{VolumeId: volNew}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: legacySnap.Name}, &miroirv1alpha1.MiroirSnapshot{}); err != nil {
+		t.Fatalf("a legacy user snapshot wearing the prefix must survive: %v", err)
+	}
+}
+
+// A clone must never adopt a pre-reservation user snapshot occupying its
+// reserved name: it would clone whatever that snapshot captured back
+// then instead of cutting fresh source data.
+func TestCreateVolumeCloneRefusesLegacyPrefixedSnapshot(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
+		},
+	}
+	legacySnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+	}
+	c := &Controller{Client: cloneReadyClient(s, srcVol, legacySnap), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: volSrc},
+			},
+		},
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("a legacy snapshot on the reserved name must refuse the clone, got %v", err)
 	}
 }
