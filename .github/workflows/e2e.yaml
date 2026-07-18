@@ -15,6 +15,8 @@ on:
     paths-ignore:
       - "**.md"
       - ".release-please-manifest.json"
+  schedule:
+    - cron: "30 5 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -35,16 +37,30 @@ jobs:
         include:
           # Go e2e specs (lifecycle, placement, block) on miroir-local.
           - suite: local
+            cluster: e2e-cluster
+            provision: e2e-provision
             task: e2e-run
+            diagnostics: e2e-diagnostics
             timeout: 20
             disk: 10G
           # Upstream Kubernetes external-storage suite on miroir-local.
           # Bigger backing device: parallel specs provision many volumes
           # and the controller's overcommit guard counts virtual size.
           - suite: conformance
+            cluster: e2e-cluster
+            provision: e2e-provision
             task: e2e-conformance
+            diagnostics: e2e-diagnostics
             timeout: 45
             disk: 40G
+          # Upstream suite on miroir-replicated (real DRBD): a 3-VM Talos
+          # QEMU cluster on the runner's KVM, group snapshots included.
+          - suite: replicated
+            cluster: e2e-replicated-cluster
+            provision: e2e-replicated-provision
+            task: e2e-replicated-conformance
+            diagnostics: e2e-replicated-diagnostics
+            timeout: 60
     permissions:
       contents: read
     steps:
@@ -60,6 +76,7 @@ jobs:
           install_args: --locked
 
       - name: Cache Go modules and build
+        if: matrix.suite != 'replicated'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -69,16 +86,46 @@ jobs:
           restore-keys: ${{ runner.os }}-go-
 
       - name: Load kernel modules
+        if: matrix.suite != 'replicated'
         run: sudo modprobe dm_thin_pool loop
 
+      - name: Install QEMU
+        if: matrix.suite == 'replicated'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
+
+      - name: Enable swap
+        if: matrix.suite == 'replicated'
+        run: |
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+
+      - name: Cache Talos boot images
+        if: matrix.suite == 'replicated'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.talos/cache
+          key: talos-boot-${{ hashFiles('deploy/e2e/schematic.yaml', '.mise/config.toml') }}
+
+      - name: Start image registry
+        if: matrix.suite == 'replicated'
+        run: docker run -d --name e2e-registry -p 5000:5000 registry:3
+
       # Cluster boot and image build are independent — overlap them.
-      - name: Create kind cluster
-        id: kind
+      - name: Create cluster
+        id: cluster
         background: true
-        run: mise run e2e-cluster
+        run: mise run "$CLUSTER"
+        env:
+          CLUSTER: ${{ matrix.cluster }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: network=host
 
       - name: Resolve toolchain versions
         id: tools
@@ -95,9 +142,10 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          load: true
+          load: ${{ matrix.suite != 'replicated' }}
+          push: ${{ matrix.suite == 'replicated' }}
           target: controller
-          tags: miroir-controller:e2e
+          tags: ${{ matrix.suite == 'replicated' && 'localhost:5000/miroir-controller:e2e' || 'miroir-controller:e2e' }}
           build-args: GO_VERSION=${{ steps.tools.outputs.go }}
           cache-from: type=gha,scope=e2e-controller
           cache-to: ${{ matrix.suite == 'local' && 'type=gha,mode=max,scope=e2e-controller' || '' }}
@@ -108,27 +156,30 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          load: true
+          load: ${{ matrix.suite != 'replicated' }}
+          push: ${{ matrix.suite == 'replicated' }}
           target: agent
-          tags: miroir-agent:e2e
+          tags: ${{ matrix.suite == 'replicated' && 'localhost:5000/miroir-agent:e2e' || 'miroir-agent:e2e' }}
           build-args: GO_VERSION=${{ steps.tools.outputs.go }}
           cache-from: type=gha,scope=e2e-agent
           cache-to: ${{ matrix.suite == 'local' && 'type=gha,mode=max,scope=e2e-agent' || '' }}
 
-      - wait: [kind, controller-image, agent-image]
+      - wait: [cluster, controller-image, agent-image]
 
       - name: Load images into kind
+        if: matrix.suite != 'replicated'
         run: |
           kind load docker-image miroir-controller:e2e --name miroir-test-e2e
           kind load docker-image miroir-agent:e2e --name miroir-test-e2e
 
-      - name: Provision (loop device, snapshot stack, helm install)
-        run: mise run e2e-provision
+      - name: Provision (device, snapshot stack, helm install)
+        run: mise run "$PROVISION"
         env:
+          PROVISION: ${{ matrix.provision }}
           MIROIR_E2E_DISK_SIZE: ${{ matrix.disk }}
 
       - name: Cache conformance test binaries
-        if: matrix.suite == 'conformance'
+        if: matrix.suite != 'local'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test/conformance/.bin
@@ -138,7 +189,20 @@ jobs:
         run: mise run "$TASK"
         env:
           TASK: ${{ matrix.task }}
+          PROCS: ${{ matrix.suite == 'replicated' && '4' || '' }}
+          VERBOSE: ${{ matrix.suite == 'replicated' && '1' || '' }}
+          SKIP: ${{ matrix.suite == 'replicated' && '\[Disruptive\]|\[Serial\]|should not mount / map unused volumes|restoring snapshot to larger size pvc' || '' }}
 
       - name: Diagnostics
         if: failure()
-        run: mise run e2e-diagnostics
+        run: mise run "$DIAGNOSTICS"
+        env:
+          DIAGNOSTICS: ${{ matrix.diagnostics }}
+
+      - name: Upload conformance report
+        if: always() && matrix.suite != 'local'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-report-${{ matrix.suite }}
+          path: test/conformance/report
+          if-no-files-found: ignore
