@@ -112,6 +112,7 @@ Kubernetes: `>=1.31.0`
 | global.imagePullSecrets | list | `[]` | Pull secrets added to every pod (controller, agent, uninstall). |
 | global.nodeSelector | object | `{}` | Controller scheduling defaults. |
 | global.tolerations | list | `[]` |  |
+| groupSnapshots.enabled | bool | `false` |  |
 | image | object | `{"digest":"","pullPolicy":"IfNotPresent","repository":"ghcr.io/home-operations/miroir-controller","tag":""}` | Controller image (distroless, no storage userland — the controller never execs a storage CLI). |
 | leaderElection.enabled | bool | `false` | Elect even with a single replica (replicaCount > 1 elects regardless; this can never switch election off above one replica). |
 | leaderElection.id | string | `""` | Lease name; empty derives the release-scoped controller name so two releases in one namespace never share a Lease. Keep it stable across upgrades. |

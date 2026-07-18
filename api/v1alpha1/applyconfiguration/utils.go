@@ -60,6 +60,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1alpha1.MiroirNodeStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirSnapshot"):
 		return &apiv1alpha1.MiroirSnapshotApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("MiroirSnapshotGroup"):
+		return &apiv1alpha1.MiroirSnapshotGroupApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("MiroirSnapshotGroupSpec"):
+		return &apiv1alpha1.MiroirSnapshotGroupSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("MiroirSnapshotGroupStatus"):
+		return &apiv1alpha1.MiroirSnapshotGroupStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirSnapshotSpec"):
 		return &apiv1alpha1.MiroirSnapshotSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("MiroirSnapshotStatus"):

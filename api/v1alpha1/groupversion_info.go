@@ -31,6 +31,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&MiroirVolumeList{},
 		&MiroirSnapshot{},
 		&MiroirSnapshotList{},
+		&MiroirSnapshotGroup{},
+		&MiroirSnapshotGroupList{},
 		&MiroirNode{},
 		&MiroirNodeList{},
 		&MiroirNodeGroup{},

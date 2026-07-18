@@ -146,6 +146,9 @@ spec:
             - --csi-address=/csi/csi.sock
             - --timeout={{ .Values.sidecars.snapshotter.timeout }}
             - --leader-election={{ include "miroir.leaderElectionEnabled" . }}
+            {{- if .Values.groupSnapshots.enabled }}
+            - --feature-gates=CSIVolumeGroupSnapshot=true
+            {{- end }}
           resources: {{- toYaml .Values.sidecars.snapshotter.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir

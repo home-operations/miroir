@@ -25,6 +25,14 @@ type MiroirSnapshotSpec struct {
 	// per-node teardown at a volume that never held them.
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="volumeName is immutable: the snapshot's backend data lives on the volume it was cut from"
 	VolumeName string `json:"volumeName"`
+	// Group names the MiroirSnapshotGroup whose shared barrier round cuts
+	// this snapshot; empty for a standalone snapshot. Grouped members are
+	// cut by the group reconciler, never by the per-snapshot round.
+	// Immutable: moving a snapshot between groups would misrepresent
+	// which barrier its data was cut under.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="group is immutable: the snapshot was cut under this group's barrier"
+	Group string `json:"group,omitempty"`
 }
 
 // MiroirSnapshotStatus is the observed state aggregated from node agents.

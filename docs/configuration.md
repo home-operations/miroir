@@ -19,7 +19,9 @@ their behavior is explained, and every StorageClass parameter.
   `autoTieBreaker` ([Replication and quorum](replication.md)),
   `autoDiskfulAfter` ([auto-diskful](remote-consumers.md#auto-diskful)),
   `autoEvictAfter` ([resilience](resilience.md)), `overcommitRatio` /
-  `freeSpaceRatio`, `provisionTimeout`, `storageCapacity`.
+  `freeSpaceRatio`, `provisionTimeout`, `storageCapacity`,
+  `groupSnapshots`
+  ([Quickstart → Group snapshots](quickstart.md#group-snapshots)).
 - **`gateway`**: the per-RWX-volume NFS gateway. `enabled` (RWX is
   opt-in, off by default) and the gateway image
   ([ReadWriteMany](rwx.md)).
@@ -62,6 +64,11 @@ VolumeSnapshotClasses need only `driver: miroir.home-operations.com`
 and a `deletionPolicy`
 ([Quickstart](quickstart.md#4-snapshot-and-restore) has the manifest;
 the snapshot-controller and its CRDs deploy separately).
+VolumeGroupSnapshotClasses take exactly the same two fields, but the
+feature is off by default: it needs `groupSnapshots.enabled: true` in
+the chart plus the cluster-side group snapshot CRDs and feature gate —
+[Quickstart → Group snapshots](quickstart.md#group-snapshots) lists
+all three switches.
 
 ## ZFS zvol settings
 

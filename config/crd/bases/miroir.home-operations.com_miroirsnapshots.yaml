@@ -55,6 +55,18 @@ spec:
               MiroirSnapshotSpec is the desired state, created by the controller on
               CSI CreateSnapshot.
             properties:
+              group:
+                description: |-
+                  Group names the MiroirSnapshotGroup whose shared barrier round cuts
+                  this snapshot; empty for a standalone snapshot. Grouped members are
+                  cut by the group reconciler, never by the per-snapshot round.
+                  Immutable: moving a snapshot between groups would misrepresent
+                  which barrier its data was cut under.
+                type: string
+                x-kubernetes-validations:
+                - message: 'group is immutable: the snapshot was cut under this group''s
+                    barrier'
+                  rule: self == oldSelf
               volumeName:
                 description: |-
                   VolumeName references the MiroirVolume this snapshot captures.

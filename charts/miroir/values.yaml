@@ -98,6 +98,16 @@ autoEvictAfter: ""
 # agent.poolStatsInterval) before the first pod schedules.
 storageCapacity:
   enabled: false
+# Volume group snapshots: crash-consistent snapshots cut across several
+# PVCs at once under one shared write barrier (VolumeGroupSnapshot API).
+# Off by default because it needs cluster-side pieces the chart does not
+# ship: the groupsnapshot.storage.k8s.io v1beta2 CRDs and a
+# snapshot-controller running with --feature-gates=CSIVolumeGroupSnapshot=true
+# (the same gate this flag passes to the csi-snapshotter sidecar).
+# Only replicated volumes (replicas > 1) can join a group — the DRBD
+# write barrier is what makes the cut atomic across volumes.
+groupSnapshots:
+  enabled: false
 # -- Controller replicas. Anything above 1 automatically enables leader
 # election: the extras are warm standbys (failover is lease expiry, ~15s,
 # instead of a full pod reschedule), the rollout strategy switches to
