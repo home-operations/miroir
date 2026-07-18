@@ -924,6 +924,65 @@ func TestSnapshotVoidedResumeDefersToSiblingRound(t *testing.T) {
 	fe.notCalledWith(t, "resume-io")
 }
 
+// The collect phase must not lift a barrier a concurrently opened group
+// round co-holds — two opens over one volume can race past each other's
+// guards, and the first round to close would let writes into legs the
+// sibling has yet to cut. The seal still proceeds; the leftover barrier
+// lifts once the sibling closes.
+func TestSnapshotCollectDefersResumeToSiblingGroupRound(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	now := metav1.Now()
+	snap := snapObj("snap-a", volPvc1, nodeA, nodeB)
+	snap.Status.IOSuspended = true
+	snap.Status.SuspendedAt = &now
+	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+		nodeA: miroirv1alpha1.SnapshotDone,
+		nodeB: miroirv1alpha1.SnapshotDone,
+	}
+	member := snapObj("g1-"+volPvc1, volPvc1, nodeA, nodeB)
+	member.Spec.Group = "g1"
+	sibling := &miroirv1alpha1.MiroirSnapshotGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "g1"},
+		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{member.Name}},
+		Status:     miroirv1alpha1.MiroirSnapshotGroupStatus{IOSuspended: true},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap, member, sibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{},
+			&miroirv1alpha1.MiroirSnapshotGroup{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, "snap-a")
+
+	fe.notCalledWith(t, "resume-io")
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: "snap-a"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.ReadyToUse || got.Status.IOSuspended {
+		t.Fatalf("the round must still seal ready: %+v", got.Status)
+	}
+
+	// The sibling closes → the ReadyToUse pass lifts the leftover barrier.
+	sibling.Status.IOSuspended = false
+	if err := c.Status().Update(t.Context(), sibling); err != nil {
+		t.Fatal(err)
+	}
+	reconcileSnap(t, r, "snap-a")
+	fe.calledWith(t, "drbdadm resume-io "+volPvc1)
+}
+
 func TestSnapshotPeerWaitsForBarrier(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeA, nodeB)

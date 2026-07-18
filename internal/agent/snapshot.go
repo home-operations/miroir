@@ -354,7 +354,9 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 	case snap.Status.IOSuspended && expired && st.Suspended:
 		// Dead round, coordinator gone before voiding it: self-expire
 		// the local barrier; the void patch stays the coordinator's.
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeIO(ctx, vol.Name)
+		// Never a barrier a sibling round co-holds — a round that raced
+		// past this one's open guards may own the kernel flag by now.
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeUnlessSiblingRound(ctx, snap, vol)
 
 	case !snap.Status.IOSuspended && st.Suspended:
 		// The round ended (voided) while the local barrier was still up —
@@ -409,8 +411,9 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 	}
 	if err != nil {
 		// The barrier is only real once recorded; a failed patch must
-		// not leave IO frozen until the retry.
-		_ = r.resumeIO(ctx, vol.Name)
+		// not leave IO frozen until the retry — but a barrier a sibling
+		// round co-holds is the sibling's to lift, not this round's.
+		_ = r.resumeUnlessSiblingRound(ctx, snap, vol)
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Second}, nil
@@ -464,8 +467,14 @@ func (r *SnapshotReconciler) collectLegs(ctx context.Context, snap *miroirv1alph
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	// Resume before reporting anything else: a frozen volume is an
-	// outage, a late snapshot is just not ready.
-	if err := r.resumeIO(ctx, vol.Name); err != nil {
+	// outage, a late snapshot is just not ready. Unless a sibling round
+	// co-holds the kernel flag: two opens over one volume can race past
+	// each other's guards (a round is invisible between its suspend-io
+	// and its status patch landing), and lifting the shared flag here
+	// would let writes into legs the sibling has yet to cut. The lift is
+	// then the sibling's, at its own close; the ReadyToUse branch and
+	// the voided-round case re-check and lift once nothing holds it.
+	if err := r.resumeUnlessSiblingRound(ctx, snap, vol); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {

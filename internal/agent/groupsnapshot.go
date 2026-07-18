@@ -205,7 +205,7 @@ func (r *GroupSnapshotReconciler) reconcileRound(ctx context.Context, grp *miroi
 	case grp.Status.IOSuspended && expired && kernelSuspended:
 		// Dead round, driver gone before voiding it: self-expire the
 		// local barriers; the void patch stays the driver's.
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeMine(ctx, mine)
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeMine(ctx, grp, mine)
 
 	case !grp.Status.IOSuspended && kernelSuspended:
 		// The round ended (voided) while local barriers were still up —
@@ -287,7 +287,7 @@ func (r *GroupSnapshotReconciler) raiseBarriers(ctx context.Context, grp *miroir
 		if err := r.suspendIO(ctx, m.vol.Name); err != nil {
 			// A half-raised node must not stay half-frozen behind a failed
 			// raise; the retry re-raises the lot.
-			_ = r.resumeMine(ctx, suspended)
+			_ = r.resumeMine(ctx, grp, suspended)
 			return r.barrierFailed(ctx, grp, m.vol, err)
 		}
 		suspended = append(suspended, m)
@@ -317,7 +317,7 @@ func (r *GroupSnapshotReconciler) raiseBarriers(ctx context.Context, grp *miroir
 	if err != nil {
 		// The barrier is only real once recorded; a failed patch must not
 		// leave IO frozen until the retry.
-		_ = r.resumeMine(ctx, mine)
+		_ = r.resumeMine(ctx, grp, mine)
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Second}, nil
@@ -373,8 +373,9 @@ func (r *GroupSnapshotReconciler) collectSlots(ctx context.Context, grp *miroirv
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	// Resume before reporting anything else: a frozen volume is an
-	// outage, a late group snapshot is just not ready.
-	if err := r.resumeMine(ctx, mine); err != nil {
+	// outage, a late group snapshot is just not ready. A barrier a
+	// sibling round co-holds stays for the sibling (see resumeMine).
+	if err := r.resumeMine(ctx, grp, mine); err != nil {
 		return ctrl.Result{}, err
 	}
 	if done == total {
@@ -546,10 +547,17 @@ func allSlotsSuspended(grp *miroirv1alpha1.MiroirSnapshotGroup, members []groupM
 	return true
 }
 
-// resumeMine lifts this node's barriers on the given members' volumes.
-func (r *GroupSnapshotReconciler) resumeMine(ctx context.Context, mine []groupMember) error {
+// resumeMine lifts this node's barriers on the given members' volumes —
+// except one a sibling round co-holds. Two opens over a shared volume
+// can race past each other's guards (a round is invisible between its
+// suspend-io and its status patch landing); both then freeze the volume
+// through the one kernel flag, and the first round to close must leave
+// the flag for the sibling to lift at its own close, or the sibling's
+// remaining legs are cut over live writes. The ReadyToUse and
+// voided-round branches re-check and lift once nothing holds it.
+func (r *GroupSnapshotReconciler) resumeMine(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mine []groupMember) error {
 	for _, m := range mine {
-		if err := r.resumeIO(ctx, m.vol.Name); err != nil {
+		if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name); err != nil {
 			return err
 		}
 	}
