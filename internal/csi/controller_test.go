@@ -1869,3 +1869,48 @@ func TestListSnapshotsHidesCloneSourceSnapshots(t *testing.T) {
 		t.Fatalf("internal clone-source snapshots must stay hidden: %+v", resp.Entries)
 	}
 }
+
+// A clone whose volume name is already taken by something that is not
+// this clone can only end in AlreadyExists — it must be refused before
+// the cut, or the doomed request freezes the source for a snapshot
+// round and leaks its result.
+func TestCreateVolumeCloneNameCollisionCutsNothing(t *testing.T) {
+	s := newScheme(t)
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
+		},
+	}
+	taken := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volNew},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
+		},
+	}
+	cl := cloneReadyClient(s, srcVol, taken)
+	c := &Controller{Client: cl, Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	_, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: volSrc},
+			},
+		},
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("a taken non-clone name must be AlreadyExists, got %v", err)
+	}
+	snaps := &miroirv1alpha1.MiroirSnapshotList{}
+	if err := cl.List(t.Context(), snaps); err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps.Items) != 0 {
+		t.Fatalf("the refused clone must not cut a snapshot: %+v", snaps.Items)
+	}
+}

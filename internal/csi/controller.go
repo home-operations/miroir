@@ -868,6 +868,29 @@ func contentSourceIDs(req *csi.CreateVolumeRequest) (snapID, cloneVolID string, 
 // match the source must fail without freezing the source volume for a
 // snapshot round it would then leak.
 func (c *Controller) ensureCloneSnapshot(ctx context.Context, srcVolID, cloneVolID string, sizeBytes int64, replicas int, pool string) (string, error) {
+	snapName := constants.CloneSnapshotPrefix + cloneVolID
+	// A taken volume name that is not this clone can only end in
+	// handleCreateErr's AlreadyExists — refuse it BEFORE the cut, or the
+	// doomed request freezes the source for a snapshot round and leaks
+	// its result until the name's owner (or the source) is deleted. A
+	// name owned by this same clone proceeds: that is the idempotent
+	// retry, and any other parameter mismatch still surfaces through
+	// handleCreateErr exactly as before.
+	existing := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: cloneVolID}, existing); err == nil {
+		if existing.Spec.Source == nil || existing.Spec.Source.SnapshotName != snapName {
+			existingSource := ""
+			if existing.Spec.Source != nil {
+				existingSource = existing.Spec.Source.SnapshotName
+			}
+			return "", status.Errorf(codes.AlreadyExists,
+				"volume %s exists with source %q (requested a clone of volume %s)",
+				cloneVolID, existingSource, srcVolID)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return "", status.Errorf(codes.Internal, "get existing volume: %v", err)
+	}
+
 	srcVol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: srcVolID}, srcVol); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -890,7 +913,6 @@ func (c *Controller) ensureCloneSnapshot(ctx context.Context, srcVolID, cloneVol
 				src, pool)
 		}
 	}
-	snapName := constants.CloneSnapshotPrefix + cloneVolID
 	if _, err := c.ensureSnapshot(ctx, snapName, srcVol, true); err != nil {
 		return "", err
 	}
