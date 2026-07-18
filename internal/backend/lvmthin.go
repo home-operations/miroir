@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // lvmThin provisions thin LVs in a dm-thin pool.
@@ -95,11 +97,41 @@ func (l *lvmThin) Setup(ctx context.Context) error {
 	return nil
 }
 
+// lvmGate serializes lvm invocations process-wide, as LINSTOR does (its
+// LvmCommands methods are synchronized): concurrent commands only contend
+// on the VG lock in the kernel anyway, and when the holder wedges there (a
+// D-state lvcreate, #276) every parallel command burns a full exec timeout
+// against it. Queued here instead, waiters stay cancellable and the error
+// names the command they were stuck behind.
+var (
+	lvmGate     = make(chan struct{}, 1)
+	lvmInflight atomic.Pointer[lvmCall]
+)
+
+type lvmCall struct {
+	cmd   string
+	since time.Time
+}
+
 // lvm runs an lvm subcommand. Udev handling is disabled centrally in the
 // image's /etc/lvm/lvmlocal.conf (the agent container has no udev daemon);
 // per-command --noudevsync is both redundant and invalid on several
 // subcommands (pvcreate rejects it).
 func (l *lvmThin) lvm(ctx context.Context, args ...string) (string, error) {
+	select {
+	case lvmGate <- struct{}{}:
+	case <-ctx.Done():
+		if c := lvmInflight.Load(); c != nil {
+			return "", fmt.Errorf("lvm %s: queued behind %q for %s: %w",
+				args[0], c.cmd, time.Since(c.since).Round(time.Second), ctx.Err())
+		}
+		return "", ctx.Err()
+	}
+	lvmInflight.Store(&lvmCall{cmd: "lvm " + strings.Join(args, " "), since: time.Now()})
+	defer func() {
+		lvmInflight.Store(nil)
+		<-lvmGate
+	}()
 	return l.exec(ctx, "lvm", args...)
 }
 
@@ -188,10 +220,15 @@ func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
 	if err != nil || ok {
 		return err
 	}
+	// Created inactive: nothing ever opens a snapshot device node, and
+	// cloning dm-suspends an active origin, a suspend that can wedge
+	// in-kernel with the VG lock held (#276). LINSTOR keeps snapshots
+	// active only because its backup shipping reads them.
 	_, err = l.lvm(ctx, "lvcreate",
 		"--snapshot",
 		"--name", snapLV(snap),
-		"--setactivationskip", "n",
+		"--setactivationskip", "y",
+		"--activate", "n",
 		l.ref(vol))
 	if err != nil {
 		return fmt.Errorf("snapshot %s of %s: %w", snap, vol, err)
@@ -205,22 +242,30 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 		return "", err
 	}
 	if !ok {
+		// Snapshots predating the inactive-at-birth change in Snapshot may
+		// still be active; lvcreate dm-suspends an active origin, the
+		// wedge window of #276. Idempotent on an inactive LV.
+		if _, err := l.lvm(ctx, "lvchange", "--activate", "n",
+			l.ref(snapLV(snap))); err != nil {
+			return "", fmt.Errorf("deactivate origin %s: %w", snapLV(snap), err)
+		}
 		// A writable thin snapshot of the snapshot is the clone: instant
-		// CoW within the same pool, no data copy.
+		// CoW within the same pool, no data copy. Created inactive and
+		// activated separately below, LINSTOR's restore shape.
 		_, err = l.lvm(ctx, "lvcreate",
 			"--snapshot",
 			"--name", vol,
-			"--setactivationskip", "n",
 			l.ref(snapLV(snap)))
 		if err != nil {
 			return "", err
 		}
-		return l.DevicePath(vol), nil
 	}
-	// Same reboot gap as Create: the clone survives in LVM metadata but
-	// inactive, with no device node until activated.
+	// Fresh clones are born inactive; pre-existing ones survive a reboot
+	// in LVM metadata but inactive (Talos activates no foreign LVs at
+	// boot). Snapshot-born LVs carry the activation-skip flag, hence
+	// --ignoreactivationskip (LINSTOR activates the same way).
 	if _, err := l.lvm(ctx, "lvchange", "--activate", "y",
-		l.ref(vol)); err != nil {
+		"--ignoreactivationskip", l.ref(vol)); err != nil {
 		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
 	return l.DevicePath(vol), nil

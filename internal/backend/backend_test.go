@@ -299,7 +299,86 @@ func TestLVMThinCloneReactivates(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "lvcreate")
-	fe.calledWith(t, "lvchange --activate y vg-miroir/pvc-2")
+	fe.calledWith(t, "lvchange --activate y --ignoreactivationskip vg-miroir/pvc-2")
+}
+
+// Snapshot LVs are created inactive with the activation-skip flag set:
+// nothing opens their device node, and an active snapshot is dm-suspended
+// when a clone lvcreate uses it as origin (the in-kernel wedge of #276).
+func TestLVMThinSnapshotCreatedInactive(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvs vg-miroir/miroir-snap-1", "", errors.New("Failed to find logical volume"))
+	b := newLVMThin(cfg, fe.run)
+
+	if err := b.Snapshot(t.Context(), "pvc-1", "snap-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "lvcreate --snapshot --name miroir-snap-1 --setactivationskip y --activate n vg-miroir/pvc-1")
+}
+
+// A fresh clone deactivates its origin snapshot first (pre-fix snapshots
+// are active), creates the clone LV inactive, and activates it in a
+// separate step, LINSTOR's restore shape (#276).
+func TestLVMThinCloneAvoidsActiveOrigin(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvs vg-miroir/pvc-2", "", errors.New("Failed to find logical volume"))
+	b := newLVMThin(cfg, fe.run)
+
+	dev, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snap-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev != "/dev/vg-miroir/pvc-2" {
+		t.Fatalf("unexpected device path %q", dev)
+	}
+	fe.calledWith(t, "lvchange --activate n vg-miroir/miroir-snap-1")
+	fe.calledWith(t, "lvcreate --snapshot --name pvc-2 vg-miroir/miroir-snap-1")
+	fe.calledWith(t, "lvchange --activate y --ignoreactivationskip vg-miroir/pvc-2")
+	// The deactivate must precede the lvcreate, and the lvcreate itself
+	// must not activate the clone (activation is the separate last step).
+	var order []string
+	for _, c := range fe.calls {
+		if strings.Contains(c, "lvchange --activate n") || strings.Contains(c, "lvcreate") {
+			order = append(order, c)
+		}
+	}
+	if len(order) != 2 || !strings.Contains(order[0], "lvchange --activate n") {
+		t.Fatalf("expected deactivate-then-lvcreate, got %v", order)
+	}
+	if strings.Contains(order[1], "--activate") || strings.Contains(order[1], "--setactivationskip") {
+		t.Fatalf("clone lvcreate must not carry activation flags: %q", order[1])
+	}
+}
+
+// One wedged lvm command must not silently absorb every follower: a waiter
+// timing out on the serialization gate names the in-flight command it was
+// queued behind (#276).
+func TestLVMGateQueuedErrorNamesHolder(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	run := func(_ context.Context, _ string, _ ...string) (string, error) {
+		close(entered)
+		<-release
+		return "", nil
+	}
+	b := newLVMThin(cfg, run)
+
+	go func() {
+		defer close(done)
+		_, _ = b.Stats(context.Background())
+	}()
+	<-entered
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := b.Create(ctx, "pvc-1", 1<<30)
+	close(release)
+	<-done
+	if err == nil || !strings.Contains(err.Error(), "queued behind") ||
+		!strings.Contains(err.Error(), "lv_size,data_percent") {
+		t.Fatalf("expected an error naming the in-flight lvs, got %v", err)
+	}
 }
 
 func TestLVMThinSnapshotAvoidsReservedName(t *testing.T) {
