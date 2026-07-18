@@ -2124,6 +2124,43 @@ func TestReconcileFastPathInvalidatedByStatusDrift(t *testing.T) {
 	}
 }
 
+// A phase contradicting the per-node slots breaks the fingerprint: a
+// sibling's concurrent full pass can force-apply a phase computed from a
+// stale informer cache after this leg's correct write (issue #279), and no
+// later kernel event breaks statusEqual, so only the recompute can route
+// the repair through the full pipeline.
+func TestReconcileFastPathInvalidatedByStalePhase(t *testing.T) {
+	_, fe, r := steadyVolume(t)
+	reconcile(t, r, volPvc1) // full pass, stores the fingerprint
+	adjusts := countCalls(fe, "adjust")
+
+	// The peer's slot reached UpToDate but a stale apply left the phase
+	// behind at Degraded.
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	got.Status.PerNode[nodeB] = miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30,
+	}
+	got.Status.Phase = miroirv1alpha1.VolumeDegraded
+	if err := r.Status().Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "adjust"); n <= adjusts {
+		t.Fatalf("stale phase must force the full pipeline: %v", fe.calls)
+	}
+	after := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Status.Phase != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %q, want %q", after.Status.Phase, miroirv1alpha1.VolumeReady)
+	}
+}
+
 // A spec change (generation bump) breaks the fingerprint.
 func TestReconcileFastPathInvalidatedByGeneration(t *testing.T) {
 	v, fe, r := steadyVolume(t)
