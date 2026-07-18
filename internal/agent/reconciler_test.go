@@ -1691,10 +1691,12 @@ func TestRemovalSnapshotGateSkipsTieBreaker(t *testing.T) {
 // covering its mixed-state logic here means a regression breaks the
 // test that mirrors the live behaviour, not a synthetic helper.
 func TestComputePhaseMixing(t *testing.T) {
+	const oneOfTwo = "1/2"
 	cases := []struct {
-		name string
-		vol  *miroirv1alpha1.MiroirVolume
-		want miroirv1alpha1.VolumePhase
+		name      string
+		vol       *miroirv1alpha1.MiroirVolume
+		want      miroirv1alpha1.VolumePhase
+		wantReady string
 	}{
 		{
 			name: "all replicas ready (unreplicated)",
@@ -1709,7 +1711,8 @@ func TestComputePhaseMixing(t *testing.T) {
 					},
 				},
 			},
-			want: miroirv1alpha1.VolumeReady,
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: "1/1",
 		},
 		{
 			name: "one ready, one not (replicated, degraded)",
@@ -1726,7 +1729,8 @@ func TestComputePhaseMixing(t *testing.T) {
 					},
 				},
 			},
-			want: miroirv1alpha1.VolumeDegraded,
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
 		},
 		{
 			name: "all replicas Inconsistent (creating)",
@@ -1743,7 +1747,8 @@ func TestComputePhaseMixing(t *testing.T) {
 					},
 				},
 			},
-			want: miroirv1alpha1.VolumeCreating,
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: "0/2",
 		},
 		{
 			name: "hard failure (no device, message set)",
@@ -1759,7 +1764,8 @@ func TestComputePhaseMixing(t *testing.T) {
 					},
 				},
 			},
-			want: miroirv1alpha1.VolumeFailed,
+			want:      miroirv1alpha1.VolumeFailed,
+			wantReady: oneOfTwo,
 		},
 		{
 			name: "transient error after device exists (stays Degraded, not Failed)",
@@ -1776,7 +1782,8 @@ func TestComputePhaseMixing(t *testing.T) {
 					},
 				},
 			},
-			want: miroirv1alpha1.VolumeDegraded,
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
 		},
 		{
 			name: "diskless tie-breaker ignored (ready on diskful legs alone)",
@@ -1798,13 +1805,18 @@ func TestComputePhaseMixing(t *testing.T) {
 					},
 				},
 			},
-			want: miroirv1alpha1.VolumeReady,
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: "2/2",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := computePhase(tc.vol); got != tc.want {
+			got, gotReady := computePhase(tc.vol)
+			if got != tc.want {
 				t.Fatalf("phase = %s, want %s", got, tc.want)
+			}
+			if gotReady != tc.wantReady {
+				t.Fatalf("readyReplicas = %q, want %q", gotReady, tc.wantReady)
 			}
 		})
 	}
@@ -2158,6 +2170,9 @@ func TestReconcileFastPathInvalidatedByStalePhase(t *testing.T) {
 	}
 	if after.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %q, want %q", after.Status.Phase, miroirv1alpha1.VolumeReady)
+	}
+	if after.Status.ReadyReplicas != "2/2" {
+		t.Fatalf("readyReplicas = %q, want %q", after.Status.ReadyReplicas, "2/2")
 	}
 }
 

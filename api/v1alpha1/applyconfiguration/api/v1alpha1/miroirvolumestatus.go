@@ -30,6 +30,11 @@ import (
 type MiroirVolumeStatusApplyConfiguration struct {
 	// Phase summarizes the volume state for the controller and humans.
 	Phase *apiv1alpha1.VolumePhase `json:"phase,omitempty"`
+	// ReadyReplicas summarizes diskful replica readiness as "ready/total"
+	// (diskless tie-breakers and client legs excluded, like Phase). A
+	// preformatted string because CRD printcolumns cannot combine two
+	// integer fields into one cell.
+	ReadyReplicas *string `json:"readyReplicas,omitempty"`
 	// PerNode maps node name to that agent's observed state.
 	PerNode map[string]ReplicaStatusApplyConfiguration `json:"perNode,omitempty"`
 	// Export is the observed state of the NFS gateway, set only on RWX
@@ -62,6 +67,14 @@ func MiroirVolumeStatus() *MiroirVolumeStatusApplyConfiguration {
 // If called multiple times, the Phase field is set to the value of the last call.
 func (b *MiroirVolumeStatusApplyConfiguration) WithPhase(value apiv1alpha1.VolumePhase) *MiroirVolumeStatusApplyConfiguration {
 	b.Phase = &value
+	return b
+}
+
+// WithReadyReplicas sets the ReadyReplicas field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ReadyReplicas field is set to the value of the last call.
+func (b *MiroirVolumeStatusApplyConfiguration) WithReadyReplicas(value string) *MiroirVolumeStatusApplyConfiguration {
+	b.ReadyReplicas = &value
 	return b
 }
 
