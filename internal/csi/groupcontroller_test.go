@@ -382,6 +382,46 @@ func TestDeleteVolumeGroupSnapshotDeletesMembersAndGroup(t *testing.T) {
 	}
 }
 
+// The group must be deleted before its members: agents process deletion
+// events in issue order, and the group's barrier-lifting teardown needs
+// the member snapshots still resolvable — members-first can strand a
+// mid-round suspend-io barrier forever (issue #272).
+func TestDeleteVolumeGroupSnapshotDeletesGroupFirst(t *testing.T) {
+	s := newScheme(t)
+	m1 := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1 + "-" + volSrc},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
+	}
+	grp := &miroirv1alpha1.MiroirSnapshotGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{m1.Name}},
+	}
+	var deletes []string
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(m1, grp).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				switch obj.(type) {
+				case *miroirv1alpha1.MiroirSnapshotGroup:
+					deletes = append(deletes, "group/"+obj.GetName())
+				case *miroirv1alpha1.MiroirSnapshot:
+					deletes = append(deletes, "member/"+obj.GetName())
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	c := &Controller{Client: cl}
+
+	if _, err := c.DeleteVolumeGroupSnapshot(t.Context(), &csi.DeleteVolumeGroupSnapshotRequest{
+		GroupSnapshotId: groupGsnap1, SnapshotIds: []string{m1.Name},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(deletes) != 2 || deletes[0] != "group/"+groupGsnap1 {
+		t.Fatalf("the group must be deleted before its members: %v", deletes)
+	}
+}
+
 func TestDeleteVolumeGroupSnapshotRejectsForeignMember(t *testing.T) {
 	s := newScheme(t)
 	foreign := &miroirv1alpha1.MiroirSnapshot{

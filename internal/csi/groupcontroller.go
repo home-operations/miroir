@@ -199,8 +199,15 @@ func (c *Controller) cleanupStrayMembers(ctx context.Context, names, owned []str
 	}
 }
 
-// DeleteVolumeGroupSnapshot removes the members and the group; agents
-// drop backend snapshots and barriers via finalizers. Idempotent.
+// DeleteVolumeGroupSnapshot removes the group and then its members;
+// agents drop backend snapshots and barriers via finalizers. The group
+// goes first: mid-round, a member's own deletion defers lifting the
+// kernel barrier to the live group round, and the group's teardown can
+// only lift barriers for members it can still resolve — so members
+// deleted first could vanish before a node's group teardown runs and
+// strand their volumes suspended (issue #272). Group-first, every agent
+// sees the group's deletion while the members still exist, and a member
+// deleted after the group is gone lifts its own barrier. Idempotent.
 func (c *Controller) DeleteVolumeGroupSnapshot(ctx context.Context, req *csi.DeleteVolumeGroupSnapshotRequest) (*csi.DeleteVolumeGroupSnapshotResponse, error) {
 	if req.GetGroupSnapshotId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "group snapshot id is required")
@@ -209,15 +216,15 @@ func (c *Controller) DeleteVolumeGroupSnapshot(ctx context.Context, req *csi.Del
 	if err != nil {
 		return nil, err
 	}
+	grp := &miroirv1alpha1.MiroirSnapshotGroup{ObjectMeta: metav1.ObjectMeta{Name: req.GetGroupSnapshotId()}}
+	if err := c.Client.Delete(ctx, grp); err != nil && !apierrors.IsNotFound(err) {
+		return nil, status.Errorf(codes.Internal, "delete MiroirSnapshotGroup: %v", err)
+	}
 	for _, name := range members {
 		snap := &miroirv1alpha1.MiroirSnapshot{ObjectMeta: metav1.ObjectMeta{Name: name}}
 		if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.Internal, "delete member MiroirSnapshot: %v", err)
 		}
-	}
-	grp := &miroirv1alpha1.MiroirSnapshotGroup{ObjectMeta: metav1.ObjectMeta{Name: req.GetGroupSnapshotId()}}
-	if err := c.Client.Delete(ctx, grp); err != nil && !apierrors.IsNotFound(err) {
-		return nil, status.Errorf(codes.Internal, "delete MiroirSnapshotGroup: %v", err)
 	}
 	return &csi.DeleteVolumeGroupSnapshotResponse{}, nil
 }

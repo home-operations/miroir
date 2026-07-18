@@ -342,3 +342,38 @@ func TestGroupSnapshotDeletionLiftsBarriers(t *testing.T) {
 		}
 	}
 }
+
+// Deleting a group whose members are already gone must still lift this
+// node's barriers: mid-round, each member's own deletion defers the lift
+// to the live group round, so once the members vanish the perLeg slot
+// keys are the only record of the legs this node froze (issue #272).
+func TestGroupSnapshotDeletionLiftsBarriersWithoutMembers(t *testing.T) {
+	grp := groupObj()
+	now := metav1.NewTime(time.Now())
+	grp.DeletionTimestamp = &now
+	grp.Status.IOSuspended = true
+	grp.Status.PerLeg = map[string]miroirv1alpha1.SnapshotNodeState{
+		slotKey(volPvc1, nodeA): miroirv1alpha1.SnapshotSuspended,
+		slotKey(volPvc2, nodeA): miroirv1alpha1.SnapshotDone,
+		slotKey(volPvc1, nodeB): miroirv1alpha1.SnapshotSuspended,
+	}
+	c := groupClient(t, grp)
+
+	fe := &fakeDRBDExec{statusJSON: groupStatusPeer} // kernel: suspended
+	r := &GroupSnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+
+	reconcileGroup(t, r)
+
+	fe.calledWith(t, "drbdadm resume-io "+volPvc1)
+	fe.calledWith(t, "drbdadm resume-io "+volPvc2)
+	got := &miroirv1alpha1.MiroirSnapshotGroup{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: groupG1}, got); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range got.Finalizers {
+		if f == constants.FinalizerPrefix+nodeA {
+			t.Fatalf("this node's finalizer must be released: %v", got.Finalizers)
+		}
+	}
+}
