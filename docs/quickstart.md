@@ -217,6 +217,23 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
 kubectl apply -f topology.yaml
 ```
 
+On Talos, create and label the namespace first instead of using
+`--create-namespace`. Talos enforces the `baseline` [Pod Security
+Standard][pss] by default, which silently rejects the agent DaemonSet's
+pods (the agent runs privileged: DRBD, LVM, and mounting need host
+access) - the install then times out with the agents stuck at `0/N`:
+
+```bash
+kubectl create namespace miroir-system
+kubectl label namespace miroir-system \
+  pod-security.kubernetes.io/enforce=privileged
+helm install miroir oci://ghcr.io/home-operations/charts/miroir \
+  -n miroir-system
+kubectl apply -f topology.yaml
+```
+
+[pss]: https://kubernetes.io/docs/concepts/security/pod-security-standards/
+
 The driver chart deploys one `miroir-controller` Deployment and a
 `miroir-agent` DaemonSet on every schedulable node, plus the CRDs — so
 the topology manifests apply after it. Each agent provisions its node's
