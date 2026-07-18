@@ -114,12 +114,9 @@ func (r *GroupSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// A group deleted mid-round must not strand barriers. Lift every
 		// local member barrier the kernel still holds — keyed on kernel
 		// state, and never one a sibling round now owns.
-		for _, m := range members {
-			if m.vol.Spec.DRBD == nil || !diskfulOn(m.vol, r.NodeName) {
-				continue
-			}
-			if st, err := r.drbdStatus(ctx, m.vol.Name); err == nil && st.Suspended {
-				if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name); err != nil {
+		for _, volume := range r.sweepVolumes(grp, members) {
+			if st, err := r.drbdStatus(ctx, volume); err == nil && st.Suspended {
+				if err := r.resumeUnlessOtherRound(ctx, grp, volume); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
@@ -460,6 +457,32 @@ func (r *GroupSnapshotReconciler) members(ctx context.Context, grp *miroirv1alph
 		members = append(members, groupMember{snap: snap, vol: vol})
 	}
 	return members, missing, nil
+}
+
+// sweepVolumes names the volumes whose local barrier the deletion path
+// must check: this node's diskful legs of every still-resolvable member,
+// plus the volumes in this node's status.perLeg slot keys. A member
+// deleted before the group (its own deletion defers the lift to the
+// live round, then the group can no longer resolve it — issue #272) is
+// invisible to the member walk, and its slot key is the only record
+// left of the leg this node froze. A slot whose DRBD resource is
+// already torn down costs one failing status read and nothing else.
+func (r *GroupSnapshotReconciler) sweepVolumes(grp *miroirv1alpha1.MiroirSnapshotGroup, members []groupMember) []string {
+	seen := map[string]bool{}
+	var vols []string
+	for _, m := range members {
+		if m.vol.Spec.DRBD != nil && diskfulOn(m.vol, r.NodeName) && !seen[m.vol.Name] {
+			seen[m.vol.Name] = true
+			vols = append(vols, m.vol.Name)
+		}
+	}
+	for key := range grp.Status.PerLeg {
+		if volume, node, ok := strings.Cut(key, "/"); ok && node == r.NodeName && !seen[volume] {
+			seen[volume] = true
+			vols = append(vols, volume)
+		}
+	}
+	return vols
 }
 
 // myLegs filters the members whose volume has a diskful leg on this node.
