@@ -242,6 +242,13 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
+	// A grouped member is cut by its MiroirSnapshotGroup's shared round
+	// (internal/agent/groupsnapshot.go); running the per-snapshot round
+	// too would raise a second barrier over the same volume mid-cut.
+	if snap.Spec.Group != "" {
+		return ctrl.Result{}, nil
+	}
+
 	if snap.Status.ReadyToUse {
 		// A peer's barrier can outlive the round by a moment; lift it —
 		// unless a sibling snapshot's round owns the kernel barrier now.
@@ -514,22 +521,55 @@ func (r *SnapshotReconciler) openRound(ctx context.Context, snap *miroirv1alpha1
 	return r.raiseBarrier(ctx, snap, vol, true)
 }
 
-// otherRoundActive reports whether a different MiroirSnapshot of the same
-// volume is mid-round (its coordinator holds status.ioSuspended). The
-// kernel suspend-io flag is per-resource, not per-snapshot: concurrent
-// rounds would lift each other's barrier and cut non-identical legs, so
-// every barrier touch outside a round defers to a live sibling. Reads
-// through the uncached Reader: a round opened milliseconds ago is not in
-// the informer cache yet, and treating it as absent would lift its
-// barrier mid-cut.
+// otherRoundActive reports whether a different MiroirSnapshot round or a
+// MiroirSnapshotGroup round over the same volume is mid-flight (its
+// owner holds status.ioSuspended). The kernel suspend-io flag is
+// per-resource, not per-snapshot: concurrent rounds would lift each
+// other's barrier and cut non-identical legs, so every barrier touch
+// outside a round defers to a live sibling.
 func (r *SnapshotReconciler) otherRoundActive(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) (bool, error) {
+	return volumeRoundActive(ctx, r.snapReader(), snap.Spec.VolumeName, snap.Name, "")
+}
+
+// volumeRoundActive reports whether any live round other than the
+// caller's own — a standalone snapshot's or a group's — holds
+// status.ioSuspended over the volume. ownSnap and ownGroup name the
+// caller's own objects ("" when not applicable) so it never defers to
+// itself. Reads through an uncached Reader: a round opened milliseconds
+// ago is not in the informer cache yet, and treating it as absent would
+// lift its barrier mid-cut.
+func volumeRoundActive(ctx context.Context, rd client.Reader, volume, ownSnap, ownGroup string) (bool, error) {
 	list := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := r.snapReader().List(ctx, list); err != nil {
+	if err := rd.List(ctx, list); err != nil {
 		return false, err
 	}
+	groups := map[string]bool{}
 	for i := range list.Items {
 		s := &list.Items[i]
-		if s.Name != snap.Name && s.Spec.VolumeName == snap.Spec.VolumeName && s.Status.IOSuspended {
+		if s.Spec.VolumeName != volume {
+			continue
+		}
+		if s.Spec.Group == "" {
+			if s.Name != ownSnap && s.Status.IOSuspended {
+				return true, nil
+			}
+			continue
+		}
+		if s.Spec.Group != ownGroup {
+			groups[s.Spec.Group] = true
+		}
+	}
+	// A grouped member's round state lives on its group object, not on
+	// the member snapshot.
+	for name := range groups {
+		grp := &miroirv1alpha1.MiroirSnapshotGroup{}
+		if err := rd.Get(ctx, types.NamespacedName{Name: name}, grp); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue // group gone; its members hold no round
+			}
+			return false, err
+		}
+		if grp.Status.IOSuspended {
 			return true, nil
 		}
 	}
@@ -565,6 +605,13 @@ func (r *SnapshotReconciler) resumeUnlessSiblingRound(ctx context.Context, snap 
 // suspend-io is idempotent, the backends treat an existing snapshot as
 // success, and both sides resume.
 func (r *SnapshotReconciler) isCoordinator(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
+	return coordinatorFor(r.NodeName, vol, st)
+}
+
+// coordinatorFor is the coordinator election shared with the group
+// round (which elects its driver by the same rule over the first member
+// volume).
+func coordinatorFor(self string, vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
 	if st.Primary {
 		return true
 	}
@@ -585,7 +632,7 @@ func (r *SnapshotReconciler) isCoordinator(vol *miroirv1alpha1.MiroirVolume, st 
 		if rep.Diskless {
 			continue
 		}
-		if rep.Node == r.NodeName {
+		if rep.Node == self {
 			return true
 		}
 		// A diskful peer earlier in spec order coordinates unless it is

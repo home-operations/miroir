@@ -290,6 +290,48 @@ DRBD briefly holds writes (a "write barrier"), so the two snapshots
 are taken at the same instant and are consistent with each other,
 not whichever leg happened to finish first.
 
+### Group snapshots
+
+Snapshot several PVCs as one crash-consistent set (a database and
+its WAL volume, an app and its uploads): every member volume is
+frozen before any snapshot is cut, and none resumes before every cut
+lands, so the members are consistent with **each other**, not just
+individually.
+
+Three switches beyond the regular snapshot stack, all off by
+default: the `groupsnapshot.storage.k8s.io` v1beta2 CRDs installed
+cluster-wide, the cluster's snapshot-controller running with
+`--feature-gates=CSIVolumeGroupSnapshot=true`, and
+`groupSnapshots.enabled: true` in the chart (which passes the same
+feature gate to the csi-snapshotter sidecar). Only replicated
+volumes (`replicas` ≥ 2) can join a group: the DRBD write barrier is
+what makes the cut atomic across volumes.
+
+```yaml
+apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+kind: VolumeGroupSnapshotClass
+metadata:
+    name: miroir-group-snap
+driver: miroir.home-operations.com
+deletionPolicy: Delete
+---
+apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+kind: VolumeGroupSnapshot
+metadata:
+    name: db-nightly
+spec:
+    volumeGroupSnapshotClassName: miroir-group-snap
+    source:
+        selector:
+            matchLabels:
+                app: db # every PVC carrying this label joins the set
+```
+
+Each member is an ordinary VolumeSnapshot and restores individually
+through `dataSource` exactly like the single-volume restore above.
+Members delete as a set: deleting the VolumeGroupSnapshot removes
+them all, and a member cannot be deleted on its own.
+
 ## 5. Expand online
 
 Edit the PVC's `spec.resources.requests.storage`. The agent grows

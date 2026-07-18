@@ -703,6 +703,18 @@ func main() {
 			setupLog.Error(err, "unable to set up snapshot reconciler")
 			os.Exit(1)
 		}
+		groupReconciler := &agent.GroupSnapshotReconciler{
+			Client:   mgr.GetClient(),
+			NodeName: nodeName,
+			Pools:    pools,
+			DRBD:     drbdDriver,
+			Reader:   mgr.GetAPIReader(),
+			Recorder: mgr.GetEventRecorder("miroir-agent"),
+		}
+		if err := groupReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to set up group snapshot reconciler")
+			os.Exit(1)
+		}
 		// Publishes this node's pool capacities for capacity-aware placement.
 		if err := mgr.Add(&agent.PoolStatsPublisher{
 			Client:           mgr.GetClient(),

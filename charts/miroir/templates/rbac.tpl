@@ -22,10 +22,10 @@ metadata:
     {{- include "miroir.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["miroir.home-operations.com"]
-    resources: ["miroirvolumes", "miroirsnapshots"]
+    resources: ["miroirvolumes", "miroirsnapshots", "miroirsnapshotgroups"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["miroir.home-operations.com"]
-    resources: ["miroirvolumes/status", "miroirsnapshots/status"]
+    resources: ["miroirvolumes/status", "miroirsnapshots/status", "miroirsnapshotgroups/status"]
     verbs: ["get", "update", "patch"]
   {{- /* create/patch: the node-group reconciler materializes MiroirNodes
       (never deletes — orphaning is the contract). */}}
@@ -76,8 +76,11 @@ rules:
     resources: ["volumesnapshotcontents/status"]
     verbs: ["update", "patch"]
   - apiGroups: ["groupsnapshot.storage.k8s.io"]
-    resources: ["volumegroupsnapshotclasses", "volumegroupsnapshotcontents"]
+    resources: ["volumegroupsnapshotclasses"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: ["groupsnapshot.storage.k8s.io"]
+    resources: ["volumegroupsnapshotcontents"]
+    verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["groupsnapshot.storage.k8s.io"]
     resources: ["volumegroupsnapshotcontents/status"]
     verbs: ["update", "patch"]
@@ -124,10 +127,10 @@ metadata:
     {{- include "miroir.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["miroir.home-operations.com"]
-    resources: ["miroirvolumes", "miroirsnapshots"]
+    resources: ["miroirvolumes", "miroirsnapshots", "miroirsnapshotgroups"]
     verbs: ["get", "list", "watch", "update"]
   - apiGroups: ["miroir.home-operations.com"]
-    resources: ["miroirvolumes/status", "miroirsnapshots/status"]
+    resources: ["miroirvolumes/status", "miroirsnapshots/status", "miroirsnapshotgroups/status"]
     verbs: ["get", "patch"]
   {{- /* Read-only on the spec: MiroirNode specs are chart-rendered desired
          state; the agent reads its own at startup, watches it for drift,

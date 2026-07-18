@@ -49,6 +49,7 @@ import (
 // them — the Kubernetes API is the only channel to the data plane (§4.2).
 type Controller struct {
 	csi.UnimplementedControllerServer
+	csi.UnimplementedGroupControllerServer
 
 	Client client.Client
 	// APIReader reads straight from the API server, bypassing the
@@ -1010,6 +1011,18 @@ func (c *Controller) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshot
 	if req.GetSnapshotId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "snapshot id is required")
 	}
+	// A group member only dies with its group: deleting one leg of an
+	// atomic cut would leave the group claiming a consistency it no
+	// longer has.
+	existing := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetSnapshotId()}, existing); err == nil {
+		if existing.Spec.Group != "" {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"snapshot %s belongs to group snapshot %s; delete the group", req.GetSnapshotId(), existing.Spec.Group)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return nil, status.Errorf(codes.Internal, "get MiroirSnapshot: %v", err)
+	}
 	snap := &miroirv1alpha1.MiroirSnapshot{ObjectMeta: metav1.ObjectMeta{Name: req.GetSnapshotId()}}
 	if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
 		return nil, status.Errorf(codes.Internal, "delete MiroirSnapshot: %v", err)
@@ -1223,11 +1236,12 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 
 func csiSnapshot(snap *miroirv1alpha1.MiroirSnapshot, sizeBytes int64) *csi.Snapshot {
 	return &csi.Snapshot{
-		SnapshotId:     snap.Name,
-		SourceVolumeId: snap.Spec.VolumeName,
-		SizeBytes:      sizeBytes,
-		CreationTime:   timestamppb.New(snap.CreationTimestamp.Time),
-		ReadyToUse:     snap.Status.ReadyToUse,
+		SnapshotId:      snap.Name,
+		SourceVolumeId:  snap.Spec.VolumeName,
+		SizeBytes:       sizeBytes,
+		CreationTime:    timestamppb.New(snap.CreationTimestamp.Time),
+		ReadyToUse:      snap.Status.ReadyToUse,
+		GroupSnapshotId: snap.Spec.Group,
 	}
 }
 

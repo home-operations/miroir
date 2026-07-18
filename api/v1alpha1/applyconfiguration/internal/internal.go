@@ -240,9 +240,62 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: status
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshotStatus
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshotGroup
+  map:
+    fields:
+    - name: apiVersion
+      type:
+        scalar: string
+    - name: kind
+      type:
+        scalar: string
+    - name: metadata
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta
+    - name: spec
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshotGroupSpec
+    - name: status
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshotGroupStatus
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshotGroupSpec
+  map:
+    fields:
+    - name: snapshotNames
+      type:
+        list:
+          elementType:
+            scalar: string
+          elementRelationship: atomic
+- name: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshotGroupStatus
+  map:
+    fields:
+    - name: conditions
+      type:
+        list:
+          elementType:
+            namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Condition
+          elementRelationship: atomic
+    - name: ioSuspended
+      type:
+        scalar: boolean
+    - name: perLeg
+      type:
+        map:
+          elementType:
+            namedType: com.github.home-operations.miroir.api.v1alpha1.SnapshotNodeState
+    - name: readyToUse
+      type:
+        scalar: boolean
+    - name: suspendedAt
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
 - name: com.github.home-operations.miroir.api.v1alpha1.MiroirSnapshotSpec
   map:
     fields:
+    - name: group
+      type:
+        scalar: string
     - name: volumeName
       type:
         scalar: string

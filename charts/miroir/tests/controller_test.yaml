@@ -491,6 +491,22 @@ tests:
           path: spec.template.spec.containers[1].env[1].name
           value: POD_NAME
 
+  - it: omits the group snapshot feature gate by default
+    documentIndex: 0
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[?(@.name == "csi-snapshotter")].args
+          content: --feature-gates=CSIVolumeGroupSnapshot=true
+  - it: wires the snapshotter feature gate when groupSnapshots is enabled
+    documentIndex: 0
+    set:
+      groupSnapshots:
+        enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[?(@.name == "csi-snapshotter")].args
+          content: --feature-gates=CSIVolumeGroupSnapshot=true
+
   - it: omits auto-diskful-after by default
     documentIndex: 0
     asserts:

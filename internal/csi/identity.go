@@ -65,13 +65,21 @@ func (s *Identity) GetPluginCapabilities(_ context.Context, _ *csi.GetPluginCapa
 		},
 	}
 	if s.WithController {
-		caps = append(caps, &csi.PluginCapability{
-			Type: &csi.PluginCapability_Service_{
-				Service: &csi.PluginCapability_Service{
-					Type: csi.PluginCapability_Service_CONTROLLER_SERVICE,
+		caps = append(caps,
+			&csi.PluginCapability{
+				Type: &csi.PluginCapability_Service_{
+					Service: &csi.PluginCapability_Service{
+						Type: csi.PluginCapability_Service_CONTROLLER_SERVICE,
+					},
 				},
 			},
-		})
+			&csi.PluginCapability{
+				Type: &csi.PluginCapability_Service_{
+					Service: &csi.PluginCapability_Service{
+						Type: csi.PluginCapability_Service_GROUP_CONTROLLER_SERVICE,
+					},
+				},
+			})
 	}
 	return &csi.GetPluginCapabilitiesResponse{Capabilities: caps}, nil
 }

@@ -29,6 +29,12 @@ type MiroirSnapshotSpecApplyConfiguration struct {
 	// replicas, so retargeting the reference would point restores and
 	// per-node teardown at a volume that never held them.
 	VolumeName *string `json:"volumeName,omitempty"`
+	// Group names the MiroirSnapshotGroup whose shared barrier round cuts
+	// this snapshot; empty for a standalone snapshot. Grouped members are
+	// cut by the group reconciler, never by the per-snapshot round.
+	// Immutable: moving a snapshot between groups would misrepresent
+	// which barrier its data was cut under.
+	Group *string `json:"group,omitempty"`
 }
 
 // MiroirSnapshotSpecApplyConfiguration constructs a declarative configuration of the MiroirSnapshotSpec type for use with
@@ -42,5 +48,13 @@ func MiroirSnapshotSpec() *MiroirSnapshotSpecApplyConfiguration {
 // If called multiple times, the VolumeName field is set to the value of the last call.
 func (b *MiroirSnapshotSpecApplyConfiguration) WithVolumeName(value string) *MiroirSnapshotSpecApplyConfiguration {
 	b.VolumeName = &value
+	return b
+}
+
+// WithGroup sets the Group field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Group field is set to the value of the last call.
+func (b *MiroirSnapshotSpecApplyConfiguration) WithGroup(value string) *MiroirSnapshotSpecApplyConfiguration {
+	b.Group = &value
 	return b
 }

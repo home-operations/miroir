@@ -67,6 +67,11 @@ func Serve(ctx context.Context, socketPath string, identity csi.IdentityServer, 
 	}
 	if controller != nil {
 		csi.RegisterControllerServer(srv, controller)
+		// The group service rides the controller socket; miroir's
+		// Controller implements both.
+		if gc, ok := controller.(csi.GroupControllerServer); ok {
+			csi.RegisterGroupControllerServer(srv, gc)
+		}
 	}
 	if node != nil {
 		csi.RegisterNodeServer(srv, node)
