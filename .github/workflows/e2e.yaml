@@ -53,6 +53,7 @@ jobs:
             task: e2e-replicated-conformance
             diagnostics: e2e-replicated-diagnostics
             testdriver: testdriver-local.yaml
+            disk: 20GiB
             timeout: 60
           # Upstream suite on miroir-replicated (real DRBD), group
           # snapshots included, on its own Talos QEMU cluster.
@@ -63,6 +64,7 @@ jobs:
             diagnostics: e2e-replicated-diagnostics
             testdriver: testdriver.yaml
             skip: \[Disruptive\]|\[Serial\]|should not mount / map unused volumes|restoring snapshot to larger size pvc
+            disk: 20GiB
             timeout: 60
     permissions:
       contents: read
@@ -77,6 +79,12 @@ jobs:
         with:
           experimental: true
           install_args: --locked
+
+      - name: Resolve toolchain versions
+        id: tools
+        run: |
+          echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
+          echo "talos=$(mise config get tools.talos)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Go modules and build
         if: matrix.suite == 'local'
@@ -111,7 +119,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.talos/cache
-          key: talos-boot-${{ hashFiles('deploy/e2e/schematic.yaml', '.mise/config.toml') }}
+          key: talos-boot-${{ steps.tools.outputs.talos }}-${{ hashFiles('deploy/e2e/schematic.yaml') }}
 
       - name: Start image registry
         if: matrix.suite != 'local'
@@ -124,15 +132,12 @@ jobs:
         run: mise run "$CLUSTER"
         env:
           CLUSTER: ${{ matrix.cluster }}
+          MIROIR_E2E_DISK_SIZE: ${{ matrix.disk }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           driver-opts: network=host
-
-      - name: Resolve toolchain versions
-        id: tools
-        run: echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
 
       # Both builds run concurrently against the same BuildKit daemon, which
       # dedupes the shared Go builder stage in flight — the agent's Debian
@@ -186,7 +191,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test/conformance/.bin
-          key: conformance-bin-${{ hashFiles('.mise/config.toml') }}
+          key: conformance-bin-${{ steps.tools.outputs.talos }}
 
       - name: Run ${{ matrix.suite }} suite
         run: mise run "$TASK"

@@ -269,15 +269,18 @@ schematic="$(curl -sfX POST https://factory.talos.dev/schematics --data-binary @
 echo "==> factory schematic: $schematic"
 
 # The provisioner drops generated machine configs (they embed cluster
-# PKI) into the working directory — keep them out of the repo.
+# PKI) into the working directory; keep them out of the repo.
 cd "$bindir"
 
 # The QEMU provisioner needs root for the bridge + NAT ("mise which"
 # resolves past the shim, which does not work under sudo). State stays
 # in the default ~/.talos/clusters: the VM monitor UNIX sockets live
 # there and a repo-rooted path overflows the 108-byte socket limit.
-# Workers get the second disk (/dev/vdb) — they are the two storage
-# nodes; the control plane node runs the controller Deployment only.
+# Workers get the second disk (/dev/vdb); they are the two storage
+# nodes, the control plane node runs the controller Deployment only.
+# The data disk sizes the lvmthin pool: parallel conformance specs
+# provision many volumes and the controller's overcommit guard counts
+# virtual (spec) size at capacity times two.
 sudo -E "$(mise which talosctl)" cluster create qemu \
   --name "$cluster" \
   --cidr 10.5.0.0/24 \
@@ -285,7 +288,7 @@ sudo -E "$(mise which talosctl)" cluster create qemu \
   --controlplanes 1 \
   --workers 2 \
   --memory-workers 3GiB \
-  --disks virtio:8GiB,virtio:20GiB \
+  --disks "virtio:8GiB,virtio:${MIROIR_E2E_DISK_SIZE:-20GiB}" \
   --config-patch @{{config_root}}/deploy/e2e/talos-patch.yaml \
   --talosconfig-destination "$TALOSCONFIG"
 sudo chown -R "$(id -u):$(id -g)" "$bindir"
@@ -295,7 +298,6 @@ talosctl kubeconfig "$KUBECONFIG" --nodes 10.5.0.2 --force
 
 [tasks.e2e-replicated-provision]
 description = "Install the CSI snapshot stack (group snapshots gated on) and helm-install miroir on the Talos e2e cluster"
-depends = ["manifests"]
 env = { KUBECONFIG = "{{config_root}}/bin/e2e-replicated/kubeconfig" }
 run = '''
 set -eu
@@ -346,7 +348,7 @@ spec:
 EOF
 
 # Talos enforces the "baseline" Pod Security Standard by default, which
-# rejects the privileged agent DaemonSet — the namespace must carry the
+# rejects the privileged agent DaemonSet; the namespace must carry the
 # privileged enforce label before helm creates any pods.
 echo "==> helm install miroir"
 kubectl create namespace miroir-system --dry-run=client -o yaml | kubectl apply -f -
@@ -360,7 +362,7 @@ helm upgrade --install miroir charts/miroir \
 [tasks.e2e-replicated-conformance]
 description = "Run the upstream external-storage conformance suite against the Talos e2e cluster (TESTDRIVER selects the class)"
 env = { KUBECONFIG = "{{config_root}}/bin/e2e-replicated/kubeconfig" }
-run = "TESTDRIVER=\"${TESTDRIVER:-testdriver.yaml}\" PROCS=\"${PROCS:-2}\" ./test/conformance/run.sh"
+run = "./test/conformance/run.sh"
 
 [tasks.e2e-replicated-diagnostics]
 description = "Dump Talos e2e cluster state for debugging a failed replicated run"
