@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.11.2](https://github.com/home-operations/miroir/compare/0.11.1...0.11.2) (2026-07-18)
+
+
+### Features
+
+* **csi:** implement crash-consistent volume group snapshots ([#268](https://github.com/home-operations/miroir/issues/268)) ([bef5efc](https://github.com/home-operations/miroir/commit/bef5efc43cba1b77327285ff1e0055e5a07459c2))
+* **csi:** support PVC clone via an internal clone-source snapshot ([#267](https://github.com/home-operations/miroir/issues/267)) ([569920e](https://github.com/home-operations/miroir/commit/569920e757e65e66f18d49983ea69cd809cc4d4d))
+
+
+### Bug Fixes
+
+* **agent:** never lift a barrier a sibling round co-holds when closing a round ([#275](https://github.com/home-operations/miroir/issues/275)) ([d99c6eb](https://github.com/home-operations/miroir/commit/d99c6eb9b0da4e50c0988bb836b45c15cc8c37b8))
+* **csi:** stop group snapshot deletion from stranding suspend-io barriers ([#274](https://github.com/home-operations/miroir/issues/274)) ([8294491](https://github.com/home-operations/miroir/commit/8294491b375ed39d6cae3478fd645e42f049b254))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool cosign (3.1.1 → 3.1.2) ([#266](https://github.com/home-operations/miroir/issues/266)) ([7b7bd20](https://github.com/home-operations/miroir/commit/7b7bd20f13dd86d256bf7d6d1ae81244f2fee443))
+
 ## [0.11.1](https://github.com/home-operations/miroir/compare/0.11.0...0.11.1) (2026-07-17)
 
 
