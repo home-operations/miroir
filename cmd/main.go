@@ -646,7 +646,7 @@ func main() {
 			}
 			// Lift any IO barrier left by a previous agent crash; same
 			// fatal-only-on-API-failure contract.
-			if err := resumeStaleBarriers(drbdDriver, apiStartupWait); err != nil {
+			if err := resumeStaleBarriers(drbdDriver, agent.NewFreezer(), nodeName, apiStartupWait); err != nil {
 				setupLog.Error(err, "barrier resume sweep failed")
 				os.Exit(1)
 			}
@@ -660,7 +660,7 @@ func main() {
 		}
 		var drbdEvents chan event.GenericEvent
 		if drbdReady {
-			shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver) }
+			shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver, nodeName) }
 			// events2 turns kernel state changes into immediate reconciles;
 			// the 30s poll remains as the safety net.
 			drbdEvents = make(chan event.GenericEvent, 64)
@@ -691,6 +691,7 @@ func main() {
 			setupLog.Error(err, "unable to set up agent reconciler")
 			os.Exit(1)
 		}
+		freezer := agent.NewFreezer()
 		snapReconciler := &agent.SnapshotReconciler{
 			Client:   mgr.GetClient(),
 			NodeName: nodeName,
@@ -698,6 +699,7 @@ func main() {
 			DRBD:     drbdDriver,
 			Reader:   mgr.GetAPIReader(),
 			Recorder: mgr.GetEventRecorder("miroir-agent"),
+			Freezer:  freezer,
 		}
 		if err := snapReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up snapshot reconciler")
@@ -710,6 +712,7 @@ func main() {
 			DRBD:     drbdDriver,
 			Reader:   mgr.GetAPIReader(),
 			Recorder: mgr.GetEventRecorder("miroir-agent"),
+			Freezer:  freezer,
 		}
 		if err := groupReconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up group snapshot reconciler")
@@ -819,7 +822,7 @@ func transientAPIError(err error) bool {
 // ungated teardown would disconnect idle replicas on every pod rollout. A
 // leftover write barrier is also kernel state that must not outlive the
 // process.
-func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver) {
+func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeName string) {
 	if cordon.Cordoned() {
 		ctx, cancel := context.WithTimeout(context.Background(), drbdShutdownTimeout)
 		defer cancel()
@@ -832,7 +835,7 @@ func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver) {
 	// manager stop + DownSecondaries already spend up to 45s of it. A
 	// stranded barrier missed here is lifted by the startup sweep on the
 	// next boot.
-	if err := resumeStaleBarriers(driver, apiShutdownWait); err != nil {
+	if err := resumeStaleBarriers(driver, agent.NewFreezer(), nodeName, apiShutdownWait); err != nil {
 		setupLog.Error(err, "shutdown barrier sweep failed")
 	}
 }
@@ -880,7 +883,7 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 // Returns an error only when the snapshot list cannot be fetched; resume
 // failures are per-resource, logged here — one wedged resource must not
 // strand the other frozen volumes' barriers (issue #195).
-func resumeStaleBarriers(driver *drbd.Driver, apiBudget time.Duration) error {
+func resumeStaleBarriers(driver *drbd.Driver, freezer *agent.Freezer, nodeName string, apiBudget time.Duration) error {
 	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
 		return err
@@ -904,16 +907,40 @@ func resumeStaleBarriers(driver *drbd.Driver, apiBudget time.Duration) error {
 		return nil
 	}
 	var errs []error
+	var stale []string
 	for _, vol := range suspended {
 		if fresh[vol] {
 			continue
 		}
+		stale = append(stale, vol)
 		if err := driver.ResumeIO(context.Background(), vol); err != nil {
 			errs = append(errs, fmt.Errorf("resume stale barrier on %s: %w", vol, err))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
 		setupLog.Error(err, "barrier resume sweep incomplete")
+	}
+	// A crash mid-round can leave the filesystem freeze behind exactly
+	// like the barrier; the reconcilers only thaw volumes whose snapshot
+	// objects still exist, so the sweep covers the rest. Fresh rounds
+	// keep their freeze — their own close lifts it.
+	if len(stale) > 0 && freezer != nil {
+		vols := &miroirv1alpha1.MiroirVolumeList{}
+		if err := listWithRetry(c, vols, apiBudget); err != nil {
+			setupLog.Error(err, "cannot list volumes; skipping freeze thaw sweep")
+			return nil
+		}
+		paths := map[string]string{}
+		for i := range vols.Items {
+			paths[vols.Items[i].Name] = vols.Items[i].Status.PerNode[nodeName].DevicePath
+		}
+		for _, name := range stale {
+			if device := paths[name]; device != "" {
+				if err := freezer.Thaw(device); err != nil {
+					setupLog.Error(err, "cannot thaw stale filesystem freeze", "volume", name)
+				}
+			}
+		}
 	}
 	return nil
 }

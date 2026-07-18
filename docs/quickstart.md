@@ -255,6 +255,14 @@ Requires the cluster-wide `snapshot-controller` and `volumesnapshot`
 CRDs (see the [CSI snapshot docs](https://kubernetes-csi.github.io/docs/snapshots.html)),
 plus a VolumeSnapshotClass (the `miroir-snap` manifest above).
 
+Snapshots of a mounted filesystem are filesystem-consistent: on the
+node where the volume is mounted, the agent freezes the filesystem
+(flushing every cached write) just before the cut and thaws it right
+after, so even data an application wrote without `fsync` is in the
+snapshot. Raw block volumes are crash-consistent — miroir cannot know
+what the application considers a consistent instant there; quiesce
+writes yourself if you need more.
+
 ```yaml
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot

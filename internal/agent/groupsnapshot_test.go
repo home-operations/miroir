@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -423,5 +424,52 @@ func TestGroupSnapshotDeletionLiftsBarriersWithoutMembers(t *testing.T) {
 		if f == constants.FinalizerPrefix+nodeA {
 			t.Fatalf("this node's finalizer must be released: %v", got.Finalizers)
 		}
+	}
+}
+
+// The group round freezes every locally mounted member filesystem
+// before its barrier rises and thaws them all when the round seals; a
+// node without mounts (the Secondary) never freezes.
+func TestGroupFreezeBracketsRound(t *testing.T) {
+	v1, v2 := groupVol(volPvc1), groupVol(volPvc2)
+	for i, v := range []*miroirv1alpha1.MiroirVolume{v1, v2} {
+		st := v.Status.PerNode[nodeA]
+		st.DevicePath = fmt.Sprintf("/dev/drbd100%d", i)
+		v.Status.PerNode[nodeA] = st
+	}
+	c := groupClient(t, v1, v2,
+		memberObj(memberOf1, volPvc1), memberObj(memberOf2, volPvc2), groupObj())
+
+	recK := &ioctlRecorder{}
+	feK := &fakeDRBDExec{statusJSON: groupStatusPrimary}
+	rK := &GroupSnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run},
+		Freezer: mountedFreezer(recK, map[string]string{
+			devDrbd1000: mntStage1, "/dev/drbd1001": "/mnt/stage-2"})}
+	recP := &ioctlRecorder{}
+	feP := &fakeDRBDExec{statusJSON: groupStatusPeer}
+	rP := &GroupSnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
+		DRBD:    &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run},
+		Freezer: mountedFreezer(recP, nil)}
+
+	// Driver opens the round: both mounted members freeze first.
+	reconcileGroup(t, rK)
+	calls := recK.recorded()
+	if len(calls) != 2 || calls[0] != callFreeze1 || calls[1] != "freeze /mnt/stage-2" {
+		t.Fatalf("the driver must freeze every mounted member at the raise: %v", calls)
+	}
+	// Peer raises, both cut, driver collects: every freeze thaws.
+	reconcileGroup(t, rP)
+	reconcileGroup(t, rK)
+	reconcileGroup(t, rP)
+	reconcileGroup(t, rK)
+	feK.calledWith(t, "drbdadm resume-io "+volPvc1)
+	calls = recK.recorded()
+	if len(calls) != 4 || calls[2] != callThaw1 || calls[3] != "thaw /mnt/stage-2" {
+		t.Fatalf("sealing the round must thaw every freeze: %v", calls)
+	}
+	reconcileGroup(t, rP)
+	if calls := recP.recorded(); len(calls) != 0 {
+		t.Fatalf("the unmounted Secondary must never freeze or thaw: %v", calls)
 	}
 }
