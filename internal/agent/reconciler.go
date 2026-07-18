@@ -353,14 +353,16 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		(!localDiskless && vol.Status.PerNode[r.NodeName].SizeBytes != vol.Spec.SizeBytes) {
 		return false, ctrl.Result{}
 	}
-	// Phase is co-owned: every leg's full pass force-applies it from its
-	// own informer cache, and near-simultaneous passes (a resync
-	// completing) can land a stale value last, leaving the CR
-	// self-contradictory while every leg parks here until the deep check
-	// (issue #279). No kernel event re-breaks the fingerprint after that,
-	// so recompute from the cached CR and take the full pipeline to
-	// re-apply phase as soon as the informer shows the mismatch.
-	if computePhase(vol) != vol.Status.Phase {
+	// Phase and ReadyReplicas are co-owned: every leg's full pass
+	// force-applies them from its own informer cache, and
+	// near-simultaneous passes (a resync completing) can land a stale
+	// value last, leaving the CR self-contradictory while every leg parks
+	// here until the deep check (issue #279). No kernel event re-breaks
+	// the fingerprint after that, so recompute from the cached CR and take
+	// the full pipeline to re-apply them as soon as the informer shows the
+	// mismatch.
+	if phase, readyReplicas := computePhase(vol); phase != vol.Status.Phase ||
+		readyReplicas != vol.Status.ReadyReplicas {
 		return false, ctrl.Result{}
 	}
 	if !entry.replicated {
@@ -1098,11 +1100,12 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.
 		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
 	}
 	vol.Status.PerNode[r.NodeName] = mine
-	vol.Status.Phase = computePhase(vol)
+	vol.Status.Phase, vol.Status.ReadyReplicas = computePhase(vol)
 
 	ac := acv1alpha1.MiroirVolume(vol.Name).
 		WithStatus(acv1alpha1.MiroirVolumeStatus().
 			WithPhase(vol.Status.Phase).
+			WithReadyReplicas(vol.Status.ReadyReplicas).
 			WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
 				r.NodeName: *replicaStatusAC(mine),
 			}))
@@ -1243,10 +1246,12 @@ func detachedDiskMessage(diskFailed bool) string {
 }
 
 // computePhase aggregates per-node states into the volume phase the CSI
-// controller waits on.
-func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
+// controller waits on, plus the "ready/total" diskful summary backing the
+// Replicas printcolumn.
+func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase, string) {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
+	failed := false
 	for _, rep := range diskfulReplicas {
 		st, ok := vol.Status.PerNode[rep.Node]
 		replicated := vol.Spec.DRBD != nil
@@ -1258,16 +1263,19 @@ func computePhase(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
 			// Hard failure: the backing device never materialised.
 			// Errors after that point (DRBD connect retries, status
 			// hiccups) are transient and must not fail provisioning.
-			return miroirv1alpha1.VolumeFailed
+			failed = true
 		}
 	}
+	readyReplicas := fmt.Sprintf("%d/%d", ready, len(diskfulReplicas))
 	switch {
+	case failed:
+		return miroirv1alpha1.VolumeFailed, readyReplicas
 	case ready == len(diskfulReplicas):
-		return miroirv1alpha1.VolumeReady
+		return miroirv1alpha1.VolumeReady, readyReplicas
 	case ready > 0:
-		return miroirv1alpha1.VolumeDegraded
+		return miroirv1alpha1.VolumeDegraded, readyReplicas
 	default:
-		return miroirv1alpha1.VolumeCreating
+		return miroirv1alpha1.VolumeCreating, readyReplicas
 	}
 }
 

@@ -405,6 +405,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: phase
       type:
         namedType: com.github.home-operations.miroir.api.v1alpha1.VolumePhase
+    - name: readyReplicas
+      type:
+        scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.QuorumPolicy
   scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.Replica

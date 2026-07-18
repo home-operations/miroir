@@ -347,6 +347,12 @@ type MiroirVolumeStatus struct {
 	// Phase summarizes the volume state for the controller and humans.
 	// +optional
 	Phase VolumePhase `json:"phase,omitempty"`
+	// ReadyReplicas summarizes diskful replica readiness as "ready/total"
+	// (diskless tie-breakers and client legs excluded, like Phase). A
+	// preformatted string because CRD printcolumns cannot combine two
+	// integer fields into one cell.
+	// +optional
+	ReadyReplicas string `json:"readyReplicas,omitempty"`
 	// PerNode maps node name to that agent's observed state.
 	// +optional
 	PerNode map[string]ReplicaStatus `json:"perNode,omitempty"`
@@ -377,7 +383,7 @@ type MiroirVolumeStatus struct {
 // +kubebuilder:resource:scope=Cluster,shortName=miv
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Size",type=integer,JSONPath=`.spec.sizeBytes`
-// +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.spec.replicas[*].node`,priority=1
+// +kubebuilder:printcolumn:name="Replicas",type=string,JSONPath=`.status.readyReplicas`
 // +kubebuilder:printcolumn:name="Pools",type=string,JSONPath=`.spec.replicas[*].pool`,priority=1
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

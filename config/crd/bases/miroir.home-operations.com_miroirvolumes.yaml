@@ -20,9 +20,8 @@ spec:
     - jsonPath: .spec.sizeBytes
       name: Size
       type: integer
-    - jsonPath: .spec.replicas[*].node
+    - jsonPath: .status.readyReplicas
       name: Replicas
-      priority: 1
       type: string
     - jsonPath: .spec.replicas[*].pool
       name: Pools
@@ -537,6 +536,13 @@ spec:
               phase:
                 description: Phase summarizes the volume state for the controller
                   and humans.
+                type: string
+              readyReplicas:
+                description: |-
+                  ReadyReplicas summarizes diskful replica readiness as "ready/total"
+                  (diskless tie-breakers and client legs excluded, like Phase). A
+                  preformatted string because CRD printcolumns cannot combine two
+                  integer fields into one cell.
                 type: string
             type: object
         required:
