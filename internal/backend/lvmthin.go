@@ -139,6 +139,26 @@ func (l *lvmThin) DevicePath(vol string) string {
 	return fmt.Sprintf("/dev/%s/%s", l.vg, vol)
 }
 
+// ensureDevice returns vol's device path once its node is usable. With
+// udev disabled, lvm mknods /dev/<vg>/ entries itself at activation; a
+// node lost after that never reappears on its own (#281), so a failed
+// probe is repaired with vgmknodes rather than waited out. LINSTOR guards
+// the same edge (waitUntilDeviceCreated after every create) but can rely
+// on udev to deliver the node; this environment has no udev to wait for.
+func (l *lvmThin) ensureDevice(ctx context.Context, vol string) (string, error) {
+	dev := l.DevicePath(vol)
+	if _, err := l.exec(ctx, "blockdev", "--getsize64", dev); err == nil {
+		return dev, nil
+	}
+	if _, err := l.lvm(ctx, "vgmknodes", l.vg); err != nil {
+		return "", fmt.Errorf("vgmknodes %s: %w", l.vg, err)
+	}
+	if _, err := l.exec(ctx, "blockdev", "--getsize64", dev); err != nil {
+		return "", fmt.Errorf("device node %s unusable after vgmknodes: %w", dev, err)
+	}
+	return dev, nil
+}
+
 // ref is the "vg/lv" reference lvm commands take for a logical volume.
 func (l *lvmThin) ref(lv string) string {
 	return fmt.Sprintf("%s/%s", l.vg, lv)
@@ -176,7 +196,7 @@ func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (stri
 		if err != nil {
 			return "", fmt.Errorf("lvcreate %s: %w", vol, err)
 		}
-		return l.DevicePath(vol), nil
+		return l.ensureDevice(ctx, vol)
 	}
 	// Talos does not activate foreign LVs at boot, so an LV surviving a
 	// node reboot exists in metadata but has no device node until
@@ -185,7 +205,7 @@ func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (stri
 		l.ref(vol)); err != nil {
 		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
-	return l.DevicePath(vol), nil
+	return l.ensureDevice(ctx, vol)
 }
 
 func (l *lvmThin) Resize(ctx context.Context, vol string, sizeBytes int64) error {
@@ -208,6 +228,14 @@ func (l *lvmThin) Sync(ctx context.Context, vol string) error {
 	// No global sync(2): it deadlocks against filesystems frozen on the
 	// suspended DRBD device above this LV (see zfsBackend.Sync).
 	_, err := l.exec(ctx, "blockdev", "--flushbufs", l.DevicePath(vol))
+	if err != nil && strings.Contains(err.Error(), "No such file or directory") {
+		// The LV may have been active long before the cut; a node missing
+		// since then (#281) would otherwise fail every retry.
+		if _, herr := l.ensureDevice(ctx, vol); herr != nil {
+			return herr
+		}
+		_, err = l.exec(ctx, "blockdev", "--flushbufs", l.DevicePath(vol))
+	}
 	return err
 }
 
@@ -268,7 +296,7 @@ func (l *lvmThin) CreateFromSnapshot(ctx context.Context, vol, _ /* sourceVol */
 		"--ignoreactivationskip", l.ref(vol)); err != nil {
 		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
-	return l.DevicePath(vol), nil
+	return l.ensureDevice(ctx, vol)
 }
 
 func (l *lvmThin) Delete(ctx context.Context, vol string) error {

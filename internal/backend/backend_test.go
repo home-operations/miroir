@@ -80,6 +80,7 @@ func (f *fakeExec) notCalledWith(t *testing.T, substr string) {
 const (
 	thinPoolName = "thinpool"
 	volumeGroup  = "vg-miroir"
+	blockdevCmd  = "blockdev"
 )
 
 var cfg = Config{VolumeGroup: volumeGroup, ThinPool: thinPoolName, Dataset: "tank/miroir"}
@@ -151,6 +152,98 @@ func TestLVMThinStats(t *testing.T) {
 	}
 	if s.MetaUsedPercent != 1.2 {
 		t.Fatalf("meta%% = %f", s.MetaUsedPercent)
+	}
+}
+
+// healingExec fails every blockdev call until a vgmknodes command has
+// been seen: a missing LV node (#281) only comes back by re-mknoding.
+func healingExec(fe *fakeExec, healed *bool) Exec {
+	return func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "lvm" && len(args) > 0 && args[0] == "vgmknodes" {
+			*healed = true
+		}
+		if name == blockdevCmd && !*healed {
+			return "", errors.New("blockdev: cannot open " + args[len(args)-1] + ": No such file or directory")
+		}
+		return fe.run(ctx, name, args...)
+	}
+}
+
+func TestLVMThinCreateHealsMissingDeviceNode(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("not found"))
+	healed := false
+	b := newLVMThin(cfg, healingExec(fe, &healed))
+
+	dev, err := b.Create(t.Context(), "pvc-1", 10<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev != "/dev/vg-miroir/pvc-1" {
+		t.Fatalf("unexpected device path %q", dev)
+	}
+	fe.calledWith(t, "lvm vgmknodes vg-miroir")
+}
+
+func TestLVMThinCreateSkipsHealWhenNodeUsable(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("not found"))
+	b := newLVMThin(cfg, fe.run) // blockdev probe succeeds
+
+	if _, err := b.Create(t.Context(), "pvc-1", 10<<30); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "vgmknodes")
+}
+
+func TestLVMThinCreateSurfacesUnhealableDeviceNode(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("not found"))
+	fe.respond("blockdev", "", errors.New("No such file or directory"))
+	b := newLVMThin(cfg, fe.run)
+
+	_, err := b.Create(t.Context(), "pvc-1", 10<<30)
+	if err == nil || !strings.Contains(err.Error(), "after vgmknodes") {
+		t.Fatalf("expected unhealable-node error, got %v", err)
+	}
+	fe.calledWith(t, "lvm vgmknodes vg-miroir")
+}
+
+func TestLVMThinCreateFromSnapshotHealsMissingDeviceNode(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvs vg-miroir/pvc-2", "", errors.New("not found"))
+	healed := false
+	b := newLVMThin(cfg, healingExec(fe, &healed))
+
+	dev, err := b.CreateFromSnapshot(t.Context(), "pvc-2", "pvc-1", "snap-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev != "/dev/vg-miroir/pvc-2" {
+		t.Fatalf("unexpected device path %q", dev)
+	}
+	fe.calledWith(t, "lvm vgmknodes vg-miroir")
+}
+
+func TestLVMThinSyncHealsMissingDeviceNode(t *testing.T) {
+	fe := &fakeExec{}
+	healed := false
+	flushes := 0
+	inner := healingExec(fe, &healed)
+	exec := func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == blockdevCmd && args[0] == "--flushbufs" {
+			flushes++
+		}
+		return inner(ctx, name, args...)
+	}
+	b := newLVMThin(cfg, exec)
+
+	if err := b.Sync(t.Context(), "pvc-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "lvm vgmknodes vg-miroir")
+	if flushes != 2 {
+		t.Fatalf("expected the flush retried once after the heal, got %d", flushes)
 	}
 }
 
