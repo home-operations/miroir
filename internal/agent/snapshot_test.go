@@ -1201,3 +1201,92 @@ func TestSnapshotSiblingCheckReadsThroughAPIReader(t *testing.T) {
 	fe.notCalledWith(t, "resume-io")
 	fe.notCalledWith(t, "suspend-io")
 }
+
+// The filesystem freeze brackets the replicated round on the node that
+// has the volume mounted (the coordinator/Primary): frozen before the
+// barrier rises, thawed when the round resumes. The Secondary mounts
+// nothing and must never freeze.
+func TestSnapshotFreezeBracketsReplicatedRound(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, DevicePath: devDrbd1000},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate, DevicePath: devDrbd1000},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	recK := &ioctlRecorder{}
+	feK := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	rK := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD:    &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run},
+		Freezer: mountedFreezer(recK, map[string]string{devDrbd1000: mntStage1})}
+
+	recP := &ioctlRecorder{}
+	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	rP := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
+		DRBD:    &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run},
+		Freezer: mountedFreezer(recP, nil)}
+
+	// Coordinator raise: freeze precedes the barrier.
+	reconcileSnap(t, rK, snapSnap1)
+	if calls := recK.recorded(); len(calls) != 1 || calls[0] != callFreeze1 {
+		t.Fatalf("coordinator must freeze its mount at the raise: %v", calls)
+	}
+	// Peer raise: nothing mounted, nothing frozen.
+	reconcileSnap(t, rP, snapSnap1)
+	// Cut on both, then the coordinator collects and thaws.
+	reconcileSnap(t, rK, snapSnap1)
+	reconcileSnap(t, rP, snapSnap1)
+	reconcileSnap(t, rK, snapSnap1)
+	feK.calledWith(t, "drbdadm resume-io pvc-1")
+	if calls := recK.recorded(); len(calls) != 2 || calls[1] != callThaw1 {
+		t.Fatalf("closing the round must thaw the freeze: %v", calls)
+	}
+	// The peer lifts its own barrier at readyToUse; it froze nothing.
+	reconcileSnap(t, rP, snapSnap1)
+	if calls := recP.recorded(); len(calls) != 0 {
+		t.Fatalf("the unmounted Secondary must never freeze or thaw: %v", calls)
+	}
+}
+
+// A freeze followed by a failed suspend must not leave the filesystem
+// frozen behind a barrier that never rose.
+func TestSnapshotSuspendFailureThawsFreeze(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate, DevicePath: devDrbd1000},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	rec := &ioctlRecorder{}
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"}]}]`,
+		errOn: map[string]error{"suspend-io": errors.New("exit status 20")}}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD:    &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run},
+		Freezer: mountedFreezer(rec, map[string]string{devDrbd1000: mntStage1})}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}); err == nil {
+		t.Fatal("a failed suspend must surface")
+	}
+	if calls := rec.recorded(); len(calls) != 2 ||
+		calls[0] != callFreeze1 || calls[1] != callThaw1 {
+		t.Fatalf("a failed raise must thaw what it froze: %v", calls)
+	}
+}

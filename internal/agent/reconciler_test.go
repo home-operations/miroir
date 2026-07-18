@@ -475,7 +475,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := got.Status.PerNode[nodeA]
-	if st.DevicePath != "/dev/drbd1000" {
+	if st.DevicePath != devDrbd1000 {
 		t.Fatalf("pods must attach the DRBD device, got %q", st.DevicePath)
 	}
 	if st.DiskState != diskStateUpToDate || !st.Connected {

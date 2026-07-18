@@ -80,6 +80,10 @@ type GroupSnapshotReconciler struct {
 	Reader client.Reader
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
+	// Freezer freezes each locally mounted member filesystem before this
+	// node's barrier on it rises (issue #291); optional (nil skips,
+	// crash-consistent as before).
+	Freezer *Freezer
 
 	// barrierFails parks a group whose barrier path fails persistently,
 	// mirroring SnapshotReconciler.barrierFails.
@@ -114,9 +118,13 @@ func (r *GroupSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// A group deleted mid-round must not strand barriers. Lift every
 		// local member barrier the kernel still holds — keyed on kernel
 		// state, and never one a sibling round now owns.
+		vols := map[string]*miroirv1alpha1.MiroirVolume{}
+		for _, m := range members {
+			vols[m.vol.Name] = m.vol
+		}
 		for _, volume := range r.sweepVolumes(grp, members) {
 			if st, err := r.drbdStatus(ctx, volume); err == nil && st.Suspended {
-				if err := r.resumeUnlessOtherRound(ctx, grp, volume); err != nil {
+				if err := r.resumeUnlessOtherRound(ctx, grp, volume, vols[volume]); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
@@ -144,10 +152,14 @@ func (r *GroupSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// ones — unless a sibling round owns the kernel flag by now.
 		for _, m := range mine {
 			if st, err := r.drbdStatus(ctx, m.vol.Name); err == nil && st.Suspended {
-				if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name); err != nil {
+				if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name, m.vol); err != nil {
 					return ctrl.Result{}, err
 				}
+				continue
 			}
+			// A freeze can outlive the barrier (a crash mid-round whose
+			// stale barrier the startup sweep resumed).
+			thawMounted(ctx, r.Freezer, r.NodeName, m.vol)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -212,7 +224,7 @@ func (r *GroupSnapshotReconciler) reconcileRound(ctx context.Context, grp *miroi
 		// unless a sibling round owns one of them by now.
 		for _, m := range mine {
 			if sts[m.vol.Name].Suspended {
-				if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name); err != nil {
+				if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name, m.vol); err != nil {
 					return ctrl.Result{RequeueAfter: 2 * time.Second}, err
 				}
 			}
@@ -284,9 +296,17 @@ func (r *GroupSnapshotReconciler) raiseBarriers(ctx context.Context, grp *miroir
 	}
 	suspended := make([]groupMember, 0, len(mine))
 	for _, m := range mine {
+		// Freeze strictly before this leg's suspend (see the per-snapshot
+		// round's twin): the writeback must replicate while the leg still
+		// accepts IO.
+		if err := freezeMounted(ctx, r.Freezer, r.NodeName, m.vol); err != nil {
+			_ = r.resumeMine(ctx, grp, suspended)
+			return r.barrierFailed(ctx, grp, m.vol, err)
+		}
 		if err := r.suspendIO(ctx, m.vol.Name); err != nil {
 			// A half-raised node must not stay half-frozen behind a failed
 			// raise; the retry re-raises the lot.
+			thawMounted(ctx, r.Freezer, r.NodeName, m.vol)
 			_ = r.resumeMine(ctx, grp, suspended)
 			return r.barrierFailed(ctx, grp, m.vol, err)
 		}
@@ -557,7 +577,7 @@ func allSlotsSuspended(grp *miroirv1alpha1.MiroirSnapshotGroup, members []groupM
 // voided-round branches re-check and lift once nothing holds it.
 func (r *GroupSnapshotReconciler) resumeMine(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mine []groupMember) error {
 	for _, m := range mine {
-		if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name); err != nil {
+		if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name, m.vol); err != nil {
 			return err
 		}
 	}
@@ -566,12 +586,21 @@ func (r *GroupSnapshotReconciler) resumeMine(ctx context.Context, grp *miroirv1a
 
 // resumeUnlessOtherRound lifts the local barrier on volume unless a
 // sibling round — a standalone snapshot's or another group's — owns it.
-func (r *GroupSnapshotReconciler) resumeUnlessOtherRound(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, volume string) error {
+// The filesystem freeze thaws under the same rule (the round that lifts
+// the barrier lifts the freeze); vol is nil for a slot-key ghost whose
+// volume object is gone — its device (and any mount) went with it.
+func (r *GroupSnapshotReconciler) resumeUnlessOtherRound(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, volume string, vol *miroirv1alpha1.MiroirVolume) error {
 	active, err := volumeRoundActive(ctx, r.reader(), volume, "", grp.Name)
 	if err != nil || active {
 		return err
 	}
-	return r.resumeIO(ctx, volume)
+	if err := r.resumeIO(ctx, volume); err != nil {
+		return err
+	}
+	if vol != nil {
+		thawMounted(ctx, r.Freezer, r.NodeName, vol)
+	}
+	return nil
 }
 
 // backendFor resolves the backend holding the volume's local leg.

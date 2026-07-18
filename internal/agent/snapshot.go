@@ -86,6 +86,10 @@ type SnapshotReconciler struct {
 	Reader client.Reader
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
+	// Freezer freezes the mounted filesystem before this node's barrier
+	// rises, making the cut filesystem-consistent (issue #291); optional
+	// (nil skips, crash-consistent as before).
+	Freezer *Freezer
 
 	// barrierFails counts consecutive DRBD failures on the barrier path
 	// (the status read and suspend-io) per snapshot. Past barrierFailLimit
@@ -177,6 +181,16 @@ func (r *SnapshotReconciler) resumeIO(ctx context.Context, name string) error {
 	return r.DRBD.ResumeIO(ctx, name)
 }
 
+// freeze and thaw wrap the shared helpers with this reconciler's
+// freezer and node.
+func (r *SnapshotReconciler) freeze(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+	return freezeMounted(ctx, r.Freezer, r.NodeName, vol)
+}
+
+func (r *SnapshotReconciler) thaw(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) {
+	thawMounted(ctx, r.Freezer, r.NodeName, vol)
+}
+
 // Reconcile drives one snapshot's state machine from this node's view.
 func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	snap := &miroirv1alpha1.MiroirSnapshot{}
@@ -258,6 +272,10 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, r.resumeUnlessSiblingRound(ctx, snap, vol)
 			}
 		}
+		// A freeze can outlive the barrier (a crash mid-round whose
+		// stale barrier the startup sweep resumed); thaw is a no-op
+		// when nothing is frozen.
+		r.thaw(ctx, vol)
 		return ctrl.Result{}, nil
 	}
 
@@ -282,6 +300,14 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		// Single replica: no barrier needed, but queued writes must land.
+		// No explicit freeze here: with the filesystem directly on the
+		// backend device, lvmthin's own cut suspends that device (dm
+		// suspend), which flushes and freezes the filesystem as a KERNEL
+		// freeze holder — a userspace FIFREEZE stacked on top leaves the
+		// blockdev freeze count unbalanced and the device unmountable
+		// ("Can't mount, blockdev is frozen"). The replicated rounds
+		// freeze safely because their filesystem sits on /dev/drbdX,
+		// isolated from the backing device the backend suspends.
 		be, err := r.backendFor(vol)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -376,7 +402,14 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 	if _, err := r.backendFor(vol); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Freeze strictly before the local suspend: FIFREEZE writes back the
+	// page cache, and those writes must reach the device (and replicate)
+	// while this leg still accepts IO.
+	if err := r.freeze(ctx, vol); err != nil {
+		return r.barrierFailed(ctx, snap, vol, err)
+	}
 	if err := r.suspendIO(ctx, vol.Name); err != nil {
+		r.thaw(ctx, vol)
 		return r.barrierFailed(ctx, snap, vol, err)
 	}
 	r.clearBarrierFails(snap.Name)
@@ -595,13 +628,20 @@ func (r *SnapshotReconciler) snapReader() client.Reader {
 }
 
 // resumeUnlessSiblingRound lifts the local barrier unless a sibling
-// snapshot's live round owns it (that round's protocol lifts it).
+// snapshot's live round owns it (that round's protocol lifts it). The
+// filesystem freeze is shared state exactly like the kernel flag, so
+// it thaws under the same rule: the round that lifts the barrier lifts
+// the freeze.
 func (r *SnapshotReconciler) resumeUnlessSiblingRound(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume) error {
 	active, err := r.otherRoundActive(ctx, snap)
 	if err != nil || active {
 		return err
 	}
-	return r.resumeIO(ctx, vol.Name)
+	if err := r.resumeIO(ctx, vol.Name); err != nil {
+		return err
+	}
+	r.thaw(ctx, vol)
+	return nil
 }
 
 // isCoordinator: the Primary owns the barrier (suspend-io only blocks
