@@ -226,6 +226,46 @@ func TestCreateVolumeGroupSnapshotConflictCleansStrayMembers(t *testing.T) {
 	}
 }
 
+// A member create failing mid-loop must not strand the members already
+// created: nothing owns them without a group object, and DeleteSnapshot
+// refuses grouped members. A terminal failure maps to InvalidArgument so
+// the snapshotter does not retry the same refusal forever.
+func TestCreateVolumeGroupSnapshotPartialFailureCleansMembers(t *testing.T) {
+	s := newScheme(t)
+	// Sorted order puts gsnap-1-pvc-1 first; fail the second create.
+	failName := groupGsnap1 + "-" + volSrc
+	cl := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(replicatedVol(volSrc, nodeA), replicatedVol(volPvc1, nodeA)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirSnapshotGroup{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*miroirv1alpha1.MiroirSnapshot); ok && obj.GetName() == failName {
+					return apierrors.NewInvalid(
+						miroirv1alpha1.GroupVersion.WithKind("MiroirSnapshot").GroupKind(),
+						failName, nil)
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	c := &Controller{Client: cl}
+
+	_, err := c.CreateVolumeGroupSnapshot(t.Context(), &csi.CreateVolumeGroupSnapshotRequest{
+		Name: groupGsnap1, SourceVolumeIds: []string{volSrc, volPvc1},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("a terminal member create failure must be InvalidArgument, got %v", err)
+	}
+	first := &miroirv1alpha1.MiroirSnapshot{}
+	err = cl.Get(t.Context(), types.NamespacedName{Name: groupGsnap1 + "-" + volPvc1}, first)
+	if err == nil && first.DeletionTimestamp.IsZero() {
+		t.Fatalf("the earlier member must be cleaned up: %+v", first.ObjectMeta)
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatal(err)
+	}
+}
+
 func TestCreateVolumeGroupSnapshotRejectsUnreplicated(t *testing.T) {
 	s := newScheme(t)
 	plain := &miroirv1alpha1.MiroirVolume{

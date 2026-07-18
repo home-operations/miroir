@@ -97,6 +97,7 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 	for i, vol := range vols {
 		snap, err := c.ensureGroupMember(ctx, names[i], req.GetName(), vol)
 		if err != nil {
+			c.cleanupPartialMembers(ctx, req.GetName(), names[:i])
 			return nil, err
 		}
 		snaps = append(snaps, snap)
@@ -158,6 +159,29 @@ func (c *Controller) refuseMemberMismatch(ctx context.Context, group string, nam
 	return nil
 }
 
+// cleanupPartialMembers deletes the members a create had already ensured
+// when a later member's create failed: with no group object, nothing
+// owns them, DeleteSnapshot refuses grouped members, and a terminal
+// per-member failure (an invalid derived name, say) would strand them
+// forever. Skipped when the group object exists — then the pre-check
+// proved the member set equal and these are a live group's members,
+// which the retry will re-adopt. Best-effort, like cleanupStrayMembers.
+func (c *Controller) cleanupPartialMembers(ctx context.Context, group string, created []string) {
+	if len(created) == 0 {
+		return
+	}
+	grp := &miroirv1alpha1.MiroirSnapshotGroup{}
+	err := c.Client.Get(ctx, types.NamespacedName{Name: group}, grp)
+	if err == nil {
+		return
+	}
+	if !apierrors.IsNotFound(err) {
+		log.Error(err, "cannot check group before member cleanup", "group", group)
+		return
+	}
+	c.cleanupStrayMembers(ctx, created, nil)
+}
+
 // cleanupStrayMembers deletes the member snapshots this RPC implied that
 // the winning group does not list. Only those: an overlapping name (the
 // winner snapshots the same volume) belongs to the winner's set and must
@@ -188,6 +212,12 @@ func (c *Controller) ensureGroupMember(ctx context.Context, name, group string, 
 		snap.Finalizers = append(snap.Finalizers, constants.FinalizerPrefix+rep.Node)
 	}
 	if err := c.Client.Create(ctx, snap); err != nil {
+		if apierrors.IsInvalid(err) {
+			// A derived name the API server rejects (e.g. group + volume
+			// exceeding the 253-char cap) can never succeed; Internal
+			// would have the snapshotter retry the same refusal forever.
+			return nil, status.Errorf(codes.InvalidArgument, "create member MiroirSnapshot: %v", err)
+		}
 		if !apierrors.IsAlreadyExists(err) {
 			return nil, status.Errorf(codes.Internal, "create member MiroirSnapshot: %v", err)
 		}
