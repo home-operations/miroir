@@ -328,7 +328,7 @@ lands, so the members are consistent with **each other**, not just
 individually.
 
 Three switches beyond the regular snapshot stack, all off by
-default: the `groupsnapshot.storage.k8s.io` v1beta2 CRDs installed
+default: the `groupsnapshot.storage.k8s.io` CRDs installed
 cluster-wide, the cluster's snapshot-controller running with
 `--feature-gates=CSIVolumeGroupSnapshot=true`, and
 `groupSnapshots.enabled: true` in the chart (which passes the same
@@ -336,15 +336,25 @@ feature gate to the csi-snapshotter sidecar). Only replicated
 volumes (`replicas` ≥ 2) can join a group: the DRBD write barrier is
 what makes the cut atomic across volumes.
 
+With external-snapshotter v8.6 and later the group API is served at
+`v1` (older releases serve `v1beta2`), and upstream ships the group
+CRDs with `conversion.strategy: None`; the schemas are identical
+across versions, so no conversion webhook is involved. If another
+chart has stamped a webhook conversion onto these CRDs (some
+snapshot-controller charts do), group snapshots fail with confusing
+`service not found` or `unexpected conversion version` errors while
+regular snapshots keep working; patch the CRDs back to
+`strategy: None`.
+
 ```yaml
-apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshotClass
 metadata:
     name: miroir-group-snap
 driver: miroir.home-operations.com
 deletionPolicy: Delete
 ---
-apiVersion: groupsnapshot.storage.k8s.io/v1beta2
+apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshot
 metadata:
     name: db-nightly
