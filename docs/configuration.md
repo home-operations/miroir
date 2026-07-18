@@ -19,7 +19,9 @@ their behavior is explained, and every StorageClass parameter.
   `autoTieBreaker` ([Replication and quorum](replication.md)),
   `autoDiskfulAfter` ([auto-diskful](remote-consumers.md#auto-diskful)),
   `autoEvictAfter` ([resilience](resilience.md)), `overcommitRatio` /
-  `freeSpaceRatio`, `provisionTimeout`, `storageCapacity`.
+  `freeSpaceRatio`, `provisionTimeout`, `storageCapacity`,
+  `groupSnapshots`
+  ([Quickstart → Group snapshots](quickstart.md#group-snapshots)).
 - **`gateway`**: the per-RWX-volume NFS gateway. `enabled` (RWX is
   opt-in, off by default) and the gateway image
   ([ReadWriteMany](rwx.md)).
