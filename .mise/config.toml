@@ -285,7 +285,7 @@ sudo -E "$(mise which talosctl)" cluster create qemu \
   --controlplanes 1 \
   --workers 2 \
   --memory-workers 3GiB \
-  --disks virtio:8GiB,virtio:10GiB \
+  --disks virtio:8GiB,virtio:20GiB \
   --config-patch @{{config_root}}/deploy/e2e/talos-patch.yaml \
   --talosconfig-destination "$TALOSCONFIG"
 sudo chown -R "$(id -u):$(id -g)" "$bindir"
@@ -358,9 +358,9 @@ helm upgrade --install miroir charts/miroir \
 '''
 
 [tasks.e2e-replicated-conformance]
-description = "Run the upstream external-storage conformance suite against the replicated Talos e2e cluster"
+description = "Run the upstream external-storage conformance suite against the Talos e2e cluster (TESTDRIVER selects the class)"
 env = { KUBECONFIG = "{{config_root}}/bin/e2e-replicated/kubeconfig" }
-run = "TESTDRIVER=testdriver.yaml PROCS=\"${PROCS:-2}\" ./test/conformance/run.sh"
+run = "TESTDRIVER=\"${TESTDRIVER:-testdriver.yaml}\" PROCS=\"${PROCS:-2}\" ./test/conformance/run.sh"
 
 [tasks.e2e-replicated-diagnostics]
 description = "Dump Talos e2e cluster state for debugging a failed replicated run"
