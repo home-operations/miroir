@@ -942,7 +942,7 @@ func (c *Controller) ensureCloneSnapshot(ctx context.Context, srcVolID, cloneVol
 				src, pool)
 		}
 	}
-	if _, err := c.ensureSnapshot(ctx, snapName, srcVol, true); err != nil {
+	if _, err := c.ensureSnapshot(ctx, snapName, srcVol, "", true); err != nil {
 		return "", err
 	}
 	if err := c.waitSnapshotReady(ctx, snapName); err != nil {
@@ -1146,7 +1146,7 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 		}
 		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
 	}
-	snap, err := c.ensureSnapshot(ctx, req.GetName(), vol, false)
+	snap, err := c.ensureSnapshot(ctx, req.GetName(), vol, "", false)
 	if err != nil {
 		return nil, err
 	}
@@ -1158,15 +1158,17 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 
 // ensureSnapshot creates a MiroirSnapshot of vol, idempotent by name:
 // AlreadyExists resolves to the existing object when it captures the
-// same volume and is a terminal error otherwise. owned marks an
-// internal clone-source snapshot: it must not outlive its source
-// volume, and an abandoned provisioning (PVC deleted before
-// CreateVolume ever succeeded) never reaches DeleteVolume's cleanup —
-// the owner reference has garbage collection reap it with the source.
-func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroirv1alpha1.MiroirVolume, owned bool) (*miroirv1alpha1.MiroirSnapshot, error) {
+// same volume in the same group ("" for standalone snapshots) and is a
+// terminal error otherwise. group names the MiroirSnapshotGroup whose
+// round cuts a member. owned marks an internal clone-source snapshot:
+// it must not outlive its source volume, and an abandoned provisioning
+// (PVC deleted before CreateVolume ever succeeded) never reaches
+// DeleteVolume's cleanup — the owner reference has garbage collection
+// reap it with the source.
+func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroirv1alpha1.MiroirVolume, group string, owned bool) (*miroirv1alpha1.MiroirSnapshot, error) {
 	snap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: vol.Name},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: vol.Name, Group: group},
 	}
 	if owned {
 		snap.OwnerReferences = []metav1.OwnerReference{
@@ -1177,6 +1179,12 @@ func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroi
 		snap.Finalizers = append(snap.Finalizers, constants.FinalizerPrefix+rep.Node)
 	}
 	if err := c.Client.Create(ctx, snap); err != nil {
+		if apierrors.IsInvalid(err) {
+			// A name the API server rejects (e.g. a derived group member
+			// name exceeding the 253-char cap) can never succeed;
+			// Internal would have the sidecar retry the refusal forever.
+			return nil, status.Errorf(codes.InvalidArgument, "create MiroirSnapshot: %v", err)
+		}
 		if !apierrors.IsAlreadyExists(err) {
 			return nil, status.Errorf(codes.Internal, "create MiroirSnapshot: %v", err)
 		}
@@ -1185,9 +1193,9 @@ func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroi
 			// Cache may lag the just-created object; retryable, not terminal.
 			return nil, status.Errorf(codes.Unavailable, "get existing snapshot: %v", err)
 		}
-		if existing.Spec.VolumeName != vol.Name {
+		if existing.Spec.VolumeName != vol.Name || existing.Spec.Group != group {
 			return nil, status.Errorf(codes.AlreadyExists,
-				"snapshot %s exists for volume %s", name, existing.Spec.VolumeName)
+				"snapshot %s exists for volume %s in group %q", name, existing.Spec.VolumeName, existing.Spec.Group)
 		}
 		if owned && !isCloneSourceSnapshot(existing) {
 			// A pre-reservation user snapshot occupying the reserved name:
