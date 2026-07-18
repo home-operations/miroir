@@ -222,6 +222,54 @@ func TestGroupSnapshotVoidsExpiredRound(t *testing.T) {
 	}
 }
 
+// The group collect must not lift a shared volume's barrier while a
+// standalone sibling round co-holds it — the opens can race past each
+// other's guards, and lifting would cut the sibling's remaining legs
+// over live writes. The rest resumes, the group still seals, and the
+// deferred barrier lifts once the sibling closes.
+func TestGroupCollectDefersResumeToSiblingRound(t *testing.T) {
+	grp := groupObj()
+	now := metav1.Now()
+	grp.Status.IOSuspended = true
+	grp.Status.SuspendedAt = &now
+	grp.Status.PerLeg = map[string]miroirv1alpha1.SnapshotNodeState{
+		slotKey(volPvc1, nodeA): miroirv1alpha1.SnapshotDone,
+		slotKey(volPvc2, nodeA): miroirv1alpha1.SnapshotDone,
+		slotKey(volPvc1, nodeB): miroirv1alpha1.SnapshotDone,
+		slotKey(volPvc2, nodeB): miroirv1alpha1.SnapshotDone,
+	}
+	sibling := snapObj("snap-solo", volPvc1, nodeA, nodeB)
+	sibling.Status.IOSuspended = true
+	c := groupClient(t, groupVol(volPvc1), groupVol(volPvc2),
+		memberObj(memberOf1, volPvc1), memberObj(memberOf2, volPvc2), grp, sibling)
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"any","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"UpToDate"}],
+		"connections":[{"connection-state":"Connected"}]}]`}
+	r := &GroupSnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+
+	reconcileGroup(t, r)
+
+	fe.notCalledWith(t, "resume-io "+volPvc1)
+	fe.calledWith(t, "drbdadm resume-io "+volPvc2)
+	got := &miroirv1alpha1.MiroirSnapshotGroup{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: groupG1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.ReadyToUse || got.Status.IOSuspended {
+		t.Fatalf("the group must still seal ready: %+v", got.Status)
+	}
+
+	// The sibling closes → the sealed group's stray-lift pass takes it.
+	sibling.Status.IOSuspended = false
+	if err := c.Status().Update(t.Context(), sibling); err != nil {
+		t.Fatal(err)
+	}
+	reconcileGroup(t, r)
+	fe.calledWith(t, "resume-io "+volPvc1)
+}
+
 // The group must not open its round while a standalone snapshot's round
 // holds any member volume, and vice versa — the kernel suspend flag is
 // per-resource and shared between the two protocols.
