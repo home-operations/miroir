@@ -63,10 +63,15 @@ documented upstream.
 VolumeSnapshotClasses need only `driver: miroir.home-operations.com`
 and a `deletionPolicy`
 ([Quickstart](quickstart.md#4-snapshot-and-restore) has the manifest;
-the snapshot-controller and its CRDs deploy separately).
-VolumeGroupSnapshotClasses take exactly the same two fields, but the
-feature is off by default: it needs `groupSnapshots.enabled: true` in
-the chart plus the cluster-side group snapshot CRDs and feature gate —
+the snapshot-controller and its CRDs deploy separately). PVC clones
+(`dataSource: {kind: PersistentVolumeClaim}`) need no class of their
+own — the clone's StorageClass just has to match the source volume's
+`replicas` and `pool` ([Quickstart → Clone a
+PVC](quickstart.md#clone-a-pvc)).
+VolumeGroupSnapshotClasses take exactly the same two fields as a
+VolumeSnapshotClass, but the feature is off by default: it needs
+`groupSnapshots.enabled: true` in the chart plus the cluster-side
+group snapshot CRDs and feature gate —
 [Quickstart → Group snapshots](quickstart.md#group-snapshots) lists
 all three switches.
 
@@ -78,7 +83,7 @@ Each ZFS pool can tune properties for newly created zvols:
   `128K` (canonical spelling, uppercase `K`). It defaults to `4K`.
   OpenZFS requires `volsize` alignment, so miroir rounds new volume
   sizes up to this boundary. Expansion follows the existing zvol's
-  actual block size, including for snapshot clones.
+  actual block size, including for snapshot restores and PVC clones.
 - `zfs.compression` defaults to `lz4`. Set it to `inherit` to omit a
   per-zvol property and use the parent dataset policy. It also accepts
   OpenZFS `on`, `off`, `lzjb`, `zle`, `gzip` levels, `zstd` levels, and
@@ -99,8 +104,8 @@ spec:
 ```
 
 These settings apply only when miroir creates a zvol. Reconciliation does
-not mutate existing volumes, and restored snapshot clones retain their
-source properties.
+not mutate existing volumes, and snapshot restores and PVC clones retain
+their source volume's properties.
 
 ## The complete values.yaml
 
