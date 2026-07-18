@@ -17,6 +17,7 @@ limitations under the License.
 package csi
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -25,8 +26,11 @@ import (
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/constants"
@@ -126,6 +130,99 @@ func TestCreateVolumeGroupSnapshotIdempotent(t *testing.T) {
 	})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("same name over a different member set must be AlreadyExists, got %v", err)
+	}
+}
+
+// A same-name group over a different member set must fail before any
+// member snapshot exists: members created past that point would be
+// undeletable strays (DeleteSnapshot refuses grouped members and
+// DeleteVolumeGroupSnapshot refuses the set mismatch).
+func TestCreateVolumeGroupSnapshotMismatchCreatesNothing(t *testing.T) {
+	s := newScheme(t)
+	existing := &miroirv1alpha1.MiroirSnapshotGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{groupGsnap1 + "-" + volNew}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(replicatedVol(volSrc, nodeA), existing).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirSnapshotGroup{}).
+		Build()
+	c := &Controller{Client: cl}
+
+	_, err := c.CreateVolumeGroupSnapshot(t.Context(), &csi.CreateVolumeGroupSnapshotRequest{
+		Name: groupGsnap1, SourceVolumeIds: []string{volSrc},
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("member-set mismatch must be AlreadyExists, got %v", err)
+	}
+	snaps := &miroirv1alpha1.MiroirSnapshotList{}
+	if err := cl.List(t.Context(), snaps); err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps.Items) != 0 {
+		t.Fatalf("the refused create must leave no member snapshots: %+v", snaps.Items)
+	}
+}
+
+// The racing twin: the conflicting group lands between the pre-check and
+// the group Create. Members this RPC created that the winner does not
+// own must be cleaned up; an overlapping member the winner owns must
+// survive.
+func TestCreateVolumeGroupSnapshotConflictCleansStrayMembers(t *testing.T) {
+	s := newScheme(t)
+	winner := &miroirv1alpha1.MiroirSnapshotGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{groupGsnap1 + "-" + volSrc}},
+	}
+	groupGets := 0
+	cl := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(replicatedVol(volSrc, nodeA), replicatedVol(volPvc1, nodeA)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirSnapshotGroup{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if g, ok := obj.(*miroirv1alpha1.MiroirSnapshotGroup); ok && key.Name == groupGsnap1 {
+					groupGets++
+					if groupGets == 1 {
+						// The pre-check races the winner: not visible yet.
+						return apierrors.NewNotFound(schema.GroupResource{
+							Group: "miroir.home-operations.com", Resource: "miroirsnapshotgroups"}, key.Name)
+					}
+					winner.DeepCopyInto(g)
+					return nil
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+			Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*miroirv1alpha1.MiroirSnapshotGroup); ok {
+					return apierrors.NewAlreadyExists(schema.GroupResource{
+						Group: "miroir.home-operations.com", Resource: "miroirsnapshotgroups"}, obj.GetName())
+				}
+				return c.Create(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	c := &Controller{Client: cl}
+
+	_, err := c.CreateVolumeGroupSnapshot(t.Context(), &csi.CreateVolumeGroupSnapshotRequest{
+		Name: groupGsnap1, SourceVolumeIds: []string{volSrc, volPvc1},
+	})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("losing the create race to a different member set must be AlreadyExists, got %v", err)
+	}
+	// Members carry agent finalizers, so the fake client parks the stray
+	// in Terminating instead of removing it; deletion-initiated is the
+	// controller's whole job here.
+	stray := &miroirv1alpha1.MiroirSnapshot{}
+	err = cl.Get(t.Context(), types.NamespacedName{Name: groupGsnap1 + "-" + volPvc1}, stray)
+	if err == nil && stray.DeletionTimestamp.IsZero() {
+		t.Fatalf("the stray member the winner does not own must be cleaned up: %+v", stray.ObjectMeta)
+	}
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatal(err)
+	}
+	kept := &miroirv1alpha1.MiroirSnapshot{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: groupGsnap1 + "-" + volSrc}, kept); err != nil || !kept.DeletionTimestamp.IsZero() {
+		t.Fatalf("the member the winner owns must survive the cleanup: %v %+v", err, kept.ObjectMeta)
 	}
 }
 

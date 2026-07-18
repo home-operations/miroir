@@ -80,15 +80,26 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 		vols = append(vols, vol)
 	}
 
-	snaps := make([]*miroirv1alpha1.MiroirSnapshot, 0, len(vols))
 	names := make([]string, 0, len(vols))
 	for _, vol := range vols {
-		snap, err := c.ensureGroupMember(ctx, req.GetName(), vol)
+		names = append(names, req.GetName()+"-"+vol.Name)
+	}
+	// A same-name group over a different member set is terminal; check
+	// before creating members so the common mismatch (a stale retry, a
+	// reused name) fails without side effects. Members created here would
+	// otherwise be undeletable strays: DeleteSnapshot refuses grouped
+	// members and DeleteVolumeGroupSnapshot refuses the set mismatch.
+	if err := c.refuseMemberMismatch(ctx, req.GetName(), names); err != nil {
+		return nil, err
+	}
+
+	snaps := make([]*miroirv1alpha1.MiroirSnapshot, 0, len(vols))
+	for i, vol := range vols {
+		snap, err := c.ensureGroupMember(ctx, names[i], req.GetName(), vol)
 		if err != nil {
 			return nil, err
 		}
 		snaps = append(snaps, snap)
-		names = append(names, snap.Name)
 	}
 
 	grp := &miroirv1alpha1.MiroirSnapshotGroup{
@@ -116,6 +127,11 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 			return nil, status.Errorf(codes.Unavailable, "get existing group: %v", err)
 		}
 		if !slices.Equal(existing.Spec.SnapshotNames, names) {
+			// The pre-check's racing twin: a conflicting group landed
+			// between the check and this Create. Members this RPC created
+			// that the winner does not own would be undeletable strays —
+			// remove them before surfacing the mismatch.
+			c.cleanupStrayMembers(ctx, names, existing.Spec.SnapshotNames)
 			return nil, status.Errorf(codes.AlreadyExists,
 				"group snapshot %s exists over different members %v", req.GetName(), existing.Spec.SnapshotNames)
 		}
@@ -124,12 +140,46 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 	return &csi.CreateVolumeGroupSnapshotResponse{GroupSnapshot: csiGroupSnapshot(grp, snaps, vols)}, nil
 }
 
+// refuseMemberMismatch fails fast when the named group already exists
+// over a different member set. Absence is fine (the create proceeds);
+// so is an equal set (the idempotent retry proceeds).
+func (c *Controller) refuseMemberMismatch(ctx context.Context, group string, names []string) error {
+	existing := &miroirv1alpha1.MiroirSnapshotGroup{}
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: group}, existing); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return status.Errorf(codes.Internal, "get MiroirSnapshotGroup: %v", err)
+	}
+	if !slices.Equal(existing.Spec.SnapshotNames, names) {
+		return status.Errorf(codes.AlreadyExists,
+			"group snapshot %s exists over different members %v", group, existing.Spec.SnapshotNames)
+	}
+	return nil
+}
+
+// cleanupStrayMembers deletes the member snapshots this RPC implied that
+// the winning group does not list. Only those: an overlapping name (the
+// winner snapshots the same volume) belongs to the winner's set and must
+// survive. Best-effort — a failed delete leaves a stray the retry (or an
+// operator) can remove, which still beats failing the RPC over cleanup.
+func (c *Controller) cleanupStrayMembers(ctx context.Context, names, owned []string) {
+	for _, name := range names {
+		if slices.Contains(owned, name) {
+			continue
+		}
+		snap := &miroirv1alpha1.MiroirSnapshot{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
+			log.Error(err, "cannot delete stray group member snapshot", "snapshot", name)
+		}
+	}
+}
+
 // ensureGroupMember creates one member snapshot (<group>-<volumeID>),
 // idempotent by name like ensureSnapshot but carrying the group
 // reference; grouped members are cut by the group's round, never their
 // own.
-func (c *Controller) ensureGroupMember(ctx context.Context, group string, vol *miroirv1alpha1.MiroirVolume) (*miroirv1alpha1.MiroirSnapshot, error) {
-	name := group + "-" + vol.Name
+func (c *Controller) ensureGroupMember(ctx context.Context, name, group string, vol *miroirv1alpha1.MiroirVolume) (*miroirv1alpha1.MiroirSnapshot, error) {
 	snap := &miroirv1alpha1.MiroirSnapshot{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: vol.Name, Group: group},
