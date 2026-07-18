@@ -12,6 +12,7 @@
 ### Bug Fixes
 
 * **agent:** never lift a barrier a sibling round co-holds when closing a round ([#275](https://github.com/home-operations/miroir/issues/275)) ([d99c6eb](https://github.com/home-operations/miroir/commit/d99c6eb9b0da4e50c0988bb836b45c15cc8c37b8))
+* **backend:** keep thin snapshot LVs inactive and serialize lvm commands ([#277](https://github.com/home-operations/miroir/issues/277)) ([022b1da](https://github.com/home-operations/miroir/commit/022b1da58adeab75f38ba1282af456c53ba916ed))
 * **csi:** stop group snapshot deletion from stranding suspend-io barriers ([#274](https://github.com/home-operations/miroir/issues/274)) ([8294491](https://github.com/home-operations/miroir/commit/8294491b375ed39d6cae3478fd645e42f049b254))
 
 
