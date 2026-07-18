@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.11.3](https://github.com/home-operations/miroir/compare/0.11.2...0.11.3) (2026-07-18)
+
+
+### Features
+
+* **api:** show a ready/total count in the Replicas printcolumn ([#286](https://github.com/home-operations/miroir/issues/286)) ([21a7a14](https://github.com/home-operations/miroir/commit/21a7a14b435ff266ca040c17ebbeb3476478480d))
+
+
+### Bug Fixes
+
+* **agent:** break the fast path when phase contradicts per-node status ([#283](https://github.com/home-operations/miroir/issues/283)) ([13f5769](https://github.com/home-operations/miroir/commit/13f57699dd360a299e5102ba441e2ab976273671))
+* **backend:** heal missing lvmthin device nodes via vgmknodes ([#282](https://github.com/home-operations/miroir/issues/282)) ([78518e8](https://github.com/home-operations/miroir/commit/78518e8e2d068ff947539177f76fb1d8400fbc88))
+
+
+### Miscellaneous Chores
+
+* **main:** release 0.11.2 ([#278](https://github.com/home-operations/miroir/issues/278)) ([08647c3](https://github.com/home-operations/miroir/commit/08647c38821e0de7131dfc82ffad669ac687623a))
+
 ## [0.11.2](https://github.com/home-operations/miroir/compare/0.11.1...0.11.2) (2026-07-18)
 
 
