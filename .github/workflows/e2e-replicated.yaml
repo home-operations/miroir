@@ -117,7 +117,7 @@ jobs:
         env:
           PROCS: 4
           VERBOSE: 1
-          SKIP: \[Disruptive\]|\[Serial\]|should not mount / map unused volumes|restoring snapshot to larger size pvc|verify data consistency after restore
+          SKIP: \[Disruptive\]|\[Serial\]|should not mount / map unused volumes|restoring snapshot to larger size pvc
 
       - name: Diagnostics
         if: failure()
