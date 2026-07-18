@@ -60,6 +60,14 @@ const (
 	// default pool (v1alpha1.DefaultPoolName).
 	ParamPool = "miroir.home-operations.com/pool"
 
+	// CloneSnapshotPrefix names the internal MiroirSnapshot that
+	// CreateVolume cuts on the source volume to serve a volume-clone
+	// content source (clone-<cloneVolumeID>). The prefix is reserved —
+	// CreateSnapshot refuses it and ListSnapshots hides it — so
+	// DeleteVolume can delete the clone's source snapshot blindly by
+	// name without ever touching a user snapshot.
+	CloneSnapshotPrefix = "clone-"
+
 	// LabelPVCName and LabelPVCNamespace record on a MiroirVolume the PVC
 	// it was provisioned for: CreateVolume stamps them from the
 	// provisioner's --extra-create-metadata parameters, the membership

@@ -25,7 +25,7 @@ DriverInfo:
     onlineExpansion: true
     offlineExpansion: true
     snapshotDataSource: true
-    pvcDataSource: false
+    pvcDataSource: true
     topology: true
     singleNodeVolume: false
     # RWX is implemented (NFS gateway over a replicated volume) but the

@@ -95,7 +95,7 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 
 	snaps := make([]*miroirv1alpha1.MiroirSnapshot, 0, len(vols))
 	for i, vol := range vols {
-		snap, err := c.ensureGroupMember(ctx, names[i], req.GetName(), vol)
+		snap, err := c.ensureSnapshot(ctx, names[i], vol, req.GetName(), false)
 		if err != nil {
 			c.cleanupPartialMembers(ctx, req.GetName(), names[:i])
 			return nil, err
@@ -197,41 +197,6 @@ func (c *Controller) cleanupStrayMembers(ctx context.Context, names, owned []str
 			log.Error(err, "cannot delete stray group member snapshot", "snapshot", name)
 		}
 	}
-}
-
-// ensureGroupMember creates one member snapshot (<group>-<volumeID>),
-// idempotent by name like ensureSnapshot but carrying the group
-// reference; grouped members are cut by the group's round, never their
-// own.
-func (c *Controller) ensureGroupMember(ctx context.Context, name, group string, vol *miroirv1alpha1.MiroirVolume) (*miroirv1alpha1.MiroirSnapshot, error) {
-	snap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: vol.Name, Group: group},
-	}
-	for _, rep := range vol.Spec.Replicas {
-		snap.Finalizers = append(snap.Finalizers, constants.FinalizerPrefix+rep.Node)
-	}
-	if err := c.Client.Create(ctx, snap); err != nil {
-		if apierrors.IsInvalid(err) {
-			// A derived name the API server rejects (e.g. group + volume
-			// exceeding the 253-char cap) can never succeed; Internal
-			// would have the snapshotter retry the same refusal forever.
-			return nil, status.Errorf(codes.InvalidArgument, "create member MiroirSnapshot: %v", err)
-		}
-		if !apierrors.IsAlreadyExists(err) {
-			return nil, status.Errorf(codes.Internal, "create member MiroirSnapshot: %v", err)
-		}
-		existing := &miroirv1alpha1.MiroirSnapshot{}
-		if err := c.reader().Get(ctx, types.NamespacedName{Name: name}, existing); err != nil {
-			return nil, status.Errorf(codes.Unavailable, "get existing member snapshot: %v", err)
-		}
-		if existing.Spec.VolumeName != vol.Name || existing.Spec.Group != group {
-			return nil, status.Errorf(codes.AlreadyExists,
-				"snapshot %s exists for volume %s in group %q", name, existing.Spec.VolumeName, existing.Spec.Group)
-		}
-		snap = existing
-	}
-	return snap, nil
 }
 
 // DeleteVolumeGroupSnapshot removes the members and the group; agents

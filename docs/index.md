@@ -20,8 +20,9 @@ current data.
 - You're on 2-3 nodes and either have a spare disk per node (LVM), a
   ZFS pool (ZFS), or a few GB on the root filesystem (loopfile).
 - You want snapshots that actually work for replicated volumes
-  (both legs cut in lockstep, not whichever finishes first), up to
-  crash-consistent group snapshots across several PVCs at once.
+  (both legs cut in lockstep, not whichever finishes first), plus
+  restores, PVC clones, and crash-consistent group snapshots built
+  on them.
 
 ## When _not_ to use it
 
