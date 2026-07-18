@@ -378,7 +378,10 @@ kubectl logs -n miroir-system -l app.kubernetes.io/component=controller --tail=2
 echo "---- agent logs ----"
 kubectl logs -n miroir-system -l app.kubernetes.io/component=agent --tail=200 --all-containers
 echo "---- drbd state ----"
-talosctl -n 10.5.0.3,10.5.0.4 read /proc/drbd
+for n in 10.5.0.3 10.5.0.4; do
+  echo "== $n =="
+  talosctl -n "$n" read /proc/drbd
+done
 echo "---- worker dmesg (tail) ----"
 talosctl -n 10.5.0.3,10.5.0.4 dmesg | tail -100
 true

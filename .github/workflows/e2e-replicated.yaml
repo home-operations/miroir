@@ -10,6 +10,7 @@ on:
       - main
     paths:
       - ".github/workflows/e2e-replicated.yaml"
+      - ".mise/config.toml"
       - "deploy/e2e/**"
       - "test/conformance/**"
   workflow_dispatch:
@@ -45,8 +46,22 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
 
+      - name: Enable swap
+        run: |
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       - name: Start image registry
         run: docker run -d --name e2e-registry -p 5000:5000 registry:3
+
+      - name: Cache Talos boot images
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.talos/cache
+          key: talos-boot-${{ hashFiles('deploy/e2e/schematic.yaml', '.mise/config.toml') }}
 
       - name: Create Talos cluster
         id: cluster
@@ -99,7 +114,18 @@ jobs:
 
       - name: Run conformance suite
         run: mise run e2e-replicated-conformance
+        env:
+          PROCS: 4
+          VERBOSE: 1
 
       - name: Diagnostics
         if: failure()
         run: mise run e2e-replicated-diagnostics
+
+      - name: Upload conformance report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-report
+          path: test/conformance/report
+          if-no-files-found: ignore

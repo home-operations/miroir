@@ -6,6 +6,7 @@
 #   SKIP='\[Disruptive\]' ./run.sh PROCS=1    # include [Serial] specs
 #   FOCUS='.*snapshot.*' ./run.sh             # narrow down
 #   TESTDRIVER=testdriver-local.yaml ./run.sh # kind / miroir-local
+#   VERBOSE=1 ./run.sh                        # per-spec live output
 #
 # The e2e.test/ginkgo binaries are fetched to match the server version
 # and cached under .bin/.
@@ -32,7 +33,7 @@ SKIP=${SKIP:-'\[Disruptive\]|\[Serial\]|should not mount / map unused volumes'}
 PROCS=${PROCS:-4}
 mkdir -p report
 
-exec "$bin/ginkgo" -procs="$PROCS" \
+exec "$bin/ginkgo" -procs="$PROCS" ${VERBOSE:+-v} \
     -focus="$FOCUS" -skip="$SKIP" -timeout=3h \
     "$bin/e2e.test" -- \
     -storage.testdriver="$PWD/$TESTDRIVER" \
