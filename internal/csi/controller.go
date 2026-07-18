@@ -338,6 +338,10 @@ func (c *Controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 	return &csi.DeleteVolumeResponse{}, nil
 }
 
+// volumeKind is the owner-reference kind stamped on internal
+// clone-source snapshots.
+const volumeKind = "MiroirVolume"
+
 // isCloneSourceSnapshot reports whether the snapshot is an internal
 // clone-source snapshot: the reserved name prefix AND the MiroirVolume
 // owner reference stamped at creation. The prefix alone is not proof —
@@ -348,7 +352,7 @@ func isCloneSourceSnapshot(snap *miroirv1alpha1.MiroirSnapshot) bool {
 		return false
 	}
 	for _, ref := range snap.OwnerReferences {
-		if ref.Kind == "MiroirVolume" &&
+		if ref.Kind == volumeKind &&
 			strings.HasPrefix(ref.APIVersion, miroirv1alpha1.GroupVersion.Group) {
 			return true
 		}
@@ -1166,7 +1170,7 @@ func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroi
 	}
 	if owned {
 		snap.OwnerReferences = []metav1.OwnerReference{
-			*metav1.NewControllerRef(vol, miroirv1alpha1.GroupVersion.WithKind("MiroirVolume")),
+			*metav1.NewControllerRef(vol, miroirv1alpha1.GroupVersion.WithKind(volumeKind)),
 		}
 	}
 	for _, rep := range vol.Spec.Replicas {

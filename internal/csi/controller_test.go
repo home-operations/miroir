@@ -1679,7 +1679,7 @@ func TestCreateVolumeCloneCutsInternalSnapshot(t *testing.T) {
 		t.Fatalf("internal snapshot must capture the source volume, got %q", snap.Spec.VolumeName)
 	}
 	if len(snap.OwnerReferences) != 1 || snap.OwnerReferences[0].Name != volSrc ||
-		snap.OwnerReferences[0].Kind != "MiroirVolume" {
+		snap.OwnerReferences[0].Kind != volumeKind {
 		t.Fatalf("internal snapshot must be owned by the source volume: %+v", snap.OwnerReferences)
 	}
 
@@ -1936,7 +1936,7 @@ func TestCreateVolumeCloneNameCollisionCutsNothing(t *testing.T) {
 func volumeOwnerRef(volume string) metav1.OwnerReference {
 	return metav1.OwnerReference{
 		APIVersion: miroirv1alpha1.GroupVersion.String(),
-		Kind:       "MiroirVolume",
+		Kind:       volumeKind,
 		Name:       volume,
 		UID:        "uid-" + types.UID(volume),
 	}
