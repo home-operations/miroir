@@ -1290,34 +1290,3 @@ func TestSnapshotSuspendFailureThawsFreeze(t *testing.T) {
 		t.Fatalf("a failed raise must thaw what it froze: %v", calls)
 	}
 }
-
-// The single-replica cut freezes the mounted filesystem around
-// Sync+Snapshot: Sync drains the block layer, the freeze drains the
-// page cache above it.
-func TestSnapshotUnreplicatedFreezesAroundCut(t *testing.T) {
-	s := newScheme(t)
-	fb := newFakeBackend()
-	v := vol(volPvc1, nodeA)
-	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeA: {DeviceCreated: true, DevicePath: "/dev/lv1"},
-	}
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA)).
-		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
-		Build()
-
-	rec := &ioctlRecorder{}
-	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
-		Freezer: mountedFreezer(rec, map[string]string{"/dev/lv1": "/mnt/lv1"})}
-	reconcileSnap(t, r, snapSnap1)
-
-	if calls := rec.recorded(); len(calls) != 2 ||
-		calls[0] != "freeze /mnt/lv1" || calls[1] != "thaw /mnt/lv1" {
-		t.Fatalf("the cut must be bracketed by freeze and thaw: %v", calls)
-	}
-	got := &miroirv1alpha1.MiroirSnapshot{}
-	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
-	if !got.Status.ReadyToUse {
-		t.Fatalf("snapshot must be ready: %+v", got.Status)
-	}
-}

@@ -300,16 +300,18 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 		// Single replica: no barrier needed, but queued writes must land.
-		// The freeze upgrades the cut to filesystem-consistent here too —
-		// Sync drains the block layer, not the page cache above it.
+		// No explicit freeze here: with the filesystem directly on the
+		// backend device, lvmthin's own cut suspends that device (dm
+		// suspend), which flushes and freezes the filesystem as a KERNEL
+		// freeze holder — a userspace FIFREEZE stacked on top leaves the
+		// blockdev freeze count unbalanced and the device unmountable
+		// ("Can't mount, blockdev is frozen"). The replicated rounds
+		// freeze safely because their filesystem sits on /dev/drbdX,
+		// isolated from the backing device the backend suspends.
 		be, err := r.backendFor(vol)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.freeze(ctx, vol); err != nil {
-			return ctrl.Result{}, err
-		}
-		defer r.thaw(ctx, vol)
 		if err := be.Sync(ctx, vol.Name); err != nil {
 			return ctrl.Result{}, err
 		}
