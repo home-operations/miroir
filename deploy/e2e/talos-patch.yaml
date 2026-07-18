@@ -1,0 +1,20 @@
+# Machine config for the replicated (QEMU) e2e cluster. The kernel
+# modules mirror docs/requirements.md (usermode_helper=disabled keeps
+# DRBD from calling out to /sbin/drbdadm on the host, which Talos does
+# not ship); dm_thin_pool is =m in the Talos kernel and nothing on the
+# host autoloads it for the agent. registry.e2e resolves to a plain-HTTP
+# registry the e2e harness runs on the QEMU bridge gateway, which is
+# where the locally built miroir images are pushed.
+machine:
+  kernel:
+    modules:
+      - name: drbd
+        parameters:
+          - usermode_helper=disabled
+      - name: drbd_transport_tcp
+      - name: dm_thin_pool
+  registries:
+    mirrors:
+      registry.e2e:
+        endpoints:
+          - http://10.5.0.1:5000

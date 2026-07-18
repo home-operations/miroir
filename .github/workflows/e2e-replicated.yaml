@@ -1,0 +1,105 @@
+---
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: E2E Replicated
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/e2e-replicated.yaml"
+      - "deploy/e2e/**"
+      - "test/conformance/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  replicated:
+    name: E2E (replicated)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Mise
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        with:
+          experimental: true
+          install_args: --locked
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
+
+      - name: Start image registry
+        run: docker run -d --name e2e-registry -p 5000:5000 registry:3
+
+      - name: Create Talos cluster
+        id: cluster
+        background: true
+        run: mise run e2e-replicated-cluster
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        with:
+          driver-opts: network=host
+
+      - name: Resolve toolchain versions
+        id: tools
+        run: echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
+
+      - name: Build controller image
+        id: controller-image
+        background: true
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          target: controller
+          tags: localhost:5000/miroir-controller:e2e
+          build-args: GO_VERSION=${{ steps.tools.outputs.go }}
+          cache-from: type=gha,scope=e2e-controller
+
+      - name: Build agent image
+        id: agent-image
+        background: true
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          target: agent
+          tags: localhost:5000/miroir-agent:e2e
+          build-args: GO_VERSION=${{ steps.tools.outputs.go }}
+          cache-from: type=gha,scope=e2e-agent
+
+      - wait: [cluster, controller-image, agent-image]
+
+      - name: Provision (snapshot stack, classes, topology, helm install)
+        run: mise run e2e-replicated-provision
+
+      - name: Cache conformance test binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: test/conformance/.bin
+          key: conformance-bin-${{ hashFiles('.mise/config.toml') }}
+
+      - name: Run conformance suite
+        run: mise run e2e-replicated-conformance
+
+      - name: Diagnostics
+        if: failure()
+        run: mise run e2e-replicated-diagnostics

@@ -2,3 +2,4 @@ rules:
   cache-poisoning:
     ignore:
       - e2e.yaml
+      - e2e-replicated.yaml

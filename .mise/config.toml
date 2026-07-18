@@ -12,6 +12,7 @@ lefthook = "2.1.10"
 oxfmt = "0.59.0"
 shellcheck = "0.11.0"
 setup-envtest = "0.24.1"
+talos = "1.13.6"
 zizmor = "1.27.0"
 "aqua:dadav/helm-schema" = "0.23.4"
 yq = "4.53.3"
@@ -251,6 +252,146 @@ mise run e2e-cluster
 mise run e2e-image
 mise run e2e-provision
 mise run e2e-run
+'''
+
+[tasks.e2e-replicated-cluster]
+description = "Create the 3-VM Talos QEMU cluster for the replicated (DRBD) e2e (requires KVM + passwordless sudo)"
+env = { KUBECONFIG = "{{config_root}}/bin/e2e-replicated/kubeconfig", TALOSCONFIG = "{{config_root}}/bin/e2e-replicated/talosconfig" }
+run = '''
+set -eu
+cluster="${MIROIR_TALOS_CLUSTER:-miroir-e2e}"
+bindir="{{config_root}}/bin/e2e-replicated"
+mkdir -p "$bindir"
+
+# The schematic bakes the drbd extension into the boot media; the id is
+# a content hash, so POSTing an unchanged schematic is idempotent.
+schematic="$(curl -sfX POST https://factory.talos.dev/schematics --data-binary @deploy/e2e/schematic.yaml | jq -r .id)"
+echo "==> factory schematic: $schematic"
+
+# The provisioner drops generated machine configs (they embed cluster
+# PKI) into the working directory — keep them out of the repo.
+cd "$bindir"
+
+# The QEMU provisioner needs root for the bridge + NAT ("mise which"
+# resolves past the shim, which does not work under sudo). State stays
+# in the default ~/.talos/clusters: the VM monitor UNIX sockets live
+# there and a repo-rooted path overflows the 108-byte socket limit.
+# Workers get the second disk (/dev/vdb) — they are the two storage
+# nodes; the control plane node runs the controller Deployment only.
+sudo -E "$(mise which talosctl)" cluster create qemu \
+  --name "$cluster" \
+  --cidr 10.5.0.0/24 \
+  --schematic-id "$schematic" \
+  --controlplanes 1 \
+  --workers 2 \
+  --memory-workers 3GiB \
+  --disks virtio:8GiB,virtio:10GiB \
+  --config-patch @{{config_root}}/deploy/e2e/talos-patch.yaml \
+  --talosconfig-destination "$TALOSCONFIG"
+sudo chown -R "$(id -u):$(id -g)" "$bindir"
+
+talosctl kubeconfig "$KUBECONFIG" --nodes 10.5.0.2 --force
+'''
+
+[tasks.e2e-replicated-provision]
+description = "Install the CSI snapshot stack (group snapshots gated on) and helm-install miroir on the Talos e2e cluster"
+depends = ["manifests"]
+env = { KUBECONFIG = "{{config_root}}/bin/e2e-replicated/kubeconfig" }
+run = '''
+set -eu
+snap_ver="v8.6.0"
+
+kubectl wait --for=condition=Ready node --all --timeout=5m
+
+echo "==> installing CSI snapshot stack ($snap_ver, CSIVolumeGroupSnapshot on)"
+kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//client/config/crd?ref=$snap_ver"
+kubectl wait --for=condition=established --timeout=60s \
+  crd/volumesnapshotclasses.snapshot.storage.k8s.io \
+  crd/volumesnapshotcontents.snapshot.storage.k8s.io \
+  crd/volumesnapshots.snapshot.storage.k8s.io \
+  crd/volumegroupsnapshotclasses.groupsnapshot.storage.k8s.io \
+  crd/volumegroupsnapshotcontents.groupsnapshot.storage.k8s.io \
+  crd/volumegroupsnapshots.groupsnapshot.storage.k8s.io
+kubectl apply -k "https://github.com/kubernetes-csi/external-snapshotter//deploy/kubernetes/snapshot-controller?ref=$snap_ver"
+kubectl -n kube-system patch deploy snapshot-controller --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--feature-gates=CSIVolumeGroupSnapshot=true"}]'
+kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
+
+# Config is CR-first, same order as the kind e2e: CRDs, then classes +
+# topology, then the driver. Both workers carry the storage class label;
+# /dev/vdb is the extra virtio disk the cluster task attaches to workers.
+echo "==> applying CRDs + storage manifests"
+kubectl apply -f charts/miroir/crds/
+kubectl wait --for=condition=established --timeout=60s \
+  crd/miroirnodes.miroir.home-operations.com \
+  crd/miroirnodegroups.miroir.home-operations.com
+for node in $(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name); do
+  kubectl label "$node" storage.miroir.home-operations.com/class=e2e --overwrite
+done
+kubectl apply -f deploy/e2e/classes-replicated.yaml
+kubectl apply -f - <<EOF
+apiVersion: miroir.home-operations.com/v1alpha1
+kind: MiroirNodeGroup
+metadata:
+  name: e2e
+spec:
+  nodeSelector:
+    matchLabels:
+      storage.miroir.home-operations.com/class: e2e
+  template:
+    pools:
+      - name: default
+        lvmthin:
+          device: /dev/vdb
+EOF
+
+# Talos enforces the "baseline" Pod Security Standard by default, which
+# rejects the privileged agent DaemonSet — the namespace must carry the
+# privileged enforce label before helm creates any pods.
+echo "==> helm install miroir"
+kubectl create namespace miroir-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace miroir-system pod-security.kubernetes.io/enforce=privileged --overwrite
+helm upgrade --install miroir charts/miroir \
+  --namespace miroir-system \
+  --wait --timeout 10m \
+  -f deploy/e2e/values-replicated.yaml
+'''
+
+[tasks.e2e-replicated-conformance]
+description = "Run the upstream external-storage conformance suite against the replicated Talos e2e cluster"
+env = { KUBECONFIG = "{{config_root}}/bin/e2e-replicated/kubeconfig" }
+run = "TESTDRIVER=testdriver.yaml PROCS=\"${PROCS:-2}\" ./test/conformance/run.sh"
+
+[tasks.e2e-replicated-diagnostics]
+description = "Dump Talos e2e cluster state for debugging a failed replicated run"
+env = { KUBECONFIG = "{{config_root}}/bin/e2e-replicated/kubeconfig", TALOSCONFIG = "{{config_root}}/bin/e2e-replicated/talosconfig" }
+run = '''
+set +e
+echo "---- miroir CRs ----"
+kubectl get miroirvolumes,miroirsnapshots,miroirsnapshotgroups -o wide
+echo "---- workloads + storage ----"
+kubectl get pods,pvc,pv,volumesnapshot,volumegroupsnapshot -A -o wide
+echo "---- Warning events ----"
+kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp
+echo "---- controller logs ----"
+kubectl logs -n miroir-system -l app.kubernetes.io/component=controller --tail=200 --all-containers
+echo "---- agent logs ----"
+kubectl logs -n miroir-system -l app.kubernetes.io/component=agent --tail=200 --all-containers
+echo "---- drbd state ----"
+talosctl -n 10.5.0.3,10.5.0.4 read /proc/drbd
+echo "---- worker dmesg (tail) ----"
+talosctl -n 10.5.0.3,10.5.0.4 dmesg | tail -100
+true
+'''
+
+[tasks.e2e-replicated-down]
+description = "Destroy the Talos QEMU e2e cluster"
+run = '''
+set -u
+cluster="${MIROIR_TALOS_CLUSTER:-miroir-e2e}"
+bindir="{{config_root}}/bin/e2e-replicated"
+sudo -E "$(mise which talosctl)" cluster destroy --name "$cluster" -f || true
+sudo rm -rf "$bindir" || true
 '''
 
 [tasks.docs]
