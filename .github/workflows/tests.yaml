@@ -68,6 +68,9 @@ jobs:
       - name: Running Integration Tests
         run: mise run test-integration
 
+      - name: Running CSI Sanity Tests
+        run: mise run test-sanity
+
   helm-unittest:
     name: Helm Unit Tests
     runs-on: ubuntu-24.04

@@ -88,7 +88,7 @@ cp config/crd/bases/*.yaml charts/miroir/crds/
 [tasks.test]
 description = "Run unit tests"
 depends = ["manifests", "generate", "fmt", "vet"]
-run = "go test $(go list ./... | grep -v /e2e | grep -v /integration) -coverprofile cover.out"
+run = "go test $(go list ./... | grep -v /e2e | grep -v /integration | grep -v /sanity) -coverprofile cover.out"
 
 [tasks.test-integration]
 description = "Run integration tests with envtest"
@@ -100,6 +100,10 @@ mkdir -p "$bin_dir"
 export KUBEBUILDER_ASSETS="$(setup-envtest use "$envtest_k8s" --bin-dir "$bin_dir" -p path)"
 go test ./test/integration/ -v -ginkgo.v
 '''
+
+[tasks.test-sanity]
+description = "Run the upstream csi-test sanity suite against the in-process Identity + Controller services"
+run = "go test ./test/sanity/ -count=1"
 
 [tasks.e2e-cluster]
 description = "Create (or reuse) the ephemeral miroir-test-e2e kind cluster (isolated KUBECONFIG under bin/e2e)"
