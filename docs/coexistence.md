@@ -1,8 +1,8 @@
 # Coexistence with other provisioners
 
 - **OpenEBS LocalPV-ZFS**: keep your pool and let `openebs-zfs` stay
-  the default StorageClass. miroir scopes itself to the dataset you
-  configure in Helm values.
+  the default StorageClass. miroir scopes itself to the dataset the
+  MiroirNode's `spec.pools[].zfs.dataset` names.
 - **Other LVM tenants**: bound the thin pool with
   the MiroirNode's `spec.pools[].lvmthin.poolSize` (e.g. `400g`) and let the
   co-tenant allocate from the VG's remainder.

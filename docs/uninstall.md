@@ -13,6 +13,14 @@ everything as it was.
 
 ## Destroying the data
 
+/// danger | There is no undo
+
+The armed hook deletes every MiroirVolume and MiroirSnapshot, and the
+agents then erase the DRBD resources and backing devices on the
+nodes. It includes volumes whose PV reclaimPolicy is `Retain`.
+
+///
+
 To delete every volume as part of the uninstall, arm the pre-delete hook
 first. Helm bakes hooks into the release at install/upgrade time, so the
 confirmation must be set **before** running `helm uninstall`:
@@ -31,8 +39,8 @@ the release to a newer chart on its way out.
 
 The hook Job deletes every MiroirVolume and MiroirSnapshot and waits while
 each node's agent tears down its DRBD resources and backing devices through
-the finalizers — including volumes whose PV reclaimPolicy is `Retain`. If a
-teardown cannot finish (a node is down), the job blocks:
+the finalizers. If a teardown cannot finish (a node is down), the job
+blocks:
 `kubectl get miroirvolumes` shows what is stuck, and the agent log on the
 affected node
 (`kubectl logs -n miroir-system -l app.kubernetes.io/component=agent`)

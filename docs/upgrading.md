@@ -32,10 +32,10 @@ starts with the CRDs.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 spec:
-  install:
-    crds: Create
-  upgrade:
-    crds: CreateReplace # default is Skip; required
+    install:
+        crds: Create
+    upgrade:
+        crds: CreateReplace # default is Skip; required
 ```
 
 **Plain Helm** has no automatic path; apply the new chart's CRDs before
@@ -52,7 +52,7 @@ The storage configuration moves out of the miroir chart entirely: the
 node topology becomes `MiroirNode` custom resources (or a
 `MiroirNodeGroup` materializing them from a label selector) and,
 together with the StorageClasses and VolumeSnapshotClasses, is now
-plain manifests you apply and version yourself — the miroir chart
+plain manifests you apply and version yourself; the miroir chart
 installs only the driver. The CRD schema is what validates the
 topology, and `kubectl apply` rejects unknown fields outright.
 Alongside the move:
@@ -110,7 +110,7 @@ under its backend's block:
 
 There is no `backend` field any more: the block that is present IS the
 backend, so exactly one of `lvmthin`/`zfs`/`loopfile` is required even
-when it has nothing to say — an lvmthin pool whose VG already exists
+when it has nothing to say: an lvmthin pool whose VG already exists
 still writes `lvmthin: {}`. A homogeneous fleet can become one
 `MiroirNodeGroup` instead of per-node objects
 ([Quickstart](quickstart.md) shows the layout).
@@ -118,7 +118,7 @@ still writes `lvmthin: {}`. A homogeneous fleet can become one
 Each `storageClasses` entry becomes a standard StorageClass manifest:
 the chart's knobs map to `parameters`
 ([the full table](configuration.md#storageclass-parameters)), and what
-the chart used to default now needs writing —
+the chart used to default now needs writing:
 `volumeBindingMode: WaitForFirstConsumer`, `allowVolumeExpansion: true`,
 and the `storageclass.kubernetes.io/is-default-class` annotation where
 `isDefault` was used. `volumeSnapshotClasses` entries become
@@ -128,16 +128,16 @@ Before (0.10 miroir values):
 
 ```yaml
 nodes:
-  k8s-0:
-    zone: rack-1
-    pools:
-      default:
-        backend: lvmthin
-        device: /dev/disk/by-partlabel/r-miroir
-        thinPoolSize: 400g
+    k8s-0:
+        zone: rack-1
+        pools:
+            default:
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
+                thinPoolSize: 400g
 storageClasses:
-  - name: miroir-replicated
-    replicas: 2
+    - name: miroir-replicated
+      replicas: 2
 ```
 
 After (plain manifests):
@@ -146,35 +146,35 @@ After (plain manifests):
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-  name: k8s-0
+    name: k8s-0
 spec:
-  zone: rack-1
-  pools:
-    - name: default
-      lvmthin:
-        device: /dev/disk/by-partlabel/r-miroir
-        poolSize: 400g
+    zone: rack-1
+    pools:
+        - name: default
+          lvmthin:
+              device: /dev/disk/by-partlabel/r-miroir
+              poolSize: 400g
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: miroir-replicated
+    name: miroir-replicated
 provisioner: miroir.home-operations.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-  miroir.home-operations.com/replicas: "2"
-  csi.storage.k8s.io/fstype: ext4
+    miroir.home-operations.com/replicas: "2"
+    csi.storage.k8s.io/fstype: ext4
 ```
 
 Apply the MiroirNode manifests **before** upgrading the driver chart,
 so the rolled agents boot straight into storage mode. Your cluster
 already has one `MiroirNode` per storage node (the 0.10 agents created
-them to publish pool capacity); `kubectl apply` over them just works —
+them to publish pool capacity); `kubectl apply` over them just works:
 the spec becomes yours, the status stays the agents'. Declaring the
 fleet as a MiroirNodeGroup instead? The existing MiroirNodes carry no
 group label, so the group reports them as Conflict and touches nothing
-(a direct MiroirNode always wins). Hand them over explicitly — the
+(a direct MiroirNode always wins). Hand them over explicitly, and the
 group then converges each spec to its template:
 
 ```bash
@@ -194,17 +194,17 @@ $(kubectl get volumesnapshotclasses -o jsonpath='{range .items[?(@.driver=="miro
 kubectl annotate $classes helm.sh/resource-policy=keep --overwrite
 ```
 
-After step 3 they are plain, unowned objects — the manifests you
+After step 3 they are plain, unowned objects: the manifests you
 authored above are their source of truth from then on (apply them over
 the live objects, and drop the keep annotation if you like:
 `kubectl annotate $classes helm.sh/resource-policy-`). MiroirNodes need
 no shielding: the 0.10 chart never rendered them. Clusters tracking
-unreleased main are the one exception — a development-window chart
-briefly rendered MiroirNodes — so there, extend the annotate command
+unreleased main are the one exception (a development-window chart
+briefly rendered MiroirNodes); there, extend the annotate command
 with `$(kubectl get miroirnodes -o name)`.
 
 Loopfile users: also set the driver chart's `agent.loopfileBaseDirs`
-to every `loopfile.baseDir` in use — the agent pod's hostPath mounts
+to every `loopfile.baseDir` in use: the agent pod's hostPath mounts
 are pod spec, which the driver chart cannot derive from objects it
 does not render.
 
@@ -235,7 +235,8 @@ your configuration (`lvmthin.device`, `zfs.dataset`, ...). If a block is
 missing, the CRD update in step 1 was skipped and the old schema pruned it:
 apply the CRDs and then your manifests again.
 
-### Also breaking, but unlikely to affect you
+/// details | Also breaking, but unlikely to affect you
+    type: note
 
 - The `--nodes-config` flag and `--mode=setup` are gone, along with the
   per-node setup Jobs and their ServiceAccount. Only custom `agent.extraArgs`
@@ -250,7 +251,7 @@ apply the CRDs and then your manifests again.
   from new placement until it is resolved.
 - `helm uninstall` no longer destroys volume data by default. The pre-delete
   hook that deletes every MiroirVolume/MiroirSnapshot is now rendered only
-  when `uninstall.confirmation` is set to `yes-really-destroy-data` — see
+  when `uninstall.confirmation` is set to `yes-really-destroy-data`; see
   [Uninstall](uninstall.md). If your teardown automation relied on the old
   behavior, set the confirmation.
 - The controller pod now tolerates `node.kubernetes.io/unreachable` for 5
@@ -262,7 +263,9 @@ apply the CRDs and then your manifests again.
   the schema, along with the controller's fold of them into the default
   pool. They existed for the 0.9→0.10 rollout skew; 0.10 agents already
   publish (and read) only `status.pools`. Anything scraping the flat paths
-  directly has been broken since 0.10 — use `status.pools[*]`.
+  directly has been broken since 0.10; use `status.pools[*]`.
+
+///
 
 ## 0.9.x → 0.10.0: named storage pools
 
@@ -281,22 +284,22 @@ Before:
 
 ```yaml
 nodes:
-  k8s-0:
-    zone: rack-1
-    backend: lvmthin
-    device: /dev/disk/by-partlabel/r-miroir
+    k8s-0:
+        zone: rack-1
+        backend: lvmthin
+        device: /dev/disk/by-partlabel/r-miroir
 ```
 
 After:
 
 ```yaml
 nodes:
-  k8s-0:
-    zone: rack-1
-    pools:
-      default:
-        backend: lvmthin
-        device: /dev/disk/by-partlabel/r-miroir
+    k8s-0:
+        zone: rack-1
+        pools:
+            default:
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
 ```
 
 The chart fails fast on the flat shape, so a missed node is a template error
@@ -319,28 +322,29 @@ unknown (the same as a cold cluster) until the DaemonSet finishes rolling.
 
 ```yaml
 nodes:
-  k8s-0:
-    pools:
-      default:
-        backend: lvmthin
-        device: /dev/disk/by-partlabel/r-miroir
-      fast:
-        backend: lvmthin
-        device: /dev/disk/by-id/nvme-Micron_7450_MTFDKBA800TFS_XXXX
-  # k8s-1, k8s-2 identical
+    k8s-0:
+        pools:
+            default:
+                backend: lvmthin
+                device: /dev/disk/by-partlabel/r-miroir
+            fast:
+                backend: lvmthin
+                device: /dev/disk/by-id/nvme-Micron_7450_MTFDKBA800TFS_XXXX
+    # k8s-1, k8s-2 identical
 storageClasses:
-  - name: miroir-replicated
-    replicas: 2
-  - name: miroir-replicated-fast
-    replicas: 3
-    pool: fast
+    - name: miroir-replicated
+      replicas: 2
+    - name: miroir-replicated-fast
+      replicas: 3
+      pool: fast
 ```
 
 Each agent creates the new pool's VG and thin-pool at startup. New pools get
 `vg-miroir-<pool>`; the default pool keeps `vg-miroir`, which is why step 2
 needs no data migration.
 
-### Also breaking, but unlikely to affect you
+/// details | Also breaking, but unlikely to affect you
+    type: note
 
 - The agent/setup `--lvm-vg` and `--lvm-thinpool` flags are gone; VG naming
   derives from the pool name. The chart never set them; only custom
@@ -356,6 +360,8 @@ needs no data migration.
   reconciles and deletions fail loudly (`storage pool "x" is not configured on
   this node`) until the pool returns or the volumes are gone.
 
+///
+
 ## 0.8.x → 0.9.0: RWX is opt-in
 
 Serving ReadWriteMany is now an explicit operator decision. Gateway pods run
@@ -369,7 +375,7 @@ values before you upgrade.**
 
 ```yaml
 gateway:
-  enabled: true
+    enabled: true
 ```
 
 Without it, running gateway pods keep serving until their next restart, but

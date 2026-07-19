@@ -10,9 +10,9 @@ both keep accepting writes, the copies diverge
 ([split-brain](index.md#terminology)) and one side's writes must
 eventually be thrown away. The **quorum policy** is the per-class
 answer to that situation, a trade between never diverging and
-staying writable. It is set per StorageClass via the `quorum` field
-on a `storageClasses` entry with `replicas > 1` (the
-`miroir.home-operations.com/quorum` parameter).
+staying writable. It is set per StorageClass via the
+`miroir.home-operations.com/quorum` parameter on classes whose
+`replicas` is above 1.
 
 ## `freeze` (default)
 
@@ -45,7 +45,7 @@ Behavior and knobs:
   node name.
 - **Existing volumes are retrofitted.** Adding a third node to
   the topology (applying its MiroirNode) appends a tie-breaker to every 2-replica `freeze` volume
-  that lacks one — the controller follows MiroirNode changes live, no
+  that lacks one; the controller follows MiroirNode changes live, no
   restart involved.
   Editing a volume's `spec.quorumPolicy` from `last-man-standing` to
   `freeze` triggers the same reconciler.

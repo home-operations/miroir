@@ -13,9 +13,9 @@ unmount, filling in the connection details (node id, address) exactly
 as for an operator-added replica. A pod landing on the tie-breaker's
 node needs no client leg; it uses the tie-breaker leg directly.
 
-Set `allowRemoteVolumeAccess: false` on a `storageClasses` entry to
-opt that class out: its PVs then pin pods to the diskful replica
-nodes, guaranteeing local reads.
+Set the `miroir.home-operations.com/allowRemoteVolumeAccess: "false"`
+parameter on a StorageClass to opt that class out: its PVs then pin
+pods to the diskful replica nodes, guaranteeing local reads.
 
 Trade-offs to understand:
 
