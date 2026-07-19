@@ -365,6 +365,9 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
+	if len(req.GetVolumeCapabilities()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "volume capabilities are required")
+	}
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
