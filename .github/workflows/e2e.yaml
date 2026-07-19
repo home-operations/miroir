@@ -29,7 +29,7 @@ permissions:
 jobs:
   e2e:
     name: E2E (${{ matrix.suite }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -39,6 +39,7 @@ jobs:
           # on kind: the fast leg, and the only one contributors can run
           # with nothing but docker.
           - suite: local
+            runner: ubuntu-24.04
             cluster: e2e-cluster
             provision: e2e-provision
             task: e2e-run
@@ -48,6 +49,7 @@ jobs:
           # Upstream Kubernetes external-storage suite on miroir-local,
           # on the Talos QEMU cluster (real per-node kernels, PSA).
           - suite: conformance
+            runner: home-operations-onedr0p
             cluster: e2e-replicated-cluster
             provision: e2e-replicated-provision
             task: e2e-replicated-conformance
@@ -58,6 +60,7 @@ jobs:
           # Upstream suite on miroir-replicated (real DRBD), group
           # snapshots included, on its own Talos QEMU cluster.
           - suite: replicated
+            runner: home-operations-onedr0p
             cluster: e2e-replicated-cluster
             provision: e2e-replicated-provision
             task: e2e-replicated-conformance
