@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.5](https://github.com/home-operations/miroir/compare/0.11.4...0.11.5) (2026-07-19)
+
+
+### Bug Fixes
+
+* **agent:** resize a restore clone's backing after DRBD attach ([#300](https://github.com/home-operations/miroir/issues/300)) ([8f611e9](https://github.com/home-operations/miroir/commit/8f611e9234542870404702e999ee7adb0643c6d8))
+
 ## [0.11.4](https://github.com/home-operations/miroir/compare/0.11.3...0.11.4) (2026-07-19)
 
 
