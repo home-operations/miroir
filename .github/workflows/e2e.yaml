@@ -73,7 +73,7 @@ jobs:
             disk: 20GiB
             worker-mem: 8GiB
             worker-cpus: "3.0"
-            procs: "6"
+            procs: "4"
             timeout: 60
     permissions:
       contents: read
