@@ -29,7 +29,7 @@ permissions:
 jobs:
   e2e:
     name: E2E (${{ matrix.suite }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -39,6 +39,7 @@ jobs:
           # on kind: the fast leg, and the only one contributors can run
           # with nothing but docker.
           - suite: local
+            runner: ubuntu-24.04
             cluster: e2e-cluster
             provision: e2e-provision
             task: e2e-run
@@ -48,16 +49,21 @@ jobs:
           # Upstream Kubernetes external-storage suite on miroir-local,
           # on the Talos QEMU cluster (real per-node kernels, PSA).
           - suite: conformance
+            runner: blacksmith-8vcpu-ubuntu-2404
             cluster: e2e-replicated-cluster
             provision: e2e-replicated-provision
             task: e2e-replicated-conformance
             diagnostics: e2e-replicated-diagnostics
             testdriver: testdriver-local.yaml
             disk: 20GiB
+            worker-mem: 8GiB
+            worker-cpus: "3.0"
+            procs: "6"
             timeout: 60
           # Upstream suite on miroir-replicated (real DRBD), group
           # snapshots included, on its own Talos QEMU cluster.
           - suite: replicated
+            runner: blacksmith-8vcpu-ubuntu-2404
             cluster: e2e-replicated-cluster
             provision: e2e-replicated-provision
             task: e2e-replicated-conformance
@@ -65,6 +71,9 @@ jobs:
             testdriver: testdriver.yaml
             skip: \[Disruptive\]|\[Serial\]|should not mount / map unused volumes|restoring snapshot to larger size pvc
             disk: 20GiB
+            worker-mem: 8GiB
+            worker-cpus: "3.0"
+            procs: "6"
             timeout: 60
     permissions:
       contents: read
@@ -106,17 +115,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
 
-      - name: Enable swap
-        if: matrix.suite != 'local'
-        run: |
-          sudo fallocate -l 12G /mnt/swapfile
-          sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-
       - name: Cache Talos boot images
         if: matrix.suite != 'local'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: useblacksmith/cache@c5fe29eb0efdf1cf4186b9f7fcbbcbc0cf025662 # v5.0.2
         with:
           path: ~/.talos/cache
           key: talos-boot-${{ steps.tools.outputs.talos }}-${{ hashFiles('deploy/e2e/schematic.yaml') }}
@@ -133,6 +134,8 @@ jobs:
         env:
           CLUSTER: ${{ matrix.cluster }}
           MIROIR_E2E_DISK_SIZE: ${{ matrix.disk }}
+          MIROIR_E2E_WORKER_MEM: ${{ matrix.worker-mem }}
+          MIROIR_E2E_WORKER_CPUS: ${{ matrix.worker-cpus }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -188,7 +191,7 @@ jobs:
 
       - name: Cache conformance test binaries
         if: matrix.suite != 'local'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: useblacksmith/cache@c5fe29eb0efdf1cf4186b9f7fcbbcbc0cf025662 # v5.0.2
         with:
           path: test/conformance/.bin
           key: conformance-bin-${{ steps.tools.outputs.talos }}
@@ -199,7 +202,7 @@ jobs:
           TASK: ${{ matrix.task }}
           TESTDRIVER: ${{ matrix.testdriver }}
           SKIP: ${{ matrix.skip }}
-          PROCS: ${{ matrix.suite != 'local' && '4' || '' }}
+          PROCS: ${{ matrix.procs }}
           VERBOSE: ${{ matrix.suite != 'local' && '1' || '' }}
 
       - name: Diagnostics

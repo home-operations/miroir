@@ -284,18 +284,21 @@ cd "$bindir"
 # nodes, the control plane node runs the controller Deployment only.
 # The data disk sizes the lvmthin pool: parallel conformance specs
 # provision many volumes and the controller's overcommit guard counts
-# virtual (spec) size at capacity times two. Workers also take most of
-# the 16 GB runner's RAM (5 GiB each): they run DRBD, dm-thin, kubelet
-# and every test pod, and 3 GiB left them tight enough to OOM.
-# virtio-balloon (talosctl default) returns the unused pages during the
-# image-build window, and the host swapfile backstops the test phase.
+# virtual (spec) size at capacity times two. Workers run DRBD, dm-thin,
+# kubelet and every test pod, so they take the bulk of the runner's RAM
+# and CPU; MIROIR_E2E_WORKER_MEM / _CPUS size them to the runner (the CI
+# legs set 8 GiB / 3 vCPU for the 8-vCPU / 32 GB Blacksmith box; the
+# defaults fit a 4-vCPU / 16 GB runner). virtio-balloon (a talosctl
+# default) returns the workers' unused pages during the image-build
+# window.
 sudo -E "$(mise which talosctl)" cluster create qemu \
   --name "$cluster" \
   --cidr 10.5.0.0/24 \
   --schematic-id "$schematic" \
   --controlplanes 1 \
   --workers 2 \
-  --memory-workers 5GiB \
+  --cpus-workers "${MIROIR_E2E_WORKER_CPUS:-2.0}" \
+  --memory-workers "${MIROIR_E2E_WORKER_MEM:-5GiB}" \
   --disks "virtio:8GiB,virtio:${MIROIR_E2E_DISK_SIZE:-20GiB}" \
   --config-patch @{{config_root}}/deploy/e2e/talos-patch.yaml \
   --talosconfig-destination "$TALOSCONFIG"
