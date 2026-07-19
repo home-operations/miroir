@@ -215,10 +215,14 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				DeviceCreated: true, DevicePath: dev, Pool: poolName,
 			}
 		}
-		if err := pool.Backend.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
-			return ctrl.Result{}, r.reportError(ctx, vol, err)
-		}
 		if vol.Spec.DRBD == nil {
+			// A restore clone is born at the snapshot's size; grow the
+			// backing to the requested size. No DRBD here, so no internal
+			// metadata to relocate; a replicated volume grows only after
+			// attach (below), or the clone's stranded metadata wedges it.
+			if err := pool.Backend.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
+				return ctrl.Result{}, r.reportError(ctx, vol, err)
+			}
 			log.V(1).Info("replica realized", "volume", vol.Name, "device", dev)
 			// resyncRatio 1 and quorum true, not the zero values: an
 			// unreplicated volume is fully in sync with itself and has no
@@ -286,13 +290,10 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err := r.latchActivated(ctx, vol, st); err != nil {
 		return ctrl.Result{}, err
 	}
-	// Online growth: once every peer's backing device is at the new size
-	// (the local leg was just resized above), the first diskful replica
-	// grows the DRBD device over them. It withholds the new size from its
-	// status until then — the CSI expansion wait keys on status, and the
-	// filesystem must not grow against a still-small DRBD device. A
-	// diskless tie-breaker must never be the resize coordinator.
-	reportSize, requeue, err := r.growIfCoordinator(ctx, vol, st)
+	// Grow this leg to the spec size now that DRBD has attached it: resize
+	// the backing, then (coordinator only) grow the DRBD device over the
+	// peers. growLeg documents why the resize must follow the attach.
+	reportSize, requeue, err := r.growLeg(ctx, pool.Backend, vol, st, localDiskless)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
@@ -1177,6 +1178,29 @@ func (r *VolumeReconciler) assignMinor(vol *miroirv1alpha1.MiroirVolume) (int32,
 		return m, nil
 	}
 	return r.DRBD.AllocateMinor(vol.Name)
+}
+
+// growLeg brings this leg up to the spec size after DRBD has attached it:
+// resize the backing, then let the coordinator grow the DRBD device over the
+// peers (growIfCoordinator withholds the size until every peer's backing
+// reports grown).
+//
+// The resize must follow the attach for a restore clone. A clone is born at
+// the snapshot's size and carries the source's DRBD internal metadata at that
+// offset. Attaching first keeps the metadata findable, so the leg adopts it
+// and reaches UpToDate like a same-size restore; growIfCoordinator's drbdadm
+// resize then relocates it while growing the device. Resizing the backing
+// before attach strands the metadata, so create-md mints a fresh Inconsistent
+// generation the leg never leaves (birth generation is skipped for clones,
+// and both legs come up Inconsistent so neither can be a sync source). A
+// fresh volume is already at size, so the resize is a no-op for it.
+func (r *VolumeReconciler) growLeg(ctx context.Context, be backend.Backend, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) (int64, time.Duration, error) {
+	if !localDiskless {
+		if err := be.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
+			return 0, 0, err
+		}
+	}
+	return r.growIfCoordinator(ctx, vol, st)
 }
 
 // growIfCoordinator runs drbdadm resize when this node is the resize

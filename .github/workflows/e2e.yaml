@@ -63,7 +63,7 @@ jobs:
             task: e2e-replicated-conformance
             diagnostics: e2e-replicated-diagnostics
             testdriver: testdriver.yaml
-            skip: \[Disruptive\]|\[Serial\]|should not mount / map unused volumes|restoring snapshot to larger size pvc
+            skip: \[Disruptive\]|\[Serial\]|should not mount / map unused volumes
             disk: 20GiB
             timeout: 60
     permissions:
