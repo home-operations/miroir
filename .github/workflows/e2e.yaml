@@ -49,7 +49,7 @@ jobs:
           # Upstream Kubernetes external-storage suite on miroir-local,
           # on the Talos QEMU cluster (real per-node kernels, PSA).
           - suite: conformance
-            runner: home-operations
+            runner: home-operations-onedr0p
             cluster: e2e-replicated-cluster
             provision: e2e-replicated-provision
             task: e2e-replicated-conformance
@@ -60,7 +60,7 @@ jobs:
           # Upstream suite on miroir-replicated (real DRBD), group
           # snapshots included, on its own Talos QEMU cluster.
           - suite: replicated
-            runner: home-operations
+            runner: home-operations-onedr0p
             cluster: e2e-replicated-cluster
             provision: e2e-replicated-provision
             task: e2e-replicated-conformance
