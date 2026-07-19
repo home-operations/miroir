@@ -107,7 +107,7 @@ jobs:
         if: matrix.suite != 'local'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
+          sudo apt-get install -y --no-install-recommends iptables qemu-system-x86 qemu-utils ovmf
 
       - name: Cache Talos boot images
         if: matrix.suite != 'local'
