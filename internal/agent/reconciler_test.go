@@ -76,6 +76,10 @@ type fakeBackend struct {
 	createVol   []string
 	stats       backend.PoolStats
 	statsErr    error
+	// seq, when set, appends a marker on Resize into a log shared with the
+	// DRBD exec, so a test can assert the backing resize is ordered after
+	// the DRBD attach rather than before it.
+	seq *[]string
 }
 
 // errBoom is the generic injected failure for fake backends.
@@ -122,6 +126,9 @@ func (f *fakeBackend) Create(_ context.Context, vol string, size int64) (string,
 func (f *fakeBackend) Resize(_ context.Context, vol string, size int64) error {
 	if f.created[vol] < size {
 		f.created[vol] = size
+	}
+	if f.seq != nil {
+		*f.seq = append(*f.seq, "backend-resize "+vol)
 	}
 	return nil
 }
@@ -511,6 +518,74 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	}
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready with both legs UpToDate", got.Status.Phase)
+	}
+}
+
+// Regression (#290): a restore that grows the volume must resize the backing
+// only after DRBD has attached it. The clone is born at the snapshot's size
+// carrying the source's internal metadata at that offset; growing the backing
+// first strands the metadata and the leg never leaves Inconsistent. The
+// backend resize must therefore be ordered after the drbdadm attach, not
+// before it.
+func TestReconcile_RestoreToLargerResizesBackingAfterAttach(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend() // no existing backing: realizeBacking clones the snapshot
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrA
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrB
+	// Restore from a snapshot to a size larger than the source.
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapSnap1}
+	v.Spec.SizeBytes = 2 << 30
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \"node-a\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`}
+	fb.seq = &fe.calls // interleave the backing resize into the DRBD call log
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, "src-vol")).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fb.fromSnapVol) != 1 || fb.fromSnapVol[0] != volPvc1 {
+		t.Fatalf("restore must clone the backing, got CreateFromSnapshot %v", fb.fromSnapVol)
+	}
+	attach, resize := -1, -1
+	for i, call := range fe.calls {
+		switch {
+		case attach < 0 && strings.Contains(call, "drbdadm adjust "+volPvc1):
+			attach = i
+		case strings.Contains(call, "backend-resize "+volPvc1):
+			resize = i
+		}
+	}
+	if attach < 0 {
+		t.Fatalf("DRBD never attached the backing, calls: %v", fe.calls)
+	}
+	if resize < 0 {
+		t.Fatalf("backing was never resized to the requested size, calls: %v", fe.calls)
+	}
+	if resize < attach {
+		t.Fatalf("backing resized before DRBD attach (strands clone metadata): attach=%d resize=%d, calls: %v",
+			attach, resize, fe.calls)
 	}
 }
 
