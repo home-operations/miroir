@@ -101,7 +101,7 @@ storageCapacity:
 # Volume group snapshots: crash-consistent snapshots cut across several
 # PVCs at once under one shared write barrier (VolumeGroupSnapshot API).
 # Off by default because it needs cluster-side pieces the chart does not
-# ship: the groupsnapshot.storage.k8s.io v1beta2 CRDs and a
+# ship: the groupsnapshot.storage.k8s.io v1 CRDs and a
 # snapshot-controller running with --feature-gates=CSIVolumeGroupSnapshot=true
 # (the same gate this flag passes to the csi-snapshotter sidecar).
 # Only replicated volumes (replicas > 1) can join a group — the DRBD

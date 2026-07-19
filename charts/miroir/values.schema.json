@@ -461,7 +461,7 @@
       "type": "object"
     },
     "groupSnapshots": {
-      "description": "Volume group snapshots: crash-consistent snapshots cut across several\nPVCs at once under one shared write barrier (VolumeGroupSnapshot API).\nOff by default because it needs cluster-side pieces the chart does not\nship: the groupsnapshot.storage.k8s.io v1beta2 CRDs and a\nsnapshot-controller running with --feature-gates=CSIVolumeGroupSnapshot=true\n(the same gate this flag passes to the csi-snapshotter sidecar).\nOnly replicated volumes (replicas \u003e 1) can join a group — the DRBD\nwrite barrier is what makes the cut atomic across volumes.",
+      "description": "Volume group snapshots: crash-consistent snapshots cut across several\nPVCs at once under one shared write barrier (VolumeGroupSnapshot API).\nOff by default because it needs cluster-side pieces the chart does not\nship: the groupsnapshot.storage.k8s.io v1 CRDs and a\nsnapshot-controller running with --feature-gates=CSIVolumeGroupSnapshot=true\n(the same gate this flag passes to the csi-snapshotter sidecar).\nOnly replicated volumes (replicas \u003e 1) can join a group — the DRBD\nwrite barrier is what makes the cut atomic across volumes.",
       "properties": {
         "enabled": {
           "default": false,

@@ -278,8 +278,10 @@ cached write) on the node where it is mounted just before the cut and
 thaws it right after, and for `replicas: 1` lvmthin volumes the cut
 itself suspends the device with the same flush-and-freeze effect — so
 even data an application wrote without `fsync` is in the snapshot.
-Unreplicated `zfs` and `loopfile` snapshots and all raw block volumes
-are crash-consistent; quiesce writes yourself if you need more there.
+Unreplicated `zfs` and `loopfile` snapshots, all raw block volumes,
+and [RWX volumes](rwx.md) (mounted inside the NFS gateway pod, where
+the agent's freeze cannot reach) are crash-consistent; quiesce writes
+yourself if you need more there.
 
 ```yaml
 apiVersion: snapshot.storage.k8s.io/v1
@@ -292,7 +294,11 @@ spec:
         persistentVolumeClaimName: my-data
 ```
 
-Restore by pointing a new PVC at the snapshot:
+Restore by pointing a new PVC at the snapshot. A restore is a
+copy-on-write clone on the nodes holding the snapshot, so it cannot
+change shape: the new PVC's StorageClass must request the source
+volume's replica count and pool, and its size must be at least the
+snapshot's.
 
 ```yaml
 apiVersion: v1
@@ -300,7 +306,7 @@ kind: PersistentVolumeClaim
 metadata:
     name: my-data-restored
 spec:
-    storageClassName: miroir-local
+    storageClassName: miroir-replicated # must match the source's replicas and pool
     dataSource:
         name: my-data-snap
         kind: VolumeSnapshot
@@ -327,7 +333,7 @@ kind: PersistentVolumeClaim
 metadata:
     name: my-data-copy
 spec:
-    storageClassName: miroir-local
+    storageClassName: miroir-replicated # must match the source's replicas and pool
     dataSource:
         name: my-data
         kind: PersistentVolumeClaim

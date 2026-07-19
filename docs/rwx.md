@@ -59,12 +59,13 @@ Things worth knowing:
 - **`freeze` quorum is required** (the default). Under
   `last-man-standing` a partition could leave the old and rescheduled
   gateways both writable; the controller rejects that combination.
-- **Snapshots** work exactly as for RWO volumes: device-level and
-  crash-consistent (the snapshot captures the filesystem as if the
-  node had lost power at that instant; journaling filesystems
-  recover this cleanly), with the gateway as the sole writer during
-  the barrier,
-  and the volume gets the same split-brain protections: the gateway
+- **Snapshots are crash-consistent**, not filesystem-consistent:
+  the filesystem is mounted inside the gateway pod, out of reach of
+  the freeze the agent applies to locally mounted volumes, so the
+  snapshot captures it as if the node had lost power at that instant
+  (journaling filesystems recover this cleanly). The write barrier
+  works as for RWO volumes, with the gateway as the sole writer, and
+  the volume gets the same split-brain protections: the gateway
   stages through the same pipeline that latches "this volume holds
   data", so auto-recovery never discards a diverged leg out from
   under it.

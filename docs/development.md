@@ -9,6 +9,7 @@ tasks:
 ```bash
 mise run test              # unit tests (regenerates manifests first)
 mise run test-integration  # envtest apiserver: CRD schema + CEL rules
+mise run test-sanity       # upstream csi-test sanity suite, in-process
 mise run lint          # golangci-lint
 mise run build         # bin/miroir
 mise run manifests     # CRD + RBAC generation
