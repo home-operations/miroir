@@ -7,6 +7,8 @@ StorageClass:
   FromExistingClassName: miroir-replicated
 SnapshotClass:
   FromExistingClassName: miroir-snap
+GroupSnapshotClass:
+  FromExistingClassName: miroir-group-snap
 DriverInfo:
   Name: miroir.home-operations.com
   SupportedSizeRange:
@@ -25,6 +27,7 @@ DriverInfo:
     onlineExpansion: true
     offlineExpansion: true
     snapshotDataSource: true
+    groupSnapshot: true
     pvcDataSource: true
     topology: true
     singleNodeVolume: false

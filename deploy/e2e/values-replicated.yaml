@@ -1,0 +1,17 @@
+# Driver-chart values for the replicated (QEMU) e2e. Images are pulled
+# through the registry.e2e mirror configured in talos-patch.yaml. Group
+# snapshots are on: the provision task installs the v1beta2 CRDs and
+# gates the snapshot-controller to match.
+image:
+  repository: registry.e2e/miroir-controller
+  tag: e2e
+  pullPolicy: IfNotPresent
+
+agent:
+  image:
+    repository: registry.e2e/miroir-agent
+    tag: e2e
+    pullPolicy: IfNotPresent
+
+groupSnapshots:
+  enabled: true

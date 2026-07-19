@@ -15,6 +15,8 @@ on:
     paths-ignore:
       - "**.md"
       - ".release-please-manifest.json"
+  schedule:
+    - cron: "30 5 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -33,18 +35,37 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Go e2e specs (lifecycle, placement, block) on miroir-local.
+          # Go e2e specs (lifecycle, placement, block) on miroir-local,
+          # on kind: the fast leg, and the only one contributors can run
+          # with nothing but docker.
           - suite: local
+            cluster: e2e-cluster
+            provision: e2e-provision
             task: e2e-run
+            diagnostics: e2e-diagnostics
             timeout: 20
             disk: 10G
-          # Upstream Kubernetes external-storage suite on miroir-local.
-          # Bigger backing device: parallel specs provision many volumes
-          # and the controller's overcommit guard counts virtual size.
+          # Upstream Kubernetes external-storage suite on miroir-local,
+          # on the Talos QEMU cluster (real per-node kernels, PSA).
           - suite: conformance
-            task: e2e-conformance
-            timeout: 45
-            disk: 40G
+            cluster: e2e-replicated-cluster
+            provision: e2e-replicated-provision
+            task: e2e-replicated-conformance
+            diagnostics: e2e-replicated-diagnostics
+            testdriver: testdriver-local.yaml
+            disk: 20GiB
+            timeout: 60
+          # Upstream suite on miroir-replicated (real DRBD), group
+          # snapshots included, on its own Talos QEMU cluster.
+          - suite: replicated
+            cluster: e2e-replicated-cluster
+            provision: e2e-replicated-provision
+            task: e2e-replicated-conformance
+            diagnostics: e2e-replicated-diagnostics
+            testdriver: testdriver.yaml
+            skip: \[Disruptive\]|\[Serial\]|should not mount / map unused volumes|restoring snapshot to larger size pvc
+            disk: 20GiB
+            timeout: 60
     permissions:
       contents: read
     steps:
@@ -59,7 +80,14 @@ jobs:
           experimental: true
           install_args: --locked
 
+      - name: Resolve toolchain versions
+        id: tools
+        run: |
+          echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
+          echo "talos=$(mise config get tools.talos)" >> "$GITHUB_OUTPUT"
+
       - name: Cache Go modules and build
+        if: matrix.suite == 'local'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -69,35 +97,63 @@ jobs:
           restore-keys: ${{ runner.os }}-go-
 
       - name: Load kernel modules
+        if: matrix.suite == 'local'
         run: sudo modprobe dm_thin_pool loop
 
+      - name: Install QEMU
+        if: matrix.suite != 'local'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
+
+      - name: Enable swap
+        if: matrix.suite != 'local'
+        run: |
+          sudo fallocate -l 8G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+
+      - name: Cache Talos boot images
+        if: matrix.suite != 'local'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.talos/cache
+          key: talos-boot-${{ steps.tools.outputs.talos }}-${{ hashFiles('deploy/e2e/schematic.yaml') }}
+
+      - name: Start image registry
+        if: matrix.suite != 'local'
+        run: docker run -d --name e2e-registry -p 5000:5000 registry:3
+
       # Cluster boot and image build are independent — overlap them.
-      - name: Create kind cluster
-        id: kind
+      - name: Create cluster
+        id: cluster
         background: true
-        run: mise run e2e-cluster
+        run: mise run "$CLUSTER"
+        env:
+          CLUSTER: ${{ matrix.cluster }}
+          MIROIR_E2E_DISK_SIZE: ${{ matrix.disk }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Resolve toolchain versions
-        id: tools
-        run: echo "go=$(mise config get tools.go)" >> "$GITHUB_OUTPUT"
+        with:
+          driver-opts: network=host
 
       # Both builds run concurrently against the same BuildKit daemon, which
       # dedupes the shared Go builder stage in flight — the agent's Debian
       # layer pull overlaps the compile. Distinct cache scopes: concurrent
       # cache-to writes to one scope evict each other, so only the local
-      # leg writes back; the conformance leg reads the same scopes.
+      # leg writes back; the other legs read the same scopes.
       - name: Build controller image
         id: controller-image
         background: true
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          load: true
+          load: ${{ matrix.suite == 'local' }}
+          push: ${{ matrix.suite != 'local' }}
           target: controller
-          tags: miroir-controller:e2e
+          tags: ${{ matrix.suite == 'local' && 'miroir-controller:e2e' || 'localhost:5000/miroir-controller:e2e' }}
           build-args: GO_VERSION=${{ steps.tools.outputs.go }}
           cache-from: type=gha,scope=e2e-controller
           cache-to: ${{ matrix.suite == 'local' && 'type=gha,mode=max,scope=e2e-controller' || '' }}
@@ -108,37 +164,54 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          load: true
+          load: ${{ matrix.suite == 'local' }}
+          push: ${{ matrix.suite != 'local' }}
           target: agent
-          tags: miroir-agent:e2e
+          tags: ${{ matrix.suite == 'local' && 'miroir-agent:e2e' || 'localhost:5000/miroir-agent:e2e' }}
           build-args: GO_VERSION=${{ steps.tools.outputs.go }}
           cache-from: type=gha,scope=e2e-agent
           cache-to: ${{ matrix.suite == 'local' && 'type=gha,mode=max,scope=e2e-agent' || '' }}
 
-      - wait: [kind, controller-image, agent-image]
+      - wait: [cluster, controller-image, agent-image]
 
       - name: Load images into kind
+        if: matrix.suite == 'local'
         run: |
           kind load docker-image miroir-controller:e2e --name miroir-test-e2e
           kind load docker-image miroir-agent:e2e --name miroir-test-e2e
 
-      - name: Provision (loop device, snapshot stack, helm install)
-        run: mise run e2e-provision
+      - name: Provision (device, snapshot stack, helm install)
+        run: mise run "$PROVISION"
         env:
+          PROVISION: ${{ matrix.provision }}
           MIROIR_E2E_DISK_SIZE: ${{ matrix.disk }}
 
       - name: Cache conformance test binaries
-        if: matrix.suite == 'conformance'
+        if: matrix.suite != 'local'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: test/conformance/.bin
-          key: conformance-bin-${{ hashFiles('.mise/config.toml') }}
+          key: conformance-bin-${{ steps.tools.outputs.talos }}
 
       - name: Run ${{ matrix.suite }} suite
         run: mise run "$TASK"
         env:
           TASK: ${{ matrix.task }}
+          TESTDRIVER: ${{ matrix.testdriver }}
+          SKIP: ${{ matrix.skip }}
+          PROCS: ${{ matrix.suite != 'local' && '4' || '' }}
+          VERBOSE: ${{ matrix.suite != 'local' && '1' || '' }}
 
       - name: Diagnostics
         if: failure()
-        run: mise run e2e-diagnostics
+        run: mise run "$DIAGNOSTICS"
+        env:
+          DIAGNOSTICS: ${{ matrix.diagnostics }}
+
+      - name: Upload conformance report
+        if: always() && matrix.suite != 'local'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: conformance-report-${{ matrix.suite }}
+          path: test/conformance/report
+          if-no-files-found: ignore

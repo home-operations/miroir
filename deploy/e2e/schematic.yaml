@@ -1,0 +1,7 @@
+# Image Factory schematic for the replicated (QEMU) e2e cluster: the
+# siderolabs/drbd extension ships the DRBD 9 kernel module the agent
+# requires (the in-tree drbd.ko is the 8.4 API and is not built anyway).
+customization:
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/drbd
