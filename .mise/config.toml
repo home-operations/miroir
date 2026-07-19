@@ -282,7 +282,7 @@ cd "$bindir"
 # provision many volumes and the controller's overcommit guard counts
 # virtual (spec) size at capacity times two. Workers also take most of
 # the 16 GB runner's RAM (5 GiB each): they run DRBD, dm-thin, kubelet
-# and every test pod, and starving them stalls snapshot rounds (#290).
+# and every test pod, and 3 GiB left them tight enough to OOM.
 # virtio-balloon (talosctl default) returns the unused pages during the
 # image-build window, and the host swapfile backstops the test phase.
 sudo -E "$(mise which talosctl)" cluster create qemu \
