@@ -14,6 +14,25 @@ byte-identical copy on a second node by completing every write on
 both. If a node dies, pods restart on the surviving node with
 current data.
 
+A 2-replica volume on a 3-node cluster looks like this (the
+[terminology](#terminology) below defines the words):
+
+```mermaid
+flowchart LR
+    subgraph node-a
+        POD[pod] --> A[("leg A (Primary)")]
+    end
+    subgraph node-b
+        B[("leg B (Secondary)")]
+    end
+    subgraph node-c
+        T["tie-breaker (diskless)"]
+    end
+    A <==>|synchronous replication| B
+    A -. quorum vote .- T
+    B -. quorum vote .- T
+```
+
 ## When to use it
 
 - You want replicated block storage without running Ceph.
@@ -87,8 +106,13 @@ require DRBD experience:
 - **[Remote consumers and auto-diskful](remote-consumers.md)**:
   mounting volumes from nodes without a replica, and converting
   settled consumers to local replicas.
+- **[Disk failures, rebuilds, and verification](resilience.md)**:
+  what a failing disk does, auto-evict for dead nodes, and the
+  scheduled online verify.
 - **[ReadWriteMany (RWX)](rwx.md)**: shared filesystems over NFS on
   top of replicated volumes.
+- **[Upgrading](upgrading.md)**: keeping the CRDs in step, and the
+  version-to-version migration steps.
 - **[Node maintenance and upgrades](maintenance.md)**: the safe
   per-node loop for reboots and upgrades.
 - **[Monitoring](monitoring.md)**: metrics, starter alerts, and the

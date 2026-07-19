@@ -30,7 +30,9 @@ ships inside the agent image; nodes only provide kernel modules.
 
 [gns]: https://kubernetes.io/docs/concepts/cluster-administration/node-shutdown/#graceful-node-shutdown
 
-## Talos
+## Node setup by OS
+
+/// tab | Talos
 
 Talos is the primary target. For replication use **≥ 1.13.0** (its
 `siderolabs/drbd` extension ships the DRBD 9.3.1 module the agent
@@ -65,7 +67,9 @@ machine:
 
 [factory]: https://factory.talos.dev
 
-## Debian/Ubuntu
+///
+
+/// tab | Debian/Ubuntu
 
 Stock kernels ship `dm_thin_pool` and `loop`, so `lvmthin` and
 `loopfile` need nothing extra. For the rest:
@@ -86,5 +90,7 @@ Stock kernels ship `dm_thin_pool` and `loop`, so `lvmthin` and
   critical-pod window ≥ the agent's grace period (default 60s).
 
 [ppa]: https://launchpad.net/~linbit/+archive/ubuntu/linbit-drbd9-stack
+
+///
 
 Nothing in the controller or agent is otherwise OS-specific.

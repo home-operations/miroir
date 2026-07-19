@@ -1,7 +1,9 @@
 # Disk failures, node rebuilds, and verification
 
-A failing **disk** is not a failing node. Since v0.3 the global DRBD
-config defaults to `on-io-error detach` (`drbd.onIoError`). A leg
+## A failing disk is not a failing node
+
+Since v0.3 the global DRBD config defaults to `on-io-error detach`
+(`drbd.onIoError`). A leg
 whose backing device errors drops to Diskless, and the volume keeps
 serving through the peer rather than surfacing I/O errors into the pod.
 The detached leg shows as `DiskState: Diskless` in
@@ -9,8 +11,10 @@ The detached leg shows as `DiskState: Diskless` in
 1 for that node. To recover: replace the disk, then remove and re-add
 the replica.
 
-**Rebuilding a node is safe.** A reinstall (e.g. a Talos wipe) destroys
-the backing devices and miroir's node-local state together. When the
+## Rebuilding a node is safe
+
+A reinstall (e.g. a Talos wipe) destroys the backing devices and
+miroir's node-local state together. When the
 node rejoins, the agent detects the wipe and makes each recreated leg
 a full sync target rather than trusting its empty disk.
 
@@ -24,8 +28,10 @@ are skipped, because loop devices mishandle discards;
 `drbd.resync.discardGranularity` remains as a manual cluster-wide
 fallback.)
 
-**Dead nodes: auto-evict.** A node that dies permanently leaves every
-volume it carried degraded until someone re-places its replicas.
+## Auto-evict for dead nodes
+
+A node that dies permanently leaves every volume it carried degraded
+until someone re-places its replicas.
 Setting `autoEvictAfter` (a Helm value, e.g. `"60m"`, off by default)
 automates that. Each node's heartbeat is the `MiroirNode` status its
 agent refreshes about every minute. Once a node's heartbeat has been
@@ -52,7 +58,7 @@ Auto-evict is deliberately timid. It stands down in any of these cases:
   replicating in the kernel and evicting anything would sever live
   storage.
 - More than one node's heartbeat is stale (opted-out nodes don't
-  count — theirs are expected to go dark). That pattern points at the
+  count; theirs are expected to go dark). That pattern points at the
   network or API server, not at two simultaneous dead nodes.
 - A surviving replica still sees the "dead" node's DRBD connections up.
   The node is then alive, and only its Kubernetes connection is broken.
@@ -66,7 +72,9 @@ A node with known long outages can opt out with
 longest planned reboot or upgrade window, since eviction discards the
 dead node's copy of the data.
 
-One scheduling limitation to know about: a PersistentVolume's node
+/// note | PV node affinity cannot follow an eviction
+
+A PersistentVolume's node
 affinity is fixed by Kubernetes at creation and cannot be updated, so
 on volumes without `allowRemoteVolumeAccess` the pod can only ever
 schedule onto the volume's _original_ replica nodes. After an eviction
@@ -75,7 +83,11 @@ replica protects the data, but the scheduler cannot place the pod on
 the replacement node. Remote-access volumes (the default for
 replicated classes) carry no such pin and are unaffected.
 
-**Verification** is the only cross-leg integrity check (a ZFS scrub
+///
+
+## Verification
+
+Online verify is the only cross-leg integrity check (a ZFS scrub
 validates one leg against itself). `drbd.verify.algorithm` (default
 `crc32c`) arms it. `drbd.verify.schedule` (a 5-field cron, e.g.
 `"0 4 * * 0"`) then runs an online verify of every replicated volume on

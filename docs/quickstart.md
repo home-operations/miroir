@@ -7,23 +7,25 @@ node shutdown), then:
 
 Storage configuration is plain manifests, applied and versioned like
 any other Kubernetes object: the node topology (MiroirNode custom
-resources — or a MiroirNodeGroup that materializes them from a label
+resources, or a MiroirNodeGroup that materializes them from a label
 selector), the StorageClasses (`replicas: "1"` is node-local,
 `replicas: "2"` is DRBD-replicated), and the VolumeSnapshotClasses.
 The chart installs only the driver. The CRDs validate the topology
 (`kubectl explain miroirnode.spec` is the reference), `kubectl apply`
 rejects unknown fields outright, and pool names and the classes that
 select them sit side by side in whatever file you keep them in. Pods
-can mount miroir volumes from any node with a MiroirNode — data lives
-only on nodes whose pools hold replicas; the rest consume remotely
+can mount miroir volumes from any node with a MiroirNode; data lives
+only on nodes whose pools hold replicas, and the rest consume remotely
 ([Remote consumers](remote-consumers.md)). Keep every schedulable node
 in the map, or set the `allowRemoteVolumeAccess: "false"` parameter on
 the class so pods stay on replica nodes.
 
-**A fleet with a path convention.** The common case: every storage node
-carries the same partition label, so the whole fleet is ONE node group —
-a MiroirNode is materialized per label-matched node, and **adding a
-storage node is labeling it** (`kubectl label node node-c
+/// tab | One node group (the common case)
+
+Every storage node carries the same partition label, so the whole
+fleet is ONE node group: a MiroirNode is materialized per
+label-matched node, and **adding a storage node is labeling it**
+(`kubectl label node node-c
 storage.miroir.home-operations.com/class=std`). Existing replicated
 volumes pick a third node up as a quorum tie-breaker automatically.
 
@@ -73,26 +75,25 @@ driver: miroir.home-operations.com
 deletionPolicy: Delete
 ```
 
-Write `volumeBindingMode` and `allowVolumeExpansion` explicitly as
-above — the Kubernetes defaults (`Immediate`, no expansion) are rarely
-what you want. Every class parameter is documented in
-[Helm chart values → StorageClass parameters](configuration.md#storageclass-parameters).
-
 Group members inherit per-node facts from the Node object: an empty
 template `zone` takes the node's `topology.kubernetes.io/zone` label,
 and a dedicated replication NIC comes from a
 `miroir.home-operations.com/address` annotation on the Node. A node
 leaving the selector orphans its MiroirNode in place (never deleted
-under live volumes); hand-authored MiroirNodes always win over groups —
-use them for odd-one-out boxes.
+under live volumes); hand-authored MiroirNodes always win over
+groups, so use them for odd-one-out boxes.
 
-**Mixed backends and failure domains.** Heterogeneous nodes are
-per-node MiroirNodes (or label-partitioned groups per disk class).
-DRBD replicates whatever device each backend provides, so one volume
-can pair a ZFS zvol with an LVM thin LV. `zone` (optional) spreads replicas and the
-tie-breaker across failure domains; `address` (optional) pins
-replication to a dedicated storage NIC/VLAN, IPv4 or IPv6 (default:
-the node's `InternalIP`; applies to volumes created afterwards).
+///
+
+/// tab | Mixed backends and zones
+
+Heterogeneous nodes are per-node MiroirNodes (or label-partitioned
+groups per disk class). DRBD replicates whatever device each backend
+provides, so one volume can pair a ZFS zvol with an LVM thin LV.
+`zone` (optional) spreads replicas and the tie-breaker across failure
+domains; `address` (optional) pins replication to a dedicated storage
+NIC/VLAN, IPv4 or IPv6 (default: the node's `InternalIP`; applies to
+volumes created afterwards).
 
 ```yaml
 apiVersion: miroir.home-operations.com/v1alpha1
@@ -130,10 +131,14 @@ spec:
               baseDir: /var/lib/miroir
 ```
 
-**Two tiers per node.** A pool name identifies the same tier across
-nodes, and a StorageClass selects one with the `pool` parameter
-(classes that name none use `default`). Volumes never span pools:
-every replica of a volume lands in the class's pool on its node.
+///
+
+/// tab | Two storage tiers per node
+
+A pool name identifies the same tier across nodes, and a StorageClass
+selects one with the `pool` parameter (classes that name none use
+`default`). Volumes never span pools: every replica of a volume lands
+in the class's pool on its node.
 
 ```yaml
 apiVersion: miroir.home-operations.com/v1alpha1
@@ -162,10 +167,14 @@ parameters:
     csi.storage.k8s.io/fstype: ext4
 ```
 
-**One node, no dedicated disk.** Dev clusters: loopfile backs volumes
-with sparse files on an existing filesystem. Loopfile base
-directories must also be listed in the **driver** chart's
-`agent.loopfileBaseDirs` so the agent pod mounts them.
+///
+
+/// tab | Single node, no dedicated disk
+
+Dev clusters: loopfile backs volumes with sparse files on an existing
+filesystem. Loopfile base directories must also be listed in the
+**driver** chart's `agent.loopfileBaseDirs` so the agent pod mounts
+them.
 
 ```yaml
 apiVersion: miroir.home-operations.com/v1alpha1
@@ -192,7 +201,9 @@ parameters:
     csi.storage.k8s.io/fstype: ext4
 ```
 
-A pool's backend is the configuration block it carries — exactly one
+///
+
+A pool's backend is the configuration block it carries: exactly one
 of `lvmthin`, `zfs`, or `loopfile` (write `lvmthin: {}` when the VG
 already exists).
 
@@ -201,6 +212,15 @@ already exists).
 | `lvmthin`  | A partition or disk for the thin pool  | `dm_thin_pool` kernel module                             |
 | `zfs`      | A ZFS pool, you specify the dataset    | ZFS module on the node ([Requirements](requirements.md)) |
 | `loopfile` | A path on a reflink-capable filesystem | `loop` module; XFS `reflink=1` / btrfs                   |
+
+/// tip | Write the StorageClass fields explicitly
+
+Write `volumeBindingMode: WaitForFirstConsumer` and
+`allowVolumeExpansion: true` as in the manifests above: the
+Kubernetes defaults (`Immediate`, no expansion) are rarely what you
+want.
+
+///
 
 [Configuration](configuration.md) documents the driver chart's values
 (DRBD tuning, behavior knobs, workloads) and every
@@ -211,17 +231,24 @@ is always current.
 
 ## 2. Install
 
+/// tab | Helm
+
 ```bash
 helm install miroir oci://ghcr.io/home-operations/charts/miroir \
   -n miroir-system --create-namespace
 kubectl apply -f topology.yaml
 ```
 
-On Talos, create and label the namespace first instead of using
+///
+
+/// tab | Talos
+
+Create and label the namespace first instead of using
 `--create-namespace`. Talos enforces the `baseline` [Pod Security
-Standard][pss] by default, which silently rejects the agent DaemonSet's
-pods (the agent runs privileged: DRBD, LVM, and mounting need host
-access) - the install then times out with the agents stuck at `0/N`:
+Standard][pss] by default, which silently rejects the agent
+DaemonSet's pods (the agent runs privileged: DRBD, LVM, and mounting
+need host access) - the install then times out with the agents stuck
+at `0/N`:
 
 ```bash
 kubectl create namespace miroir-system
@@ -234,18 +261,21 @@ kubectl apply -f topology.yaml
 
 [pss]: https://kubernetes.io/docs/concepts/security/pod-security-standards/
 
+///
+
 The driver chart deploys one `miroir-controller` Deployment and a
-`miroir-agent` DaemonSet on every schedulable node, plus the CRDs — so
-the topology manifests apply after it. Each agent provisions its node's
-pools with idempotent setup the moment its MiroirNode exists (existing
-pools are reused) — agents on nodes without one serve client-only and
-switch over by themselves — and restarts itself to re-run setup when
-the pool spec changes. Your manifests are the source of truth: nothing
-deletes a MiroirNode but you, and decommissioning a node stays an
-explicit `kubectl delete miroirnode <name>` — for a group member, first
-take the node out of the selector (remove its class label), or the
-group recreates the MiroirNode within seconds. Inspect the topology
-with `kubectl get miroirnodes`.
+`miroir-agent` DaemonSet on every schedulable node, plus the CRDs, so
+the topology manifests apply after it. Each agent provisions its
+node's pools with idempotent setup the moment its MiroirNode exists
+(existing pools are reused) and restarts itself to re-run setup when
+the pool spec changes; agents on nodes without a MiroirNode serve
+client-only and switch over by themselves. Your manifests are the
+source of truth: nothing deletes a MiroirNode but you, and
+decommissioning a node stays an explicit
+`kubectl delete miroirnode <name>`. For a group member, first take
+the node out of the selector (remove its class label), or the group
+recreates the MiroirNode within seconds. Inspect the topology with
+`kubectl get miroirnodes`.
 
 ## 3. Claim a volume
 
@@ -270,13 +300,24 @@ tie-breaker fits in.
 
 Requires the cluster-wide `snapshot-controller` and `volumesnapshot`
 CRDs (see the [CSI snapshot docs](https://kubernetes-csi.github.io/docs/snapshots.html)),
-plus a VolumeSnapshotClass (the `miroir-snap` manifest above).
+plus a VolumeSnapshotClass (the `miroir-snap` manifest above). Any
+distribution of the upstream snapshot-controller works; the
+[home-operations chart][snap-chart] ships it with the CRDs exactly as
+upstream publishes them:
+
+```bash
+helm install snapshot-controller \
+  oci://ghcr.io/home-operations/charts/snapshot-controller \
+  -n kube-system
+```
+
+[snap-chart]: https://github.com/home-operations/helm-charts/tree/main/charts/snapshot-controller
 
 Snapshots of a mounted filesystem are filesystem-consistent: for
 replicated volumes the agent freezes the filesystem (flushing every
 cached write) on the node where it is mounted just before the cut and
 thaws it right after, and for `replicas: 1` lvmthin volumes the cut
-itself suspends the device with the same flush-and-freeze effect — so
+itself suspends the device with the same flush-and-freeze effect, so
 even data an application wrote without `fsync` is in the snapshot.
 Unreplicated `zfs` and `loopfile` snapshots, all raw block volumes,
 and [RWX volumes](rwx.md) (mounted inside the NFS gateway pod, where
@@ -364,19 +405,27 @@ default: the `groupsnapshot.storage.k8s.io` CRDs installed
 cluster-wide, the cluster's snapshot-controller running with
 `--feature-gates=CSIVolumeGroupSnapshot=true`, and
 `groupSnapshots.enabled: true` in the chart (which passes the same
-feature gate to the csi-snapshotter sidecar). Only replicated
+feature gate to the csi-snapshotter sidecar). The
+[home-operations snapshot-controller chart][snap-chart] covers the
+first two: it ships the group CRDs and enables the feature gate by
+default (`controller.volumeGroupSnapshots`). Only replicated
 volumes (`replicas` ≥ 2) can join a group: the DRBD write barrier is
 what makes the cut atomic across volumes.
 
 With external-snapshotter v8.6 and later the group API is served at
 `v1` (older releases serve `v1beta2`), and upstream ships the group
 CRDs with `conversion.strategy: None`; the schemas are identical
-across versions, so no conversion webhook is involved. If another
-chart has stamped a webhook conversion onto these CRDs (some
-snapshot-controller charts do), group snapshots fail with confusing
-`service not found` or `unexpected conversion version` errors while
-regular snapshots keep working; patch the CRDs back to
+across versions, so no conversion webhook is involved.
+
+/// warning | A stamped conversion webhook breaks group snapshots
+
+If another chart has stamped a webhook conversion onto these CRDs
+(some snapshot-controller charts do), group snapshots fail with
+confusing `service not found` or `unexpected conversion version`
+errors while regular snapshots keep working; patch the CRDs back to
 `strategy: None`.
+
+///
 
 ```yaml
 apiVersion: groupsnapshot.storage.k8s.io/v1
@@ -402,6 +451,17 @@ Each member is an ordinary VolumeSnapshot and restores individually
 through `dataSource` exactly like the single-volume restore above.
 Members delete as a set: deleting the VolumeGroupSnapshot removes
 them all, and a member cannot be deleted on its own.
+
+/// note | Snapshots are not backups
+
+A miroir snapshot is a copy-on-write copy on the same nodes and pool
+as its volume, so it dies with them. For backups exported to durable
+storage, pair miroir with [kopiur](https://kopiur.home-operations.com/),
+the home-operations backup operator: it makes a
+[kopia](https://kopia.io/) repository a first-class Kubernetes
+resource and schedules backups into it.
+
+///
 
 ## 5. Expand online
 

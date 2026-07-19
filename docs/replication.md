@@ -45,7 +45,7 @@ Behavior and knobs:
   node name.
 - **Existing volumes are retrofitted.** Adding a third node to
   the topology (applying its MiroirNode) appends a tie-breaker to every 2-replica `freeze` volume
-  that lacks one — the controller follows MiroirNode changes live, no
+  that lacks one; the controller follows MiroirNode changes live, no
   restart involved.
   Editing a volume's `spec.quorumPolicy` from `last-man-standing` to
   `freeze` triggers the same reconciler.
