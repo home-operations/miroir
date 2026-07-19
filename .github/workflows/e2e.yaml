@@ -109,14 +109,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
 
-      - name: Enable swap
-        if: matrix.suite != 'local'
-        run: |
-          sudo fallocate -l 12G /mnt/swapfile
-          sudo chmod 600 /mnt/swapfile
-          sudo mkswap /mnt/swapfile
-          sudo swapon /mnt/swapfile
-
       - name: Cache Talos boot images
         if: matrix.suite != 'local'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
