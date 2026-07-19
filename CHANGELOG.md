@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.4](https://github.com/home-operations/miroir/compare/0.11.3...0.11.4) (2026-07-19)
+
+
+### Bug Fixes
+
+* **agent:** freeze mounted filesystems before snapshot cuts ([#292](https://github.com/home-operations/miroir/issues/292)) ([5dbb657](https://github.com/home-operations/miroir/commit/5dbb6570f0d485d25030f997b8554877950a525f))
+
+
+### Documentation
+
+* **quickstart:** note group snapshot CRD conversion requirements ([#287](https://github.com/home-operations/miroir/issues/287)) ([fdf393c](https://github.com/home-operations/miroir/commit/fdf393c00900f67844f6f86bbb9861b322103a89))
+
 ## [0.11.3](https://github.com/home-operations/miroir/compare/0.11.2...0.11.3) (2026-07-18)
 
 
