@@ -2,6 +2,8 @@
 # siderolabs/drbd extension ships the DRBD 9 kernel module the agent
 # requires (the in-tree drbd.ko is the 8.4 API and is not built anyway).
 customization:
+  extraKernelArgs:
+    - talos.dashboard.disabled=1
   systemExtensions:
     officialExtensions:
       - siderolabs/drbd
