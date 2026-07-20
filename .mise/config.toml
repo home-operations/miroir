@@ -21,7 +21,7 @@ yq = "4.53.3"
 # creates the locked venv on first `uv run`). Material bundles mermaid.js and the
 # admonition styling, so there are no separate preprocessor binaries or committed
 # assets to manage. `uv lock` after bumping a docs dependency in pyproject.toml.
-"aqua:astral-sh/uv" = "0.11.29"
+"aqua:astral-sh/uv" = "0.11.30"
 
 [tasks.manifests]
 description = "Generate CRD and RBAC manifests"
