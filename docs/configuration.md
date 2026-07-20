@@ -40,14 +40,14 @@ A miroir class is a standard StorageClass with
 `provisioner: miroir.home-operations.com` and these `parameters` (all
 values are strings; quote the numbers and booleans):
 
-| Parameter                                          | Default            | Meaning                                                                                                                                                                                                                                                                                                       |
-| -------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `miroir.home-operations.com/replicas`              | `"1"`              | Replica count, 1–3. Above 1 the volume is DRBD-replicated.                                                                                                                                                                                                                                                     |
-| `miroir.home-operations.com/pool`                  | `default`          | The named storage pool the class provisions from. Every replica of a volume lands in this pool on its node, so the pool must exist (in the MiroirNode specs) on at least `replicas` nodes.                                                                                                                     |
-| `miroir.home-operations.com/quorum`                | `freeze`           | Replicated only: `freeze` never diverges but halts writes without a peer majority; `last-man-standing` keeps the survivor writable at the risk of split-brain. See [Replication and quorum](replication.md).                                                                                                   |
-| `miroir.home-operations.com/allowRemoteVolumeAccess` | `"true"`           | Replicated only: pods on nodes without a replica consume the volume through an ephemeral diskless DRBD leg at replication-network speed. `"false"` pins pods to replica nodes for local reads. See [Remote consumers](remote-consumers.md).                                                                     |
-| `miroir.home-operations.com/bitmapGranularity`     | absent (DRBD 4096) | Replicated only: DRBD bitmap block size in bytes, a power of two 4096–1048576. Coarser cuts bitmap RAM proportionally but resyncs more per dirty bit; worth considering for classes holding large volumes. Fixed when a replica's metadata is created: changing the class affects new volumes only.             |
-| `csi.storage.k8s.io/fstype`                        | `ext4`             | `ext4` or `xfs`.                                                                                                                                                                                                                                                                                               |
+| Parameter                                            | Default            | Meaning                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `miroir.home-operations.com/replicas`                | `"1"`              | Replica count, 1–3. Above 1 the volume is DRBD-replicated.                                                                                                                                                                                                                                          |
+| `miroir.home-operations.com/pool`                    | `default`          | The named storage pool the class provisions from. Every replica of a volume lands in this pool on its node, so the pool must exist (in the MiroirNode specs) on at least `replicas` nodes.                                                                                                          |
+| `miroir.home-operations.com/quorum`                  | `freeze`           | Replicated only: `freeze` never diverges but halts writes without a peer majority; `last-man-standing` keeps the survivor writable at the risk of split-brain. See [Replication and quorum](replication.md).                                                                                        |
+| `miroir.home-operations.com/allowRemoteVolumeAccess` | `"true"`           | Replicated only: pods on nodes without a replica consume the volume through an ephemeral diskless DRBD leg at replication-network speed. `"false"` pins pods to replica nodes for local reads. See [Remote consumers](remote-consumers.md).                                                         |
+| `miroir.home-operations.com/bitmapGranularity`       | absent (DRBD 4096) | Replicated only: DRBD bitmap block size in bytes, a power of two 4096–1048576. Coarser cuts bitmap RAM proportionally but resyncs more per dirty bit; worth considering for classes holding large volumes. Fixed when a replica's metadata is created: changing the class affects new volumes only. |
+| `csi.storage.k8s.io/fstype`                          | `ext4`             | `ext4` or `xfs`.                                                                                                                                                                                                                                                                                    |
 
 The standard StorageClass fields behave as usual, with two worth
 writing explicitly, because the Kubernetes defaults are rarely what you
@@ -93,14 +93,14 @@ Each ZFS pool can tune properties for newly created zvols:
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: paris
+  name: paris
 spec:
-    pools:
-        - name: default
-          zfs:
-              dataset: data-pool/miroir
-              volBlockSize: 16K
-              compression: inherit
+  pools:
+    - name: default
+      zfs:
+        dataset: data-pool/miroir
+        volBlockSize: 16K
+        compression: inherit
 ```
 
 These settings apply only when miroir creates a zvol. Reconciliation does

@@ -1,5 +1,5 @@
-# Driver definition for the kind e2e: miroir-local (lvmthin, replicas:1),
-# where volumes are pinned to their node — hence singleNodeVolume: true.
+# Driver definition for the miroir-local path (lvmthin, replicas:1), where volumes
+# are pinned to their node — hence singleNodeVolume: true.
 StorageClass:
   FromExistingClassName: miroir-local
 SnapshotClass:

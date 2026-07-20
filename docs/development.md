@@ -14,9 +14,12 @@ mise run lint          # golangci-lint
 mise run build         # bin/miroir
 mise run manifests     # CRD + RBAC generation
 mise run helm-test     # helm-unittest against the chart
-mise run test-e2e      # full kind-based e2e (needs docker)
 mise run docs-serve    # this docs site, live-reloading
 ```
+
+The end-to-end suite runs against a real Talos cluster booted under QEMU by
+[talosctl-cluster-action](https://github.com/home-operations/talosctl-cluster-action);
+CI runs it on every PR, and `test/e2e-qemu/README.md` documents how to run it locally.
 
 The docs site is MkDocs Material: pages live under `docs/`, the nav
 lives in `mkdocs.yml`, and `mise run docs` builds the deployable

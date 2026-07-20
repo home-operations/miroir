@@ -53,16 +53,16 @@ critical-pod window to cover the agent's
 
 ```yaml
 machine:
-    kernel:
-        modules:
-            - name: drbd
-              parameters:
-                  - usermode_helper=disabled
-            - name: drbd_transport_tcp
-    kubelet:
-        extraConfig:
-            shutdownGracePeriod: 120s
-            shutdownGracePeriodCriticalPods: 60s
+  kernel:
+    modules:
+      - name: drbd
+        parameters:
+          - usermode_helper=disabled
+      - name: drbd_transport_tcp
+  kubelet:
+    extraConfig:
+      shutdownGracePeriod: 120s
+      shutdownGracePeriodCriticalPods: 60s
 ```
 
 [factory]: https://factory.talos.dev

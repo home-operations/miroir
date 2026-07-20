@@ -5,7 +5,7 @@
 #   ./test/conformance/run.sh                 # parallel-safe set
 #   SKIP='\[Disruptive\]' ./run.sh PROCS=1    # include [Serial] specs
 #   FOCUS='.*snapshot.*' ./run.sh             # narrow down
-#   TESTDRIVER=testdriver-local.yaml ./run.sh # kind / miroir-local
+#   TESTDRIVER=testdriver-local.yaml ./run.sh # miroir-local (lvmthin)
 #   VERBOSE=1 ./run.sh                        # per-spec live output
 #
 # The e2e.test/ginkgo binaries are fetched to match the server version

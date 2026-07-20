@@ -1,11 +1,11 @@
 //go:build e2e
 
 // Package e2e drives a Helm-deployed miroir through the CSI volume lifecycle on
-// the kind cluster $KUBECONFIG points at (see the mise test-e2e task). It is
-// build-tagged so `mise run test` never compiles it.
+// the Talos QEMU cluster $KUBECONFIG points at (test/e2e-qemu runs it as part of
+// the conformance leg). It is build-tagged so `mise run test` never compiles it.
 //
-// Scope: the local backend (miroir-local / lvmthin / replicas:1). The DRBD path
-// needs modules absent from kind; it stays gated by smoke.sh + conformance.
+// Scope: the local backend (miroir-local / lvmthin / replicas:1). The DRBD path is
+// left to the replicated conformance leg and smoke.sh.
 package e2e
 
 import (

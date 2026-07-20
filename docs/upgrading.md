@@ -32,10 +32,10 @@ starts with the CRDs.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 spec:
-    install:
-        crds: Create
-    upgrade:
-        crds: CreateReplace # default is Skip; required
+  install:
+    crds: Create
+  upgrade:
+    crds: CreateReplace # default is Skip; required
 ```
 
 **Plain Helm** has no automatic path; apply the new chart's CRDs before
@@ -128,16 +128,16 @@ Before (0.10 miroir values):
 
 ```yaml
 nodes:
-    k8s-0:
-        zone: rack-1
-        pools:
-            default:
-                backend: lvmthin
-                device: /dev/disk/by-partlabel/r-miroir
-                thinPoolSize: 400g
+  k8s-0:
+    zone: rack-1
+    pools:
+      default:
+        backend: lvmthin
+        device: /dev/disk/by-partlabel/r-miroir
+        thinPoolSize: 400g
 storageClasses:
-    - name: miroir-replicated
-      replicas: 2
+  - name: miroir-replicated
+    replicas: 2
 ```
 
 After (plain manifests):
@@ -146,25 +146,25 @@ After (plain manifests):
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: k8s-0
+  name: k8s-0
 spec:
-    zone: rack-1
-    pools:
-        - name: default
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
-              poolSize: 400g
+  zone: rack-1
+  pools:
+    - name: default
+      lvmthin:
+        device: /dev/disk/by-partlabel/r-miroir
+        poolSize: 400g
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-    name: miroir-replicated
+  name: miroir-replicated
 provisioner: miroir.home-operations.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-    miroir.home-operations.com/replicas: "2"
-    csi.storage.k8s.io/fstype: ext4
+  miroir.home-operations.com/replicas: "2"
+  csi.storage.k8s.io/fstype: ext4
 ```
 
 Apply the MiroirNode manifests **before** upgrading the driver chart,
@@ -236,7 +236,7 @@ missing, the CRD update in step 1 was skipped and the old schema pruned it:
 apply the CRDs and then your manifests again.
 
 /// details | Also breaking, but unlikely to affect you
-    type: note
+type: note
 
 - The `--nodes-config` flag and `--mode=setup` are gone, along with the
   per-node setup Jobs and their ServiceAccount. Only custom `agent.extraArgs`
@@ -284,22 +284,22 @@ Before:
 
 ```yaml
 nodes:
-    k8s-0:
-        zone: rack-1
-        backend: lvmthin
-        device: /dev/disk/by-partlabel/r-miroir
+  k8s-0:
+    zone: rack-1
+    backend: lvmthin
+    device: /dev/disk/by-partlabel/r-miroir
 ```
 
 After:
 
 ```yaml
 nodes:
-    k8s-0:
-        zone: rack-1
-        pools:
-            default:
-                backend: lvmthin
-                device: /dev/disk/by-partlabel/r-miroir
+  k8s-0:
+    zone: rack-1
+    pools:
+      default:
+        backend: lvmthin
+        device: /dev/disk/by-partlabel/r-miroir
 ```
 
 The chart fails fast on the flat shape, so a missed node is a template error
@@ -322,21 +322,21 @@ unknown (the same as a cold cluster) until the DaemonSet finishes rolling.
 
 ```yaml
 nodes:
-    k8s-0:
-        pools:
-            default:
-                backend: lvmthin
-                device: /dev/disk/by-partlabel/r-miroir
-            fast:
-                backend: lvmthin
-                device: /dev/disk/by-id/nvme-Micron_7450_MTFDKBA800TFS_XXXX
-    # k8s-1, k8s-2 identical
+  k8s-0:
+    pools:
+      default:
+        backend: lvmthin
+        device: /dev/disk/by-partlabel/r-miroir
+      fast:
+        backend: lvmthin
+        device: /dev/disk/by-id/nvme-Micron_7450_MTFDKBA800TFS_XXXX
+  # k8s-1, k8s-2 identical
 storageClasses:
-    - name: miroir-replicated
-      replicas: 2
-    - name: miroir-replicated-fast
-      replicas: 3
-      pool: fast
+  - name: miroir-replicated
+    replicas: 2
+  - name: miroir-replicated-fast
+    replicas: 3
+    pool: fast
 ```
 
 Each agent creates the new pool's VG and thin-pool at startup. New pools get
@@ -344,7 +344,7 @@ Each agent creates the new pool's VG and thin-pool at startup. New pools get
 needs no data migration.
 
 /// details | Also breaking, but unlikely to affect you
-    type: note
+type: note
 
 - The agent/setup `--lvm-vg` and `--lvm-thinpool` flags are gone; VG naming
   derives from the pool name. The chart never set them; only custom
@@ -358,7 +358,7 @@ needs no data migration.
   are not.
 - Do not remove a pool from `nodes` while volumes still reference it. Their
   reconciles and deletions fail loudly (`storage pool "x" is not configured on
-  this node`) until the pool returns or the volumes are gone.
+this node`) until the pool returns or the volumes are gone.
 
 ///
 
@@ -375,7 +375,7 @@ values before you upgrade.**
 
 ```yaml
 gateway:
-    enabled: true
+  enabled: true
 ```
 
 Without it, running gateway pods keep serving until their next restart, but
