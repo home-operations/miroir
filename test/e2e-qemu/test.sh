@@ -118,8 +118,21 @@ spec:
         path: /run/udev
 EOF
     done
-    kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Succeeded \
-        pod -l app=zpool-create --timeout=5m
+    # Poll rather than kubectl wait: wait --for can watch one phase only, and a
+    # Failed pod should fail the run now (with its logs), not after the full
+    # timeout.
+    local end=$((SECONDS + 300)) phases
+    while :; do
+        phases=$(kubectl -n "$NAMESPACE" get pods -l app=zpool-create \
+            -o jsonpath='{.items[*].status.phase}')
+        if [[ "$phases" == *Failed* ]]; then
+            kubectl -n "$NAMESPACE" logs -l app=zpool-create --prefix --tail=5 || true
+            die "zpool creation failed"
+        fi
+        [[ -n "$phases" && "$phases" != *Pending* && "$phases" != *Running* ]] && break
+        ((SECONDS < end)) || die "timed out waiting for the zpool pods"
+        sleep 2
+    done
     kubectl -n "$NAMESPACE" delete pod -l app=zpool-create --wait=false
 }
 
