@@ -1,8 +1,7 @@
-# Storage classes for the Talos (QEMU) e2e: plain manifests, exactly
-# what the docs tell users to author. The topology (a MiroirNodeGroup)
-# is applied by the e2e-replicated-provision task. The class names match
-# test/conformance/testdriver.yaml and testdriver-local.yaml
-# (FromExistingClassName).
+# Storage classes for the QEMU e2e: plain manifests, exactly what the docs tell users
+# to author. The topology (a MiroirNodeGroup) is applied by test.sh, which knows the
+# worker data disk. The class names match test/conformance/testdriver.yaml and
+# testdriver-local.yaml (FromExistingClassName).
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:

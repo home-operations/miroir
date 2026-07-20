@@ -30,8 +30,8 @@ ENTRYPOINT ["/usr/local/bin/miroir"]
 #     against the DRBD 9.3.x kernel module the siderolabs extension
 #     ships. The birth generation depends on drbdadm
 #     new-current-uuid --clear-bitmap behavior — re-validate with
-#     smoke.sh + conformance on real DRBD (the kind e2e exercises the
-#     local backend only) before shipping a utils or base bump.
+#     smoke.sh + conformance on real DRBD (the Go e2e specs exercise
+#     the local backend only) before shipping a utils or base bump.
 #   - zfs userland 2.3 against the siderolabs/zfs 2.4 module: userland
 #     older than the module is the supported direction, and miroir only
 #     uses ancient ops (create -V/snapshot/clone/promote/volsize).

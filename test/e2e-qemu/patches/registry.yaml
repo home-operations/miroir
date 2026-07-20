@@ -1,0 +1,11 @@
+# CI runs a plain-HTTP registry on the runner and pushes the miroir images there, so
+# the nodes pull them over the QEMU bridge instead of from the internet. 10.5.0.1 is
+# the bridge gateway, the first address of spec.network.cidr; a leg that changes that
+# range has to change this with it. Inert for a local run, where nothing resolves
+# registry.e2e unless CONTROLLER_IMAGE / AGENT_IMAGE name it.
+machine:
+  registries:
+    mirrors:
+      registry.e2e:
+        endpoints:
+          - http://10.5.0.1:5000

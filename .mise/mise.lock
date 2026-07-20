@@ -326,45 +326,6 @@ url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-windows-amd64.
 url_api = "https://api.github.com/repos/jqlang/jq/releases/assets/453012788"
 provenance = "github-attestations"
 
-[[tools.kind]]
-version = "0.32.0"
-backend = "aqua:kubernetes-sigs/kind"
-
-[tools.kind."platforms.linux-arm64"]
-checksum = "sha256:b92cd615e97585de8ddade28ed5cd7feb4248d717c233eea5b03c37298900f5d"
-url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-arm64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/kind/releases/assets/436442565"
-
-[tools.kind."platforms.linux-arm64-musl"]
-checksum = "sha256:b92cd615e97585de8ddade28ed5cd7feb4248d717c233eea5b03c37298900f5d"
-url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-arm64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/kind/releases/assets/436442565"
-
-[tools.kind."platforms.linux-x64"]
-checksum = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
-url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-amd64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/kind/releases/assets/436442498"
-
-[tools.kind."platforms.linux-x64-musl"]
-checksum = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
-url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-linux-amd64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/kind/releases/assets/436442498"
-
-[tools.kind."platforms.macos-arm64"]
-checksum = "sha256:dca67911095a110c2b5c36e26df6cac860c602033e456c0db47be498cdef1ebb"
-url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-darwin-arm64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/kind/releases/assets/436442412"
-
-[tools.kind."platforms.macos-x64"]
-checksum = "sha256:295ac6d0d634c9819c9907df45e3017d1f13166bd13c3404c45e79f7faa47498"
-url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-darwin-amd64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/kind/releases/assets/436442366"
-
-[tools.kind."platforms.windows-x64"]
-checksum = "sha256:0bcb2d1cfedc1912d664014db716937e8a0e843e91c6807b4db2025dbc8989fa"
-url = "https://github.com/kubernetes-sigs/kind/releases/download/v0.32.0/kind-windows-amd64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/kind/releases/assets/436442633"
-
 [[tools.kube-controller-tools]]
 version = "0.21.0"
 backend = "github:kubernetes-sigs/controller-tools"
@@ -571,36 +532,43 @@ backend = "aqua:siderolabs/talos"
 [tools.talos."platforms.linux-arm64"]
 checksum = "sha256:59f59e2c0c79504f4666cb7c2307ca32ce2925a53fbebee3e2454ad5ea1f230e"
 url = "https://github.com/siderolabs/talos/releases/download/v1.13.6/talosctl-linux-arm64"
+url_api = "https://api.github.com/repos/siderolabs/talos/releases/assets/471115019"
 provenance = "cosign"
 
 [tools.talos."platforms.linux-arm64-musl"]
 checksum = "sha256:59f59e2c0c79504f4666cb7c2307ca32ce2925a53fbebee3e2454ad5ea1f230e"
 url = "https://github.com/siderolabs/talos/releases/download/v1.13.6/talosctl-linux-arm64"
+url_api = "https://api.github.com/repos/siderolabs/talos/releases/assets/471115019"
 provenance = "cosign"
 
 [tools.talos."platforms.linux-x64"]
 checksum = "sha256:540c5e7cb0d3fa3a9b2e1c717ced212727b73bcaf0cf9cf9ba2472ec381041d4"
 url = "https://github.com/siderolabs/talos/releases/download/v1.13.6/talosctl-linux-amd64"
+url_api = "https://api.github.com/repos/siderolabs/talos/releases/assets/471115014"
 provenance = "cosign"
 
 [tools.talos."platforms.linux-x64-musl"]
 checksum = "sha256:540c5e7cb0d3fa3a9b2e1c717ced212727b73bcaf0cf9cf9ba2472ec381041d4"
 url = "https://github.com/siderolabs/talos/releases/download/v1.13.6/talosctl-linux-amd64"
+url_api = "https://api.github.com/repos/siderolabs/talos/releases/assets/471115014"
 provenance = "cosign"
 
 [tools.talos."platforms.macos-arm64"]
 checksum = "sha256:8badc3f3907776488e9b13b6a521ffadf301dff9a3f097c1551102c363905c9f"
 url = "https://github.com/siderolabs/talos/releases/download/v1.13.6/talosctl-darwin-arm64"
+url_api = "https://api.github.com/repos/siderolabs/talos/releases/assets/471115050"
 provenance = "cosign"
 
 [tools.talos."platforms.macos-x64"]
 checksum = "sha256:156c4189c36f4419774e17ebf7ce7818869b7c1068031a026f4702b5ab271495"
 url = "https://github.com/siderolabs/talos/releases/download/v1.13.6/talosctl-darwin-amd64"
+url_api = "https://api.github.com/repos/siderolabs/talos/releases/assets/471115015"
 provenance = "cosign"
 
 [tools.talos."platforms.windows-x64"]
 checksum = "sha256:87289b89abc444e9428d067f4e4097757148f4c3283491444ef4cceb9cd58b07"
 url = "https://github.com/siderolabs/talos/releases/download/v1.13.6/talosctl-windows-amd64.exe"
+url_api = "https://api.github.com/repos/siderolabs/talos/releases/assets/471115018"
 provenance = "cosign"
 
 [[tools.yq]]
@@ -634,6 +602,7 @@ provenance = "cosign"
 [tools.yq."platforms.macos-arm64"]
 checksum = "sha256:877de31753a4dd2401aa048937aa9a7fc4d5f6ce858cf31508c5802954297213"
 url = "https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_darwin_arm64"
+url_api = "https://api.github.com/repos/mikefarah/yq/releases/assets/440146762"
 provenance = "cosign"
 
 [tools.yq."platforms.macos-x64"]

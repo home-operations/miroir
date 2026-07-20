@@ -1,0 +1,43 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/home-operations/talosctl-cluster-action/main/schema/talos-cluster.json
+# The one cluster shape both QEMU suites boot: a controller node and two storage
+# workers. conformance and replicated run this same document on separate runners and
+# differ only in which testdriver test.sh hands the upstream suite (see README.md).
+#
+# The ephemeral profile supplies the throwaway-cluster settings miroir used to patch
+# in by hand -- the dashboard/auditd/mitigations kernel args, kubelet image GC and
+# eviction thresholds, etcd unsafe-no-fsync, the apiserver audit policy, and pinning
+# machine.install.image to the schematic -- so this document is only what makes a
+# miroir cluster a miroir cluster.
+apiVersion: v1alpha1
+kind: TalosCluster
+metadata:
+  # Short: the name is in the QEMU monitor socket path twice, and test.sh guards on
+  # the miroir-e2e prefix so it cannot be pointed at a real cluster by accident.
+  name: miroir-e2e
+spec:
+  controlplanes:
+    count: 1
+  workers:
+    count: 2
+    # A worker runs DRBD, dm-thin, kubelet and every test pod; 3GiB left them tight
+    # enough to OOM under the parallel conformance suite.
+    memory: 5GiB
+  network:
+    # Explicit because patches/registry.yaml hardcodes the gateway, the first address
+    # of this range. It is also talosctl's default.
+    cidr: 10.5.0.0/24
+  qemu:
+    schematic: "@schematic.yaml"
+    # The first disk goes to every node (the system disk); the second is attached to
+    # workers only -- it is /dev/vdb, which the MiroirNodeGroup points the lvmthin
+    # pool at. Parallel conformance provisions many volumes and the controller's
+    # overcommit guard counts virtual size at capacity times two, so it is sized well
+    # above the sum of the live volumes.
+    disks:
+      - virtio:8GiB
+      - virtio:20GiB
+  config-patches:
+    cluster:
+      - "@patches/modules.yaml"
+      - "@patches/registry.yaml"
