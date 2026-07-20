@@ -26,6 +26,7 @@ import (
 	"context"
 	"os"
 	"slices"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -203,6 +204,9 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 		// FormatAndMount formats only when the device has no filesystem —
 		// the mkfs-if-blank step.
 		if err := d.Mounter.FormatAndMount(dev, target, fsType, flags); err != nil {
+			if rerr := recoverFrozenBdev(ctx, d, vol, dev, err); rerr != nil {
+				return rerr
+			}
 			return status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
 		}
 		if format == "" {
@@ -244,6 +248,39 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 		return status.Errorf(codes.Internal, "record activated flag: %v", err)
 	}
 	return nil
+}
+
+// resourceRestarter is the optional Deps.DRBD upgrade the frozen-bdev
+// recovery needs; *drbd.Driver implements it, a status-only fake skips
+// the recovery.
+type resourceRestarter interface {
+	Restart(ctx context.Context, name string) error
+}
+
+// recoverFrozenBdev handles a mount refused because the device's freeze
+// count is pinned: a filesystem freeze leaked by a snapshot barrier round
+// whose thaw never ran — agent restart or unmount between freeze and thaw
+// (issue #311). The volume is otherwise wedged on this node forever, as
+// FITHAW needs a mountpoint and every new mount is refused; the kernel
+// prints exactly this text for the refusal (fs/super.c get_tree_bdev),
+// surfaced through mount(8)'s output inside the error. Dropping the
+// minor's bdev inode is the only way out: down/up the resource and hand
+// kubelet an Unavailable to retry the stage. Returns nil when the error
+// is not this case (the caller's generic wrap applies).
+func recoverFrozenBdev(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVolume, dev string, mountErr error) error {
+	if vol.Spec.DRBD == nil || !strings.Contains(mountErr.Error(), "blockdev is frozen") {
+		return nil
+	}
+	r, ok := d.DRBD.(resourceRestarter)
+	if !ok {
+		return nil
+	}
+	if err := r.Restart(ctx, vol.Name); err != nil {
+		return status.Errorf(codes.Internal,
+			"clear leaked filesystem freeze on %s (restart %s): %v", dev, vol.Name, err)
+	}
+	return status.Errorf(codes.Unavailable,
+		"cleared a leaked filesystem freeze on %s by restarting %s; retry the stage", dev, vol.Name)
 }
 
 // MarkFormatted flips the Formatted status flag once; shared by the

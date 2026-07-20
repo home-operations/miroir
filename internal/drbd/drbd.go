@@ -842,6 +842,29 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 	return d.releaseMinor(name)
 }
 
+// Restart drops and re-registers the resource's kernel state (down + up),
+// keeping the rendered config and the minor assignment. It exists for one
+// consumer: a filesystem freeze leaked onto an unmounted device pins the
+// bdev's freeze count with no mountpoint left for FITHAW, and dropping the
+// minor's bdev inode is the only remaining way to clear it (issue #311).
+// The disconnect costs a brief bitmap-based resync on reconnect. A
+// resource wearing the teardown wedge signature is refused outright — a
+// down spawned against it can only hang (see ErrWedged); the caller's
+// retry re-evaluates.
+func (d *Driver) Restart(ctx context.Context, name string) error {
+	peerIDs, wedged := d.liveTeardownView(ctx, name)
+	if wedged {
+		return fmt.Errorf("restart %s: teardown wedge signature; refusing to spawn a down", name)
+	}
+	if err := d.downResource(ctx, name, peerIDs); err != nil {
+		return err
+	}
+	if _, err := d.adm(ctx, "up", name); err != nil {
+		return fmt.Errorf("up %s: %w", name, err)
+	}
+	return nil
+}
+
 // DiskUpToDate is the disk state of a replica holding current data.
 const DiskUpToDate = "UpToDate"
 

@@ -180,16 +180,89 @@ func TestFreezeTimeoutSelfCancels(t *testing.T) {
 func TestThawToleratesNotFrozen(t *testing.T) {
 	rec := &ioctlRecorder{errs: []error{unix.EINVAL}}
 	f := testFreezer(rec)
-	if err := f.Thaw(devDrbd1000); err != nil {
+	mp, err := f.Thaw(devDrbd1000)
+	if err != nil {
 		t.Fatalf("EINVAL (not frozen) must be a success: %v", err)
+	}
+	if !strings.HasSuffix(mp, "/globalmount") {
+		t.Fatalf("Thaw must report the mountpoint it reached, got %q", mp)
+	}
+}
+
+func TestThawReportsNoMountpoint(t *testing.T) {
+	rec := &ioctlRecorder{}
+	f := testFreezer(rec)
+	// Not mounted: a no-op, but the empty mountpoint must be visible to
+	// callers — a freeze leaked on an unmounted device was NOT lifted.
+	mp, err := f.Thaw("/dev/drbd9999")
+	if err != nil || mp != "" {
+		t.Fatalf("unmounted device must report no mountpoint, got %q, %v", mp, err)
+	}
+	if len(rec.recorded()) != 0 {
+		t.Fatalf("no ioctl may run without a mount: %v", rec.recorded())
 	}
 }
 
 func TestThawSurfacesRealErrors(t *testing.T) {
 	rec := &ioctlRecorder{errs: []error{errors.New("io error")}}
 	f := testFreezer(rec)
-	if err := f.Thaw(devDrbd1000); err == nil {
+	if _, err := f.Thaw(devDrbd1000); err == nil {
 		t.Fatal("a real thaw failure must surface (a frozen workload)")
+	}
+}
+
+func TestThawMountpointThawsTheStagingMount(t *testing.T) {
+	rec := &ioctlRecorder{}
+	f := testFreezer(rec)
+	target := "/var/lib/kubelet/plugins/kubernetes.io/csi/miroir/abc/globalmount"
+	if err := f.ThawMountpoint(target); err != nil {
+		t.Fatal(err)
+	}
+	if calls := rec.recorded(); len(calls) != 1 || calls[0] != "thaw "+target {
+		t.Fatalf("unexpected ioctls: %v", calls)
+	}
+}
+
+func TestThawMountpointSkipsNonMountpoint(t *testing.T) {
+	rec := &ioctlRecorder{}
+	f := testFreezer(rec)
+	// An unstage retry after the unmount already happened: the target is
+	// no longer in mountinfo, and an ioctl against a plain directory would
+	// reach whatever filesystem holds it.
+	if err := f.ThawMountpoint("/var/lib/kubelet/plugins/kubernetes.io/csi/miroir/gone/globalmount"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.recorded()) != 0 {
+		t.Fatalf("no ioctl may run against a non-mountpoint: %v", rec.recorded())
+	}
+}
+
+func TestThawMountpointSkipsNonBlockMounts(t *testing.T) {
+	rec := &ioctlRecorder{}
+	f := testFreezer(rec)
+	// A devtmpfs/NFS-style mount (major 0) can never wear a bdev freeze,
+	// and opening a dead hard-NFS mountpoint would hang — never touch it.
+	if err := f.ThawMountpoint("/var/lib/kubelet/pods/y/volumeDevices/pvc-2"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.recorded()) != 0 {
+		t.Fatalf("no ioctl may run against a non-block mount: %v", rec.recorded())
+	}
+}
+
+func TestThawMountpointToleratesNotFrozen(t *testing.T) {
+	rec := &ioctlRecorder{errs: []error{unix.EINVAL}}
+	f := testFreezer(rec)
+	if err := f.ThawMountpoint("/var/lib/kubelet/plugins/kubernetes.io/csi/miroir/abc/globalmount"); err != nil {
+		t.Fatalf("EINVAL (not frozen) must be a success: %v", err)
+	}
+}
+
+func TestThawMountpointSurfacesRealErrors(t *testing.T) {
+	rec := &ioctlRecorder{errs: []error{errors.New("io error")}}
+	f := testFreezer(rec)
+	if err := f.ThawMountpoint("/var/lib/kubelet/plugins/kubernetes.io/csi/miroir/abc/globalmount"); err == nil {
+		t.Fatal("a real thaw failure must surface")
 	}
 }
 
