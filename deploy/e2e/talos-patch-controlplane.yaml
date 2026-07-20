@@ -1,0 +1,14 @@
+# Control-plane-only machine config for the replicated (QEMU) e2e
+# cluster. Kept separate from talos-patch.yaml because Talos rejects an
+# etcd section on a worker config ("etcd config is only allowed on
+# control plane machines"), so these cannot ride the all-node patch.
+cluster:
+  etcd:
+    extraArgs:
+      unsafe-no-fsync: "true"
+  apiServer:
+    auditPolicy:
+      apiVersion: audit.k8s.io/v1
+      kind: Policy
+      rules:
+        - level: None
