@@ -29,13 +29,15 @@ spec:
     cidr: 10.5.0.0/24
   qemu:
     schematic: "@schematic.yaml"
-    # The first disk goes to every node (the system disk); the second is attached to
-    # workers only -- it is /dev/vdb, which the MiroirNodeGroup points the lvmthin
-    # pool at. Parallel conformance provisions many volumes and the controller's
-    # overcommit guard counts virtual size at capacity times two, so it is sized well
-    # above the sum of the live volumes.
+    # The first disk goes to every node (the system disk); the rest are attached to
+    # workers only -- /dev/vdb, which the MiroirNodeGroup points the lvmthin pool
+    # at, and /dev/vdc, which test.sh turns into the zpool backing the zfs pool.
+    # Parallel conformance provisions many volumes and the controller's overcommit
+    # guard counts virtual size at capacity times two, so both are sized well above
+    # the sum of the live volumes.
     disks:
       - virtio:8GiB
+      - virtio:20GiB
       - virtio:20GiB
   config-patches:
     cluster:

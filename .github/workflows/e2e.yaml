@@ -48,6 +48,8 @@ jobs:
           # group snapshots included.
           - suite: replicated
             testdriver: testdriver.yaml
+          - suite: zfs
+            testdriver: testdriver-zfs.yaml
     env:
       # Two names for one image in the runner-local registry. The nodes pull
       # registry.e2e, which the Talos mirror in patches/registry.yaml points at the
