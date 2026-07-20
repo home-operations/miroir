@@ -1,7 +1,8 @@
-# DRBD 9 needs its kernel modules loaded and the agent drives dm-thin:
+# DRBD 9 needs its kernel modules loaded and the agent drives dm-thin and zfs:
 # usermode_helper=disabled stops DRBD from calling out to /sbin/drbdadm on the host,
-# which Talos does not ship, and dm_thin_pool is =m in the Talos kernel with nothing
-# on the host to autoload it. Mirrors docs/requirements.md. Applied to every node.
+# which Talos does not ship; dm_thin_pool is =m in the Talos kernel with nothing on
+# the host to autoload it; zfs comes from the schematic's extension and nothing
+# autoloads it either. Mirrors docs/requirements.md. Applied to every node.
 machine:
   kernel:
     modules:
@@ -10,3 +11,4 @@ machine:
           - usermode_helper=disabled
       - name: drbd_transport_tcp
       - name: dm_thin_pool
+      - name: zfs

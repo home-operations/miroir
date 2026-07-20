@@ -5,32 +5,36 @@ End-to-end tests for the miroir CSI driver against a local Talos cluster, booted
 
 ## Overview
 
-Both CI legs boot the same `cluster.yaml` -- a controller node and two storage
-workers, with the DRBD kernel module baked in by an Image Factory schematic -- and
-drive the tests against it. The action boots the shape the document describes, exports
-a kubeconfig and talosconfig, and destroys the cluster in its post step; `test.sh`
-then installs the driver from a packaged Helm chart and runs the tests.
+Every CI leg boots the same `cluster.yaml` -- a controller node and two storage
+workers, with the DRBD and ZFS kernel modules baked in by an Image Factory schematic
+-- and drives the tests against it. The action boots the shape the document
+describes, exports a kubeconfig and talosconfig, and destroys the cluster in its post
+step; `test.sh` then installs the driver from a packaged Helm chart and runs the
+tests.
 
-The two legs run the same document and differ in what `test.sh` drives against it, so
-a failure names the path that broke:
+The legs run the same document and differ in what `test.sh` drives against it, so a
+failure names the path that broke:
 
 | Leg           | Runs                                       | Class               |
 | ------------- | ------------------------------------------ | ------------------- |
 | `conformance` | miroir's Go specs, then the upstream suite | `miroir-local`      |
 | `replicated`  | the upstream suite                         | `miroir-replicated` |
+| `zfs`         | the upstream suite                         | `miroir-zfs`        |
 
 miroir's Go specs (`test/e2e`) assert the local lifecycle, snapshot/restore, block and
 placement behaviour the upstream suite does not; the conformance leg runs them
 (`RUN_SPECS=1`) against the miroir-local (lvmthin, replicas: 1) class before the long
 external-storage run. The replicated leg drives that upstream suite against the DRBD
-(replicas: 2) class, group snapshots included. Real per-node kernels and real block
-devices are the point: the DRBD path needs the DRBD 9 module, which only a real Talos
-node has.
+(replicas: 2) class, group snapshots included; the zfs leg drives it against the same
+DRBD shape backed by the zfs pool instead, so replication pairs zvol with zvol and
+the zfs snapshot/restore path runs under the suite. Real per-node kernels and real
+block devices are the point: the DRBD path needs the DRBD 9 module, which only a real
+Talos node has.
 
 ```text
-cluster.yaml              the one cluster shape both legs boot
-schematic.yaml            the drbd system extension (referenced by cluster.yaml)
-patches/modules.yaml      shared: the DRBD / dm-thin kernel modules
+cluster.yaml              the one cluster shape every leg boots
+schematic.yaml            the drbd + zfs system extensions (referenced by cluster.yaml)
+patches/modules.yaml      shared: the DRBD / dm-thin / zfs kernel modules
 patches/registry.yaml     shared: where the nodes pull the miroir images
 classes.yaml              the StorageClasses / snapshot classes under test
 common.sh                 shared configuration for the scripts
@@ -63,7 +67,7 @@ sudo -E (mise which talosctl) cluster create qemu \
     --cidr 10.5.0.0/24 \
     --schematic-id "$SCHEMATIC_ID" \
     --controlplanes 1 --workers 2 --memory-workers 5GiB \
-    --disks virtio:8GiB,virtio:20GiB \
+    --disks virtio:8GiB,virtio:20GiB,virtio:20GiB \
     --config-patch @patches/modules.yaml \
     --config-patch @patches/registry.yaml \
     --talosconfig-destination /tmp/miroir-e2e/talosconfig
@@ -74,7 +78,7 @@ talosctl kubeconfig /tmp/miroir-e2e/kubeconfig --nodes 10.5.0.2 --force
 set -gx CLUSTER_NAME miroir-e2e
 set -gx KUBECONFIG /tmp/miroir-e2e/kubeconfig
 set -gx TALOSCONFIG /tmp/miroir-e2e/talosconfig
-set -gx TESTDRIVER testdriver.yaml # replicated leg; or testdriver-local.yaml
+set -gx TESTDRIVER testdriver.yaml # or testdriver-local.yaml / testdriver-zfs.yaml
 set -gx RUN_SPECS 1                 # also run the Go specs (the conformance leg does)
 ./test.sh
 
@@ -124,10 +128,14 @@ The image overrides (`image.*`, `agent.image.*`) and `groupSnapshots.enabled` ar
 passed as `--set` either way, so they win over the chart's defaults.
 
 The install is CR-first: the CRDs, the StorageClasses, and a labelled MiroirNodeGroup
-pointing the lvmthin pool at the workers' `/dev/vdb` all land before the driver, so
-the agent boots straight into storage mode. The namespace is labelled
-`pod-security.kubernetes.io/enforce=privileged` first, because Talos enforces the
-baseline standard and would otherwise reject the privileged agent DaemonSet.
+pointing the lvmthin pool at the workers' `/dev/vdb` and the zfs pool at a dataset on
+the `tank` zpool all land before the driver, so the agent boots straight into storage
+mode. The zpool itself is the one piece of node state the agent deliberately leaves
+to the operator, so `test.sh` creates it first: one privileged pod per worker,
+running the agent image's own `zpool create` against `/dev/vdc`. The namespace is
+labelled `pod-security.kubernetes.io/enforce=privileged` before any of this, because
+Talos enforces the baseline standard and would otherwise reject the privileged zpool
+pods and agent DaemonSet.
 
 ## What the action's profile supplies
 
@@ -144,9 +152,9 @@ matching Factory installer, so the drbd extension would survive a `talosctl upgr
 The e2e never upgrades, so this is inert here, but it is the correct default and costs
 nothing.
 
-What is left in `patches/` is only what the profile has no opinion about: the DRBD and
-dm-thin kernel modules the agent needs, and the `registry.e2e` mirror that feeds the
-nodes their images.
+What is left in `patches/` is only what the profile has no opinion about: the DRBD,
+dm-thin, and zfs kernel modules the agent needs, and the `registry.e2e` mirror that
+feeds the nodes their images.
 
 ## Configuration
 

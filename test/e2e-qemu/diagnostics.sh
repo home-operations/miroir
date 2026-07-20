@@ -26,6 +26,13 @@ for n in $workers; do
     echo "== $n =="
     talosctl -n "$n" read /proc/drbd
 done
+echo "---- zfs state ----"
+for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=agent \
+    -o jsonpath='{.items[*].metadata.name}'); do
+    echo "== $pod =="
+    kubectl exec -n "$NAMESPACE" "$pod" -c agent -- zpool status 2>&1
+    kubectl exec -n "$NAMESPACE" "$pod" -c agent -- zfs list -t all 2>&1
+done
 echo "---- worker dmesg (tail) ----"
 talosctl -n "${workers// /,}" dmesg | tail -100
 true

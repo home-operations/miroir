@@ -56,12 +56,80 @@ install_snapshot_stack() {
     kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=150s
 }
 
+# Talos enforces the baseline Pod Security Standard, which rejects privileged pods;
+# the namespace must carry the privileged label before the zpool pods or helm create
+# any.
+prepare_namespace() {
+    log "Preparing the $NAMESPACE namespace..."
+    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+    kubectl label namespace "$NAMESPACE" pod-security.kubernetes.io/enforce=privileged --overwrite
+}
+
+# The agent creates the parent dataset itself but a zpool is deliberately the
+# operator's (docs/quickstart.md), so the harness plays operator: one privileged pod
+# per worker runs zpool create on /dev/vdc, the third virtio disk cluster.yaml
+# attaches to workers. The agent image ships the zfs userland and the host carries
+# the module, exactly like the agent's own execution environment, and the mounts
+# mirror the agent's: /run/udev because zpool create partitions a whole disk and
+# then waits on udev for the partition nodes.
+#
+# The same pod pins the ARC to 512MiB, which would otherwise grow toward most of a
+# worker's 5GiB the parallel suite needs for pods. Through sysfs at runtime because
+# nothing earlier can deliver the parameter: a zfs.zfs_arc_max kernel arg needs
+# modprobe (Talos loads modules through kmod directly), and a machine-config module
+# parameter races the zfs extension's own service for who loads the module.
+create_zpools() {
+    log "Creating the zfs pool on each worker..."
+    for node in $(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+        -o jsonpath='{.items[*].metadata.name}'); do
+        kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zpool-create-${node}
+  namespace: ${NAMESPACE}
+  labels:
+    app: zpool-create
+spec:
+  nodeName: ${node}
+  restartPolicy: Never
+  containers:
+    - name: zpool-create
+      image: ${AGENT_IMAGE}
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          echo 536870912 > /sys/module/zfs/parameters/zfs_arc_max
+          zpool list tank >/dev/null 2>&1 || zpool create -f tank /dev/vdc
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: dev
+          mountPath: /dev
+        - name: run-udev
+          mountPath: /run/udev
+  volumes:
+    - name: dev
+      hostPath:
+        path: /dev
+    - name: run-udev
+      hostPath:
+        path: /run/udev
+EOF
+    done
+    kubectl -n "$NAMESPACE" wait --for=jsonpath='{.status.phase}'=Succeeded \
+        pod -l app=zpool-create --timeout=5m
+    kubectl -n "$NAMESPACE" delete pod -l app=zpool-create --wait=false
+}
+
 # Config is CR-first, the same order the upgrade guide mandates: CRDs, then the
 # classes and the topology, then the driver -- so the agent boots straight into
 # storage mode instead of client-only plus a self-restart. Both workers carry the
-# storage class label; /dev/vdb is the extra virtio disk cluster.yaml attaches to
-# workers, and the labelled MiroirNodeGroup is the group controller's coverage:
-# label -> group -> materialized MiroirNode -> agent.
+# storage class label; /dev/vdb is the second virtio disk cluster.yaml attaches to
+# workers, tank the zpool create_zpools made on the third, and the labelled
+# MiroirNodeGroup is the group controller's coverage: label -> group ->
+# materialized MiroirNode -> agent.
 apply_storage_config() {
     log "Applying CRDs, classes, and the node topology..."
     kubectl apply -f "${REPO_ROOT}/charts/miroir/crds/"
@@ -88,19 +156,15 @@ spec:
       - name: default
         lvmthin:
           device: /dev/vdb
+      - name: zfs
+        zfs:
+          dataset: tank/miroir
 EOF
 }
 
 # Install the chart the way it is actually distributed: packaged, and -- in CI --
 # pushed to an OCI registry and pulled back, rather than from the working tree.
 install_chart() {
-    # Talos enforces the baseline Pod Security Standard, which rejects the privileged
-    # agent DaemonSet; the namespace must carry the privileged label before helm
-    # creates any pods.
-    log "Preparing the $NAMESPACE namespace..."
-    kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-    kubectl label namespace "$NAMESPACE" pod-security.kubernetes.io/enforce=privileged --overwrite
-
     local controller_repo controller_tag agent_repo agent_tag
     IFS=':' read -r controller_repo controller_tag <<<"$CONTROLLER_IMAGE"
     IFS=':' read -r agent_repo agent_tag <<<"$AGENT_IMAGE"
@@ -151,8 +215,9 @@ main() {
     : "${CLUSTER_NAME:?must be metadata.name from cluster.yaml}"
 
     # Which storage class the upstream suite drives. testdriver.yaml is the replicated
-    # (DRBD) class; testdriver-local.yaml is the single-node lvmthin one. run.sh reads
-    # SKIP / PROCS / VERBOSE / FOCUS from the environment, so the workflow sets those.
+    # (DRBD over lvmthin) class; testdriver-local.yaml the single-node lvmthin one;
+    # testdriver-zfs.yaml the replicated zfs one. run.sh reads SKIP / PROCS / VERBOSE
+    # / FOCUS from the environment, so the workflow sets those.
     export TESTDRIVER="${TESTDRIVER:-testdriver.yaml}"
 
     # Where the Talos API calls go. CI passes the action's endpoint output; otherwise
@@ -172,6 +237,8 @@ main() {
     kubectl wait --for=condition=Ready node --all --timeout=5m
 
     install_snapshot_stack
+    prepare_namespace
+    create_zpools
     apply_storage_config
     install_chart
 

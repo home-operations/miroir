@@ -1,0 +1,39 @@
+# Driver definition for the upstream Kubernetes external-storage e2e
+# suite (test/e2e/storage/external). Run via ./run.sh.
+#
+# Drives the replicated zfs class (pool: zfs, replicas: 2), so DRBD pairs
+# a zvol with a zvol -- the zfs analogue of testdriver.yaml.
+StorageClass:
+  FromExistingClassName: miroir-zfs
+SnapshotClass:
+  FromExistingClassName: miroir-snap
+GroupSnapshotClass:
+  FromExistingClassName: miroir-group-snap
+DriverInfo:
+  Name: miroir.home-operations.com
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 10Gi
+  SupportedFsType:
+    ext4: {}
+  Capabilities:
+    persistence: true
+    block: true
+    exec: true
+    fsGroup: true
+    multipods: true
+    controllerExpansion: true
+    nodeExpansion: true
+    onlineExpansion: true
+    offlineExpansion: true
+    snapshotDataSource: true
+    groupSnapshot: true
+    pvcDataSource: true
+    topology: true
+    singleNodeVolume: false
+    # RWX is implemented (NFS gateway over a replicated volume) but the
+    # upstream RWX specs need real DRBD + ganesha, not kind. Flip to true
+    # once the smoke suite's RWX scenario passes on a real cluster.
+    RWX: false
+    readWriteOncePod: true
+    capacity: false
