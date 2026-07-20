@@ -34,43 +34,43 @@ volumes pick a third node up as a quorum tie-breaker automatically.
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNodeGroup
 metadata:
-    name: std
+  name: std
 spec:
-    nodeSelector:
-        matchLabels:
-            storage.miroir.home-operations.com/class: std
-    template:
-        pools:
-            - name: default
-              lvmthin:
-                  device: /dev/disk/by-partlabel/r-miroir
+  nodeSelector:
+    matchLabels:
+      storage.miroir.home-operations.com/class: std
+  template:
+    pools:
+      - name: default
+        lvmthin:
+          device: /dev/disk/by-partlabel/r-miroir
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-    name: miroir-local
+  name: miroir-local
 provisioner: miroir.home-operations.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-    miroir.home-operations.com/replicas: "1"
-    csi.storage.k8s.io/fstype: ext4
+  miroir.home-operations.com/replicas: "1"
+  csi.storage.k8s.io/fstype: ext4
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-    name: miroir-replicated
+  name: miroir-replicated
 provisioner: miroir.home-operations.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-    miroir.home-operations.com/replicas: "2"
-    csi.storage.k8s.io/fstype: ext4
+  miroir.home-operations.com/replicas: "2"
+  csi.storage.k8s.io/fstype: ext4
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
-    name: miroir-snap
+  name: miroir-snap
 driver: miroir.home-operations.com
 deletionPolicy: Delete
 ```
@@ -99,36 +99,36 @@ volumes created afterwards).
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: kharkiv
+  name: kharkiv
 spec:
-    zone: rack-a
-    address: 10.0.100.11
-    pools:
-        - name: default
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
+  zone: rack-a
+  address: 10.0.100.11
+  pools:
+    - name: default
+      lvmthin:
+        device: /dev/disk/by-partlabel/r-miroir
 ---
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: paris
+  name: paris
 spec:
-    zone: rack-b
-    pools:
-        - name: default
-          zfs:
-              dataset: data-pool/miroir
+  zone: rack-b
+  pools:
+    - name: default
+      zfs:
+        dataset: data-pool/miroir
 ---
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: le-havre
+  name: le-havre
 spec:
-    zone: rack-c
-    pools:
-        - name: default
-          loopfile:
-              baseDir: /var/lib/miroir
+  zone: rack-c
+  pools:
+    - name: default
+      loopfile:
+        baseDir: /var/lib/miroir
 ```
 
 ///
@@ -144,27 +144,27 @@ in the class's pool on its node.
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: node-a # node-b is identical, with its own NVMe device id
+  name: node-a # node-b is identical, with its own NVMe device id
 spec:
-    pools:
-        - name: default # bulk tier
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
-        - name: fast # NVMe tier for latency-sensitive workloads
-          lvmthin:
-              device: /dev/disk/by-id/nvme-Micron_7450_XXXX
+  pools:
+    - name: default # bulk tier
+      lvmthin:
+        device: /dev/disk/by-partlabel/r-miroir
+    - name: fast # NVMe tier for latency-sensitive workloads
+      lvmthin:
+        device: /dev/disk/by-id/nvme-Micron_7450_XXXX
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-    name: miroir-replicated-fast
+  name: miroir-replicated-fast
 provisioner: miroir.home-operations.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-    miroir.home-operations.com/replicas: "2"
-    miroir.home-operations.com/pool: fast
-    csi.storage.k8s.io/fstype: ext4
+  miroir.home-operations.com/replicas: "2"
+  miroir.home-operations.com/pool: fast
+  csi.storage.k8s.io/fstype: ext4
 ```
 
 ///
@@ -180,25 +180,25 @@ them.
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: solo
+  name: solo
 spec:
-    pools:
-        - name: default
-          loopfile:
-              baseDir: /var/lib/miroir
+  pools:
+    - name: default
+      loopfile:
+        baseDir: /var/lib/miroir
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-    name: miroir-local
-    annotations:
-        storageclass.kubernetes.io/is-default-class: "true"
+  name: miroir-local
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
 provisioner: miroir.home-operations.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-    miroir.home-operations.com/replicas: "1"
-    csi.storage.k8s.io/fstype: ext4
+  miroir.home-operations.com/replicas: "1"
+  csi.storage.k8s.io/fstype: ext4
 ```
 
 ///
@@ -283,13 +283,13 @@ recreates the MiroirNode within seconds. Inspect the topology with
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-    name: my-data
+  name: my-data
 spec:
-    storageClassName: miroir-replicated # or miroir-local
-    accessModes: [ReadWriteOnce]
-    resources:
-        requests:
-            storage: 10Gi
+  storageClassName: miroir-replicated # or miroir-local
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
 ```
 
 See [Replication and quorum](replication.md) for what the
@@ -328,11 +328,11 @@ yourself if you need more there.
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
 metadata:
-    name: my-data-snap
+  name: my-data-snap
 spec:
-    volumeSnapshotClassName: miroir-snap
-    source:
-        persistentVolumeClaimName: my-data
+  volumeSnapshotClassName: miroir-snap
+  source:
+    persistentVolumeClaimName: my-data
 ```
 
 Restore by pointing a new PVC at the snapshot. A restore is a
@@ -345,17 +345,17 @@ snapshot's.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-    name: my-data-restored
+  name: my-data-restored
 spec:
-    storageClassName: miroir-replicated # must match the source's replicas and pool
-    dataSource:
-        name: my-data-snap
-        kind: VolumeSnapshot
-        apiGroup: snapshot.storage.k8s.io
-    accessModes: [ReadWriteOnce]
-    resources:
-        requests:
-            storage: 10Gi
+  storageClassName: miroir-replicated # must match the source's replicas and pool
+  dataSource:
+    name: my-data-snap
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
 ```
 
 For replicated volumes both legs get a copy-on-write snapshot while
@@ -372,16 +372,16 @@ intermediate VolumeSnapshot:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-    name: my-data-copy
+  name: my-data-copy
 spec:
-    storageClassName: miroir-replicated # must match the source's replicas and pool
-    dataSource:
-        name: my-data
-        kind: PersistentVolumeClaim
-    accessModes: [ReadWriteOnce]
-    resources:
-        requests:
-            storage: 10Gi
+  storageClassName: miroir-replicated # must match the source's replicas and pool
+  dataSource:
+    name: my-data
+    kind: PersistentVolumeClaim
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
 ```
 
 Under the hood miroir cuts a hidden snapshot of the source volume
@@ -431,20 +431,20 @@ errors while regular snapshots keep working; patch the CRDs back to
 apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshotClass
 metadata:
-    name: miroir-group-snap
+  name: miroir-group-snap
 driver: miroir.home-operations.com
 deletionPolicy: Delete
 ---
 apiVersion: groupsnapshot.storage.k8s.io/v1
 kind: VolumeGroupSnapshot
 metadata:
-    name: db-nightly
+  name: db-nightly
 spec:
-    volumeGroupSnapshotClassName: miroir-group-snap
-    source:
-        selector:
-            matchLabels:
-                app: db # every PVC carrying this label joins the set
+  volumeGroupSnapshotClassName: miroir-group-snap
+  source:
+    selector:
+      matchLabels:
+        app: db # every PVC carrying this label joins the set
 ```
 
 Each member is an ordinary VolumeSnapshot and restores individually

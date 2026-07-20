@@ -58,28 +58,28 @@ pair:
 apiVersion: miroir.home-operations.com/v1alpha1
 kind: MiroirNode
 metadata:
-    name: node-a # node-b is identical
+  name: node-a # node-b is identical
 spec:
-    pools:
-        - name: default
-          lvmthin:
-              device: /dev/disk/by-partlabel/r-miroir
+  pools:
+    - name: default
+      lvmthin:
+        device: /dev/disk/by-partlabel/r-miroir
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-    name: miroir-replicated
+  name: miroir-replicated
 provisioner: miroir.home-operations.com
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 parameters:
-    miroir.home-operations.com/replicas: "2"
-    csi.storage.k8s.io/fstype: ext4
+  miroir.home-operations.com/replicas: "2"
+  csi.storage.k8s.io/fstype: ext4
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
-    name: miroir-snap
+  name: miroir-snap
 driver: miroir.home-operations.com
 deletionPolicy: Delete
 ```

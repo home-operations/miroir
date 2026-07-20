@@ -16,13 +16,13 @@ a pending RWX PVC provision on the next retry.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-    name: shared-data
+  name: shared-data
 spec:
-    storageClassName: miroir-replicated
-    accessModes: [ReadWriteMany]
-    resources:
-        requests:
-            storage: 10Gi
+  storageClassName: miroir-replicated
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 10Gi
 ```
 
 Under the hood the volume is a normal miroir DRBD volume. The

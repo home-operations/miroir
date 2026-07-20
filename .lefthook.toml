@@ -13,12 +13,11 @@ glob = [
 ]
 run = "mise run helm-docs && git add charts/miroir/README.md charts/miroir/values.schema.json"
 
-# The generated chart README/schema and the authored docs site are
-# .prettierignore'd; exclude them from the shared formatters too (oxfmt exits
-# non-zero when every input is ignored — staging only docs/*.md would otherwise
-# hand it an all-ignored set and fail the whole hook).
+# The generated chart README is .prettierignore'd (helm-docs owns it); keep it out
+# of the shared markdown formatter's file list too, or a commit staging only it
+# hands oxfmt an all-ignored set and it exits non-zero.
 [pre-commit.commands.format-markdown]
-exclude = ["charts/miroir/README.md", "docs/**"]
+exclude = ["charts/miroir/README.md"]
 
 [pre-commit.commands.format-json]
 exclude = ["charts/miroir/values.schema.json"]
