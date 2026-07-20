@@ -4,6 +4,8 @@
 customization:
   extraKernelArgs:
     - talos.dashboard.disabled=1
+    - talos.auditd.disabled=1
+    - mitigations=off
   systemExtensions:
     officialExtensions:
       - siderolabs/drbd

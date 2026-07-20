@@ -298,6 +298,7 @@ sudo -E "$(mise which talosctl)" cluster create qemu \
   --memory-workers 5GiB \
   --disks "virtio:8GiB,virtio:${MIROIR_E2E_DISK_SIZE:-20GiB}" \
   --config-patch @{{config_root}}/deploy/e2e/talos-patch.yaml \
+  --config-patch-controlplanes @{{config_root}}/deploy/e2e/talos-patch-controlplane.yaml \
   --talosconfig-destination "$TALOSCONFIG"
 sudo chown -R "$(id -u):$(id -g)" "$bindir"
 
