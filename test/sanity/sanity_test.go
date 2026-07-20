@@ -27,6 +27,7 @@ package sanity_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -169,10 +170,17 @@ func (cleanupNode) NodeUnpublishVolume(
 	return &csiapi.NodeUnpublishVolumeResponse{}, nil
 }
 
-func storageNode() nodemap.Node {
-	return nodemap.Node{Pools: map[string]nodemap.Pool{
-		"default": {Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/vdb"},
-	}}
+// storageNode carries an address override so the replicated run's
+// placement resolves replication endpoints without corev1 Node objects
+// (nodemap.ReplicationAddress falls back to the Node's InternalIP only
+// when the override is unset).
+func storageNode(addr string) nodemap.Node {
+	return nodemap.Node{
+		Address: addr,
+		Pools: map[string]nodemap.Pool{
+			"default": {Backend: miroirv1alpha1.BackendLVMThin, Device: "/dev/vdb"},
+		},
+	}
 }
 
 func TestCSISanity(t *testing.T) {
@@ -186,8 +194,8 @@ func TestCSISanity(t *testing.T) {
 
 	cl := agentSim(scheme)
 	nodes := nodemap.Map{}
-	for _, n := range storageNodeNames {
-		nodes[n] = storageNode()
+	for i, n := range storageNodeNames {
+		nodes[n] = storageNode(fmt.Sprintf("10.0.0.%d", i+1))
 	}
 
 	controller := &csi.Controller{
@@ -225,14 +233,25 @@ func TestCSISanity(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	config := sanity.NewTestConfig()
-	config.Address = "unix://" + sock
-	config.TestVolumeSize = 1 << 30 // 1 GiB
-	config.TestVolumeParameters = map[string]string{constants.ParamReplicas: "1"}
-	config.TestSnapshotParameters = map[string]string{}
-	config.IdempotentCount = 3
+	newConfig := func(replicas string) sanity.TestConfig {
+		config := sanity.NewTestConfig()
+		config.Address = "unix://" + sock
+		config.TestVolumeSize = 1 << 30 // 1 GiB
+		config.TestVolumeParameters = map[string]string{constants.ParamReplicas: replicas}
+		config.TestSnapshotParameters = map[string]string{}
+		config.IdempotentCount = 3
+		return config
+	}
 
-	sanity.GinkgoTest(&config)
+	// The suite runs twice against the same driver: unreplicated, then
+	// replicated (DRBD port allocation, cross-node placement, the restore
+	// replica-count check). GinkgoTest only registers describes bound to a
+	// config, so both runs share the single RunSpecs invocation below —
+	// ginkgo refuses a second one per process.
+	local := newConfig("1")
+	replicated := newConfig("2")
+	ginkgo.Describe("replicas=1", func() { sanity.GinkgoTest(&local) })
+	ginkgo.Describe("replicas=2", func() { sanity.GinkgoTest(&replicated) })
 	gomega.RegisterFailHandler(ginkgo.Fail)
 
 	suiteCfg, reporterCfg := ginkgo.GinkgoConfiguration()
