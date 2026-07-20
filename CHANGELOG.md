@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.11.6](https://github.com/home-operations/miroir/compare/0.11.5...0.11.6) (2026-07-20)
+
+
+### Features
+
+* **deps:** update module github.com/prometheus/client_golang (v1.23.2 → v1.24.0) ([#310](https://github.com/home-operations/miroir/issues/310)) ([58726c5](https://github.com/home-operations/miroir/commit/58726c5f4d9cbb3edfeae95fde2507b855919087))
+
+
+### Bug Fixes
+
+* **agent:** recover volumes wedged by a leaked filesystem freeze ([#312](https://github.com/home-operations/miroir/issues/312)) ([de3ed0b](https://github.com/home-operations/miroir/commit/de3ed0b5d44882403a4f2d5af39b586387a6a049))
+
+
+### Documentation
+
+* fix stale and self-contradictory claims from a documentation review ([#303](https://github.com/home-operations/miroir/issues/303)) ([639ef79](https://github.com/home-operations/miroir/commit/639ef79dd158740494fa8d7dd979b84a99dea2d8))
+
+
+### Miscellaneous Chores
+
+* disable Talos dashboard in e2e schematic ([d9005df](https://github.com/home-operations/miroir/commit/d9005dfe2a77d9ae4dad3c425afae274cb8e0b40))
+
 ## [0.11.5](https://github.com/home-operations/miroir/compare/0.11.4...0.11.5) (2026-07-19)
 
 
