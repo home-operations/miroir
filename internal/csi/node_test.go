@@ -561,3 +561,54 @@ func TestNodeUnstageForcesWhenVolumeGone(t *testing.T) {
 		t.Fatal("unstage must take the deadline-bounded force path")
 	}
 }
+
+// fakeThawer records thaw requests; err scripts a failure.
+type fakeThawer struct {
+	targets []string
+	err     error
+}
+
+func (f *fakeThawer) ThawMountpoint(target string) error {
+	f.targets = append(f.targets, target)
+	return f.err
+}
+
+// Unstage must lift a leaked snapshot-round freeze while the staging
+// mount still exists: once the unmount removes the last mountpoint, a
+// frozen device can neither be thawed (FITHAW needs a mountpoint) nor
+// mounted again — the catch-22 of issue #311.
+func TestNodeUnstageThawsBeforeUnmount(t *testing.T) {
+	target := t.TempDir()
+	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
+	n.Mounter = mount.NewSafeFormatAndMount(
+		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
+	thawer := &fakeThawer{}
+	n.Freezer = thawer
+
+	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: target,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(thawer.targets) != 1 || thawer.targets[0] != target {
+		t.Fatalf("the staging mount must be thawed before the unmount: %v", thawer.targets)
+	}
+}
+
+// A failed thaw must never block unstage — the stage-time frozen-bdev
+// recovery is the backstop for a freeze this best-effort lift missed.
+func TestNodeUnstageProceedsWhenThawFails(t *testing.T) {
+	target := t.TempDir()
+	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
+	n.Mounter = mount.NewSafeFormatAndMount(
+		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
+	n.Freezer = &fakeThawer{err: context.DeadlineExceeded}
+
+	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: target,
+	}); err != nil {
+		t.Fatalf("a failed thaw must not fail unstage: %v", err)
+	}
+}

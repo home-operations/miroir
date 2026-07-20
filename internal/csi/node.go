@@ -36,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/agent"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/drbd"
 	"github.com/home-operations/miroir/internal/stage"
@@ -60,6 +61,16 @@ type Node struct {
 	// volume's deletion forever. RWO remote-access staging refuses
 	// instead; RWX (NFS) staging needs no DRBD leg and still works.
 	ClientOnly bool
+	// Freezer lifts a snapshot-round filesystem freeze leaked onto the
+	// staging mount before unstage tears it down (issue #311); nil skips
+	// (tests).
+	Freezer Thawer
+}
+
+// Thawer lifts a filesystem freeze from a staging mountpoint before its
+// unmount; *agent.Freezer implements it.
+type Thawer interface {
+	ThawMountpoint(target string) error
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
@@ -69,6 +80,7 @@ func NewNode(c client.Client, nodeName string, d stage.DRBDStatus) *Node {
 		NodeName: nodeName,
 		Mounter:  mount.NewSafeFormatAndMount(mount.New(""), utilexec.New()),
 		DRBD:     d,
+		Freezer:  agent.NewFreezer(),
 	}
 }
 
@@ -410,6 +422,16 @@ const nfsUnmountTimeout = 30 * time.Second
 func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	if req.GetVolumeId() == "" || req.GetStagingTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and staging path are required")
+	}
+	// Lift any leaked snapshot-round freeze while the staging mount still
+	// exists: once the unmount below removes the last mountpoint, FITHAW
+	// has nothing left to open while the frozen device refuses every new
+	// mount — the catch-22 of issue #311. Best-effort: a failed thaw must
+	// never block unstage (the stage-time recovery is the backstop).
+	if n.Freezer != nil {
+		if err := n.Freezer.ThawMountpoint(req.GetStagingTargetPath()); err != nil {
+			log.Error(err, "cannot thaw the staging mount before unstage", "volume", req.GetVolumeId())
+		}
 	}
 	if err := cleanupMount(req.GetStagingTargetPath(), n.Mounter); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage: %v", err)

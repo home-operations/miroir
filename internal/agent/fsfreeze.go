@@ -110,17 +110,51 @@ func (f *Freezer) Freeze(ctx context.Context, device string) (string, error) {
 	}
 }
 
-// Thaw lifts the freeze on the filesystem mounted from device. Not
-// mounted or not frozen (EINVAL) are successes: thaw is called from
-// every path that closes or abandons a barrier round, most of which
-// never froze anything.
-func (f *Freezer) Thaw(device string) error {
+// Thaw lifts the freeze on the filesystem mounted from device, returning
+// the mountpoint it thawed. Not mounted (mountpoint "") or not frozen
+// (EINVAL) are successes: thaw is called from every path that closes or
+// abandons a barrier round, most of which never froze anything. But ""
+// also means an actually-leaked freeze was NOT lifted — FITHAW needs a
+// mountpoint, and a frozen device refuses every new mount (issue #311) —
+// so callers who suspect a leak must not read "" as thawed; the
+// stage-time recovery (stage.EnsureFilesystem) is what clears those.
+func (f *Freezer) Thaw(device string) (string, error) {
 	mp, err := f.mountpointOf(device)
 	if err != nil || mp == "" {
-		return err
+		return "", err
 	}
 	if err := f.ioctl(mp, fiThaw); err != nil && !errors.Is(err, unix.EINVAL) {
-		return fmt.Errorf("thaw %s (%s): %w", mp, device, err)
+		return "", fmt.Errorf("thaw %s (%s): %w", mp, device, err)
+	}
+	return mp, nil
+}
+
+// ThawMountpoint lifts a freeze on the block-device-backed filesystem
+// mounted at target; not a mountpoint and not frozen (EINVAL) are
+// successes, as it guards every staging unmount and those almost never
+// tear down a frozen filesystem. The unmount must run after it: once the
+// last mountpoint is gone, FITHAW has nothing left to open while the
+// frozen device refuses every new mount — the catch-22 of issue #311.
+// Only block-device mounts (mountinfo major != 0) are touched: opening a
+// dead hard-NFS mountpoint for the ioctl would hang exactly where the
+// unstage path's forced unmount cannot.
+func (f *Freezer) ThawMountpoint(target string) error {
+	data, err := f.mountinfo()
+	if err != nil {
+		return err
+	}
+	for line := range strings.Lines(string(data)) {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[4] != target {
+			continue
+		}
+		if maj, _, ok := strings.Cut(fields[2], ":"); !ok || maj == "0" {
+			return nil
+		}
+		if err := f.ioctl(target, fiThaw); err != nil && !errors.Is(err, unix.EINVAL) {
+			return fmt.Errorf("thaw %s: %w", target, err)
+		}
+		return nil
 	}
 	return nil
 }
@@ -183,7 +217,7 @@ func thawMounted(ctx context.Context, f *Freezer, node string, vol *miroirv1alph
 	if device == "" {
 		return
 	}
-	if err := f.Thaw(device); err != nil {
+	if _, err := f.Thaw(device); err != nil {
 		ctrl.LoggerFrom(ctx).Error(err, "cannot thaw the snapshot filesystem freeze", "volume", vol.Name)
 	}
 }

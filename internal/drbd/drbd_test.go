@@ -1010,6 +1010,64 @@ func TestDownDetachingWithPeersStillDowns(t *testing.T) {
 	fe.calledWith(t, "drbdsetup down pvc-1")
 }
 
+// Restart drops and re-registers the kernel state — the only lever that
+// clears a filesystem freeze leaked onto an unmounted device (issue #311)
+// — while the rendered config and minor assignment stay for the up.
+func TestRestartDownsAndUps(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"` + DiskUpToDate + `"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.Restart(t.Context(), volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, "drbdadm up pvc-1")
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("rendered config must survive a restart: %v", err)
+	}
+}
+
+// A resource wearing the teardown wedge signature must be refused: a down
+// spawned against it can only hang and strand an unkillable process.
+func TestRestartRefusesWedged(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Detaching"}],"connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Restart(t.Context(), volPvc1); err == nil {
+		t.Fatal("a wedged resource must refuse restart")
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+	fe.notCalledWith(t, "drbdadm up")
+}
+
+// A failed down must not be followed by an up: the resource is still
+// registered, and the error is the caller's retry signal.
+func TestRestartSkipsUpWhenDownFails(t *testing.T) {
+	fe := &fakeExec{
+		responses: map[string]string{
+			cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary","connections":[]}]`,
+		},
+		errOn: map[string]error{"down pvc-1": errors.New("Device is held open by someone")},
+	}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Restart(t.Context(), volPvc1); err == nil {
+		t.Fatal("a failed down must surface")
+	}
+	fe.notCalledWith(t, "drbdadm up")
+}
+
 // A wedged orphan must be skipped from the sweep's own status parse —
 // spawning a down against it can only hang 30s and strand another
 // unkillable process per agent boot.

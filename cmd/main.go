@@ -966,8 +966,19 @@ func resumeStaleBarriers(driver *drbd.Driver, freezer *agent.Freezer, nodeName s
 		}
 		for _, name := range stale {
 			if device := paths[name]; device != "" {
-				if err := freezer.Thaw(device); err != nil {
+				mp, err := freezer.Thaw(device)
+				switch {
+				case err != nil:
 					setupLog.Error(err, "cannot thaw stale filesystem freeze", "volume", name)
+				case mp == "":
+					// Usually a leg that never froze (only mounted legs do),
+					// but a freeze leaked before its mount went away is
+					// unreachable now — mount refuses the frozen device and
+					// FITHAW needs a mountpoint (issue #311). Not silent, so
+					// the leak never looks like success; the stage-time
+					// recovery is what clears it.
+					setupLog.Info("stale barrier volume is not mounted; nothing to thaw here",
+						"volume", name, "device", device)
 				}
 			}
 		}
