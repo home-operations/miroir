@@ -17,12 +17,15 @@ limitations under the License.
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // drbdMajor is DRBD's registered block major (LANANA, drivers/block/drbd).
@@ -65,9 +68,11 @@ func pidAlive(procDir string, pid int) bool {
 // pod's container can keep the staged filesystem mounted in its own
 // namespace after the host paths are gone, and that is a live consumer,
 // not an orphan (#195: never destroy a backing under a consumer).
-// Namespaces are deduped via ns/mnt so each table is read once; a process
-// that exits mid-scan is skipped. Errors reading procDir itself surface —
-// "could not check" must never read as "not mounted".
+// Namespaces are deduped via ns/mnt so each table is read once. Every
+// error fails closed — "could not check" must never read as "not
+// mounted" — except a process gone mid-scan: reaped reads ENOENT, a
+// zombie EINVAL (its mount namespace is already released), and neither
+// can hold a mount.
 func deviceMountedAnywhere(procDir string, minor int32) (bool, error) {
 	entries, err := os.ReadDir(procDir)
 	if err != nil {
@@ -86,7 +91,10 @@ func deviceMountedAnywhere(procDir string, minor int32) (bool, error) {
 		}
 		data, err := os.ReadFile(filepath.Join(procDir, e.Name(), "mountinfo"))
 		if err != nil {
-			continue
+			if os.IsNotExist(err) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ESRCH) {
+				continue
+			}
+			return false, err
 		}
 		if mountinfoListsDevice(data, minor) {
 			return true, nil

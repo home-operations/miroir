@@ -104,6 +104,33 @@ func TestDeviceMountedAnywhereSurfacesUnreadableProc(t *testing.T) {
 	}
 }
 
+// A live process whose mountinfo cannot be read must fail the scan
+// closed: skipping it could hide the one table listing the device and
+// authorize destroying the backing under a consumer. Only a process gone
+// mid-scan (reaped: ENOENT; zombie: EINVAL, verified on Linux 7.x) may
+// be skipped — a mountinfo that is a directory stands in for any other
+// read error here.
+func TestDeviceMountedAnywhereFailsClosedOnUnreadableTable(t *testing.T) {
+	dir := procFixture(t, map[int]string{1: unrelatedMountinfo})
+	if err := os.MkdirAll(filepath.Join(dir, "4321", "mountinfo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deviceMountedAnywhere(dir, 1422); err == nil {
+		t.Fatal("an unreadable live table must surface as an error, not read as unmounted")
+	}
+
+	// A vanished process is the one tolerated gap: a pid dir with no
+	// mountinfo (the ENOENT shape) must not fail the scan.
+	gone := procFixture(t, map[int]string{1: unrelatedMountinfo})
+	if err := os.MkdirAll(filepath.Join(gone, "9876"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mounted, err := deviceMountedAnywhere(gone, 1422)
+	if err != nil || mounted {
+		t.Fatalf("a reaped process must be skipped, got %v / %v", mounted, err)
+	}
+}
+
 func TestPidAlive(t *testing.T) {
 	dir := procFixture(t, map[int]string{4321: ""})
 	if !pidAlive(dir, 4321) {
