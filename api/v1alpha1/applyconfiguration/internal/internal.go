@@ -504,6 +504,9 @@ var schemaYAML = typed.YAMLObject(`types:
 - name: com.github.home-operations.miroir.api.v1alpha1.VolumeSource
   map:
     fields:
+    - name: padForMetadata
+      type:
+        scalar: boolean
     - name: snapshotName
       type:
         scalar: string

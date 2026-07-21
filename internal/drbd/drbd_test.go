@@ -1051,6 +1051,57 @@ func TestRestartRefusesWedged(t *testing.T) {
 	fe.notCalledWith(t, "drbdadm up")
 }
 
+// The overhead bound must dominate the bitmap arithmetic it stands in
+// for (1 bit per 4KiB per peer slot) with real slack for the superblock
+// and activity log, stay extent-aligned, and grow monotonically.
+func TestInternalMetaOverheadBounds(t *testing.T) {
+	prev := int64(0)
+	for _, size := range []int64{1 << 30, 5 << 30, 100 << 30, 1 << 40} {
+		got := InternalMetaOverhead(size)
+		if bitmaps := size / 32768 * maxPeers; got <= bitmaps {
+			t.Fatalf("overhead %d for %d must exceed the raw bitmap bytes %d", got, size, bitmaps)
+		}
+		if got%(4<<20) != 0 {
+			t.Fatalf("overhead %d for %d must be 4MiB-aligned", got, size)
+		}
+		if got < prev {
+			t.Fatalf("overhead must grow with size: %d then %d", prev, got)
+		}
+		prev = got
+	}
+}
+
+// SeedUUID must not pass --clear-bitmap: the whole point is a full
+// bitmap toward every peer so just-created joiners elect full
+// SyncTarget, where --clear-bitmap would declare them identical to data
+// they do not hold.
+func TestSeedUUIDKeepsBitmap(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.SeedUUID(t.Context(), volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "new-current-uuid pvc-1/0")
+	fe.notCalledWith(t, "--clear-bitmap")
+}
+
+// MetadataAdopted reflects the adoption marker ensureMetadata writes for
+// metadata inherited from a previous life — the restore seed mint must
+// never fire on such a leg.
+func TestMetadataAdoptedTracksMarker(t *testing.T) {
+	d := &Driver{StateDir: t.TempDir(), Exec: (&fakeExec{}).run, Mknod: fakeMknod}
+	if d.MetadataAdopted(volPvc1) {
+		t.Fatal("no marker must read as not adopted")
+	}
+	if err := d.markAdopted(volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	if !d.MetadataAdopted(volPvc1) {
+		t.Fatal("marker must read as adopted")
+	}
+}
+
 // ForceDetach disconnects the peers, then force-detaches the backing by
 // minor — the escape hatch for a deletion whose down is permanently
 // refused by an orphaned opener (issue #319). No down is spawned and the

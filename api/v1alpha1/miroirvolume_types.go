@@ -110,6 +110,17 @@ type DRBDSpec struct {
 type VolumeSource struct {
 	// SnapshotName references a MiroirSnapshot by name.
 	SnapshotName string `json:"snapshotName"`
+	// PadForMetadata marks every diskful backing of this volume as padded
+	// by the DRBD internal-metadata overhead. Set at creation when a
+	// restore crosses the replication boundary (an unreplicated source
+	// restored into a replicated volume, directly or transitively): the
+	// source filesystem spans its full nominal size, so internal metadata
+	// only fits if every leg's backing is grown past sizeBytes — the
+	// clone before create-md, and full-sync joiners at creation, or the
+	// device would size below the filesystem. Inherited by replicated
+	// restores of padded volumes; immutable with the rest of the source.
+	// +optional
+	PadForMetadata bool `json:"padForMetadata,omitempty"`
 }
 
 // VolumeClient is an ephemeral diskless consumer leg: a DRBD peer with no

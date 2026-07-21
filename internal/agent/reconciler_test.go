@@ -589,6 +589,181 @@ func TestReconcile_RestoreToLargerResizesBackingAfterAttach(t *testing.T) {
 	}
 }
 
+// paddedRestoreVol builds a 2-leg replicated restore that crossed the
+// replication boundary (PadForMetadata): node-a is the seed clone,
+// node-b the FullSync joiner.
+func paddedRestoreVol() *miroirv1alpha1.MiroirVolume {
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
+	v.Spec.Replicas[1].FullSync = true
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapSnap1, PadForMetadata: true}
+	return v
+}
+
+// A padded restore's clone must grow by the metadata overhead BEFORE the
+// DRBD apply: there is no adopted metadata to strand (the source was
+// unreplicated), and create-md must land in the grown tail, not over the
+// source filesystem's last bytes (issue #305).
+func TestReconcilePaddedRestoreGrowsCloneBeforeCreateMD(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := paddedRestoreVol()
+	stateDir := t.TempDir()
+	// Empty statusJSON: probeMetadata's kernel probe must see no attached
+	// resource, or the fresh clone reads as adopted metadata and create-md
+	// never runs. The --json status reads are served from statusSeq.
+	up := `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
+	fe := &fakeDRBDExec{statusSeq: []string{up, up, up, up}}
+	fb.seq = &fe.calls // interleave the backing resize into the DRBD call log
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, "src-vol")).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fb.fromSnapVol) != 1 {
+		t.Fatalf("the seed must clone the snapshot, got %v", fb.fromSnapVol)
+	}
+	createMD, resize := -1, -1
+	for i, call := range fe.calls {
+		switch {
+		case createMD < 0 && strings.Contains(call, "create-md"):
+			createMD = i
+		case resize < 0 && strings.Contains(call, "backend-resize "+volPvc1):
+			resize = i
+		}
+	}
+	if createMD < 0 || resize < 0 {
+		t.Fatalf("want both create-md and a backing resize, calls: %v", fe.calls)
+	}
+	if resize > createMD {
+		t.Fatalf("padded clone must grow before create-md (metadata would overwrite the filesystem tail): resize=%d create-md=%d, calls: %v",
+			resize, createMD, fe.calls)
+	}
+	want := 1<<30 + drbd.InternalMetaOverhead(1<<30)
+	if fb.created[volPvc1] != want {
+		t.Fatalf("clone backing must realize the padded size %d, got %d", want, fb.created[volPvc1])
+	}
+}
+
+// A padded restore's FullSync joiner must realize the padded size too:
+// DRBD sizes the device to the smallest leg, and a bare-spec joiner
+// would cap it below the restored filesystem.
+func TestReconcilePaddedRestoreFullSyncJoinerPadsBacking(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := paddedRestoreVol()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateInconsistent + `"}],
+		"connections":[{"peer-node-id":0,"connection-state":"Connected"}]}]`}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeB, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(fb.fromSnapVol) != 0 {
+		t.Fatal("a FullSync joiner must never clone")
+	}
+	want := 1<<30 + drbd.InternalMetaOverhead(1<<30)
+	if fb.created[volPvc1] != want {
+		t.Fatalf("joiner backing must realize the padded size %d, got %d", want, fb.created[volPvc1])
+	}
+	// The joiner must not mint the seed generation — its content arrives
+	// over the wire.
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
+// The seed of a padded restore sits on fresh create-md metadata that
+// nothing else can promote (the birth flow refuses data-bearing volumes,
+// and there was no metadata to adopt): the agent must mint its data
+// generation with a full bitmap so the joiners full-sync from it.
+func TestReconcilePaddedRestoreSeedMintsGeneration(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := paddedRestoreVol()
+	// statusSeq, not statusJSON: the metadata must read as this agent's
+	// own fresh create (see the create-md test above) — adopted metadata
+	// carries a generation and correctly refuses the mint.
+	inc := `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateInconsistent + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
+	fe := &fakeDRBDExec{statusSeq: []string{inc, inc, inc, inc}}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, "src-vol")).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	fe.calledWith(t, "new-current-uuid "+volPvc1+"/0")
+	fe.notCalledWith(t, "--clear-bitmap")
+}
+
+// A seed leg recreated after a node wipe wears the same fresh-metadata
+// signature as first bring-up, but its peer holds the data now: the mint
+// must refuse and let the leg join as a plain full SyncTarget.
+func TestReconcilePaddedRestoreSeedMintRefusesWhenPeerHasData(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := paddedRestoreVol()
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeB: {DiskState: diskStateUpToDate, DeviceCreated: true},
+	}
+	// statusSeq like the mint test: with freshly created metadata the
+	// peer-data guard must be the thing refusing, not metadata adoption.
+	inc := `[{"name":"` + volPvc1 + `",
+		"devices":[{"disk-state":"` + diskStateInconsistent + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
+	fe := &fakeDRBDExec{statusSeq: []string{inc, inc, inc, inc}}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, "src-vol")).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
 // Every status apply must name only this node's slot and the phase — never a
 // peer's slot or Formatted (a CSI-owned field). A full-status apply would
 // force-own those and revert them to this agent's stale read, hot-looping the

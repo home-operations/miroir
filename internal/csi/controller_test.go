@@ -980,6 +980,278 @@ func TestCreateVolumeFromSnapshotFullSyncsPostSnapshotReplica(t *testing.T) {
 	}
 }
 
+// reshapeController is a 3-node tie-breaker-enabled controller seeded
+// with a restore source volume and its ready snapshot (Done on every
+// diskful source leg).
+func reshapeController(t *testing.T, srcVol *miroirv1alpha1.MiroirVolume) *Controller {
+	t.Helper()
+	done := map[string]miroirv1alpha1.SnapshotNodeState{}
+	for _, rep := range srcVol.Spec.DiskfulReplicas() {
+		done[rep.Node] = miroirv1alpha1.SnapshotDone
+	}
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: srcVol.Name},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{
+			ReadyToUse: true, SizeBytes: srcVol.Spec.SizeBytes, PerNode: done,
+		},
+	}
+	cl := readyOnGet(newScheme(t),
+		nodeObj(nodeA, addrA), nodeObj(nodeB, addrB), nodeObj(nodeC, addrC))
+	for _, obj := range []client.Object{srcVol, srcSnap} {
+		if err := cl.Create(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cl.Status().Update(t.Context(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	return &Controller{
+		Client: cl,
+		Nodes: nodemap.Map{
+			nodeA: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+			nodeB: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+			nodeC: storageNode(nodemap.Pool{Backend: miroirv1alpha1.BackendLVMThin}),
+		},
+		ProvisionTimeout: 2 * time.Second,
+		AutoTieBreaker:   true,
+	}
+}
+
+// restoreReq is a snapshot-restore CreateVolume request for snapSnap1
+// with the given replica count.
+func restoreReq(replicas string) *csi.CreateVolumeRequest {
+	return &csi.CreateVolumeRequest{
+		Name:               volNew,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 5 << 30},
+		Parameters:         map[string]string{constants.ParamReplicas: replicas},
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Snapshot{
+				Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: snapSnap1},
+			},
+		},
+	}
+}
+
+// Restoring an unreplicated source into a 2-replica class (issue #305):
+// the source leg seeds (CoW clone, address resolved, id 0), the extra
+// leg is placed elsewhere as a FullSync joiner, a tie-breaker completes
+// quorum, and the volume is marked padded — the clone gains internal
+// metadata only because every backing grows past the spec size.
+func TestCreateVolumeRestoreExpandsUnreplicatedSource(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
+		},
+	}
+	c := reshapeController(t, srcVol)
+
+	if _, err := c.CreateVolume(t.Context(), restoreReq("2")); err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.DRBD == nil {
+		t.Fatal("the expanded restore must be born replicated")
+	}
+	if got.Spec.Source == nil || !got.Spec.Source.PadForMetadata {
+		t.Fatalf("a boundary-crossing restore must be padded: %+v", got.Spec.Source)
+	}
+	diskful := got.Spec.DiskfulReplicas()
+	if len(diskful) != 2 || len(got.Spec.Replicas) != 3 {
+		t.Fatalf("want 2 diskful + tie-breaker, got %+v", got.Spec.Replicas)
+	}
+	seed := diskful[0]
+	if seed.Node != nodeA || seed.FullSync || seed.NodeID != 0 || seed.Address != addrA {
+		t.Fatalf("the source leg must seed with id 0 and a resolved address: %+v", seed)
+	}
+	joiner := diskful[1]
+	if !joiner.FullSync || joiner.Node == nodeA || joiner.NodeID != 1 || joiner.Address == "" {
+		t.Fatalf("the extra leg must full-sync elsewhere with id 1: %+v", joiner)
+	}
+	tb := got.Spec.Replicas[2]
+	if !tb.Diskless || tb.NodeID != 2 || tb.Node == seed.Node || tb.Node == joiner.Node {
+		t.Fatalf("unexpected tie-breaker %+v", tb)
+	}
+}
+
+// Restoring a replicated source into a 3-replica class: the source legs
+// keep the ids their clone metadata is keyed by, the extra leg full-syncs
+// under the next free id, and no padding applies (the source backings
+// already carry internal metadata).
+func TestCreateVolumeRestoreExpandsReplicatedSource(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+
+	if _, err := c.CreateVolume(t.Context(), restoreReq("3")); err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Source.PadForMetadata {
+		t.Fatal("a replicated-source restore must not pad")
+	}
+	diskful := got.Spec.DiskfulReplicas()
+	if len(diskful) != 3 || len(got.Spec.Replicas) != 3 {
+		t.Fatalf("want exactly 3 diskful legs, got %+v", got.Spec.Replicas)
+	}
+	if diskful[0].NodeID != 0 || diskful[0].FullSync || diskful[0].Address != addrA ||
+		diskful[1].NodeID != 1 || diskful[1].FullSync {
+		t.Fatalf("source legs must keep their ids, not full-sync, and re-resolve addresses: %+v", diskful[:2])
+	}
+	if diskful[2].Node != nodeC || !diskful[2].FullSync || diskful[2].NodeID != 2 {
+		t.Fatalf("the extra leg must full-sync on the spare node under id 2: %+v", diskful[2])
+	}
+}
+
+// Restoring a replicated source into a 1-replica class ends unreplicated:
+// only the seed leg survives, shed of the replication-only fields — the
+// clone's embedded DRBD metadata becomes inert tail bytes.
+func TestCreateVolumeRestoreShrinksToUnreplicated(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+				{Node: nodeC, NodeID: 2, Address: addrC, Diskless: true},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+
+	resp, err := c.CreateVolume(t.Context(), restoreReq("1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.DRBD != nil || got.Spec.QuorumPolicy != "" {
+		t.Fatalf("a 1-replica restore must be unreplicated: %+v", got.Spec)
+	}
+	if got.Spec.Source.PadForMetadata {
+		t.Fatal("an unreplicated target never pads")
+	}
+	if len(got.Spec.Replicas) != 1 {
+		t.Fatalf("want the seed leg only, got %+v", got.Spec.Replicas)
+	}
+	kept := got.Spec.Replicas[0]
+	if kept.Node != nodeA || kept.NodeID != 0 || kept.Address != "" || kept.FullSync || kept.Diskless {
+		t.Fatalf("the kept leg must shed replication fields: %+v", kept)
+	}
+	if len(resp.Volume.AccessibleTopology) != 1 {
+		t.Fatalf("an unreplicated restore pins to its node: %+v", resp.Volume.AccessibleTopology)
+	}
+}
+
+// Shrinking keeps Done legs over post-snapshot FullSync ones — dropping
+// a free CoW clone while keeping a leg that must full-resync would be
+// pure waste — and the re-derived tie-breaker takes the smallest unused
+// id, not a positional one that would collide with the sparse kept set.
+func TestCreateVolumeRestoreShrinkPrefersDoneLegs(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+				{Node: nodeC, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 2, Address: addrC},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+	// node-b was added after the snapshot: no local snapshot state there.
+	srcSnap := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, srcSnap); err != nil {
+		t.Fatal(err)
+	}
+	delete(srcSnap.Status.PerNode, nodeB)
+	if err := c.Client.Status().Update(t.Context(), srcSnap); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := c.CreateVolume(t.Context(), restoreReq("2")); err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	diskful := got.Spec.DiskfulReplicas()
+	if len(diskful) != 2 || diskful[0].Node != nodeA || diskful[1].Node != nodeC {
+		t.Fatalf("want the Done legs (a, c) kept, got %+v", diskful)
+	}
+	if diskful[0].FullSync || diskful[1].FullSync {
+		t.Fatalf("kept Done legs must clone, not full-sync: %+v", diskful)
+	}
+	if diskful[0].NodeID != 0 || diskful[1].NodeID != 2 {
+		t.Fatalf("kept legs must keep their metadata-keyed ids: %+v", diskful)
+	}
+	if len(got.Spec.Replicas) != 3 {
+		t.Fatalf("want a re-derived tie-breaker, got %+v", got.Spec.Replicas)
+	}
+	if tb := got.Spec.Replicas[2]; !tb.Diskless || tb.Node != nodeB || tb.NodeID != 1 {
+		t.Fatalf("tie-breaker must take the spare node under the smallest unused id: %+v", tb)
+	}
+}
+
+// PadForMetadata is sticky through replicated restore chains: a padded
+// source's clone is physically padded and its filesystem sized past the
+// bare spec, so its joiners must pad too.
+func TestCreateVolumeRestoreInheritsPadding(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Source:       &miroirv1alpha1.VolumeSource{SnapshotName: "older-snap", PadForMetadata: true},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+
+	if _, err := c.CreateVolume(t.Context(), restoreReq("2")); err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Spec.Source.PadForMetadata {
+		t.Fatal("a replicated restore of a padded source must stay padded")
+	}
+}
+
 // A lagging informer after AlreadyExists must surface as Unavailable
 // (retryable) — not Internal, which the provisioner treats as final and
 // would record "volume not created" for a volume that exists.
@@ -1750,8 +2022,6 @@ func TestCreateVolumeCloneShapeChecksRunBeforeCut(t *testing.T) {
 		params map[string]string
 		want   codes.Code
 	}{
-		{name: "replica count mismatch", source: volSrc, size: 5 << 30,
-			params: map[string]string{constants.ParamReplicas: "2"}, want: codes.InvalidArgument},
 		{name: "smaller than source", source: volSrc, size: 1 << 30, want: codes.InvalidArgument},
 		{name: "cross pool", source: volSrc, size: 5 << 30,
 			params: map[string]string{constants.ParamPool: poolFast}, want: codes.InvalidArgument},

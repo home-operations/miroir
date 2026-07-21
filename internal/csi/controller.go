@@ -171,7 +171,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 
-	snapID, cloneSrc, err := c.resolveContentSource(ctx, req, sizeBytes, replicas, params.pool)
+	snapID, cloneSrc, err := c.resolveContentSource(ctx, req, sizeBytes, params.pool)
 	if err != nil {
 		return nil, err
 	}
@@ -195,26 +195,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		c.allocMu.Unlock()
 		return nil, err
 	}
-	placed := srcReplicas
-	if snapID == "" {
-		// One topology snapshot serves both placement and the tie-breaker
-		// pick; separate resolves could observe different topologies
-		// mid-RPC.
-		nodes, err := c.nodes(ctx)
-		if err != nil {
-			c.allocMu.Unlock()
-			return nil, err
-		}
-		p, err := c.place(ctx, nodes, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess, params.pool)
-		if err != nil {
-			c.allocMu.Unlock()
-			return nil, err
-		}
-		placed, err = c.withTieBreaker(ctx, nodes, p, replicas, quorum)
-		if err != nil {
-			c.allocMu.Unlock()
-			return nil, err
-		}
+	placed, err := c.placeVolume(ctx, req, snapID, srcReplicas, replicas, sizeBytes, vols, remoteAccess, params.pool, quorum)
+	if err != nil {
+		c.allocMu.Unlock()
+		return nil, err
 	}
 	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{
@@ -395,8 +379,10 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 
 // resolveSource resolves a restore's source: on a clone (snapID set) it
 // validates the snapshot, size, and pool, and returns the placement
-// replicas (following the source, FullSyncing post-snapshot legs). Returns
-// zero values for a fresh volume (no content source).
+// replicas (following the source, FullSyncing post-snapshot legs; a class
+// requesting a different diskful count is reshaped later, see
+// reshapeRestore) plus the padding verdict for a boundary-crossing
+// restore. Returns zero values for a fresh volume (no content source).
 func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes int64, replicas int, pool string) (*miroirv1alpha1.VolumeSource, []miroirv1alpha1.Replica, bool, error) {
 	if snapID == "" {
 		return nil, nil, false, nil
@@ -411,11 +397,6 @@ func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes
 		return nil, nil, false, status.Errorf(codes.InvalidArgument,
 			"requested %d below snapshot size %d", sizeBytes, snap.Status.SizeBytes)
 	}
-	if len(srcVol.Spec.DiskfulReplicas()) != replicas {
-		return nil, nil, false, status.Errorf(codes.InvalidArgument,
-			"restore replica count %d must match source diskful replicas %d",
-			replicas, len(srcVol.Spec.DiskfulReplicas()))
-	}
 	// CoW clones cannot cross pools: each leg clones its node-local
 	// snapshot inside the pool that holds it.
 	for _, rep := range srcVol.Spec.DiskfulReplicas() {
@@ -429,7 +410,44 @@ func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes
 	if err != nil {
 		return nil, nil, false, err
 	}
-	return &miroirv1alpha1.VolumeSource{SnapshotName: snapID}, srcReplicas, snap.Status.SourceFormatted, nil
+	source := &miroirv1alpha1.VolumeSource{
+		SnapshotName: snapID,
+		// A replicated target restored across the replication boundary —
+		// from an unreplicated source, directly or through a chain of
+		// padded restores — pads every backing by the internal-metadata
+		// overhead (see the field's doc). Sticky through replicated
+		// restore chains: a padded source's clone is physically padded
+		// and its filesystem sized past the bare spec, so its joiners
+		// must pad too.
+		PadForMetadata: replicas > 1 && (srcVol.Spec.DRBD == nil ||
+			(srcVol.Spec.Source != nil && srcVol.Spec.Source.PadForMetadata)),
+	}
+	return source, srcReplicas, snap.Status.SourceFormatted, nil
+}
+
+// placeVolume decides the volume's replica layout inside the allocMu
+// critical section: fresh volumes are placed (plus tie-breaker), a
+// restore follows its source, and a restore whose class requests a
+// different diskful count than the source had is reshaped (issue #305).
+// One topology snapshot serves placement and the tie-breaker pick;
+// separate resolves could observe different topologies mid-RPC.
+func (c *Controller) placeVolume(ctx context.Context, req *csi.CreateVolumeRequest, snapID string, srcReplicas []miroirv1alpha1.Replica, replicas int, sizeBytes int64, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string, quorum miroirv1alpha1.QuorumPolicy) ([]miroirv1alpha1.Replica, error) {
+	if snapID != "" && len(diskfulOf(srcReplicas)) == replicas {
+		return srcReplicas, nil
+	}
+	nodes, err := c.nodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if snapID != "" {
+		return c.reshapeRestore(ctx, nodes, req.GetAccessibilityRequirements(),
+			srcReplicas, replicas, sizeBytes, req.GetName(), vols, remoteAccess, pool, quorum)
+	}
+	p, err := c.place(ctx, nodes, req.GetAccessibilityRequirements(), replicas, sizeBytes, req.GetName(), vols, remoteAccess, pool, nil)
+	if err != nil {
+		return nil, err
+	}
+	return c.withTieBreaker(ctx, nodes, p, replicas, quorum)
 }
 
 // allocVolumes lists every volume once for the allocMu critical section
@@ -456,15 +474,19 @@ func (c *Controller) allocVolumes(ctx context.Context, needed bool) ([]miroirv1a
 // so a cold cluster still provisions. For replicated volumes it resolves
 // each node's InternalIP and assigns DRBD node ids by slice position —
 // replicas[0] is the GI-seed winner (internal/drbd).
-func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string) ([]miroirv1alpha1.Replica, error) {
+func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.TopologyRequirement, count int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string, excluded map[string]bool) ([]miroirv1alpha1.Replica, error) {
 	// Every diskful leg needs the pool on its own node; a class naming a
 	// pool too few nodes carry must say so instead of a generic refusal.
 	// Unplaceable nodes (address conflict) are excluded outright — but
 	// counted, so the refusal names the real cause instead of blaming the
-	// pool declarations.
+	// pool declarations. Callers placing joiners for a reshaped restore
+	// pass the nodes already holding a leg as excluded.
 	candidates := map[string]nodemap.Pool{}
 	conflicted := 0
 	for n := range nodes {
+		if excluded[n] {
+			continue
+		}
 		p, ok := nodes.Pool(n, pool)
 		if !ok {
 			continue
@@ -633,11 +655,123 @@ func (c *Controller) withTieBreaker(ctx context.Context, nodes nodemap.Map, plac
 		return nil, err
 	}
 	return append(placed, miroirv1alpha1.Replica{
-		Node:     tb,
-		NodeID:   int32(len(placed)), //nolint:gosec // ≤3 replicas
+		Node: tb,
+		// Smallest unused, not positional: a reshaped restore preserves
+		// the source legs' ids (clone metadata is keyed by them), so the
+		// kept set can be sparse. Identical to len(placed) for a freshly
+		// placed contiguous layout.
+		NodeID:   nextFreeNodeID(placed),
 		Address:  addr,
 		Diskless: true,
 	}), nil
+}
+
+// nextFreeNodeID returns the smallest DRBD node id no replica uses.
+func nextFreeNodeID(reps []miroirv1alpha1.Replica) int32 {
+	used := map[int32]bool{}
+	for _, r := range reps {
+		used[r.NodeID] = true
+	}
+	for id := int32(0); ; id++ {
+		if !used[id] {
+			return id
+		}
+	}
+}
+
+// diskfulOf filters a replica layout down to its diskful legs, order
+// preserved.
+func diskfulOf(reps []miroirv1alpha1.Replica) []miroirv1alpha1.Replica {
+	diskful := make([]miroirv1alpha1.Replica, 0, len(reps))
+	for _, rep := range reps {
+		if !rep.Diskless {
+			diskful = append(diskful, rep)
+		}
+	}
+	return diskful
+}
+
+// reshapeRestore adapts a restore's replica layout to a class requesting
+// a different diskful count than the source volume had (issue #305).
+// Growing appends freshly placed FullSync joiners — their content
+// arrives over the wire, so unlike the CoW legs they may land anywhere
+// the pool reaches. Shrinking keeps a subset of the source legs, seed
+// first, Done legs preferred. The source tie-breaker (if any) is
+// discarded and re-derived for the final shape, and node ids are
+// re-numbered around the preserved legs — a leg cloning DRBD metadata
+// keeps the id that metadata is keyed by, everything else takes the
+// smallest unused id. A 1-replica target ends unreplicated: the sole
+// kept leg sheds the replication-only fields (the clone's embedded
+// metadata becomes inert tail bytes past the filesystem).
+func (c *Controller) reshapeRestore(ctx context.Context, nodes nodemap.Map, reqs *csi.TopologyRequirement, base []miroirv1alpha1.Replica, target int, sizeBytes int64, name string, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string, quorum miroirv1alpha1.QuorumPolicy) ([]miroirv1alpha1.Replica, error) {
+	diskful := diskfulOf(base)
+	switch {
+	case len(diskful) > target:
+		diskful = keepRestoreLegs(diskful, target)
+	case len(diskful) < target:
+		excluded := map[string]bool{}
+		for _, rep := range diskful {
+			excluded[rep.Node] = true
+		}
+		extra, err := c.place(ctx, nodes, reqs, target-len(diskful), sizeBytes, name, vols, remoteAccess, pool, excluded)
+		if err != nil {
+			return nil, err
+		}
+		for i := range extra {
+			extra[i].FullSync = true
+		}
+		diskful = append(diskful, extra...)
+	}
+	if target == 1 {
+		diskful[0].NodeID, diskful[0].Address, diskful[0].FullSync = 0, "", false
+		return diskful[:1], nil
+	}
+	// Preserved clone legs (recognizable by their replicated-source
+	// address) keep their ids; everything else — an unreplicated source's
+	// seed, placement's positional ids — is re-numbered and addressed.
+	used := map[int32]bool{}
+	assign := make([]int, 0, len(diskful))
+	for i := range diskful {
+		if diskful[i].Address != "" && !diskful[i].FullSync {
+			used[diskful[i].NodeID] = true
+			continue
+		}
+		assign = append(assign, i)
+	}
+	for _, i := range assign {
+		id := int32(0)
+		for used[id] {
+			id++
+		}
+		used[id] = true
+		diskful[i].NodeID = id
+		if diskful[i].Address == "" {
+			addr, err := c.replicationAddress(ctx, nodes, diskful[i].Node)
+			if err != nil {
+				return nil, err
+			}
+			diskful[i].Address = addr
+		}
+	}
+	return c.withTieBreaker(ctx, nodes, diskful, target, quorum)
+}
+
+// keepRestoreLegs selects target legs from the source's diskful layout:
+// the seed (first diskful — the clone's sync source, already validated
+// complete by restoreReplicas) stays first, then the remaining legs in
+// order with Done legs before FullSync ones — dropping a Done leg while
+// keeping a FullSync one would trade a free CoW clone for a full resync.
+func keepRestoreLegs(diskful []miroirv1alpha1.Replica, target int) []miroirv1alpha1.Replica {
+	kept := make([]miroirv1alpha1.Replica, 0, target)
+	kept = append(kept, diskful[0])
+	for _, fullSync := range []bool{false, true} {
+		for _, rep := range diskful[1:] {
+			if rep.FullSync == fullSync && len(kept) < target {
+				kept = append(kept, rep)
+			}
+		}
+	}
+	return kept
 }
 
 // spreadByZone selects count nodes from ordered (already ranked by topology
@@ -858,12 +992,12 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 // volume clone the internal snapshot this call cuts on the source
 // volume (waiting until every leg holds it). cloneSrc is the clone's
 // source volume id, "" for snapshot and blank sources.
-func (c *Controller) resolveContentSource(ctx context.Context, req *csi.CreateVolumeRequest, sizeBytes int64, replicas int, pool string) (snapID, cloneSrc string, err error) {
+func (c *Controller) resolveContentSource(ctx context.Context, req *csi.CreateVolumeRequest, sizeBytes int64, pool string) (snapID, cloneSrc string, err error) {
 	snapID, cloneSrc, err = contentSourceIDs(req)
 	if err != nil || cloneSrc == "" {
 		return snapID, cloneSrc, err
 	}
-	snapID, err = c.ensureCloneSnapshot(ctx, cloneSrc, req.GetName(), sizeBytes, replicas, pool)
+	snapID, err = c.ensureCloneSnapshot(ctx, cloneSrc, req.GetName(), sizeBytes, pool)
 	return snapID, cloneSrc, err
 }
 
@@ -899,7 +1033,7 @@ func contentSourceIDs(req *csi.CreateVolumeRequest) (snapID, cloneVolID string, 
 // The shape checks run before the cut — a clone whose class can never
 // match the source must fail without freezing the source volume for a
 // snapshot round it would then leak.
-func (c *Controller) ensureCloneSnapshot(ctx context.Context, srcVolID, cloneVolID string, sizeBytes int64, replicas int, pool string) (string, error) {
+func (c *Controller) ensureCloneSnapshot(ctx context.Context, srcVolID, cloneVolID string, sizeBytes int64, pool string) (string, error) {
 	snapName := constants.CloneSnapshotPrefix + cloneVolID
 	// A taken volume name that is not this clone can only end in
 	// handleCreateErr's AlreadyExists — refuse it BEFORE the cut, or the
@@ -934,10 +1068,10 @@ func (c *Controller) ensureCloneSnapshot(ctx context.Context, srcVolID, cloneVol
 		return "", status.Errorf(codes.InvalidArgument,
 			"requested %d below clone source volume size %d", sizeBytes, srcVol.Spec.SizeBytes)
 	}
-	if got := len(srcVol.Spec.DiskfulReplicas()); got != replicas {
-		return "", status.Errorf(codes.InvalidArgument,
-			"clone replica count %d must match source diskful replicas %d", replicas, got)
-	}
+	// No replica-count gate: a clone is an internal snapshot plus a
+	// restore, and a count differing from the source's is reshaped on the
+	// restore leg of that path (reshapeRestore), same as an explicit
+	// snapshot restore.
 	for _, rep := range srcVol.Spec.DiskfulReplicas() {
 		if src := nodemap.PoolOrDefault(rep.Pool); src != pool {
 			return "", status.Errorf(codes.InvalidArgument,

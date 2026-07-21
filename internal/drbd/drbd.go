@@ -199,7 +199,7 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 		// --max-peers reserves metadata slots up-front: it cannot
 		// be raised later without recreating metadata, so leave
 		// headroom beyond the current 2-node shape.
-		args := []string{"create-md", "--force", "--max-peers", "7"}
+		args := []string{"create-md", "--force", "--max-peers", strconv.Itoa(maxPeers)}
 		if r.BitmapGranularityBytes > 0 {
 			// Like max-peers, fixed for this leg's lifetime: adjust
 			// never revisits it, only a metadata recreate could.
@@ -211,6 +211,36 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 		}
 	}
 	return nil
+}
+
+// maxPeers is the metadata peer-slot count create-md reserves up-front
+// (it cannot be raised later without recreating metadata) and the input
+// InternalMetaOverhead sizes bitmaps for.
+const maxPeers = 7
+
+// InternalMetaOverhead returns how many extra bytes a backing device
+// needs beyond its nominal size so DRBD internal metadata (meta-disk
+// internal, created with --max-peers) fits without the usable device
+// sizing below nominal. Consumed by restores that cross the replication
+// boundary (VolumeSource.PadForMetadata): an unreplicated source's
+// filesystem spans the full nominal size, so the clone must grow by at
+// least the metadata size before create-md, and every full-sync joiner
+// must match or the DRBD device sizes to the smallest leg.
+//
+// Deliberately a generous upper bound rather than drbdmeta's exact
+// arithmetic: one bitmap bit covers 4KiB per peer slot (the finest
+// granularity DRBD accepts; a coarser BitmapGranularityBytes only
+// shrinks it), rounded up per slot, plus slack for the superblock and
+// activity log, rounded to 4MiB for backend extent alignment. The pad
+// is virtual on every miroir backend (thin/sparse), so over-reserving
+// costs nothing; the e2e restore spec verifies the bound against a real
+// create-md.
+func InternalMetaOverhead(sizeBytes int64) int64 {
+	const block = 4096
+	perPeer := (sizeBytes/32768 + block) &^ (block - 1) // 1 bit / 4KiB, per peer, rounded up
+	overhead := perPeer*(maxPeers+1) + (8 << 20)
+	const extent = 4 << 20
+	return (overhead + extent - 1) &^ (extent - 1)
 }
 
 // probeMetadata reports the backing device's DRBD metadata state.
@@ -261,6 +291,16 @@ func (d *Driver) probeMetadata(ctx context.Context, name string) (hasMD, attache
 // normal first sync during triage.
 func (d *Driver) markAdopted(name string) error {
 	return os.WriteFile(d.path(name+".md-adopted"), nil, 0o640)
+}
+
+// MetadataAdopted reports whether this leg's metadata was adopted from a
+// previous life (an attached resource, or a dump proving live data)
+// rather than created fresh by this agent. The restore seed mint keys on
+// it: adopted metadata carries a real generation and must never be
+// re-seeded.
+func (d *Driver) MetadataAdopted(name string) bool {
+	_, err := os.Stat(d.path(name + ".md-adopted"))
+	return err == nil
 }
 
 // justCreatedUUID is drbdmeta's constant current-uuid for metadata that
@@ -658,6 +698,26 @@ func IsWinner(r Resource) bool {
 // generations (issue #139).
 func (d *Driver) InitialUUID(ctx context.Context, name string) error {
 	if _, err := d.adm(ctx, "new-current-uuid", "--clear-bitmap", name+"/0"); err != nil {
+		return fmt.Errorf("new-current-uuid %s: %w", name, err)
+	}
+	return nil
+}
+
+// SeedUUID declares this leg's just-created metadata the volume's data
+// generation with a full bitmap toward every peer — DRBD's documented
+// "force the full initial sync from this node": new-current-uuid WITHOUT
+// --clear-bitmap flips the leg UpToDate as sync source and every
+// just-created peer elects full SyncTarget on its handshake. It exists
+// for one consumer: the seed leg of a restore that crossed the
+// replication boundary (an unreplicated source's clone) holds real data
+// under freshly minted metadata, so neither the birth flow (data must
+// not be declared identical to blank peers) nor metadata adoption (there
+// was none to adopt) can produce its generation. The caller gates on the
+// metadata being this agent's own fresh create (see agent
+// restoreSeedPending) — running this on a leg with a live generation
+// would fork history.
+func (d *Driver) SeedUUID(ctx context.Context, name string) error {
+	if _, err := d.adm(ctx, "new-current-uuid", name+"/0"); err != nil {
 		return fmt.Errorf("new-current-uuid %s: %w", name, err)
 	}
 	return nil

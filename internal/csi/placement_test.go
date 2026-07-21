@@ -105,7 +105,7 @@ func TestPlaceWeightsByFreeSpace(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestPlaceRefusesOvercommit(t *testing.T) {
 	}
 
 	// Default 2× ratio: 15 + 10 = 25 GiB provisioned > 20 GiB cap on both.
-	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("overcommit must be ResourceExhausted, got %v", err)
 	}
@@ -144,7 +144,7 @@ func TestPlaceTopologyPinnedRefusedWhenOvercommitted(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	_, err := c.place(t.Context(), placeNodes(t, c), topologyPref(nodeA), 1, 10*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	_, err := c.place(t.Context(), placeNodes(t, c), topologyPref(nodeA), 1, 10*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("pinned overcommitted node must be ResourceExhausted, got %v", err)
 	}
@@ -154,7 +154,7 @@ func TestPlaceFallsBackWithoutStats(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: placementClient(s), Nodes: testNodes}
 
-	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestPlaceHonoursConfiguredRatio(t *testing.T) {
 	}
 
 	// 11 GiB on a 10 GiB pool breaches a 1× ratio on every node.
-	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 11*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 11*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("1x ratio must refuse an over-capacity volume, got %v", err)
 	}
@@ -196,7 +196,7 @@ func TestPlaceRefusesPhysicallyFullPool(t *testing.T) {
 	}
 
 	// Default 20× free-space ratio: 1 GiB free admits at most 20 GiB.
-	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 25*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 25*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("a physically full pool must be ResourceExhausted, got %v", err)
 	}
@@ -215,7 +215,7 @@ func TestPlaceHonoursConfiguredFreeSpaceRatio(t *testing.T) {
 
 	// The default 20× would admit this out of the same 10 GiB of free space,
 	// as would the untouched 2× virtual bound.
-	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 50*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	_, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 50*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("1x free-space ratio must refuse a volume past the physical headroom, got %v", err)
 	}
@@ -293,7 +293,7 @@ func TestPlaceSpreadsAcrossZones(t *testing.T) {
 		},
 	}
 
-	got, err := c.place(t.Context(), placeNodes(t, c), nil, 2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+	got, err := c.place(t.Context(), placeNodes(t, c), nil, 2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestPlaceFiltersAndRanksByPool(t *testing.T) {
 
 	// node-c has the roomiest default pool but no fast pool at all; node-b's
 	// fast pool has more headroom than node-a's.
-	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolFast)
+	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolFast, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestPlaceRefusesPoolOnTooFewNodes(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: placementClient(s), Nodes: multiPoolNodes()}
 
-	_, err := c.place(t.Context(), placeNodes(t, c), nil, 3, 5*gib, volNew, placementVols(t, c.Client), false, poolFast)
+	_, err := c.place(t.Context(), placeNodes(t, c), nil, 3, 5*gib, volNew, placementVols(t, c.Client), false, poolFast, nil)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("want ResourceExhausted, got %v", err)
 	}
@@ -400,10 +400,10 @@ func TestPlaceOvercommitIsPoolScoped(t *testing.T) {
 	// Each pool holds 15 GiB provisioned of its 2×10 GiB budget: another
 	// 10 GiB breaches either pool alone (25 > 20), so per-pool accounting
 	// refuses — but 5 GiB still fits (20 > 15+5 is false; 20 >= 20 passes).
-	if _, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false, poolFast); status.Code(err) != codes.ResourceExhausted {
+	if _, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 10*gib, volNew, placementVols(t, c.Client), false, poolFast, nil); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("fast pool at 15/20 GiB must refuse 10 GiB more, got %v", err)
 	}
-	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolFast)
+	got, err := c.place(t.Context(), placeNodes(t, c), nil, 1, 5*gib, volNew, placementVols(t, c.Client), false, poolFast, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestPlaceRemoteAccessIgnoresNonStorageTopology(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	got, err := c.place(t.Context(), placeNodes(t, c), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), true, poolDefault)
+	got, err := c.place(t.Context(), placeNodes(t, c), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), true, poolDefault, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +544,7 @@ func TestPlaceStrictRefusesNonStorageTopology(t *testing.T) {
 		Nodes: testNodes,
 	}
 
-	if _, err := c.place(t.Context(), placeNodes(t, c), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault); status.Code(err) != codes.ResourceExhausted {
+	if _, err := c.place(t.Context(), placeNodes(t, c), topologyReq("edge-node"), 2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("non-storage topology without remote access must refuse, got %v", err)
 	}
 }
@@ -640,10 +640,10 @@ func TestGetCapacityAgreesWithPlacement(t *testing.T) {
 	room := resp.GetAvailableCapacity()
 
 	vols := placementVols(t, c.Client)
-	if _, err := c.place(t.Context(), placeNodes(t, c), topologyPref(nodeA), 1, room, volNew, vols, false, poolDefault); err != nil {
+	if _, err := c.place(t.Context(), placeNodes(t, c), topologyPref(nodeA), 1, room, volNew, vols, false, poolDefault, nil); err != nil {
 		t.Fatalf("place must admit exactly the reported capacity (%d): %v", room, err)
 	}
-	_, err = c.place(t.Context(), placeNodes(t, c), topologyPref(nodeA), 1, room+1, volNew, vols, false, poolDefault)
+	_, err = c.place(t.Context(), placeNodes(t, c), topologyPref(nodeA), 1, room+1, volNew, vols, false, poolDefault, nil)
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("place must refuse one byte over the reported capacity, got %v", err)
 	}
@@ -803,7 +803,7 @@ func TestPlaceSecondReplicaByCapacityNotRotation(t *testing.T) {
 
 	// Consumer on node-b: the provisioner sends [b, c, a].
 	got, err := c.place(t.Context(), placeNodes(t, c), rotatedTopology(nodeB, nodeA, nodeB, nodeC),
-		2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault)
+		2, 5*gib, volNew, placementVols(t, c.Client), false, poolDefault, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -836,7 +836,7 @@ func TestPlaceBurstSpreadsSecondReplicas(t *testing.T) {
 	for i := range 4 {
 		name := fmt.Sprintf("pvc-burst-%d", i)
 		got, err := c.place(t.Context(), placeNodes(t, c), rotation,
-			2, 5*gib, name, placementVols(t, cl), false, poolDefault)
+			2, 5*gib, name, placementVols(t, cl), false, poolDefault, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
