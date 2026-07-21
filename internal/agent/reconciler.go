@@ -801,18 +801,49 @@ func (r *VolumeReconciler) mintGenerations(ctx context.Context, vol *miroirv1alp
 // metadata at UUID_JUST_CREATED, the birth flow refuses (the volume holds
 // real data, and its FullSync joiners must not be declared identical),
 // and there was no metadata to adopt — so nothing else can ever move this
-// volume past Inconsistent. SeedUUID flips the seed UpToDate with a full
-// bitmap toward every peer; the just-created joiners then elect full
-// SyncTarget on their handshakes.
+// volume past Inconsistent. ForceFullSyncSource flips the seed UpToDate
+// with a full bitmap toward every peer; the just-created joiners then
+// elect full SyncTarget on their handshakes. A crash between its promote
+// and demote leaves the role Primary with the mint already durable
+// (UpToDate), which the pending gate no longer matches — the recovery
+// branch demotes it (best-effort: a real consumer holding the device
+// refuses harmlessly, and Activated cannot have latched yet because the
+// latch runs after this mint).
 func (r *VolumeReconciler) mintRestoreSeedUUID(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) (drbd.Status, error) {
+	if r.restoreSeedStuckPrimary(vol, st, localDiskless) {
+		ctrl.LoggerFrom(ctx).Info("demoting restore seed left Primary by an interrupted mint", "volume", vol.Name)
+		if err := r.DRBD.Demote(ctx, vol.Name); err != nil {
+			ctrl.LoggerFrom(ctx).V(1).Info("seed demote refused; leaving it to the consumer lifecycle",
+				"volume", vol.Name, "error", err)
+			return st, nil
+		}
+		return r.DRBD.Status(ctx, vol.Name)
+	}
 	if !r.restoreSeedPending(vol, st, localDiskless) {
 		return st, nil
 	}
 	ctrl.LoggerFrom(ctx).Info("seeding restore data generation (forces full sync to joiners)", "volume", vol.Name)
-	if err := r.DRBD.SeedUUID(ctx, vol.Name); err != nil {
+	if err := r.DRBD.ForceFullSyncSource(ctx, vol.Name); err != nil {
 		return st, err
 	}
 	return r.DRBD.Status(ctx, vol.Name)
+}
+
+// restoreSeedStuckPrimary reports a padded-restore seed left Primary by a
+// mint whose demote never ran: same leg identity as the pending gate, but
+// the disk already UpToDate, the role still Primary, and the volume never
+// Activated (a consumer's promote latches Activated on the pass that
+// observes it, so an unactivated Primary here can only be the mint's).
+func (r *VolumeReconciler) restoreSeedStuckPrimary(vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
+	if localDiskless || vol.Spec.DRBD == nil ||
+		vol.Spec.Source == nil || !vol.Spec.Source.PadForMetadata {
+		return false
+	}
+	seed := vol.Spec.FirstDiskfulReplica()
+	if seed == nil || seed.Node != r.NodeName || seed.FullSync {
+		return false
+	}
+	return st.Primary && st.DiskState == drbd.DiskUpToDate && !vol.Status.Activated
 }
 
 // restoreSeedPending gates the restore seed mint on proof that this leg

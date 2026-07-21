@@ -557,18 +557,9 @@ func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.Top
 	// overcommit guard, so a topology-pinned volume refuses rather than
 	// silently landing on a node the pod can't reach.
 	ordered := make([]string, 0, len(candidates))
-	topologyMatched := false
-	for _, t := range append(reqs.GetPreferred(), reqs.GetRequisite()...) {
-		n, ok := t.GetSegments()[constants.TopologyKey]
-		if !ok {
-			continue
-		}
-		if _, ok := candidates[n]; !ok {
-			continue
-		}
-		topologyMatched = true
-		ordered = append(ordered, n)
-		break
+	pin, topologyMatched := topologyPick(reqs, candidates, excluded)
+	if pin != "" {
+		ordered = append(ordered, pin)
 	}
 	if reqs != nil && len(reqs.GetRequisite()) > 0 && !topologyMatched && !remoteAccess {
 		// On a remote-access volume the scheduler may pick a non-storage
@@ -664,6 +655,28 @@ func (c *Controller) withTieBreaker(ctx context.Context, nodes nodemap.Map, plac
 		Address:  addr,
 		Diskless: true,
 	}), nil
+}
+
+// topologyPick resolves the scheduler's topology selection against the
+// placeable candidates: the first candidate named by the requirement is
+// pinned. A named node that instead already holds a kept leg (a reshaped
+// restore placing joiners passes those as excluded) satisfies the
+// topology without a pin — scanning on would pin a rotation artifact,
+// the exact #258 bug — and must not trip the topology refusal.
+func topologyPick(reqs *csi.TopologyRequirement, candidates map[string]nodemap.Pool, excluded map[string]bool) (pin string, matched bool) {
+	for _, t := range append(reqs.GetPreferred(), reqs.GetRequisite()...) {
+		n, ok := t.GetSegments()[constants.TopologyKey]
+		if !ok {
+			continue
+		}
+		if excluded[n] {
+			return "", true
+		}
+		if _, ok := candidates[n]; ok {
+			return n, true
+		}
+	}
+	return "", false
 }
 
 // nextFreeNodeID returns the smallest DRBD node id no replica uses.

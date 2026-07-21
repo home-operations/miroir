@@ -1080,6 +1080,44 @@ func TestCreateVolumeRestoreExpandsUnreplicatedSource(t *testing.T) {
 	}
 }
 
+// Under WaitForFirstConsumer the scheduler usually selects the node the
+// pod runs on — for a restore that is typically the seed's node, which
+// joiner placement excludes. The kept leg satisfies that topology, so
+// the restore must succeed with the joiner placed elsewhere instead of
+// refusing (or pinning a rotation artifact, #258).
+func TestCreateVolumeRestoreExpandTopologyOnSeedNode(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
+		},
+	}
+	c := reshapeController(t, srcVol)
+	req := restoreReq("2")
+	req.AccessibilityRequirements = &csi.TopologyRequirement{
+		Preferred: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: nodeA}},
+			{Segments: map[string]string{constants.TopologyKey: nodeB}},
+		},
+		Requisite: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: nodeA}},
+		},
+	}
+
+	if _, err := c.CreateVolume(t.Context(), req); err != nil {
+		t.Fatalf("topology on the seed node must be satisfied by the kept leg: %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	diskful := got.Spec.DiskfulReplicas()
+	if len(diskful) != 2 || diskful[0].Node != nodeA || diskful[1].Node == nodeA {
+		t.Fatalf("want the seed kept and the joiner elsewhere, got %+v", diskful)
+	}
+}
+
 // Restoring a replicated source into a 3-replica class: the source legs
 // keep the ids their clone metadata is keyed by, the extra leg full-syncs
 // under the next free id, and no padding applies (the source backings

@@ -1071,19 +1071,33 @@ func TestInternalMetaOverheadBounds(t *testing.T) {
 	}
 }
 
-// SeedUUID must not pass --clear-bitmap: the whole point is a full
-// bitmap toward every peer so just-created joiners elect full
-// SyncTarget, where --clear-bitmap would declare them identical to data
-// they do not hold.
-func TestSeedUUIDKeepsBitmap(t *testing.T) {
+// The seed bootstrap is force-promote then demote — never
+// new-current-uuid, which a connected resource refuses ("Need to be
+// StandAlone") and which leaves the disk Inconsistent even when minted,
+// and never --clear-bitmap, which would declare blank joiners identical
+// to data they do not hold.
+func TestForceFullSyncSourcePromotesAndDemotes(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
-	if err := d.SeedUUID(t.Context(), volPvc1); err != nil {
+	if err := d.ForceFullSyncSource(t.Context(), volPvc1); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "new-current-uuid pvc-1/0")
-	fe.notCalledWith(t, "--clear-bitmap")
+	fe.calledWith(t, "drbdadm primary --force pvc-1")
+	fe.calledWith(t, "drbdadm secondary pvc-1")
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
+// A failed promote must not be followed by the demote; the error is the
+// caller's retry signal.
+func TestForceFullSyncSourceSkipsDemoteOnPromoteFailure(t *testing.T) {
+	fe := &fakeExec{errOn: map[string]error{"primary --force": errors.New("boom")}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.ForceFullSyncSource(t.Context(), volPvc1); err == nil {
+		t.Fatal("a failed promote must surface")
+	}
+	fe.notCalledWith(t, "drbdadm secondary")
 }
 
 // MetadataAdopted reflects the adoption marker ensureMetadata writes for

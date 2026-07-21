@@ -703,22 +703,37 @@ func (d *Driver) InitialUUID(ctx context.Context, name string) error {
 	return nil
 }
 
-// SeedUUID declares this leg's just-created metadata the volume's data
-// generation with a full bitmap toward every peer — DRBD's documented
-// "force the full initial sync from this node": new-current-uuid WITHOUT
-// --clear-bitmap flips the leg UpToDate as sync source and every
-// just-created peer elects full SyncTarget on its handshake. It exists
-// for one consumer: the seed leg of a restore that crossed the
-// replication boundary (an unreplicated source's clone) holds real data
-// under freshly minted metadata, so neither the birth flow (data must
-// not be declared identical to blank peers) nor metadata adoption (there
-// was none to adopt) can produce its generation. The caller gates on the
-// metadata being this agent's own fresh create (see agent
-// restoreSeedPending) — running this on a leg with a live generation
-// would fork history.
-func (d *Driver) SeedUUID(ctx context.Context, name string) error {
-	if _, err := d.adm(ctx, "new-current-uuid", name+"/0"); err != nil {
-		return fmt.Errorf("new-current-uuid %s: %w", name, err)
+// ForceFullSyncSource declares this leg's data the volume's generation —
+// DRBD's documented bootstrap for a node that has the data while its
+// peers do not: primary --force flips the Inconsistent disk UpToDate and
+// mints a current UUID with full bitmaps, every just-created peer elects
+// full SyncTarget, and the immediate demote hands the device back to
+// auto-promote. Not new-current-uuid: without --clear-bitmap (and with
+// --force-resync alike) drbdsetup refuses it on a connected resource
+// ("(151) Need to be StandAlone"), and even minted StandAlone it leaves
+// the disk Inconsistent with the resync parked on the source's own state
+// (PausedSyncS, resync-suspended:dependency) — verified against DRBD 9.3
+// on the QEMU e2e. It exists for one consumer: the seed leg of a restore
+// that crossed the replication boundary (an unreplicated source's clone)
+// holds real data under freshly created metadata, so neither the birth
+// flow (data must not be declared identical to blank peers) nor metadata
+// adoption (there was none to adopt) can produce its generation. The
+// caller gates on the metadata being this agent's own fresh create (see
+// agent restoreSeedPending) — forcing a leg with a live generation would
+// fork history.
+func (d *Driver) ForceFullSyncSource(ctx context.Context, name string) error {
+	if _, err := d.adm(ctx, "primary", "--force", name); err != nil {
+		return fmt.Errorf("primary --force %s: %w", name, err)
+	}
+	return d.Demote(ctx, name)
+}
+
+// Demote releases an explicitly held Primary role back to auto-promote.
+// Used by ForceFullSyncSource and by its crash recovery (a mint whose
+// demote never ran); a device a consumer holds open refuses harmlessly.
+func (d *Driver) Demote(ctx context.Context, name string) error {
+	if _, err := d.adm(ctx, "secondary", name); err != nil {
+		return fmt.Errorf("secondary %s: %w", name, err)
 	}
 	return nil
 }

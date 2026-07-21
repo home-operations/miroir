@@ -114,6 +114,45 @@ func TestPlaceWeightsByFreeSpace(t *testing.T) {
 	}
 }
 
+// A reshaped restore places joiners with the kept-leg nodes excluded.
+// The scheduler's selected node being one of them satisfies the
+// requested topology — the kept leg lives there — so placement must
+// neither refuse (the strict-topology shape: requisite names only that
+// node) nor pin the next rotation entry (the #258 artifact bug): the
+// joiner falls back to capacity ranking.
+func TestPlaceExcludedTopologyNodeSatisfiesWithoutPinning(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{
+		Client: placementClient(s,
+			miroirNodeObj(nodeA, 100*gib, 90*gib), // 10 GiB free — the rotation's next entry
+			miroirNodeObj(nodeB, 100*gib, 10*gib), // 90 GiB free — capacity's pick
+		),
+		Nodes: testNodes,
+	}
+	// Selected node seedNode leads the preferred rotation; node-a follows
+	// as rotation artifact. Requisite names only the selected node (the
+	// external-provisioner --strict-topology shape).
+	const seedNode = "seed-node"
+	reqs := &csi.TopologyRequirement{
+		Preferred: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: seedNode}},
+			{Segments: map[string]string{constants.TopologyKey: nodeA}},
+		},
+		Requisite: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: seedNode}},
+		},
+	}
+
+	got, err := c.place(t.Context(), placeNodes(t, c), reqs, 1, 5*gib, volNew,
+		placementVols(t, c.Client), false, poolDefault, map[string]bool{seedNode: true})
+	if err != nil {
+		t.Fatalf("a kept leg on the selected node must satisfy the topology: %v", err)
+	}
+	if len(got) != 1 || got[0].Node != nodeB {
+		t.Fatalf("joiner must fall back to capacity ranking, not pin the rotation artifact: %+v", got)
+	}
+}
+
 func TestPlaceRefusesOvercommit(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{

@@ -693,7 +693,7 @@ func TestReconcilePaddedRestoreFullSyncJoinerPadsBacking(t *testing.T) {
 	}
 	// The joiner must not mint the seed generation — its content arrives
 	// over the wire.
-	fe.notCalledWith(t, "new-current-uuid")
+	fe.notCalledWith(t, "primary --force")
 }
 
 // The seed of a padded restore sits on fresh create-md metadata that
@@ -726,8 +726,9 @@ func TestReconcilePaddedRestoreSeedMintsGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fe.calledWith(t, "new-current-uuid "+volPvc1+"/0")
-	fe.notCalledWith(t, "--clear-bitmap")
+	fe.calledWith(t, "drbdadm primary --force "+volPvc1)
+	fe.calledWith(t, "drbdadm secondary "+volPvc1)
+	fe.notCalledWith(t, "new-current-uuid")
 }
 
 // A seed leg recreated after a node wipe wears the same fresh-metadata
@@ -761,7 +762,38 @@ func TestReconcilePaddedRestoreSeedMintRefusesWhenPeerHasData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fe.notCalledWith(t, "new-current-uuid")
+	fe.notCalledWith(t, "primary --force")
+}
+
+// A padded-restore seed found Primary and UpToDate without ever being
+// Activated can only be a mint whose demote never ran (the crash window
+// between promote and secondary): the next pass must demote it so a
+// consumer on the peer node can promote.
+func TestReconcilePaddedRestoreSeedDemotesInterruptedMint(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := paddedRestoreVol()
+	up := `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
+	fe := &fakeDRBDExec{statusSeq: []string{up, up, up, up}}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, "src-vol")).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	fe.calledWith(t, "drbdadm secondary "+volPvc1)
+	fe.notCalledWith(t, "primary --force")
 }
 
 // Every status apply must name only this node's slot and the phase — never a
