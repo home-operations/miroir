@@ -21,8 +21,12 @@ spec:
   workers:
     count: 2
     # A worker runs DRBD, dm-thin, kubelet and every test pod; 3GiB left them tight
-    # enough to OOM under the parallel conformance suite.
-    memory: 5GiB
+    # enough to OOM under the parallel conformance suite, and 5GiB was the ceiling
+    # the 16 GB GitHub runners allowed. Sized for the Blacksmith 8 vCPU / 32 GB
+    # runners: 2 workers x 3 vCPU / 8GiB plus the default control plane is 8 of 8
+    # cores and 18GiB of 32, no oversubscription (#299 measurements).
+    cpus: 3
+    memory: 8GiB
   network:
     # Explicit because patches/registry.yaml hardcodes the gateway, the first address
     # of this range. It is also talosctl's default.
