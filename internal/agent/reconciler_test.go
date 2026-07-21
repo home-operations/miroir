@@ -1370,7 +1370,7 @@ func TestReconcileTeardownOrphanHoldLiveOpenerStaysParked(t *testing.T) {
 func TestReconcileTeardownOrphanHoldMountedStaysParked(t *testing.T) {
 	procDir := procFixture(t, map[int]string{
 		1:    unrelatedMountinfo,
-		4321: "824 25 147:1422 / /data rw - ext4 /dev/drbd1422 rw\n",
+		4321: drbd1422Mountinfo,
 	})
 	r, fb, fe, _ := orphanHoldFixture(t, procDir)
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}

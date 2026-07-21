@@ -83,11 +83,9 @@ func deviceMountedAnywhere(procDir string, minor int32) (bool, error) {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue
 		}
-		if ns, err := os.Readlink(filepath.Join(procDir, e.Name(), "ns", "mnt")); err == nil {
-			if seen[ns] {
-				continue
-			}
-			seen[ns] = true
+		ns, nsErr := os.Readlink(filepath.Join(procDir, e.Name(), "ns", "mnt"))
+		if nsErr == nil && seen[ns] {
+			continue
 		}
 		data, err := os.ReadFile(filepath.Join(procDir, e.Name(), "mountinfo"))
 		if err != nil {
@@ -95,6 +93,13 @@ func deviceMountedAnywhere(procDir string, minor int32) (bool, error) {
 				continue
 			}
 			return false, err
+		}
+		// Mark the namespace covered only now: a process that exited
+		// between the readlink and the read must not retire its shared
+		// namespace unread, or a surviving sibling's table — possibly the
+		// one listing the device — would be skipped as a duplicate.
+		if nsErr == nil {
+			seen[ns] = true
 		}
 		if mountinfoListsDevice(data, minor) {
 			return true, nil

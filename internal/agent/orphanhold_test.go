@@ -30,8 +30,12 @@ const heldOpenWithOpeners = `pvc-1: State change failed: (-12) Device is held op
 /dev/drbd1422 open_cnt:1, writable:1; list of openers follows
 drbd1422 opened by mount (pid 4242424) at 2026-07-20 22:48:32.925`
 
-// unrelatedMountinfo is a mountinfo table that references no DRBD device.
-const unrelatedMountinfo = "36 25 0:35 / /run rw - tmpfs tmpfs rw\n"
+// unrelatedMountinfo is a mountinfo table that references no DRBD device;
+// drbd1422Mountinfo one whose filesystem is backed by /dev/drbd1422.
+const (
+	unrelatedMountinfo = "36 25 0:35 / /run rw - tmpfs tmpfs rw\n"
+	drbd1422Mountinfo  = "824 25 147:1422 / /data rw - ext4 /dev/drbd1422 rw\n"
+)
 
 func TestOpenerPidsParsesReportedOpeners(t *testing.T) {
 	got := openerPids(heldOpenWithOpeners + "\ndrbd1422 opened by qemu-system (pid 555) at 2026-07-20 23:00:00.000")
@@ -78,12 +82,47 @@ func procFixture(t *testing.T, mountinfoByPid map[int]string) string {
 	return dir
 }
 
+// mntNS stamps a pid dir in a procFixture with an ns/mnt symlink so two
+// pids can share (or claim) a mount namespace identity.
+func mntNS(t *testing.T, procDir string, pid int, ns string) {
+	t.Helper()
+	nsDir := filepath.Join(procDir, strconv.Itoa(pid), "ns")
+	if err := os.MkdirAll(nsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(ns, filepath.Join(nsDir, "mnt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A process that exits between the ns readlink and the mountinfo read
+// must not retire its shared namespace unread: the surviving sibling's
+// table — here the one listing the device — would otherwise be skipped
+// as a duplicate and the device would read as orphaned.
+func TestDeviceMountedAnywhereGoneProcessDoesNotRetireNamespace(t *testing.T) {
+	dir := procFixture(t, map[int]string{
+		200: drbd1422Mountinfo,
+	})
+	// Pid 100: ns link present, mountinfo already gone (exited mid-scan).
+	// Scanned first (ReadDir is name-sorted).
+	if err := os.MkdirAll(filepath.Join(dir, "100"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mntNS(t, dir, 100, "mnt:[4026531840]")
+	mntNS(t, dir, 200, "mnt:[4026531840]")
+
+	mounted, err := deviceMountedAnywhere(dir, 1422)
+	if err != nil || !mounted {
+		t.Fatalf("the sibling's table must still be read, got %v / %v", mounted, err)
+	}
+}
+
 // The scan must see a mount held only inside a container's namespace —
 // the force-deleted-pod hazard (#195): the host table is clean while the
 // container still runs with the staged filesystem mounted.
 func TestDeviceMountedAnywhereSeesContainerNamespaces(t *testing.T) {
 	host := unrelatedMountinfo
-	container := "824 25 147:1422 / /data rw - ext4 /dev/drbd1422 rw\n"
+	container := drbd1422Mountinfo
 	dir := procFixture(t, map[int]string{1: host, 4321: container})
 
 	mounted, err := deviceMountedAnywhere(dir, 1422)
