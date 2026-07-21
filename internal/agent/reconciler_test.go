@@ -1249,6 +1249,147 @@ func TestReconcileBusyStreakResetsOutsideTeardown(t *testing.T) {
 	}
 }
 
+// orphanHoldFixture assembles a deletion whose down is refused by the
+// issue #319 signature: held open, all reported openers exited, device
+// mounted in no namespace. Callers tweak the proc dir to flip individual
+// legs of the orphan proof.
+func orphanHoldFixture(t *testing.T, procDir string) (*VolumeReconciler, *fakeBackend, *fakeDRBDExec, *events.FakeRecorder) {
+	t.Helper()
+	s := newScheme(t)
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DRBDMinor: 1422},
+	}
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{
+		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[]}]`,
+		errOn: map[string]error{cmdDownPvc1: errors.New(heldOpenWithOpeners)},
+	}
+	rec := events.NewFakeRecorder(8)
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec, ProcDir: procDir,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	return r, fb, fe, rec
+}
+
+// drainEvents empties the recorder and reports whether any drained event
+// contains substr.
+func drainEvents(rec *events.FakeRecorder, substr string) bool {
+	for {
+		select {
+		case e := <-rec.Events:
+			if strings.Contains(e, substr) {
+				return true
+			}
+		default:
+			return false
+		}
+	}
+}
+
+// An orphaned hold — held open only by exited openers, mounted nowhere,
+// past the busy escalation — must not park forever: teardown routes
+// around the pinned minor with a force-detach, destroys the backing, and
+// releases the finalizer, leaving the rendered config for the post-reboot
+// orphan sweep (issue #319).
+func TestReconcileTeardownOrphanHoldReclaims(t *testing.T) {
+	procDir := procFixture(t, map[int]string{1: unrelatedMountinfo})
+	r, fb, fe, rec := orphanHoldFixture(t, procDir)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+
+	// Ride the whole busy escalation first: the orphan proof must not
+	// pre-empt a hold NodeUnstage could still release.
+	for range busyFailLimit {
+		if _, err := r.Reconcile(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fe.notCalledWith(t, "drbdsetup detach")
+
+	// The next cycle reclaims instead of parking.
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatalf("the reclaim cycle must complete teardown: %v", err)
+	}
+	fe.calledWith(t, "drbdsetup detach 1422 --force")
+	fe.notCalledWith(t, "wipe-md")
+	if fb.existing[volPvc1] {
+		t.Fatal("the backing device must be destroyed by the reclaim")
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err == nil {
+		if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeA) {
+			t.Fatalf("this node's finalizer must release after the reclaim: %v", got.Finalizers)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(r.DRBD.StateDir, "pvc-1.res")); err != nil {
+		t.Fatalf("rendered config must stay for the post-reboot orphan sweep: %v", err)
+	}
+	if !drainEvents(rec, "TeardownReclaimed") {
+		t.Fatal("want a TeardownReclaimed event")
+	}
+}
+
+// A live opener pid is a consumer, not an orphan: the reclaim must not
+// fire and the parked busy retry stands (#195: never destroy a backing
+// under a consumer).
+func TestReconcileTeardownOrphanHoldLiveOpenerStaysParked(t *testing.T) {
+	procDir := procFixture(t, map[int]string{4242424: unrelatedMountinfo})
+	r, fb, fe, _ := orphanHoldFixture(t, procDir)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+
+	for range busyFailLimit + 1 {
+		if _, err := r.Reconcile(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("a live opener must stay parked, got %v / %v", res.RequeueAfter, err)
+	}
+	fe.notCalledWith(t, "drbdsetup detach")
+	if !fb.existing[volPvc1] {
+		t.Fatal("the backing must survive while an opener lives")
+	}
+}
+
+// A device still mounted in any namespace — even one no host path shows,
+// like a force-deleted pod's container — is a live consumer: the reclaim
+// must not fire even though every reported opener pid is dead.
+func TestReconcileTeardownOrphanHoldMountedStaysParked(t *testing.T) {
+	procDir := procFixture(t, map[int]string{
+		1:    unrelatedMountinfo,
+		4321: drbd1422Mountinfo,
+	})
+	r, fb, fe, _ := orphanHoldFixture(t, procDir)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+
+	for range busyFailLimit + 1 {
+		if _, err := r.Reconcile(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("a mounted device must stay parked, got %v / %v", res.RequeueAfter, err)
+	}
+	fe.notCalledWith(t, "drbdsetup detach")
+	if !fb.existing[volPvc1] {
+		t.Fatal("the backing must survive while the device is mounted somewhere")
+	}
+}
+
 // A kernel-wedged resource (stuck Detaching with the connections gone,
 // LINBIT/drbd#137) must leave the fast busy-retry without ever spawning
 // another down: the first sighting defers on the busy cadence, the second
@@ -1308,6 +1449,22 @@ func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 	}
 	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, "reboot") {
 		t.Fatalf("Message must say a reboot is required, got %q", msg)
+	}
+
+	// The escalation latches: parked cycles must not re-emit the Warning
+	// (issue #319: a wedged volume re-emitted it every cycle for hours)
+	// while the gauge stays raised.
+	res, err = r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != wedgedRequeue {
+		t.Fatalf("post-escalation cycle must stay parked, got %v / %v", res.RequeueAfter, err)
+	}
+	select {
+	case e := <-rec.Events:
+		t.Fatalf("parked wedge cycles must not re-emit events, got %q", e)
+	default:
+	}
+	if got := testutil.ToFloat64(metricWedged.WithLabelValues(volPvc1, volPvc1, "")); got != 1 {
+		t.Fatalf("wedged gauge must stay raised on parked cycles, got %v", got)
 	}
 
 	// The wedge clears (reboot happened) but the device is now merely held

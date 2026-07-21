@@ -4,8 +4,9 @@
 // the Talos QEMU cluster $KUBECONFIG points at (test/e2e-qemu runs it as part of
 // the conformance leg). It is build-tagged so `mise run test` never compiles it.
 //
-// Scope: the local backend (miroir-local / lvmthin / replicas:1). The DRBD path is
-// left to the replicated conformance leg and smoke.sh.
+// Scope: the local backend (miroir-local / lvmthin / replicas:1), plus the
+// orphaned-hold teardown spec, which needs a replicated (DRBD) volume. The rest
+// of the DRBD path is left to the replicated conformance leg and smoke.sh.
 package e2e
 
 import (

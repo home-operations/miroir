@@ -256,12 +256,14 @@ main() {
     install_chart
 
     # miroir's own Go specs assert the local (lvmthin, replicas:1) lifecycle,
-    # snapshot/restore, block and placement behaviour the upstream suite does not.
-    # The conformance leg sets RUN_SPECS to run them against miroir-local before the
-    # long external-storage run, so a miroir-specific break fails fast.
+    # snapshot/restore, block, placement, and orphaned-hold teardown behaviour
+    # the upstream suite does not. The conformance leg sets RUN_SPECS to run
+    # them before the long external-storage run, so a miroir-specific break
+    # fails fast. 35m: the orphaned-hold spec alone rides the full ~6-minute
+    # busy escalation before its reclaim can fire.
     if [[ "${RUN_SPECS:-}" == "1" ]]; then
-        log "Running miroir's Go e2e specs (miroir-local)..."
-        (cd "$REPO_ROOT" && go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 20m)
+        log "Running miroir's Go e2e specs..."
+        (cd "$REPO_ROOT" && go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 35m)
     fi
 
     log "Running the external-storage conformance suite ($TESTDRIVER)..."
