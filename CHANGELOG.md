@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.7](https://github.com/home-operations/miroir/compare/0.11.6...0.11.7) (2026-07-21)
+
+
+### Bug Fixes
+
+* **agent:** reclaim volume deletions blocked by an orphaned device hold ([#321](https://github.com/home-operations/miroir/issues/321)) ([6e76957](https://github.com/home-operations/miroir/commit/6e76957ebe17b09572ee7f2b704d289757c015b2))
+* **deps:** update module github.com/go-logr/logr (v1.4.3 → v1.4.4) ([#315](https://github.com/home-operations/miroir/issues/315)) ([1d5350e](https://github.com/home-operations/miroir/commit/1d5350ef1668c2630dd0556542530febdb70cec3))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool aqua:astral-sh/uv (0.11.29 → 0.11.30) ([#314](https://github.com/home-operations/miroir/issues/314)) ([2110661](https://github.com/home-operations/miroir/commit/21106611555188a8f3e614957c69b05ad9e77e3d))
+* **mise:** Update tool talos (1.13.6 → 1.13.7) ([#320](https://github.com/home-operations/miroir/issues/320)) ([1e6e587](https://github.com/home-operations/miroir/commit/1e6e587c2e36985dd4560f3fcdc1e114da0d7f63))
+
 ## [0.11.6](https://github.com/home-operations/miroir/compare/0.11.5...0.11.6) (2026-07-20)
 
 
