@@ -39,6 +39,7 @@ const (
 	poolDefault = "default"
 	datasetTank = "tank/miroir"
 	deviceSDB   = "/dev/sdb"
+	snapshotA   = "snap-a"
 )
 
 // unreplicatedVolume is the minimal valid single-replica volume.
@@ -117,7 +118,7 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 
 	It("rejects retargeting or adding a clone source", func() {
 		vol := unreplicatedVolume("pvc-source-pin")
-		vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-a"}
+		vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapshotA}
 		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
 
@@ -130,14 +131,14 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 		Expect(k8sClient.Create(ctx, unsourced)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, unsourced)).To(Succeed()) })
 
-		unsourced.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-a"}
+		unsourced.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapshotA}
 		err = k8sClient.Update(ctx, unsourced)
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "adding a source after creation must be rejected, got: %v", err)
 	})
 
 	It("rejects changing a clone source's metadata padding", func() {
 		vol := replicatedVolume("pvc-source-padding-pin")
-		vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-a", PadForMetadata: true}
+		vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapshotA, PadForMetadata: true}
 		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
 
