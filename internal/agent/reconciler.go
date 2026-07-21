@@ -284,10 +284,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	// Birth generation, ordered before growIfCoordinator so resize never
-	// runs against a both-Inconsistent device; status is re-read so this
-	// same pass proceeds against UpToDate legs.
-	if st, err = r.mintBirthUUID(ctx, vol, resource, st, localDiskless); err != nil {
+	// Data generations (birth, or the padded-restore seed), ordered
+	// before growIfCoordinator so resize never runs against a
+	// both-Inconsistent device; status is re-read so this same pass
+	// proceeds against UpToDate legs.
+	if st, err = r.mintGenerations(ctx, vol, resource, st, localDiskless); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	// Ordered before handleSplitBrain so the same pass cannot auto-discard
@@ -556,25 +557,44 @@ func peerBackingsGrown(vol *miroirv1alpha1.MiroirVolume, self string) bool {
 	return true
 }
 
+// backingBytes is the size a diskful backing must realize for vol: the
+// spec size, plus the internal-metadata overhead when the volume is
+// padded (a restore that crossed the replication boundary — see
+// VolumeSource.PadForMetadata). Every diskful leg must agree: DRBD sizes
+// the device to the smallest leg's usable bytes, and an unpadded joiner
+// would shrink the device below the restored filesystem.
+func backingBytes(vol *miroirv1alpha1.MiroirVolume) int64 {
+	if vol.Spec.DRBD != nil && vol.Spec.Source != nil && vol.Spec.Source.PadForMetadata {
+		return vol.Spec.SizeBytes + drbd.InternalMetaOverhead(vol.Spec.SizeBytes)
+	}
+	return vol.Spec.SizeBytes
+}
+
 // realizeBacking creates the backing device: fresh, or cloned from a
-// snapshot for restores. Clones are byte-identical on every replica and
-// carry the source's live DRBD metadata, so restored legs connect with
-// identical inherited generations and skip the resync. A wiped node's
-// recreated device gets fresh just-created metadata and full-syncs at the
-// first handshake — no special-casing needed.
+// snapshot for restores. Clones of a replicated source are byte-identical
+// on every replica and carry the source's live DRBD metadata, so restored
+// legs connect with identical inherited generations and skip the resync.
+// A wiped node's recreated device gets fresh just-created metadata and
+// full-syncs at the first handshake — no special-casing needed. A padded
+// clone (unreplicated source restored into a replicated volume) instead
+// grows by the metadata overhead here, BEFORE the DRBD apply: there is no
+// adopted metadata to strand (the #300 concern), and create-md must land
+// in the grown tail rather than over the source filesystem's last bytes.
+// The grow runs on the recovery path too — a crash between clone and
+// resize must not leave an unpadded backing for create-md to corrupt.
 func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backend, vol *miroirv1alpha1.MiroirVolume, fullSync bool) (dev string, err error) {
 	if vol.Spec.Source == nil || fullSync {
 		// A FullSync joiner never clones, even on a restored volume: its
 		// node holds no source snapshot, and its content arrives over the
 		// wire as a full SyncTarget regardless of what the backing holds.
-		return be.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		return be.Create(ctx, vol.Name, backingBytes(vol))
 	}
 	// The backing is cloned once and survives reboots; the source snapshot
 	// may be gone by then, so recover an existing device without it.
 	if exists, err := be.Exists(ctx, vol.Name); err != nil {
 		return "", err
 	} else if exists {
-		return be.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+		return r.finishClone(ctx, be, vol)
 	}
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
@@ -583,7 +603,40 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 		}
 		return "", err
 	}
-	return be.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name)
+	if vol.Spec.DRBD == nil {
+		if err := r.DRBD.InvalidateForeignMetadataWipe(vol.Name); err != nil {
+			return "", err
+		}
+	}
+	if _, err := be.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name); err != nil {
+		return "", err
+	}
+	return r.finishClone(ctx, be, vol)
+}
+
+// finishClone re-activates an existing clone and settles the shape a
+// boundary-crossing restore left it in — both run on the recovery path
+// too, so a crash right after the clone cannot skip them. A padded
+// volume grows to backingBytes ahead of the DRBD apply (Resize is
+// grow-only and idempotent); an unreplicated target sheds any DRBD
+// metadata a replicated source's clone carried, or blkid reads the raw
+// backing as TYPE=drbd and staging refuses it (see WipeForeignMetadata).
+// Unpadded replicated volumes keep today's contract: clones grow only
+// after attach (growLeg).
+func (r *VolumeReconciler) finishClone(ctx context.Context, be backend.Backend, vol *miroirv1alpha1.MiroirVolume) (string, error) {
+	dev, err := be.Create(ctx, vol.Name, vol.Spec.SizeBytes)
+	if err != nil {
+		return "", err
+	}
+	if vol.Spec.DRBD == nil {
+		return dev, r.DRBD.WipeForeignMetadata(ctx, vol.Name, dev)
+	}
+	if vol.Spec.Source.PadForMetadata {
+		if err := be.Resize(ctx, vol.Name, backingBytes(vol)); err != nil {
+			return "", err
+		}
+	}
+	return dev, nil
 }
 
 // drbdResource maps the CRD desired state to a render input. Entries the
@@ -741,6 +794,103 @@ func (r *VolumeReconciler) mintBirthUUID(ctx context.Context, vol *miroirv1alpha
 		return st, err
 	}
 	return r.DRBD.Status(ctx, vol.Name)
+}
+
+// mintGenerations runs the mutually exclusive one-time generation mints:
+// the birth UUID for a fresh volume, or the restore seed UUID for a
+// padded restore (its gates are disjoint from birth's — birth refuses
+// FullSync legs and the seed mint requires them).
+func (r *VolumeReconciler) mintGenerations(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, st drbd.Status, localDiskless bool) (drbd.Status, error) {
+	st, err := r.mintBirthUUID(ctx, vol, res, st, localDiskless)
+	if err != nil {
+		return st, err
+	}
+	return r.mintRestoreSeedUUID(ctx, vol, st, localDiskless)
+}
+
+// mintRestoreSeedUUID mints the data generation for the seed leg of a
+// restore that crossed the replication boundary (an unreplicated source
+// cloned into a replicated volume): create-md left the clone's fresh
+// metadata at UUID_JUST_CREATED, the birth flow refuses (the volume holds
+// real data, and its FullSync joiners must not be declared identical),
+// and there was no metadata to adopt — so nothing else can ever move this
+// volume past Inconsistent. ForceFullSyncSource flips the seed UpToDate
+// with a full bitmap toward every peer; the just-created joiners then
+// elect full SyncTarget on their handshakes. A crash between its promote
+// and demote leaves the role Primary with the mint already durable
+// (UpToDate), which the pending gate no longer matches — the recovery
+// branch demotes it (best-effort: a real consumer holding the device
+// refuses harmlessly, and Activated cannot have latched yet because the
+// latch runs after this mint).
+func (r *VolumeReconciler) mintRestoreSeedUUID(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) (drbd.Status, error) {
+	if r.restoreSeedStuckPrimary(vol, st, localDiskless) {
+		ctrl.LoggerFrom(ctx).Info("demoting restore seed left Primary by an interrupted mint", "volume", vol.Name)
+		if err := r.DRBD.Demote(ctx, vol.Name); err != nil {
+			ctrl.LoggerFrom(ctx).V(1).Info("seed demote refused; leaving it to the consumer lifecycle",
+				"volume", vol.Name, "error", err)
+			return st, nil
+		}
+		return r.DRBD.Status(ctx, vol.Name)
+	}
+	if !r.restoreSeedPending(vol, st, localDiskless) {
+		return st, nil
+	}
+	ctrl.LoggerFrom(ctx).Info("seeding restore data generation (forces full sync to joiners)", "volume", vol.Name)
+	if err := r.DRBD.ForceFullSyncSource(ctx, vol.Name); err != nil {
+		return st, err
+	}
+	return r.DRBD.Status(ctx, vol.Name)
+}
+
+// restoreSeedStuckPrimary reports a padded-restore seed left Primary by a
+// mint whose demote never ran: same leg identity as the pending gate, but
+// the disk already UpToDate, the role still Primary, and the volume never
+// Activated (a consumer's promote latches Activated on the pass that
+// observes it, so an unactivated Primary here can only be the mint's).
+func (r *VolumeReconciler) restoreSeedStuckPrimary(vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
+	if localDiskless || vol.Spec.DRBD == nil ||
+		vol.Spec.Source == nil || !vol.Spec.Source.PadForMetadata {
+		return false
+	}
+	seed := vol.Spec.FirstDiskfulReplica()
+	if seed == nil || seed.Node != r.NodeName || seed.FullSync {
+		return false
+	}
+	return st.Primary && st.DiskState == drbd.DiskUpToDate && !vol.Status.Activated
+}
+
+// restoreSeedPending gates the restore seed mint on proof that this leg
+// is the data-bearing clone waiting on its first generation, and nothing
+// else: only the padded-restore seed (first diskful, never FullSync — the
+// clone), only fresh self-created metadata (adopted metadata carries a
+// real generation; see Driver.MetadataAdopted), only while Inconsistent,
+// and only while no peer has ever reported UpToDate — a seed leg
+// recreated after a node wipe wears the same fresh-metadata signature,
+// but its peers hold the data now and it must join as a plain full
+// SyncTarget, not declare its blank disk the source.
+func (r *VolumeReconciler) restoreSeedPending(vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
+	if localDiskless || vol.Spec.DRBD == nil ||
+		vol.Spec.Source == nil || !vol.Spec.Source.PadForMetadata {
+		return false
+	}
+	seed := vol.Spec.FirstDiskfulReplica()
+	if seed == nil || seed.Node != r.NodeName || seed.FullSync {
+		return false
+	}
+	if st.DiskState != drbd.DiskInconsistent || r.DRBD.MetadataAdopted(vol.Name) {
+		return false
+	}
+	for _, ds := range st.PeerDiskState {
+		if ds == drbd.DiskUpToDate {
+			return false
+		}
+	}
+	for node, ps := range vol.Status.PerNode {
+		if node != r.NodeName && ps.DiskState == drbd.DiskUpToDate {
+			return false
+		}
+	}
+	return true
 }
 
 // handleSplitBrain detects an active split and routes it into recovery.
@@ -1124,12 +1274,15 @@ func (r *VolumeReconciler) orphanHold(ctx context.Context, vol *miroirv1alpha1.M
 // reclaimOrphanHold routes a deletion around the pinned minor: the only
 // thing an orphaned hold pins is the DRBD minor itself, so force-detach
 // frees the backing and the sweep destroys it, letting the caller release
-// the finalizer through teardown's normal tail. The rendered config and
-// the minor assignment deliberately stay — the kernel minor is pinned
-// until a reboot, releasing the number would hand it to a new volume, and
-// the startup orphan sweep reaps both once the reboot clears the state.
-// On any failure the original busy outcome stands and the parked retry
-// re-evaluates (ForceDetach no-ops once detached, so a failed sweep
+// the finalizer through teardown's normal tail. The rendered config goes
+// with the volume — left behind it would hold the volume's DRBD port
+// hostage against the next volume handed the recycled number (see
+// drbd.RemoveConfig) — while the minor assignment deliberately stays:
+// the kernel minor is pinned until a reboot, releasing the number would
+// hand it to a new volume, and the startup orphan sweep reaps the
+// reservation once the reboot clears the state. On any failure the
+// original busy outcome stands and the parked retry re-evaluates
+// (ForceDetach no-ops once detached, so a failed sweep or config removal
 // converges on the next cycle).
 func (r *VolumeReconciler) reclaimOrphanHold(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, slot miroirv1alpha1.ReplicaStatus, cause error) error {
 	if err := r.DRBD.ForceDetach(ctx, vol.Name, slot.DRBDMinor); err != nil {
@@ -1138,6 +1291,9 @@ func (r *VolumeReconciler) reclaimOrphanHold(ctx context.Context, vol *miroirv1a
 		return cause
 	}
 	if err := r.Pools.SweepDelete(ctx, vol.Name); err != nil {
+		return err
+	}
+	if err := r.DRBD.RemoveConfig(vol.Name); err != nil {
 		return err
 	}
 	ctrl.LoggerFrom(ctx).Info("teardown reclaimed from an orphaned device hold; kernel minor stays pinned until reboot",
@@ -1310,7 +1466,10 @@ func (r *VolumeReconciler) assignMinor(vol *miroirv1alpha1.MiroirVolume) (int32,
 // fresh volume is already at size, so the resize is a no-op for it.
 func (r *VolumeReconciler) growLeg(ctx context.Context, be backend.Backend, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) (int64, time.Duration, error) {
 	if !localDiskless {
-		if err := be.Resize(ctx, vol.Name, vol.Spec.SizeBytes); err != nil {
+		// backingBytes, not the spec size: a padded volume's legs all
+		// carry the metadata overhead, and growing one leg to the bare
+		// spec would cap the DRBD device below the restored filesystem.
+		if err := be.Resize(ctx, vol.Name, backingBytes(vol)); err != nil {
 			return 0, 0, err
 		}
 	}

@@ -25,6 +25,16 @@ package v1alpha1
 type VolumeSourceApplyConfiguration struct {
 	// SnapshotName references a MiroirSnapshot by name.
 	SnapshotName *string `json:"snapshotName,omitempty"`
+	// PadForMetadata marks every diskful backing of this volume as padded
+	// by the DRBD internal-metadata overhead. Set at creation when a
+	// restore crosses the replication boundary (an unreplicated source
+	// restored into a replicated volume, directly or transitively): the
+	// source filesystem spans its full nominal size, so internal metadata
+	// only fits if every leg's backing is grown past sizeBytes — the
+	// clone before create-md, and full-sync joiners at creation, or the
+	// device would size below the filesystem. Inherited by replicated
+	// restores of padded volumes; immutable with the rest of the source.
+	PadForMetadata *bool `json:"padForMetadata,omitempty"`
 }
 
 // VolumeSourceApplyConfiguration constructs a declarative configuration of the VolumeSource type for use with
@@ -38,5 +48,13 @@ func VolumeSource() *VolumeSourceApplyConfiguration {
 // If called multiple times, the SnapshotName field is set to the value of the last call.
 func (b *VolumeSourceApplyConfiguration) WithSnapshotName(value string) *VolumeSourceApplyConfiguration {
 	b.SnapshotName = &value
+	return b
+}
+
+// WithPadForMetadata sets the PadForMetadata field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the PadForMetadata field is set to the value of the last call.
+func (b *VolumeSourceApplyConfiguration) WithPadForMetadata(value bool) *VolumeSourceApplyConfiguration {
+	b.PadForMetadata = &value
 	return b
 }

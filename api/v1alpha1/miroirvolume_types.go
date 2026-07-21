@@ -110,6 +110,17 @@ type DRBDSpec struct {
 type VolumeSource struct {
 	// SnapshotName references a MiroirSnapshot by name.
 	SnapshotName string `json:"snapshotName"`
+	// PadForMetadata marks every diskful backing of this volume as padded
+	// by the DRBD internal-metadata overhead. Set at creation when a
+	// restore crosses the replication boundary (an unreplicated source
+	// restored into a replicated volume, directly or transitively): the
+	// source filesystem spans its full nominal size, so internal metadata
+	// only fits if every leg's backing is grown past sizeBytes — the
+	// clone before create-md, and full-sync joiners at creation, or the
+	// device would size below the filesystem. Inherited by replicated
+	// restores of padded volumes; immutable with the rest of the source.
+	// +optional
+	PadForMetadata bool `json:"padForMetadata,omitempty"`
 }
 
 // VolumeClient is an ephemeral diskless consumer leg: a DRBD peer with no
@@ -199,7 +210,7 @@ func (s MiroirVolumeSpec) FirstDiskfulReplica() *Replica {
 // +kubebuilder:validation:XValidation:rule="self.replicas.all(r, self.replicas.exists_one(o, o.node == r.node))",message="replica nodes must be unique: a node holds at most one leg of a volume"
 // +kubebuilder:validation:XValidation:rule="!has(self.clients) || self.clients.all(c, self.clients.exists_one(o, o.node == c.node))",message="client-leg nodes must be unique"
 // +kubebuilder:validation:XValidation:rule="!has(self.drbd) || !has(oldSelf.drbd) || self.drbd.port == oldSelf.drbd.port",message="drbd.port is immutable: it was allocated cluster-wide at creation and the allocator assumes existing volumes keep their ports"
-// +kubebuilder:validation:XValidation:rule="has(self.source) == has(oldSelf.source) && (!has(self.source) || !has(oldSelf.source) || self.source.snapshotName == oldSelf.source.snapshotName)",message="source is immutable: it records the snapshot this volume was cloned from"
+// +kubebuilder:validation:XValidation:rule="has(self.source) == has(oldSelf.source) && (!has(self.source) || !has(oldSelf.source) || (self.source.snapshotName == oldSelf.source.snapshotName && (has(self.source.padForMetadata) && self.source.padForMetadata) == (has(oldSelf.source.padForMetadata) && oldSelf.source.padForMetadata)))",message="source is immutable: it records the snapshot and metadata padding this volume was cloned with"
 // +kubebuilder:validation:XValidation:rule="!has(self.export) || !has(oldSelf.export) || self.export.fsType == oldSelf.export.fsType",message="export.fsType is immutable: the gateway formatted the volume with it at first start"
 type MiroirVolumeSpec struct {
 	// SizeBytes is the provisioned (virtual, thin) size of the volume.

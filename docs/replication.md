@@ -95,3 +95,41 @@ see [Remote consumers and auto-diskful](remote-consumers.md). For
 what happens when a disk (rather than a node) fails, and how legs are
 verified against each other, see
 [Disk failures, rebuilds, and verification](resilience.md).
+
+## Changing the replica count on restore
+
+A live volume can never cross the replication boundary: an
+unreplicated (`replicas: 1`) volume cannot gain a DRBD layer in
+place, and its PersistentVolume is pinned to its one node forever.
+What _is_ supported is requesting a different replica count when
+restoring a snapshot (or cloning a PVC): the restored volume is born
+with the class's shape, whatever the source had.
+
+This is the growth story for a cluster going from one storage node
+to two. For each PVC:
+
+1. Snapshot the PVC (any `VolumeSnapshotClass` backed by miroir).
+2. Create a new PVC from that snapshot using the replicated
+   StorageClass.
+3. Repoint the workload at the new PVC and delete the old one.
+
+The leg on the node that holds the snapshot restores as an instant
+copy-on-write clone; every additional leg is placed on another node
+carrying the class's pool and receives its content over the wire as
+a DRBD full sync (the restore reports Ready once the sync
+completes). The new PersistentVolume carries the replicated
+topology from the start, so pods can immediately follow either
+node.
+
+Shrinking works the same way in reverse: restoring a replicated
+volume's snapshot with a `replicas: 1` class keeps one
+copy-on-write leg and drops the replication layer. When the counts
+differ, the restore keeps the legs that hold the snapshot in
+preference to ones that would need a full sync.
+
+One implementation detail worth knowing: a restore that crosses
+from unreplicated to replicated grows every backing slightly past
+the requested size (`spec.source.padForMetadata`), because the
+source filesystem spans its full nominal size and DRBD's internal
+metadata must fit behind it. The padding is virtual on every miroir
+backend and invisible to the workload.

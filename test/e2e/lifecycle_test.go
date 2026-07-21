@@ -93,10 +93,16 @@ var _ = Describe("miroir-local volume lifecycle", Ordered, func() {
 		// Finalizers run backend.Delete() before the cluster-scoped objects go.
 		eventuallyGone(ctx, &miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: appPV}})
 		eventuallyGone(ctx, &miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: restoredPV}})
+		// Scoped to this suite's volumes: containers run in random order,
+		// and a failed sibling deliberately leaves its namespace (and thus
+		// snapshots) behind for diagnostics.
 		Eventually(func(g Gomega) {
 			var snaps miroirv1alpha1.MiroirSnapshotList
 			g.Expect(k8s.List(ctx, &snaps)).To(Succeed())
-			g.Expect(snaps.Items).To(BeEmpty(), "MiroirSnapshots not cleaned up")
+			for _, s := range snaps.Items {
+				g.Expect(s.Spec.VolumeName).NotTo(BeElementOf(appPV, restoredPV),
+					"MiroirSnapshot %s not cleaned up", s.Name)
+			}
 		}).Should(Succeed())
 	})
 })

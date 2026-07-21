@@ -1051,6 +1051,171 @@ func TestRestartRefusesWedged(t *testing.T) {
 	fe.notCalledWith(t, "drbdadm up")
 }
 
+// The foreign-metadata wipe must fire only on proof: metadata present
+// (or unclean — still metadata) wipes and marks; a bare device marks
+// without wiping (wipe-md there would zero the filesystem tail); the
+// marker short-circuits every later call so the probe can never run
+// against a device a consumer may have mounted.
+func TestWipeForeignMetadataProbesThenWipesOnce(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{"dump-md": "version \"v09\";"}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path("used.res"), []byte("device minor 1000;\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdmeta 1001 v09 /dev/x internal dump-md")
+	fe.calledWith(t, "drbdmeta --force 1001 v09 /dev/x internal wipe-md")
+	assigned, err := d.readAssignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := assigned["@foreign-metadata-probe/"+volPvc1]; ok {
+		t.Fatalf("temporary probe minor must be released: %v", assigned)
+	}
+	fe.calls = nil
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fe.calls) != 0 {
+		t.Fatalf("marker must short-circuit later calls, got %v", fe.calls)
+	}
+}
+
+func TestWipeForeignMetadataSkipsBareDevice(t *testing.T) {
+	fe := &fakeExec{} // default dump-md answer: no valid meta data
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "wipe-md")
+	if _, err := os.Stat(d.path(volPvc1 + ".md-wiped")); err != nil {
+		t.Fatalf("a bare device must still mark as settled: %v", err)
+	}
+}
+
+func TestWipeForeignMetadataWipesUncleanMetadata(t *testing.T) {
+	fe := &fakeExec{errOn: map[string]error{"dump-md": errors.New("unclean meta data; apply-al first")}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "wipe-md")
+}
+
+// A reclaim leftover — an assignment with no CR, no kernel resource, no
+// rendered config — must be released by the startup sweep after the
+// reboot cleared the zombie; while the zombie still lives in the kernel
+// the reservation must survive, or a new volume could be handed a minor
+// it can never register.
+func TestSweepOrphansReleasesReclaimLeftoverAssignments(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: `[]`}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if _, err := d.AllocateMinor("pvc-zombie"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.SweepOrphans(t.Context(), func(string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	assigned, err := d.readAssignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := assigned["pvc-zombie"]; ok {
+		t.Fatalf("post-reboot sweep must release the leftover reservation: %v", assigned)
+	}
+}
+
+func TestSweepOrphansKeepsAssignmentWhileZombieLives(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: `[
+		{"name":"pvc-zombie","role":"Secondary","devices":[{"disk-state":"Diskless"}],"connections":[]}]`}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if _, err := d.AllocateMinor("pvc-zombie"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sweep tries (and here fails to matter) to down the unowned
+	// kernel zombie; the reservation must survive regardless.
+	_ = d.SweepOrphans(t.Context(), func(string) bool { return false })
+	assigned, err := d.readAssignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := assigned["pvc-zombie"]; !ok {
+		t.Fatalf("reservation must survive while the kernel holds the zombie: %v", assigned)
+	}
+}
+
+// The overhead bound must dominate the bitmap arithmetic it stands in
+// for (1 bit per 4KiB per peer slot) with real slack for the superblock
+// and activity log, stay extent-aligned, and grow monotonically.
+func TestInternalMetaOverheadBounds(t *testing.T) {
+	prev := int64(0)
+	for _, size := range []int64{1 << 30, 5 << 30, 100 << 30, 1 << 40} {
+		got := InternalMetaOverhead(size)
+		if bitmaps := size / 32768 * maxPeers; got <= bitmaps {
+			t.Fatalf("overhead %d for %d must exceed the raw bitmap bytes %d", got, size, bitmaps)
+		}
+		if got%(4<<20) != 0 {
+			t.Fatalf("overhead %d for %d must be 4MiB-aligned", got, size)
+		}
+		if got < prev {
+			t.Fatalf("overhead must grow with size: %d then %d", prev, got)
+		}
+		prev = got
+	}
+}
+
+// The seed bootstrap is force-promote then demote — never
+// new-current-uuid, which a connected resource refuses ("Need to be
+// StandAlone") and which leaves the disk Inconsistent even when minted,
+// and never --clear-bitmap, which would declare blank joiners identical
+// to data they do not hold.
+func TestForceFullSyncSourcePromotesAndDemotes(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.ForceFullSyncSource(t.Context(), volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm primary --force pvc-1")
+	fe.calledWith(t, "drbdadm secondary pvc-1")
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
+// A failed promote must not be followed by the demote; the error is the
+// caller's retry signal.
+func TestForceFullSyncSourceSkipsDemoteOnPromoteFailure(t *testing.T) {
+	fe := &fakeExec{errOn: map[string]error{"primary --force": errors.New("boom")}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.ForceFullSyncSource(t.Context(), volPvc1); err == nil {
+		t.Fatal("a failed promote must surface")
+	}
+	fe.notCalledWith(t, "drbdadm secondary")
+}
+
+// MetadataAdopted reflects the adoption marker ensureMetadata writes for
+// metadata inherited from a previous life — the restore seed mint must
+// never fire on such a leg.
+func TestMetadataAdoptedTracksMarker(t *testing.T) {
+	d := &Driver{StateDir: t.TempDir(), Exec: (&fakeExec{}).run, Mknod: fakeMknod}
+	if d.MetadataAdopted(volPvc1) {
+		t.Fatal("no marker must read as not adopted")
+	}
+	if err := d.markAdopted(volPvc1); err != nil {
+		t.Fatal(err)
+	}
+	if !d.MetadataAdopted(volPvc1) {
+		t.Fatal("marker must read as adopted")
+	}
+}
+
 // ForceDetach disconnects the peers, then force-detaches the backing by
 // minor — the escape hatch for a deletion whose down is permanently
 // refused by an orphaned opener (issue #319). No down is spawned and the

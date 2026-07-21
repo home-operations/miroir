@@ -199,7 +199,7 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 		// --max-peers reserves metadata slots up-front: it cannot
 		// be raised later without recreating metadata, so leave
 		// headroom beyond the current 2-node shape.
-		args := []string{"create-md", "--force", "--max-peers", "7"}
+		args := []string{"create-md", "--force", "--max-peers", strconv.Itoa(maxPeers)}
 		if r.BitmapGranularityBytes > 0 {
 			// Like max-peers, fixed for this leg's lifetime: adjust
 			// never revisits it, only a metadata recreate could.
@@ -211,6 +211,36 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 		}
 	}
 	return nil
+}
+
+// maxPeers is the metadata peer-slot count create-md reserves up-front
+// (it cannot be raised later without recreating metadata) and the input
+// InternalMetaOverhead sizes bitmaps for.
+const maxPeers = 7
+
+// InternalMetaOverhead returns how many extra bytes a backing device
+// needs beyond its nominal size so DRBD internal metadata (meta-disk
+// internal, created with --max-peers) fits without the usable device
+// sizing below nominal. Consumed by restores that cross the replication
+// boundary (VolumeSource.PadForMetadata): an unreplicated source's
+// filesystem spans the full nominal size, so the clone must grow by at
+// least the metadata size before create-md, and every full-sync joiner
+// must match or the DRBD device sizes to the smallest leg.
+//
+// Deliberately a generous upper bound rather than drbdmeta's exact
+// arithmetic: one bitmap bit covers 4KiB per peer slot (the finest
+// granularity DRBD accepts; a coarser BitmapGranularityBytes only
+// shrinks it), rounded up per slot, plus slack for the superblock and
+// activity log, rounded to 4MiB for backend extent alignment. The pad
+// is virtual on every miroir backend (thin/sparse), so over-reserving
+// costs nothing; the e2e restore spec verifies the bound against a real
+// create-md.
+func InternalMetaOverhead(sizeBytes int64) int64 {
+	const block = 4096
+	perPeer := (sizeBytes/32768 + block) &^ (block - 1) // 1 bit / 4KiB, per peer, rounded up
+	overhead := perPeer*(maxPeers+1) + (8 << 20)
+	const extent = 4 << 20
+	return (overhead + extent - 1) &^ (extent - 1)
 }
 
 // probeMetadata reports the backing device's DRBD metadata state.
@@ -263,6 +293,16 @@ func (d *Driver) markAdopted(name string) error {
 	return os.WriteFile(d.path(name+".md-adopted"), nil, 0o640)
 }
 
+// MetadataAdopted reports whether this leg's metadata was adopted from a
+// previous life (an attached resource, or a dump proving live data)
+// rather than created fresh by this agent. The restore seed mint keys on
+// it: adopted metadata carries a real generation and must never be
+// re-seeded.
+func (d *Driver) MetadataAdopted(name string) bool {
+	_, err := os.Stat(d.path(name + ".md-adopted"))
+	return err == nil
+}
+
 // justCreatedUUID is drbdmeta's constant current-uuid for metadata that
 // was created but never promoted (UUID_JUST_CREATED).
 const justCreatedUUID = "0000000000000004"
@@ -296,8 +336,91 @@ func virginMetadata(dump, name string) bool {
 }
 
 // stateSuffixes are the per-resource files in StateDir that teardown
-// removes — keep in sync with everything Apply and ensureMetadata write.
-var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"}
+// removes — keep in sync with everything Apply, ensureMetadata, and
+// WipeForeignMetadata write.
+var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted", ".md-wiped"}
+
+// removeStateFiles deletes the resource's rendered config and markers.
+func (d *Driver) removeStateFiles(name string) error {
+	for _, suffix := range stateSuffixes {
+		if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// WipeForeignMetadata probes an unreplicated volume's backing for DRBD
+// internal metadata and wipes it when present — the state a restore that
+// shrank out of replication clones in: the replicated source's metadata
+// rides the tail of the byte-identical clone, and with pods staging the
+// raw backing (no DRBD layer above it), blkid identifies the device as
+// TYPE=drbd and staging's filesystem checks refuse it (found by the
+// e2e). Probing first keeps a metadata-less clone (an unreplicated
+// source's) untouched — wipe-md against a bare device would zero the
+// filesystem tail instead. The .md-wiped marker makes it one-shot: the
+// probe must never run against the device once a consumer can have it
+// mounted, and the crash window between clone and wipe is covered by the
+// caller re-running until the marker lands. A temporary minor assignment
+// keeps drbdmeta's DEVICE handle clear of both system resources below
+// minorBase and concurrently realized miroir resources.
+func (d *Driver) WipeForeignMetadata(ctx context.Context, name, disk string) (retErr error) {
+	marker := d.path(name + ".md-wiped")
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	probeName := "@foreign-metadata-probe/" + name
+	minor, err := d.AllocateMinor(probeName)
+	if err != nil {
+		return fmt.Errorf("reserve foreign metadata probe minor for %s: %w", name, err)
+	}
+	defer func() {
+		retErr = errors.Join(retErr, d.releaseMinor(probeName))
+	}()
+
+	// "unclean" is metadata too: a snapshot cut on an attached source
+	// captures its activity log mid-flight and dump-md refuses to read
+	// it, but wipe-md --force does not care.
+	_, err = d.Exec(ctx, "drbdmeta", strconv.Itoa(int(minor)), "v09", disk, "internal", "dump-md")
+	switch {
+	case err == nil || strings.Contains(err.Error(), "unclean"):
+		if err := d.WipeMetadata(ctx, name, disk, minor); err != nil {
+			return err
+		}
+	case !isMissingMetadata(err):
+		return fmt.Errorf("probe foreign metadata on %s: %w", name, err)
+	}
+	return os.WriteFile(marker, nil, 0o640)
+}
+
+// InvalidateForeignMetadataWipe forgets the one-shot result before a
+// backing is recreated from its source snapshot. The replacement clone
+// carries the source's metadata again even when its device path and volume
+// name are unchanged.
+func (d *Driver) InvalidateForeignMetadataWipe(name string) error {
+	err := os.Remove(d.path(name + ".md-wiped"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// RemoveConfig removes the resource's rendered config and markers while
+// leaving its minor.assign reservation in place. It exists for the
+// orphaned-hold reclaim: the zombie kernel minor outlives its volume
+// until a reboot, and a rendered config left behind holds the volume's
+// DRBD port hostage — the controller re-allocates ports from CRs alone,
+// and drbdadm refuses to parse a config directory whose resources share
+// an endpoint, wedging the next replicated volume handed the recycled
+// port on this node (caught by the e2e). The minor reservation must
+// outlive the config (a fresh volume handed the zombie's minor could
+// never register it); the startup orphan sweep releases it once a reboot
+// clears the kernel state.
+func (d *Driver) RemoveConfig(name string) error {
+	return d.removeStateFiles(name)
+}
 
 // listStatus runs `drbdsetup status --json [name]` and parses the result —
 // the one fetch every kernel-view consumer shares.
@@ -362,10 +485,8 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 		if !found || owned(name) || stuck[name] {
 			continue
 		}
-		for _, suffix := range stateSuffixes {
-			if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, err)
-			}
+		if err := d.removeStateFiles(name); err != nil {
+			errs = append(errs, err)
 		}
 		// The orphaned volume never comes back to Down on this node, so
 		// its minor.assign entry would leak — and permanently burn a
@@ -374,7 +495,48 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 			errs = append(errs, fmt.Errorf("release minor of orphan %s: %w", name, err))
 		}
 	}
+	// Assignment entries with no CR, no kernel resource, and no rendered
+	// config are reclaim leftovers: RemoveConfig keeps the reservation
+	// while the zombie minor lives, and after the reboot that cleared the
+	// kernel they are pure leaks. Ordered after the file loop so a plain
+	// config orphan is handled (and released) exactly once, above.
+	inKernel := map[string]bool{}
+	for _, res := range parsed {
+		inKernel[res.Name] = true
+	}
+	if err := d.releaseOrphanedAssignments(owned, inKernel); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// releaseOrphanedAssignments drops minor.assign entries whose volume has
+// vanished entirely — not owned, not in the kernel, no rendered config.
+func (d *Driver) releaseOrphanedAssignments(owned func(name string) bool, inKernel map[string]bool) error {
+	unlock, err := d.lockMinors()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	assigned, err := d.readAssignments()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for name := range assigned {
+		if owned(name) || inKernel[name] {
+			continue
+		}
+		if _, err := os.Stat(d.path(name + ".res")); err == nil {
+			continue
+		}
+		delete(assigned, name)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return d.writeAssignments(assigned)
 }
 
 // DownSecondaries brings down every resource this node holds Secondary,
@@ -663,6 +825,41 @@ func (d *Driver) InitialUUID(ctx context.Context, name string) error {
 	return nil
 }
 
+// ForceFullSyncSource declares this leg's data the volume's generation —
+// DRBD's documented bootstrap for a node that has the data while its
+// peers do not: primary --force flips the Inconsistent disk UpToDate and
+// mints a current UUID with full bitmaps, every just-created peer elects
+// full SyncTarget, and the immediate demote hands the device back to
+// auto-promote. Not new-current-uuid: without --clear-bitmap (and with
+// --force-resync alike) drbdsetup refuses it on a connected resource
+// ("(151) Need to be StandAlone"), and even minted StandAlone it leaves
+// the disk Inconsistent with the resync parked on the source's own state
+// (PausedSyncS, resync-suspended:dependency) — verified against DRBD 9.3
+// on the QEMU e2e. It exists for one consumer: the seed leg of a restore
+// that crossed the replication boundary (an unreplicated source's clone)
+// holds real data under freshly created metadata, so neither the birth
+// flow (data must not be declared identical to blank peers) nor metadata
+// adoption (there was none to adopt) can produce its generation. The
+// caller gates on the metadata being this agent's own fresh create (see
+// agent restoreSeedPending) — forcing a leg with a live generation would
+// fork history.
+func (d *Driver) ForceFullSyncSource(ctx context.Context, name string) error {
+	if _, err := d.adm(ctx, "primary", "--force", name); err != nil {
+		return fmt.Errorf("primary --force %s: %w", name, err)
+	}
+	return d.Demote(ctx, name)
+}
+
+// Demote releases an explicitly held Primary role back to auto-promote.
+// Used by ForceFullSyncSource and by its crash recovery (a mint whose
+// demote never ran); a device a consumer holds open refuses harmlessly.
+func (d *Driver) Demote(ctx context.Context, name string) error {
+	if _, err := d.adm(ctx, "secondary", name); err != nil {
+		return fmt.Errorf("secondary %s: %w", name, err)
+	}
+	return nil
+}
+
 // ResolveSplitBrain runs DRBD's documented split-brain recovery around the
 // winner: every leg disconnects, then the winner (lowest diskful node id)
 // and the diskless tie-breaker reconnect as survivors while every other
@@ -840,10 +1037,8 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 	if err := d.downResource(ctx, name, peerIDs); err != nil {
 		return err
 	}
-	for _, suffix := range stateSuffixes {
-		if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
+	if err := d.removeStateFiles(name); err != nil {
+		return err
 	}
 	// Free the minor for reuse — the .res is gone, so scanUsedMinors no
 	// longer covers it, and the assignment would otherwise leak forever.
@@ -879,10 +1074,10 @@ func (d *Driver) Restart(ctx context.Context, name string) error {
 // #319). Down can never win that state, but force-detach is legal on an
 // open device (dropping a failing disk under live I/O is its purpose),
 // and the backing is all a deletion still needs back. The caller must
-// keep the rendered config and the minor assignment: the kernel minor
-// stays pinned until a reboot, releasing the number would hand it to a
-// new volume, and the startup orphan sweep reaps both once the reboot
-// clears the state. Already-detached (Diskless) and not-in-kernel are
+// keep the minor assignment (see RemoveConfig): the kernel minor stays
+// pinned until a reboot, releasing the number would hand it to a new
+// volume, and the startup orphan sweep reaps it once the reboot clears
+// the state. Already-detached (Diskless) and not-in-kernel are
 // no-ops so a retry after a failed backing delete converges. A resource
 // wearing the teardown wedge signature is refused like everywhere else —
 // mid-detach is exactly the state a second detach would race.

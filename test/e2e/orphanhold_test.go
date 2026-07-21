@@ -56,13 +56,13 @@ func agentExec(ctx context.Context, node, sh string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// Reproduces issue #319 on real DRBD and asserts the orphaned-hold
-// reclaim: a filesystem freeze leaked onto the staged volume (the #311
-// state, with the staging mountpoint removed so NodeUnstage's thaw cannot
-// fire) leaves the DRBD device held open by a dead superblock after every
-// mount is gone. drbdsetup down is then refused forever — the reclaim
-// must force-detach the backing, finish the deletion, and leave only the
-// pinned kernel minor for the post-reboot orphan sweep.
+// Reproduces issue #319's shape on real DRBD and asserts the
+// orphaned-hold reclaim: a kernel object with no living process behind it
+// (in the field, a leaked freeze's dead superblock; here, a loop device —
+// see the planting step for why) holds the unmounted DRBD device open, so
+// drbdsetup down is refused forever. The reclaim must force-detach the
+// backing, finish the deletion, and leave only the pinned kernel minor
+// for the post-reboot orphan sweep.
 var _ = Describe("orphaned-hold teardown reclaim", Ordered, func() {
 	const ns = "miroir-e2e-orphan"
 	ctx := context.Background()
@@ -102,27 +102,27 @@ var _ = Describe("orphaned-hold teardown reclaim", Ordered, func() {
 		Expect(minor).To(BeNumerically(">", 0), "staged leg must report its DRBD minor")
 	})
 
-	It("leaks a freeze and strips every mountpoint, leaving a dead-opener hold", func() {
-		dev := fmt.Sprintf("/dev/drbd%d", minor)
-		staging := agentExec(ctx, node,
-			fmt.Sprintf("findmnt -rn -S %s -o TARGET | grep globalmount | head -1", dev))
-		Expect(staging).NotTo(BeEmpty(), "staged device must have a globalmount")
-
-		// Freeze through the staging mountpoint, then remove that
-		// mountpoint out from under the thaw-before-unmount guard — the
-		// pre-#312 leak. Deleting the pod afterwards removes the publish
-		// bind (kubelet unmounts a frozen bind fine); the frozen
-		// superblock then holds the device open with no mountpoint left
-		// to thaw, and its recorded opener (mount) is long exited.
-		agentExec(ctx, node, fmt.Sprintf("fsfreeze -f %s && umount -l %s", staging, staging))
-
+	It("plants a dead-opener hold on the unmounted device", func() {
+		// Clean unstage first: the pod goes, kubelet unmounts, and the
+		// #312 thaw guard runs — no mount survives in any namespace.
 		Expect(k8s.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "holder"}})).To(Succeed())
 		eventuallyGone(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "holder"}})
 
-		// The leak must actually pin the device: no mounts left, yet the
-		// kernel still counts an opener. Without this the repro proves
-		// nothing (a kernel that releases the superblock on unmount would
-		// let teardown succeed normally).
+		// Then pin the device with a kernel object whose opener is dead: a
+		// loop device holds the DRBD device open (auto-promoted, writable)
+		// after losetup itself has exited — the same shape as #319's field
+		// state, where a leaked freeze's dead superblock held open_cnt with
+		// every recorded opener long gone. Deliberately NOT reproduced via
+		// fsfreeze here: on Talos, machined's device prober race-opens a
+		// frozen bdev and wedges in the open, becoming a live opener the
+		// reclaim gates then (correctly) refuse — the freeze repro is
+		// nondeterministic, the loop hold is not.
+		dev := fmt.Sprintf("/dev/drbd%d", minor)
+		agentExec(ctx, node, "losetup -f "+dev)
+
+		// The hold must actually pin the device: no mounts anywhere, yet
+		// the kernel counts a writable opener — exactly what drbdsetup
+		// down is about to be refused over.
 		Eventually(func(g Gomega) {
 			g.Expect(agentExec(ctx, node, fmt.Sprintf("findmnt -rn -S %s -o TARGET || true", dev))).To(BeEmpty())
 			g.Expect(agentExec(ctx, node, "drbdsetup status "+pv+" --verbose")).To(ContainSubstring("open:yes"))
@@ -148,8 +148,8 @@ var _ = Describe("orphaned-hold teardown reclaim", Ordered, func() {
 		Expect(lvs).NotTo(ContainSubstring(pv), "backing LV must be destroyed by the reclaim")
 
 		// The kernel minor is the expected residue: still registered,
-		// diskless, pinned by the dead superblock until the node reboots
-		// (the startup orphan sweep then reaps the rendered config).
+		// diskless, pinned by the dead-opener hold until the node reboots
+		// (the startup orphan sweep then releases its minor reservation).
 		status := agentExec(ctx, node, "drbdsetup status "+pv+" --verbose || true")
 		Expect(status).To(ContainSubstring(pv), "zombie minor must remain until reboot")
 		Expect(status).To(ContainSubstring("Diskless"), "zombie minor must have no backing attached")
