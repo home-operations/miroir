@@ -1205,6 +1205,73 @@ func TestCreateVolumeRestoreShrinksToUnreplicated(t *testing.T) {
 	}
 }
 
+func TestCreateVolumeRestoreShrinkHonorsSelectedTopology(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+	req := restoreReq("1")
+	req.AccessibilityRequirements = topologyReq(nodeB)
+
+	resp, err := c.CreateVolume(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.Replicas) != 1 || got.Spec.Replicas[0].Node != nodeB {
+		t.Fatalf("the selected node's snapshot leg must be retained: %+v", got.Spec.Replicas)
+	}
+	if top := resp.Volume.AccessibleTopology; len(top) != 1 || top[0].GetSegments()[constants.TopologyKey] != nodeB {
+		t.Fatalf("the restored PV must stay accessible on the selected node: %+v", top)
+	}
+}
+
+func TestCreateVolumeRestoreShrinkRefusesSelectedIncompleteLeg(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+	snap := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, snap); err != nil {
+		t.Fatal(err)
+	}
+	delete(snap.Status.PerNode, nodeB)
+	if err := c.Client.Status().Update(t.Context(), snap); err != nil {
+		t.Fatal(err)
+	}
+	req := restoreReq("1")
+	req.AccessibilityRequirements = topologyReq(nodeB)
+
+	_, err := c.CreateVolume(t.Context(), req)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("an incomplete selected leg must be ResourceExhausted, got %v", err)
+	}
+	if !strings.Contains(err.Error(), nodeB) {
+		t.Fatalf("the refusal must name the selected node: %v", err)
+	}
+}
+
 // Shrinking keeps Done legs over post-snapshot FullSync ones — dropping
 // a free CoW clone while keeping a leg that must full-resync would be
 // pure waste — and the re-derived tie-breaker takes the smallest unused

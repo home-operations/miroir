@@ -93,6 +93,10 @@ var _ = Describe("restore replica reshape", Ordered, func() {
 		Expect(k8s.Get(ctx, client.ObjectKey{Name: pv}, &v)).To(Succeed())
 		Expect(v.Spec.DRBD).To(BeNil(), "shrunk restore must be unreplicated")
 		Expect(v.Spec.Replicas).To(HaveLen(1))
+		var reader corev1.Pod
+		Expect(k8s.Get(ctx, client.ObjectKey{Namespace: ns, Name: "shape-down-reader"}, &reader)).To(Succeed())
+		Expect(v.Spec.Replicas[0].Node).To(Equal(reader.Spec.NodeName),
+			"shrunk restore must retain the snapshot leg selected for its consumer")
 
 		Expect(sha(ns, "shape-down-reader", "/data/seed")).To(Equal(downSum))
 	})

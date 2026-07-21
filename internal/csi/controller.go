@@ -708,8 +708,9 @@ func diskfulOf(reps []miroirv1alpha1.Replica) []miroirv1alpha1.Replica {
 // a different diskful count than the source volume had (issue #305).
 // Growing appends freshly placed FullSync joiners — their content
 // arrives over the wire, so unlike the CoW legs they may land anywhere
-// the pool reaches. Shrinking keeps a subset of the source legs, seed
-// first, Done legs preferred. The source tie-breaker (if any) is
+// the pool reaches. Shrinking keeps a subset of the source legs, including
+// the scheduler-selected completed leg when topology is constrained, then
+// seed first and Done legs preferred. The source tie-breaker (if any) is
 // discarded and re-derived for the final shape, and node ids are
 // re-numbered around the preserved legs — a leg cloning DRBD metadata
 // keeps the id that metadata is keyed by, everything else takes the
@@ -720,7 +721,21 @@ func (c *Controller) reshapeRestore(ctx context.Context, nodes nodemap.Map, reqs
 	diskful := diskfulOf(base)
 	switch {
 	case len(diskful) > target:
-		diskful = keepRestoreLegs(diskful, target)
+		pin := ""
+		if !remoteAccess {
+			pin = selectedTopologyNode(reqs)
+			if reqs != nil && len(reqs.GetRequisite()) > 0 && pin == "" {
+				return nil, status.Error(codes.ResourceExhausted,
+					"no complete source snapshot leg satisfies the requested topology")
+			}
+			if pin != "" && !slices.ContainsFunc(diskful, func(rep miroirv1alpha1.Replica) bool {
+				return rep.Node == pin && !rep.FullSync
+			}) {
+				return nil, status.Errorf(codes.ResourceExhausted,
+					"no complete source snapshot leg exists on topology node %q", pin)
+			}
+		}
+		diskful = keepRestoreLegs(diskful, target, pin)
 	case len(diskful) < target:
 		excluded := map[string]bool{}
 		for _, rep := range diskful {
@@ -769,22 +784,47 @@ func (c *Controller) reshapeRestore(ctx context.Context, nodes nodemap.Map, reqs
 	return c.withTieBreaker(ctx, nodes, diskful, target, quorum)
 }
 
-// keepRestoreLegs selects target legs from the source's diskful layout:
-// the seed (first diskful — the clone's sync source, already validated
-// complete by restoreReplicas) stays first, then the remaining legs in
-// order with Done legs before FullSync ones — dropping a Done leg while
-// keeping a FullSync one would trade a free CoW clone for a full resync.
-func keepRestoreLegs(diskful []miroirv1alpha1.Replica, target int) []miroirv1alpha1.Replica {
+// keepRestoreLegs selects target legs from the source's diskful layout.
+// A pinned completed leg is guaranteed inclusion; for an unreplicated
+// target it replaces the source seed, which no longer has a DRBD generation
+// to bootstrap. Replicated targets keep the seed first, then the pin, then
+// the remaining legs in order with Done before FullSync.
+func keepRestoreLegs(diskful []miroirv1alpha1.Replica, target int, pin string) []miroirv1alpha1.Replica {
 	kept := make([]miroirv1alpha1.Replica, 0, target)
 	kept = append(kept, diskful[0])
+	if pin != "" {
+		pinned := diskful[slices.IndexFunc(diskful, func(rep miroirv1alpha1.Replica) bool {
+			return rep.Node == pin
+		})]
+		if target == 1 {
+			return []miroirv1alpha1.Replica{pinned}
+		}
+		if pin != diskful[0].Node {
+			kept = append(kept, pinned)
+		}
+	}
 	for _, fullSync := range []bool{false, true} {
 		for _, rep := range diskful[1:] {
-			if rep.FullSync == fullSync && len(kept) < target {
+			if rep.Node != pin && rep.FullSync == fullSync && len(kept) < target {
 				kept = append(kept, rep)
 			}
 		}
 	}
 	return kept
+}
+
+// selectedTopologyNode returns the scheduler-selected node from a
+// WaitForFirstConsumer request. The provisioner puts it first in preferred;
+// strict-topology requests also carry it as the sole requisite entry.
+func selectedTopologyNode(reqs *csi.TopologyRequirement) string {
+	for _, tops := range [][]*csi.Topology{reqs.GetPreferred(), reqs.GetRequisite()} {
+		for _, top := range tops {
+			if node := top.GetSegments()[constants.TopologyKey]; node != "" {
+				return node
+			}
+		}
+	}
+	return ""
 }
 
 // spreadByZone selects count nodes from ordered (already ranked by topology
