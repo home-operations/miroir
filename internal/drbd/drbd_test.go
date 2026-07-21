@@ -1051,6 +1051,70 @@ func TestRestartRefusesWedged(t *testing.T) {
 	fe.notCalledWith(t, "drbdadm up")
 }
 
+// ForceDetach disconnects the peers, then force-detaches the backing by
+// minor — the escape hatch for a deletion whose down is permanently
+// refused by an orphaned opener (issue #319). No down is spawned and the
+// rendered config survives: the caller keeps the zombie minor reserved
+// until the post-reboot orphan sweep reaps it.
+func TestForceDetachDisconnectsAndDetaches(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"` + DiskUpToDate + `"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.ForceDetach(t.Context(), volPvc1, 1422); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup detach 1422 --force")
+	fe.notCalledWith(t, "drbdsetup down")
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("rendered config must survive a force-detach: %v", err)
+	}
+}
+
+// An already-detached (or vanished) resource is a no-op, so a retry after
+// a failed backing delete converges instead of erroring on the re-detach.
+func TestForceDetachAlreadyDisklessNoop(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"Diskless"}],"connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.ForceDetach(t.Context(), volPvc1, 1422); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "drbdsetup detach")
+
+	fe.responses[cmdDrbdsetupStatus] = `[]`
+	if err := d.ForceDetach(t.Context(), volPvc1, 1422); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "drbdsetup detach")
+}
+
+// A resource wearing the teardown wedge signature must be refused: a
+// detach is already in flight in the kernel and racing it is exactly what
+// the wedge containment exists to prevent.
+func TestForceDetachRefusesWedged(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Detaching"}],"connections":[]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.ForceDetach(t.Context(), volPvc1, 1422); !errors.Is(err, ErrWedged) {
+		t.Fatalf("want ErrWedged, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup detach")
+}
+
 // A failed down must not be followed by an up: the resource is still
 // registered, and the error is the caller's retry signal.
 func TestRestartSkipsUpWhenDownFails(t *testing.T) {

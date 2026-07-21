@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,6 +70,10 @@ type VolumeReconciler struct {
 	// KmsgPath overrides /dev/kmsg for the split-brain kernel-log capture
 	// (tests point it at a plain file).
 	KmsgPath string
+	// ProcDir overrides /proc for the orphaned-hold checks — opener pid
+	// liveness and the all-namespaces mount scan (tests point it at a
+	// fixture directory).
+	ProcDir string
 	// Recorder emits the TeardownWedged warning; optional.
 	Recorder events.EventRecorder
 
@@ -877,8 +882,14 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			}
 			// A still-staged device answers "held open"; classify it as
 			// ErrBusy so teardown takes the 10s retry, not the workqueue's
-			// minutes-long backoff (NodeUnstage releases it shortly).
-			return backend.Busy(err)
+			// minutes-long backoff (NodeUnstage releases it shortly). An
+			// orphaned hold no retry can release routes around the down
+			// instead of parking on it forever (issue #319).
+			busy := backend.Busy(err)
+			if r.orphanHold(ctx, vol, slot, busy) {
+				return r.reclaimOrphanHold(ctx, vol, slot, busy)
+			}
+			return busy
 		}
 		// With the resource down, wipe the DRBD metadata before the sweep
 		// removes the device, so freed blocks cannot carry a stale generation
@@ -936,16 +947,26 @@ const wedgedRequeue = 5 * time.Minute
 // reportWedged surfaces a teardown the kernel can no longer finish
 // (drbd.ErrWedged) — Warning Event, status message, and the wedged gauge
 // the shipped alerts page on — then parks the retry at wedgedRequeue.
-// The gauge clears on any non-wedged teardown outcome, on teardown
-// success (dropVolumeMetrics), and when the CR vanishes (volumeGone).
+// The escalation latches on the transition cycle: the park can outlive
+// the wedge only through a reboot, and re-emitting an identical Event,
+// Error log, and no-op status write every cycle is pure churn (issue
+// #319: a wedged volume streamed 123 of them). The gauge is re-raised
+// every cycle regardless — it is process state and must survive an agent
+// restart into an already-stamped Message. It clears on any non-wedged
+// teardown outcome, on teardown success (dropVolumeMetrics), and when
+// the CR vanishes (volumeGone).
 func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
+	recordWedged(vol)
+	if vol.Status.PerNode[r.NodeName].Message == cause.Error() {
+		ctrl.LoggerFrom(ctx).V(1).Info("teardown still wedged in kernel; retry stays parked", "volume", vol.Name)
+		return ctrl.Result{RequeueAfter: wedgedRequeue}, nil
+	}
 	ctrl.LoggerFrom(ctx).Error(cause, "teardown wedged in kernel", "volume", vol.Name)
 	if r.Recorder != nil {
 		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownWedged", "Teardown",
 			"DRBD cannot tear down %s: device stuck Detaching with connections gone (LINBIT/drbd#137); reboot node %s to clear it",
 			vol.Name, r.NodeName)
 	}
-	recordWedged(vol)
 	return r.parkWithMessage(ctx, vol, cause, wedgedRequeue)
 }
 
@@ -988,9 +1009,11 @@ func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv
 // busyFailLimit is how many consecutive ErrBusy teardown outcomes ride the
 // fast 10s retry — NodeUnstage normally releases the device within a few
 // cycles — before the loop escalates; busyRetryAfter is the parked cadence.
-// The finalizer is never released on busy: the hold may be a live mount,
-// and force-releasing would leak the backing device or destroy it under a
-// consumer (issue #195).
+// The finalizer is never released on a busy outcome itself: the hold may
+// be a live mount, and force-releasing would leak the backing device or
+// destroy it under a consumer (issue #195). The one exit is the orphaned-
+// hold reclaim (orphanHold), which completes a real teardown of the
+// backing first and only fires past this same threshold.
 const (
 	busyFailLimit  = 30 // ~5 minutes at the 10s cadence
 	busyRetryAfter = time.Minute
@@ -998,8 +1021,9 @@ const (
 
 // reportBusy paces one ErrBusy teardown outcome: the fast 10s retry below
 // busyFailLimit, then a Warning Event, a status Message naming the cause,
-// and the parked cadence. The cause is always logged — an ErrBusy from the
-// backend sweep looks identical to a held-open device without it.
+// and the parked cadence. The cause is logged on every fast cycle and on
+// the escalation — an ErrBusy from the backend sweep looks identical to a
+// held-open device without it — and demotes to V(1) once parked.
 func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
 	r.busyMu.Lock()
 	if r.busyFails == nil {
@@ -1013,15 +1037,21 @@ func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.M
 			"volume", vol.Name, "attempts", fails, "error", cause)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
-	ctrl.LoggerFrom(ctx).Error(cause, "teardown still busy; parking the retry",
-		"volume", vol.Name, "attempts", fails)
 	// Latch the escalation on the crossing cycle: the parked retry can
-	// outlive the hold by hours, and re-emitting an identical Event plus a
-	// no-op status write every cycle is pure API churn.
-	if fails == busyFailLimit && r.Recorder != nil {
-		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownBusy", "Teardown",
-			"cannot tear down %s on node %s after %d attempts: %v; something still holds the device (or its backing) open",
-			vol.Name, r.NodeName, fails, cause)
+	// outlive the hold by hours, and re-emitting an identical Event, Error
+	// log, and no-op status write every cycle is pure churn (issue #319:
+	// one parked volume streamed 648 Error lines).
+	if fails > busyFailLimit {
+		ctrl.LoggerFrom(ctx).V(1).Info("teardown still busy; retry stays parked",
+			"volume", vol.Name, "attempts", fails)
+	} else {
+		ctrl.LoggerFrom(ctx).Error(cause, "teardown still busy; parking the retry",
+			"volume", vol.Name, "attempts", fails)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownBusy", "Teardown",
+				"cannot tear down %s on node %s after %d attempts: %v; something still holds the device (or its backing) open",
+				vol.Name, r.NodeName, fails, cause)
+		}
 	}
 	if vol.Status.PerNode[r.NodeName].Message == cause.Error() {
 		return ctrl.Result{RequeueAfter: busyRetryAfter}, nil
@@ -1034,6 +1064,90 @@ func (r *VolumeReconciler) clearBusyFails(name string) {
 	r.busyMu.Lock()
 	delete(r.busyFails, name)
 	r.busyMu.Unlock()
+}
+
+// busyFailCount reads the volume's consecutive busy-teardown count.
+func (r *VolumeReconciler) busyFailCount(name string) int {
+	r.busyMu.Lock()
+	defer r.busyMu.Unlock()
+	return r.busyFails[name]
+}
+
+// procDir resolves the /proc override for the orphaned-hold checks.
+func (r *VolumeReconciler) procDir() string {
+	if r.ProcDir != "" {
+		return r.ProcDir
+	}
+	return "/proc"
+}
+
+// orphanHold reports whether a busy teardown outcome is the unwinnable
+// held-open state of issue #319 — the device pinned by a leaked freeze's
+// dead superblock, which no retry, restart, or unstage can ever release —
+// as opposed to a still-staged device NodeUnstage frees shortly. It
+// requires all of: a deletion-targeted volume (a removed replica's volume
+// lives on and keeps the parked retry), a known minor, a busy streak past
+// the escalation threshold (an in-flight unstage never lasts that long),
+// a held-open failure whose reported openers have all exited (a live
+// consumer's opener pid is alive; a plain fs mount's dead mount(8) pid is
+// disambiguated by the mount scan below), and the device mounted in no
+// mount namespace on the node. Any doubt — no opener list, an unreadable
+// /proc, a surviving mount — reads as "live consumer" and the park stands.
+func (r *VolumeReconciler) orphanHold(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, slot miroirv1alpha1.ReplicaStatus, cause error) bool {
+	if vol.DeletionTimestamp.IsZero() || slot.DRBDMinor <= 0 {
+		return false
+	}
+	if r.busyFailCount(vol.Name) < busyFailLimit {
+		return false
+	}
+	if !strings.Contains(cause.Error(), "held open") {
+		return false
+	}
+	pids := openerPids(cause.Error())
+	if len(pids) == 0 {
+		return false
+	}
+	for _, pid := range pids {
+		if pidAlive(r.procDir(), pid) {
+			return false
+		}
+	}
+	mounted, err := deviceMountedAnywhere(r.procDir(), slot.DRBDMinor)
+	if err != nil {
+		ctrl.LoggerFrom(ctx).V(1).Info("cannot scan mount namespaces for the orphaned-hold check; teardown stays parked",
+			"volume", vol.Name, "error", err)
+		return false
+	}
+	return !mounted
+}
+
+// reclaimOrphanHold routes a deletion around the pinned minor: the only
+// thing an orphaned hold pins is the DRBD minor itself, so force-detach
+// frees the backing and the sweep destroys it, letting the caller release
+// the finalizer through teardown's normal tail. The rendered config and
+// the minor assignment deliberately stay — the kernel minor is pinned
+// until a reboot, releasing the number would hand it to a new volume, and
+// the startup orphan sweep reaps both once the reboot clears the state.
+// On any failure the original busy outcome stands and the parked retry
+// re-evaluates (ForceDetach no-ops once detached, so a failed sweep
+// converges on the next cycle).
+func (r *VolumeReconciler) reclaimOrphanHold(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, slot miroirv1alpha1.ReplicaStatus, cause error) error {
+	if err := r.DRBD.ForceDetach(ctx, vol.Name, slot.DRBDMinor); err != nil {
+		ctrl.LoggerFrom(ctx).Info("orphaned-hold reclaim could not detach; teardown stays parked",
+			"volume", vol.Name, "error", err)
+		return cause
+	}
+	if err := r.Pools.SweepDelete(ctx, vol.Name); err != nil {
+		return err
+	}
+	ctrl.LoggerFrom(ctx).Info("teardown reclaimed from an orphaned device hold; kernel minor stays pinned until reboot",
+		"volume", vol.Name, "minor", slot.DRBDMinor, "cause", cause.Error())
+	if r.Recorder != nil {
+		r.Recorder.Eventf(vol, nil, corev1.EventTypeNormal, "TeardownReclaimed", "Teardown",
+			"backing of %s reclaimed on node %s: the DRBD device was held open only by exited processes (leaked freeze, issue #311); orphaned minor %d frees itself on the next reboot",
+			vol.Name, r.NodeName, slot.DRBDMinor)
+	}
+	return nil
 }
 
 // reportRealizeError routes a realizeBacking failure: an impossible

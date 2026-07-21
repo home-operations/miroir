@@ -736,19 +736,16 @@ const disconnectTimeout = 10 * time.Second
 // detach still draining gets one retry cycle to finish first.
 var ErrWedged = errors.New("resource wedged in kernel (LINBIT/drbd#137): node reboot required")
 
-// downResource disconnects each peer connection, then downs the resource.
-// Disconnecting first avoids a kernel deadlock: drbdsetup down on a
-// resource with an active resync connection can enter uninterruptible
-// sleep negotiating teardown with the peer. Disconnects are best-effort
-// (a StandAlone or unconfigured connection errors harmlessly) — except
-// when one is killed at its deadline: then the connection may be half-torn
-// and running down would race exactly that teardown, so the down is
-// deferred to the caller's retry (which disconnects again). drbdsetup
-// needs no config, takes peers by node id, and down exits 0 for unknown
-// names, keeping teardown idempotent. drbdsetup, not drbdadm: drbdadm
-// refuses conflicting .res files, and teardown is how a conflict gets
-// removed.
-func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32) error {
+// disconnectPeers disconnects each peer connection ahead of a down or a
+// force-detach. Disconnecting first avoids a kernel deadlock: drbdsetup
+// down on a resource with an active resync connection can enter
+// uninterruptible sleep negotiating teardown with the peer. Disconnects
+// are best-effort (a StandAlone or unconfigured connection errors
+// harmlessly) — except when one is killed at its deadline: then the
+// connection may be half-torn and acting on the device would race exactly
+// that teardown, so the caller's retry (which disconnects again) takes
+// over. drbdsetup needs no config and takes peers by node id.
+func (d *Driver) disconnectPeers(ctx context.Context, name string, peerIDs []int32) error {
 	for _, id := range peerIDs {
 		dcCtx, cancel := context.WithTimeout(ctx, disconnectTimeout)
 		_, _ = d.Exec(dcCtx, "drbdsetup", "disconnect", name, strconv.Itoa(int(id)))
@@ -757,9 +754,20 @@ func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32)
 		if expired {
 			// ErrBusy: the caller's short retry re-disconnects; the state
 			// clears on its own once the kernel finishes the teardown.
-			return fmt.Errorf("disconnect %s peer %d killed after %s; deferring down: %w",
+			return fmt.Errorf("disconnect %s peer %d killed after %s; deferring teardown: %w",
 				name, id, disconnectTimeout, backend.ErrBusy)
 		}
+	}
+	return nil
+}
+
+// downResource disconnects each peer connection, then downs the resource.
+// drbdsetup down exits 0 for unknown names, keeping teardown idempotent.
+// drbdsetup, not drbdadm: drbdadm refuses conflicting .res files, and
+// teardown is how a conflict gets removed.
+func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32) error {
+	if err := d.disconnectPeers(ctx, name, peerIDs); err != nil {
+		return err
 	}
 	downCtx, cancel := context.WithTimeout(ctx, downTimeout)
 	defer cancel()
@@ -861,6 +869,45 @@ func (d *Driver) Restart(ctx context.Context, name string) error {
 	}
 	if _, err := d.adm(ctx, "up", name); err != nil {
 		return fmt.Errorf("up %s: %w", name, err)
+	}
+	return nil
+}
+
+// ForceDetach releases the backing device from a resource whose down is
+// permanently refused by an orphaned opener — a leaked freeze's dead
+// superblock pinning open_cnt with no mountpoint left to thaw (issue
+// #319). Down can never win that state, but force-detach is legal on an
+// open device (dropping a failing disk under live I/O is its purpose),
+// and the backing is all a deletion still needs back. The caller must
+// keep the rendered config and the minor assignment: the kernel minor
+// stays pinned until a reboot, releasing the number would hand it to a
+// new volume, and the startup orphan sweep reaps both once the reboot
+// clears the state. Already-detached (Diskless) and not-in-kernel are
+// no-ops so a retry after a failed backing delete converges. A resource
+// wearing the teardown wedge signature is refused like everywhere else —
+// mid-detach is exactly the state a second detach would race.
+func (d *Driver) ForceDetach(ctx context.Context, name string, minor int32) error {
+	parsed, err := d.listStatus(ctx, name)
+	if err != nil {
+		return err
+	}
+	for _, res := range parsed {
+		if res.Name != name {
+			continue
+		}
+		if res.wedgeSignature() {
+			return fmt.Errorf("force-detach %s: %w", name, ErrWedged)
+		}
+		if len(res.Devices) == 0 || res.Devices[0].DiskState == DiskDiskless {
+			return nil
+		}
+		if err := d.disconnectPeers(ctx, name, res.peerIDs()); err != nil {
+			return err
+		}
+		if _, err := d.Exec(ctx, "drbdsetup", "detach", strconv.Itoa(int(minor)), "--force"); err != nil {
+			return fmt.Errorf("force-detach %s: %w", name, err)
+		}
+		return nil
 	}
 	return nil
 }
