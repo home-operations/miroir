@@ -66,7 +66,7 @@ sudo -E (mise which talosctl) cluster create qemu \
     --name miroir-e2e \
     --cidr 10.5.0.0/24 \
     --schematic-id "$SCHEMATIC_ID" \
-    --controlplanes 1 --workers 2 --memory-workers 5GiB \
+    --controlplanes 1 --workers 2 --memory-workers 8GiB --cpus-workers 3.0 \
     --disks virtio:8GiB,virtio:20GiB,virtio:20GiB \
     --config-patch @patches/modules.yaml \
     --config-patch @patches/registry.yaml \

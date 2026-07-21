@@ -29,7 +29,11 @@ permissions:
 jobs:
   e2e:
     name: E2E (${{ matrix.suite }})
-    runs-on: ubuntu-24.04
+    # 8 vCPU / 32 GB / 160 GB with nested KVM (jobs run in Firecracker microVMs),
+    # measured against GitHub's 4 vCPU / 16 GB in the first Blacksmith trial (#299):
+    # the CPU-bound conformance leg gained ~30%; cluster.yaml sizes the VMs to the
+    # bigger box (3 vCPU / 8 GiB workers).
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 60
     permissions:
       contents: read
@@ -40,16 +44,23 @@ jobs:
       matrix:
         include:
           # miroir's own Go specs, then the upstream external-storage suite, both
-          # against the local (lvmthin, replicas:1) class.
+          # against the local (lvmthin, replicas:1) class. procs 6 exploits the 6
+          # worker vCPUs: this leg is CPU-bound (no DRBD coordination) and was the
+          # big winner in the #299 measurements.
           - suite: conformance
             testdriver: testdriver-local.yaml
             specs: "1"
+            procs: "6"
           # The upstream suite against the replicated (DRBD, replicas:2) class,
-          # group snapshots included.
+          # group snapshots included. procs stays 4: the replicated legs are bounded
+          # by DRBD bring-up throughput, not CPU, and procs 6 flaked a
+          # snapshot-restore spec in the #299 trial.
           - suite: replicated
             testdriver: testdriver.yaml
+            procs: "4"
           - suite: zfs
             testdriver: testdriver-zfs.yaml
+            procs: "4"
     env:
       # Two names for one image in the runner-local registry. The nodes pull
       # registry.e2e, which the Talos mirror in patches/registry.yaml points at the
@@ -91,17 +102,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils ovmf
 
-      - name: Enable swap
-        run: |
-          sudo fallocate -l 12G /mnt/e2e-swapfile
-          sudo chmod 600 /mnt/e2e-swapfile
-          sudo mkswap /mnt/e2e-swapfile
-          sudo swapon /mnt/e2e-swapfile
+      # No swap step: it only existed to survive the 16 GB GitHub runners; the
+      # 21 GiB VM allocation leaves ~10 GB of headroom on this box.
 
       # The conformance leg compiles and runs miroir's Go specs; both legs read the
-      # module cache, only the conformance one uses it.
+      # module cache, only the conformance one uses it. useblacksmith/cache is the
+      # co-located drop-in for actions/cache — same inputs, much faster restore
+      # than reaching GitHub's cache backend from a Blacksmith runner.
       - name: Cache Go modules and build
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: useblacksmith/cache@c5fe29eb0efdf1cf4186b9f7fcbbcbc0cf025662 # v5.0.2
         with:
           path: |
             ~/.cache/go-build
@@ -161,7 +170,7 @@ jobs:
       - wait: [cluster, controller-image, agent-image]
 
       - name: Cache conformance test binaries
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: useblacksmith/cache@c5fe29eb0efdf1cf4186b9f7fcbbcbc0cf025662 # v5.0.2
         with:
           path: test/conformance/.bin
           key: conformance-bin-${{ steps.tools.outputs.talos }}
@@ -175,7 +184,7 @@ jobs:
           ENDPOINT: ${{ steps.cluster.outputs.endpoint }}
           KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig }}
           TALOSCONFIG: ${{ steps.cluster.outputs.talosconfig }}
-          PROCS: "4"
+          PROCS: ${{ matrix.procs }}
           VERBOSE: "1"
 
       - name: Diagnostics
