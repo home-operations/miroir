@@ -1051,6 +1051,51 @@ func TestRestartRefusesWedged(t *testing.T) {
 	fe.notCalledWith(t, "drbdadm up")
 }
 
+// The foreign-metadata wipe must fire only on proof: metadata present
+// (or unclean — still metadata) wipes and marks; a bare device marks
+// without wiping (wipe-md there would zero the filesystem tail); the
+// marker short-circuits every later call so the probe can never run
+// against a device a consumer may have mounted.
+func TestWipeForeignMetadataProbesThenWipesOnce(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{"dump-md": "version \"v09\";"}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "wipe-md")
+	fe.calls = nil
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fe.calls) != 0 {
+		t.Fatalf("marker must short-circuit later calls, got %v", fe.calls)
+	}
+}
+
+func TestWipeForeignMetadataSkipsBareDevice(t *testing.T) {
+	fe := &fakeExec{} // default dump-md answer: no valid meta data
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "wipe-md")
+	if _, err := os.Stat(d.path(volPvc1 + ".md-wiped")); err != nil {
+		t.Fatalf("a bare device must still mark as settled: %v", err)
+	}
+}
+
+func TestWipeForeignMetadataWipesUncleanMetadata(t *testing.T) {
+	fe := &fakeExec{errOn: map[string]error{"dump-md": errors.New("unclean meta data; apply-al first")}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "wipe-md")
+}
+
 // A reclaim leftover — an assignment with no CR, no kernel resource, no
 // rendered config — must be released by the startup sweep after the
 // reboot cleared the zombie; while the zombie still lives in the kernel

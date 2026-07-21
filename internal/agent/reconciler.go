@@ -594,7 +594,7 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 	if exists, err := be.Exists(ctx, vol.Name); err != nil {
 		return "", err
 	} else if exists {
-		return r.padClone(ctx, be, vol)
+		return r.finishClone(ctx, be, vol)
 	}
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
@@ -606,19 +606,27 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 	if _, err := be.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name); err != nil {
 		return "", err
 	}
-	return r.padClone(ctx, be, vol)
+	return r.finishClone(ctx, be, vol)
 }
 
-// padClone re-activates an existing clone and, on a padded volume, grows
-// it to backingBytes ahead of the DRBD apply (Resize is grow-only and
-// idempotent). Unpadded volumes keep today's contract: replicated clones
-// grow only after attach (growLeg), unreplicated ones on their own path.
-func (r *VolumeReconciler) padClone(ctx context.Context, be backend.Backend, vol *miroirv1alpha1.MiroirVolume) (string, error) {
+// finishClone re-activates an existing clone and settles the shape a
+// boundary-crossing restore left it in — both run on the recovery path
+// too, so a crash right after the clone cannot skip them. A padded
+// volume grows to backingBytes ahead of the DRBD apply (Resize is
+// grow-only and idempotent); an unreplicated target sheds any DRBD
+// metadata a replicated source's clone carried, or blkid reads the raw
+// backing as TYPE=drbd and staging refuses it (see WipeForeignMetadata).
+// Unpadded replicated volumes keep today's contract: clones grow only
+// after attach (growLeg).
+func (r *VolumeReconciler) finishClone(ctx context.Context, be backend.Backend, vol *miroirv1alpha1.MiroirVolume) (string, error) {
 	dev, err := be.Create(ctx, vol.Name, vol.Spec.SizeBytes)
 	if err != nil {
 		return "", err
 	}
-	if vol.Spec.DRBD != nil && vol.Spec.Source.PadForMetadata {
+	if vol.Spec.DRBD == nil {
+		return dev, r.DRBD.WipeForeignMetadata(ctx, vol.Name, dev)
+	}
+	if vol.Spec.Source.PadForMetadata {
 		if err := be.Resize(ctx, vol.Name, backingBytes(vol)); err != nil {
 			return "", err
 		}

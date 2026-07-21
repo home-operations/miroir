@@ -358,7 +358,11 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
-	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+	// A DRBD driver even though the volume is unreplicated: recovering a
+	// restore clone probes it for foreign metadata (finishClone).
+	fe := &fakeDRBDExec{}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
 
 	reconcile(t, r, volPvc1)
 
@@ -694,6 +698,49 @@ func TestReconcilePaddedRestoreFullSyncJoinerPadsBacking(t *testing.T) {
 	// The joiner must not mint the seed generation — its content arrives
 	// over the wire.
 	fe.notCalledWith(t, "primary --force")
+}
+
+// A restore that shrank out of replication clones the replicated
+// source's DRBD metadata into a raw backing pods stage directly: realize
+// must wipe it (blkid otherwise reads the device as TYPE=drbd and
+// staging refuses), while a clone of an unreplicated source — no
+// metadata — stays untouched.
+func TestReconcileUnreplicatedRestoreWipesForeignMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		dumpMD   map[string]string
+		wantWipe bool
+	}{
+		{name: "replicated source clone", dumpMD: map[string]string{"dump-md": `version "v09";`}, wantWipe: true},
+		{name: "unreplicated source clone", wantWipe: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newScheme(t)
+			fb := newFakeBackend()
+			v := vol(volPvc1, nodeA)
+			v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapSnap1}
+			fe := &fakeDRBDExec{responses: tc.dumpMD}
+			c := fake.NewClientBuilder().WithScheme(s).
+				WithObjects(v, snapObj(snapSnap1, "src-vol")).
+				WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+				Build()
+			r := &VolumeReconciler{
+				Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+				DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+			}
+
+			reconcile(t, r, volPvc1)
+
+			if len(fb.fromSnapVol) != 1 {
+				t.Fatalf("restore must clone, got %v", fb.fromSnapVol)
+			}
+			if tc.wantWipe {
+				fe.calledWith(t, "wipe-md")
+			} else {
+				fe.notCalledWith(t, "wipe-md")
+			}
+		})
+	}
 }
 
 // The seed of a padded restore sits on fresh create-md metadata that

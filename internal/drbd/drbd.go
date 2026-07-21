@@ -336,8 +336,9 @@ func virginMetadata(dump, name string) bool {
 }
 
 // stateSuffixes are the per-resource files in StateDir that teardown
-// removes — keep in sync with everything Apply and ensureMetadata write.
-var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"}
+// removes — keep in sync with everything Apply, ensureMetadata, and
+// WipeForeignMetadata write.
+var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted", ".md-wiped"}
 
 // removeStateFiles deletes the resource's rendered config and markers.
 func (d *Driver) removeStateFiles(name string) error {
@@ -347,6 +348,43 @@ func (d *Driver) removeStateFiles(name string) error {
 		}
 	}
 	return nil
+}
+
+// WipeForeignMetadata probes an unreplicated volume's backing for DRBD
+// internal metadata and wipes it when present — the state a restore that
+// shrank out of replication clones in: the replicated source's metadata
+// rides the tail of the byte-identical clone, and with pods staging the
+// raw backing (no DRBD layer above it), blkid identifies the device as
+// TYPE=drbd and staging's filesystem checks refuse it (found by the
+// e2e). Probing first keeps a metadata-less clone (an unreplicated
+// source's) untouched — wipe-md against a bare device would zero the
+// filesystem tail instead. The .md-wiped marker makes it one-shot: the
+// probe must never run against the device once a consumer can have it
+// mounted, and the crash window between clone and wipe is covered by the
+// caller re-running until the marker lands. drbdmeta is addressed with
+// minor 0 as the DEVICE handle, like WipeMetadata: unreplicated volumes
+// have no minor, 0 is below minorBase so it never names a live resource,
+// and it probes as unconfigured.
+func (d *Driver) WipeForeignMetadata(ctx context.Context, name, disk string) error {
+	marker := d.path(name + ".md-wiped")
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	// "unclean" is metadata too: a snapshot cut on an attached source
+	// captures its activity log mid-flight and dump-md refuses to read
+	// it, but wipe-md --force does not care.
+	_, err := d.Exec(ctx, "drbdmeta", "0", "v09", disk, "internal", "dump-md")
+	switch {
+	case err == nil || strings.Contains(err.Error(), "unclean"):
+		if err := d.WipeMetadata(ctx, name, disk, 0); err != nil {
+			return err
+		}
+	case !isMissingMetadata(err):
+		return fmt.Errorf("probe foreign metadata on %s: %w", name, err)
+	}
+	return os.WriteFile(marker, nil, 0o640)
 }
 
 // RemoveConfig removes the resource's rendered config and markers while
