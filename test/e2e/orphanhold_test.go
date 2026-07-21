@@ -148,8 +148,8 @@ var _ = Describe("orphaned-hold teardown reclaim", Ordered, func() {
 		Expect(lvs).NotTo(ContainSubstring(pv), "backing LV must be destroyed by the reclaim")
 
 		// The kernel minor is the expected residue: still registered,
-		// diskless, pinned by the dead superblock until the node reboots
-		// (the startup orphan sweep then reaps the rendered config).
+		// diskless, pinned by the dead-opener hold until the node reboots
+		// (the startup orphan sweep then releases its minor reservation).
 		status := agentExec(ctx, node, "drbdsetup status "+pv+" --verbose || true")
 		Expect(status).To(ContainSubstring(pv), "zombie minor must remain until reboot")
 		Expect(status).To(ContainSubstring("Diskless"), "zombie minor must have no backing attached")

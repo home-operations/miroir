@@ -1476,6 +1476,9 @@ func orphanHoldFixture(t *testing.T, procDir string) (*VolumeReconciler, *fakeBa
 	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(stateDir, "minor.assign"), []byte("pvc-1 1422\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fe := &fakeDRBDExec{
@@ -1540,8 +1543,16 @@ func TestReconcileTeardownOrphanHoldReclaims(t *testing.T) {
 			t.Fatalf("this node's finalizer must release after the reclaim: %v", got.Finalizers)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(r.DRBD.StateDir, "pvc-1.res")); err != nil {
-		t.Fatalf("rendered config must stay for the post-reboot orphan sweep: %v", err)
+	// The rendered config goes with the volume — left behind it would
+	// hold the DRBD port hostage against the next volume handed the
+	// recycled number — while the minor reservation stays so the zombie
+	// kernel minor cannot be re-assigned before the reboot clears it.
+	if _, err := os.Stat(filepath.Join(r.DRBD.StateDir, "pvc-1.res")); !os.IsNotExist(err) {
+		t.Fatalf("rendered config must be removed by the reclaim: %v", err)
+	}
+	assign, err := os.ReadFile(filepath.Join(r.DRBD.StateDir, "minor.assign"))
+	if err != nil || !strings.Contains(string(assign), volPvc1) {
+		t.Fatalf("minor reservation must survive the reclaim, got %q / %v", assign, err)
 	}
 	if !drainEvents(rec, "TeardownReclaimed") {
 		t.Fatal("want a TeardownReclaimed event")

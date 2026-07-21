@@ -339,6 +339,31 @@ func virginMetadata(dump, name string) bool {
 // removes — keep in sync with everything Apply and ensureMetadata write.
 var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted"}
 
+// removeStateFiles deletes the resource's rendered config and markers.
+func (d *Driver) removeStateFiles(name string) error {
+	for _, suffix := range stateSuffixes {
+		if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoveConfig removes the resource's rendered config and markers while
+// leaving its minor.assign reservation in place. It exists for the
+// orphaned-hold reclaim: the zombie kernel minor outlives its volume
+// until a reboot, and a rendered config left behind holds the volume's
+// DRBD port hostage — the controller re-allocates ports from CRs alone,
+// and drbdadm refuses to parse a config directory whose resources share
+// an endpoint, wedging the next replicated volume handed the recycled
+// port on this node (caught by the e2e). The minor reservation must
+// outlive the config (a fresh volume handed the zombie's minor could
+// never register it); the startup orphan sweep releases it once a reboot
+// clears the kernel state.
+func (d *Driver) RemoveConfig(name string) error {
+	return d.removeStateFiles(name)
+}
+
 // listStatus runs `drbdsetup status --json [name]` and parses the result —
 // the one fetch every kernel-view consumer shares.
 func (d *Driver) listStatus(ctx context.Context, name ...string) ([]jsonStatus, error) {
@@ -402,10 +427,8 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 		if !found || owned(name) || stuck[name] {
 			continue
 		}
-		for _, suffix := range stateSuffixes {
-			if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, err)
-			}
+		if err := d.removeStateFiles(name); err != nil {
+			errs = append(errs, err)
 		}
 		// The orphaned volume never comes back to Down on this node, so
 		// its minor.assign entry would leak — and permanently burn a
@@ -414,7 +437,48 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 			errs = append(errs, fmt.Errorf("release minor of orphan %s: %w", name, err))
 		}
 	}
+	// Assignment entries with no CR, no kernel resource, and no rendered
+	// config are reclaim leftovers: RemoveConfig keeps the reservation
+	// while the zombie minor lives, and after the reboot that cleared the
+	// kernel they are pure leaks. Ordered after the file loop so a plain
+	// config orphan is handled (and released) exactly once, above.
+	inKernel := map[string]bool{}
+	for _, res := range parsed {
+		inKernel[res.Name] = true
+	}
+	if err := d.releaseOrphanedAssignments(owned, inKernel); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
+}
+
+// releaseOrphanedAssignments drops minor.assign entries whose volume has
+// vanished entirely — not owned, not in the kernel, no rendered config.
+func (d *Driver) releaseOrphanedAssignments(owned func(name string) bool, inKernel map[string]bool) error {
+	unlock, err := d.lockMinors()
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	assigned, err := d.readAssignments()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for name := range assigned {
+		if owned(name) || inKernel[name] {
+			continue
+		}
+		if _, err := os.Stat(d.path(name + ".res")); err == nil {
+			continue
+		}
+		delete(assigned, name)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return d.writeAssignments(assigned)
 }
 
 // DownSecondaries brings down every resource this node holds Secondary,
@@ -915,10 +979,8 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 	if err := d.downResource(ctx, name, peerIDs); err != nil {
 		return err
 	}
-	for _, suffix := range stateSuffixes {
-		if err := os.Remove(d.path(name + suffix)); err != nil && !os.IsNotExist(err) {
-			return err
-		}
+	if err := d.removeStateFiles(name); err != nil {
+		return err
 	}
 	// Free the minor for reuse — the .res is gone, so scanUsedMinors no
 	// longer covers it, and the assignment would otherwise leak forever.
@@ -954,10 +1016,10 @@ func (d *Driver) Restart(ctx context.Context, name string) error {
 // #319). Down can never win that state, but force-detach is legal on an
 // open device (dropping a failing disk under live I/O is its purpose),
 // and the backing is all a deletion still needs back. The caller must
-// keep the rendered config and the minor assignment: the kernel minor
-// stays pinned until a reboot, releasing the number would hand it to a
-// new volume, and the startup orphan sweep reaps both once the reboot
-// clears the state. Already-detached (Diskless) and not-in-kernel are
+// keep the minor assignment (see RemoveConfig): the kernel minor stays
+// pinned until a reboot, releasing the number would hand it to a new
+// volume, and the startup orphan sweep reaps it once the reboot clears
+// the state. Already-detached (Diskless) and not-in-kernel are
 // no-ops so a retry after a failed backing delete converges. A resource
 // wearing the teardown wedge signature is refused like everywhere else —
 // mid-detach is exactly the state a second detach would race.

@@ -1051,6 +1051,50 @@ func TestRestartRefusesWedged(t *testing.T) {
 	fe.notCalledWith(t, "drbdadm up")
 }
 
+// A reclaim leftover — an assignment with no CR, no kernel resource, no
+// rendered config — must be released by the startup sweep after the
+// reboot cleared the zombie; while the zombie still lives in the kernel
+// the reservation must survive, or a new volume could be handed a minor
+// it can never register.
+func TestSweepOrphansReleasesReclaimLeftoverAssignments(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: `[]`}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if _, err := d.AllocateMinor("pvc-zombie"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.SweepOrphans(t.Context(), func(string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	assigned, err := d.readAssignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := assigned["pvc-zombie"]; ok {
+		t.Fatalf("post-reboot sweep must release the leftover reservation: %v", assigned)
+	}
+}
+
+func TestSweepOrphansKeepsAssignmentWhileZombieLives(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: `[
+		{"name":"pvc-zombie","role":"Secondary","devices":[{"disk-state":"Diskless"}],"connections":[]}]`}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if _, err := d.AllocateMinor("pvc-zombie"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The sweep tries (and here fails to matter) to down the unowned
+	// kernel zombie; the reservation must survive regardless.
+	_ = d.SweepOrphans(t.Context(), func(string) bool { return false })
+	assigned, err := d.readAssignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := assigned["pvc-zombie"]; !ok {
+		t.Fatalf("reservation must survive while the kernel holds the zombie: %v", assigned)
+	}
+}
+
 // The overhead bound must dominate the bitmap arithmetic it stands in
 // for (1 bit per 4KiB per peer slot) with real slack for the superblock
 // and activity log, stay extent-aligned, and grow monotonically.

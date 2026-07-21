@@ -1261,12 +1261,15 @@ func (r *VolumeReconciler) orphanHold(ctx context.Context, vol *miroirv1alpha1.M
 // reclaimOrphanHold routes a deletion around the pinned minor: the only
 // thing an orphaned hold pins is the DRBD minor itself, so force-detach
 // frees the backing and the sweep destroys it, letting the caller release
-// the finalizer through teardown's normal tail. The rendered config and
-// the minor assignment deliberately stay — the kernel minor is pinned
-// until a reboot, releasing the number would hand it to a new volume, and
-// the startup orphan sweep reaps both once the reboot clears the state.
-// On any failure the original busy outcome stands and the parked retry
-// re-evaluates (ForceDetach no-ops once detached, so a failed sweep
+// the finalizer through teardown's normal tail. The rendered config goes
+// with the volume — left behind it would hold the volume's DRBD port
+// hostage against the next volume handed the recycled number (see
+// drbd.RemoveConfig) — while the minor assignment deliberately stays:
+// the kernel minor is pinned until a reboot, releasing the number would
+// hand it to a new volume, and the startup orphan sweep reaps the
+// reservation once the reboot clears the state. On any failure the
+// original busy outcome stands and the parked retry re-evaluates
+// (ForceDetach no-ops once detached, so a failed sweep or config removal
 // converges on the next cycle).
 func (r *VolumeReconciler) reclaimOrphanHold(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, slot miroirv1alpha1.ReplicaStatus, cause error) error {
 	if err := r.DRBD.ForceDetach(ctx, vol.Name, slot.DRBDMinor); err != nil {
@@ -1275,6 +1278,9 @@ func (r *VolumeReconciler) reclaimOrphanHold(ctx context.Context, vol *miroirv1a
 		return cause
 	}
 	if err := r.Pools.SweepDelete(ctx, vol.Name); err != nil {
+		return err
+	}
+	if err := r.DRBD.RemoveConfig(vol.Name); err != nil {
 		return err
 	}
 	ctrl.LoggerFrom(ctx).Info("teardown reclaimed from an orphaned device hold; kernel minor stays pinned until reboot",
