@@ -361,30 +361,50 @@ func (d *Driver) removeStateFiles(name string) error {
 // filesystem tail instead. The .md-wiped marker makes it one-shot: the
 // probe must never run against the device once a consumer can have it
 // mounted, and the crash window between clone and wipe is covered by the
-// caller re-running until the marker lands. drbdmeta is addressed with
-// minor 0 as the DEVICE handle, like WipeMetadata: unreplicated volumes
-// have no minor, 0 is below minorBase so it never names a live resource,
-// and it probes as unconfigured.
-func (d *Driver) WipeForeignMetadata(ctx context.Context, name, disk string) error {
+// caller re-running until the marker lands. A temporary minor assignment
+// keeps drbdmeta's DEVICE handle clear of both system resources below
+// minorBase and concurrently realized miroir resources.
+func (d *Driver) WipeForeignMetadata(ctx context.Context, name, disk string) (retErr error) {
 	marker := d.path(name + ".md-wiped")
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	probeName := "@foreign-metadata-probe/" + name
+	minor, err := d.AllocateMinor(probeName)
+	if err != nil {
+		return fmt.Errorf("reserve foreign metadata probe minor for %s: %w", name, err)
+	}
+	defer func() {
+		retErr = errors.Join(retErr, d.releaseMinor(probeName))
+	}()
+
 	// "unclean" is metadata too: a snapshot cut on an attached source
 	// captures its activity log mid-flight and dump-md refuses to read
 	// it, but wipe-md --force does not care.
-	_, err := d.Exec(ctx, "drbdmeta", "0", "v09", disk, "internal", "dump-md")
+	_, err = d.Exec(ctx, "drbdmeta", strconv.Itoa(int(minor)), "v09", disk, "internal", "dump-md")
 	switch {
 	case err == nil || strings.Contains(err.Error(), "unclean"):
-		if err := d.WipeMetadata(ctx, name, disk, 0); err != nil {
+		if err := d.WipeMetadata(ctx, name, disk, minor); err != nil {
 			return err
 		}
 	case !isMissingMetadata(err):
 		return fmt.Errorf("probe foreign metadata on %s: %w", name, err)
 	}
 	return os.WriteFile(marker, nil, 0o640)
+}
+
+// InvalidateForeignMetadataWipe forgets the one-shot result before a
+// backing is recreated from its source snapshot. The replacement clone
+// carries the source's metadata again even when its device path and volume
+// name are unchanged.
+func (d *Driver) InvalidateForeignMetadataWipe(name string) error {
+	err := os.Remove(d.path(name + ".md-wiped"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // RemoveConfig removes the resource's rendered config and markers while

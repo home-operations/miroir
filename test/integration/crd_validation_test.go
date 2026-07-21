@@ -135,6 +135,18 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "adding a source after creation must be rejected, got: %v", err)
 	})
 
+	It("rejects changing a clone source's metadata padding", func() {
+		vol := replicatedVolume("pvc-source-padding-pin")
+		vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-a", PadForMetadata: true}
+		Expect(k8sClient.Create(ctx, vol)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, vol)).To(Succeed()) })
+
+		vol.Spec.Source.PadForMetadata = false
+		err := k8sClient.Update(ctx, vol)
+		Expect(apierrors.IsInvalid(err)).To(BeTrue(), "metadata padding change must be rejected, got: %v", err)
+		Expect(err.Error()).To(ContainSubstring("source is immutable"))
+	})
+
 	It("rejects changing the export filesystem after formatting", func() {
 		vol := replicatedVolume("pvc-fstype-pin")
 		vol.Spec.Export = &miroirv1alpha1.ExportSpec{FSType: "ext4"}

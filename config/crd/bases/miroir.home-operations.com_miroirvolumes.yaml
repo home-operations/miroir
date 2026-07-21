@@ -342,10 +342,12 @@ spec:
             - message: 'drbd.port is immutable: it was allocated cluster-wide at creation
                 and the allocator assumes existing volumes keep their ports'
               rule: '!has(self.drbd) || !has(oldSelf.drbd) || self.drbd.port == oldSelf.drbd.port'
-            - message: 'source is immutable: it records the snapshot this volume was
-                cloned from'
+            - message: 'source is immutable: it records the snapshot and metadata
+                padding this volume was cloned with'
               rule: has(self.source) == has(oldSelf.source) && (!has(self.source)
-                || !has(oldSelf.source) || self.source.snapshotName == oldSelf.source.snapshotName)
+                || !has(oldSelf.source) || (self.source.snapshotName == oldSelf.source.snapshotName
+                && (has(self.source.padForMetadata) && self.source.padForMetadata)
+                == (has(oldSelf.source.padForMetadata) && oldSelf.source.padForMetadata)))
             - message: 'export.fsType is immutable: the gateway formatted the volume
                 with it at first start'
               rule: '!has(self.export) || !has(oldSelf.export) || self.export.fsType

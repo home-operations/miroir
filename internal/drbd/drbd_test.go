@@ -1059,11 +1059,22 @@ func TestRestartRefusesWedged(t *testing.T) {
 func TestWipeForeignMetadataProbesThenWipesOnce(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{"dump-md": "version \"v09\";"}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := os.WriteFile(d.path("used.res"), []byte("device minor 1000;\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
 		t.Fatal(err)
 	}
-	fe.calledWith(t, "wipe-md")
+	fe.calledWith(t, "drbdmeta 1001 v09 /dev/x internal dump-md")
+	fe.calledWith(t, "drbdmeta --force 1001 v09 /dev/x internal wipe-md")
+	assigned, err := d.readAssignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := assigned["@foreign-metadata-probe/"+volPvc1]; ok {
+		t.Fatalf("temporary probe minor must be released: %v", assigned)
+	}
 	fe.calls = nil
 	if err := d.WipeForeignMetadata(t.Context(), volPvc1, "/dev/x"); err != nil {
 		t.Fatal(err)

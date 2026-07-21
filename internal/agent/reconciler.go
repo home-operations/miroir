@@ -603,6 +603,11 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 		}
 		return "", err
 	}
+	if vol.Spec.DRBD == nil {
+		if err := r.DRBD.InvalidateForeignMetadataWipe(vol.Name); err != nil {
+			return "", err
+		}
+	}
 	if _, err := be.CreateFromSnapshot(ctx, vol.Name, snap.Spec.VolumeName, snap.Name); err != nil {
 		return "", err
 	}

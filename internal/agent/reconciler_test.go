@@ -2039,6 +2039,43 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 	}
 }
 
+func TestRealizeBackingRecloneInvalidatesForeignMetadataWipe(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapSnap1}
+	snap := &miroirv1alpha1.MiroirSnapshot{
+		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
+		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "source"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v, snap).Build()
+	fb := newFakeBackend()
+	fe := &fakeDRBDExec{responses: map[string]string{"dump-md": "version \"v09\";"}}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	if _, err := r.realizeBacking(t.Context(), fb, v, false); err != nil {
+		t.Fatal(err)
+	}
+	delete(fb.created, volPvc1)
+	delete(fb.existing, volPvc1)
+	if _, err := r.realizeBacking(t.Context(), fb, v, false); err != nil {
+		t.Fatal(err)
+	}
+
+	var probes, wipes int
+	for _, call := range fe.calls {
+		if strings.Contains(call, "dump-md") {
+			probes++
+		}
+		if strings.Contains(call, "wipe-md") {
+			wipes++
+		}
+	}
+	if probes != 2 || wipes != 2 {
+		t.Fatalf("each clone incarnation must be probed and wiped, got %d probes and %d wipes: %v", probes, wipes, fe.calls)
+	}
+}
+
 // A backing device that vanished after this node had realized it (the
 // status slot still says DeviceCreated) is the node-wipe signature: the
 // recreated device gets fresh just-created metadata and full-syncs at the
