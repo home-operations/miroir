@@ -1548,14 +1548,21 @@ func detachedDiskMessage(diskFailed bool) string {
 func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase, string) {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
+	realized := 0
 	failed := false
 	for _, rep := range diskfulReplicas {
 		st, ok := vol.Status.PerNode[rep.Node]
 		replicated := vol.Spec.DRBD != nil
+		realizedReplica := ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
+			(!replicated || st.DiskState == drbd.DiskUpToDate)
 		switch {
-		case ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
-			(!replicated || st.DiskState == drbd.DiskUpToDate):
-			ready++
+		case realizedReplica:
+			// Keep current data separate from operational readiness so an
+			// established but disconnected volume is Degraded, not Creating.
+			realized++
+			if !replicated || st.Connected {
+				ready++
+			}
 		case ok && st.Message != "" && !st.DeviceCreated:
 			// Hard failure: the backing device never materialised.
 			// Errors after that point (DRBD connect retries, status
@@ -1569,7 +1576,7 @@ func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase,
 		return miroirv1alpha1.VolumeFailed, readyReplicas
 	case ready == len(diskfulReplicas):
 		return miroirv1alpha1.VolumeReady, readyReplicas
-	case ready > 0:
+	case realized > 0:
 		return miroirv1alpha1.VolumeDegraded, readyReplicas
 	default:
 		return miroirv1alpha1.VolumeCreating, readyReplicas
