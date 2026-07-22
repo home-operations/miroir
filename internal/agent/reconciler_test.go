@@ -2227,7 +2227,11 @@ func TestRemovalSnapshotGateSkipsTieBreaker(t *testing.T) {
 // covering its mixed-state logic here means a regression breaks the
 // test that mirrors the live behaviour, not a synthetic helper.
 func TestComputePhaseMixing(t *testing.T) {
-	const oneOfTwo = "1/2"
+	const (
+		noneOfTwo = "0/2"
+		oneOfTwo  = "1/2"
+		twoOfTwo  = "2/2"
+	)
 	cases := []struct {
 		name      string
 		vol       *miroirv1alpha1.MiroirVolume
@@ -2260,13 +2264,79 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 				Status: miroirv1alpha1.MiroirVolumeStatus{
 					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
-						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent},
 					},
 				},
 			},
 			want:      miroirv1alpha1.VolumeDegraded,
 			wantReady: oneOfTwo,
+		},
+		{
+			name: "both diskful replicas disconnected (degraded)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "one diskful replica disconnected (degraded)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
+		},
+		{
+			name: "all diskful replicas reconnected (ready)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "no realized replicas (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
 		},
 		{
 			name: "all replicas Inconsistent (creating)",
@@ -2284,7 +2354,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 			},
 			want:      miroirv1alpha1.VolumeCreating,
-			wantReady: "0/2",
+			wantReady: noneOfTwo,
 		},
 		{
 			name: "hard failure (no device, message set)",
@@ -2313,7 +2383,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 				Status: miroirv1alpha1.MiroirVolumeStatus{
 					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
-						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Outdated", Message: "peer not yet up"},
 					},
 				},
@@ -2333,8 +2403,8 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 				Status: miroirv1alpha1.MiroirVolumeStatus{
 					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
-						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
-						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
 						// The tie-breaker's slot must count toward
 						// neither ready nor failed.
 						"tb": {DiskState: diskStateDiskless, Message: "whatever"},
@@ -2342,7 +2412,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 			},
 			want:      miroirv1alpha1.VolumeReady,
-			wantReady: "2/2",
+			wantReady: twoOfTwo,
 		},
 	}
 	for _, tc := range cases {
@@ -2689,7 +2759,7 @@ func TestReconcileFastPathInvalidatedByStalePhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	got.Status.PerNode[nodeB] = miroirv1alpha1.ReplicaStatus{
-		DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30,
+		DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30, Connected: true,
 	}
 	got.Status.Phase = miroirv1alpha1.VolumeDegraded
 	if err := r.Status().Update(t.Context(), got); err != nil {
