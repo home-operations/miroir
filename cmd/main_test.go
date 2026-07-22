@@ -193,8 +193,10 @@ func TestFinishManagerShutdownInternalRestartOnlySweepsBarrier(t *testing.T) {
 	var full, barrier int
 	unexpectedCleanup := make(chan struct{}, 1)
 	shutdown := armSignalShutdown(signalCtx, func() { unexpectedCleanup <- struct{}{} })
-	finishManagerShutdown(nil, signalCtx, managerCtx,
-		func() { full++ }, func() { barrier++ }, shutdown)
+	if err := finishManagerShutdown(nil, signalCtx, managerCtx,
+		func() { full++ }, func() { barrier++ }, shutdown); err != nil {
+		t.Fatalf("finish manager shutdown: %v", err)
+	}
 	if full != 0 || barrier != 1 {
 		t.Fatalf("full = %d, barrier = %d; want 0, 1", full, barrier)
 	}
@@ -212,8 +214,10 @@ func TestFinishManagerShutdownSignalBeforeManagerStopRunsFullSweep(t *testing.T)
 	cancelManager()
 	var full, barrier int
 	shutdown := armSignalShutdown(signalCtx, func() {})
-	finishManagerShutdown(nil, signalCtx, managerCtx,
-		func() { full++ }, func() { barrier++ }, shutdown)
+	if err := finishManagerShutdown(nil, signalCtx, managerCtx,
+		func() { full++ }, func() { barrier++ }, shutdown); err != nil {
+		t.Fatalf("finish manager shutdown: %v", err)
+	}
 	if full != 1 || barrier != 0 {
 		t.Fatalf("full = %d, barrier = %d; want 1, 0", full, barrier)
 	}
@@ -227,10 +231,12 @@ func TestFinishManagerShutdownSignalDuringBarrierRunsFullSweep(t *testing.T) {
 	earlyCleaned := make(chan struct{})
 	var full, barrier int
 	shutdown := armSignalShutdown(signalCtx, func() { close(earlyCleaned) })
-	finishManagerShutdown(nil, signalCtx, managerCtx, func() { full++ }, func() {
+	if err := finishManagerShutdown(nil, signalCtx, managerCtx, func() { full++ }, func() {
 		barrier++
 		cancelSignal()
-	}, shutdown)
+	}, shutdown); err != nil {
+		t.Fatalf("finish manager shutdown: %v", err)
+	}
 	if full != 1 || barrier != 1 {
 		t.Fatalf("full = %d, barrier = %d; want 1, 1", full, barrier)
 	}
