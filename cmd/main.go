@@ -31,6 +31,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -539,16 +540,19 @@ func main() {
 
 	identity := &csi.Identity{Version: version, WithController: mode == modeController}
 
-	// Agent mode only, run after the manager stops (SIGTERM): release DRBD
-	// backings when the node is going down and lift any leftover write
-	// barrier — both are kernel state that outlives the process.
+	// Agent mode only, run around manager shutdown: release DRBD backings when
+	// the node is going down and lift any leftover write barrier — both are
+	// kernel state that outlives the process.
 	var shutdownSweep func()
+	var shutdownBarrierSweep func()
+	var shutdownEarly func()
 
-	// The signal context is created before the mode switch so the agent's
-	// topology watcher can stop the manager gracefully (restart-to-reload)
-	// through the same cancellation path a SIGTERM takes.
-	ctx, stop := context.WithCancel(ctrl.SetupSignalHandler())
-	defer stop()
+	// Keep OS-signal cancellation separate from manager cancellation: the
+	// topology watcher can restart the manager without looking like a node
+	// shutdown.
+	signalCtx := ctrl.SetupSignalHandler()
+	managerCtx, stopManager := context.WithCancel(signalCtx)
+	defer stopManager()
 
 	switch mode {
 	case modeController:
@@ -595,7 +599,7 @@ func main() {
 		// holds no storage either and gets the same treatment —
 		// setupAgentPools would read zero pools as "every pool failed" and
 		// crash-loop.
-		miroirNode, found := agentTopology(mgr, nodeName, stop)
+		miroirNode, found := agentTopology(mgr, nodeName, stopManager)
 		var flat nodemap.Node
 		if found {
 			flat = nodemap.FromSpec(miroirNode.Spec)
@@ -662,6 +666,8 @@ func main() {
 		var drbdEvents chan event.GenericEvent
 		if drbdReady {
 			shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver, nodeName) }
+			shutdownBarrierSweep = func() { agentShutdownBarrierSweep(drbdDriver, nodeName) }
+			shutdownEarly = func() { agentShutdownDownSecondaries(cordon, drbdDriver) }
 			// events2 turns kernel state changes into immediate reconciles;
 			// the 30s poll remains as the safety net.
 			drbdEvents = make(chan event.GenericEvent, 64)
@@ -744,17 +750,44 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	err = mgr.Start(ctx)
-	// The sweep must run even when the manager exits with an error — a
-	// runnable blowing the shutdown grace is exactly the case where a
-	// cordoned node still needs its DRBD backings released for reboot.
+	var earlyCleanup *signalShutdown
 	if shutdownSweep != nil {
-		shutdownSweep()
+		earlyCleanup = armSignalShutdown(signalCtx, shutdownEarly)
 	}
+	err = mgr.Start(managerCtx)
+	err = finishManagerShutdown(err, signalCtx, managerCtx, shutdownSweep,
+		shutdownBarrierSweep, earlyCleanup)
 	if err != nil {
 		setupLog.Error(err, "manager exited")
 		os.Exit(1)
 	}
+}
+
+// finishManagerShutdown completes the shutdown coordination after the
+// manager has stopped. Signal shutdown repeats the early teardown; an
+// internal restart only recovers barriers, while an unexpected manager error
+// keeps the defensive full sweep.
+func finishManagerShutdown(err error, signalCtx, managerCtx context.Context,
+	shutdownSweep, shutdownBarrierSweep func(), earlyCleanup *signalShutdown,
+) error {
+	if shutdownSweep == nil {
+		return err
+	}
+	if signalCtx.Err() != nil {
+		earlyCleanup.finish()
+		shutdownSweep()
+		return err
+	}
+	if err != nil && managerCtx.Err() == nil {
+		earlyCleanup.finish()
+		shutdownSweep()
+		return err
+	}
+	shutdownBarrierSweep()
+	if earlyCleanup.finish() {
+		shutdownSweep()
+	}
+	return err
 }
 
 // apiStartupWait bounds how long the startup sweeps wait for the API server,
@@ -771,6 +804,59 @@ const drbdShutdownTimeout = 15 * time.Second
 // DownSecondaries can already spend 45s of it. apiStartupWait would
 // guarantee a SIGKILL mid-sweep.
 const apiShutdownWait = 5 * time.Second
+
+// signalShutdown starts cleanup as soon as the OS signal arrives, rather
+// than waiting for controller-runtime to finish stopping its runnables. Its
+// finish method commits an internal restart only after the barrier sweep; its
+// result reports whether signal cleanup won that race.
+type signalShutdown struct {
+	signalCtx context.Context
+	cleanup   func()
+
+	mu        sync.Mutex
+	committed bool
+	done      chan struct{}
+	stop      chan struct{}
+}
+
+func armSignalShutdown(signalCtx context.Context, cleanup func()) *signalShutdown {
+	s := &signalShutdown{
+		signalCtx: signalCtx,
+		cleanup:   cleanup,
+		done:      make(chan struct{}),
+		stop:      make(chan struct{}),
+	}
+	go func() {
+		select {
+		case <-signalCtx.Done():
+			s.mu.Lock()
+			committed := s.committed
+			s.mu.Unlock()
+			if !committed {
+				s.cleanup()
+			}
+		case <-s.stop:
+		}
+		close(s.done)
+	}()
+	return s
+}
+
+// finish joins the helper. It linearizes an internal restart against signal
+// cancellation: a signal observed before the commit wins and returns true.
+func (s *signalShutdown) finish() bool {
+	s.mu.Lock()
+	if s.signalCtx.Err() != nil {
+		s.mu.Unlock()
+		<-s.done
+		return true
+	}
+	s.committed = true
+	close(s.stop)
+	s.mu.Unlock()
+	<-s.done
+	return false
+}
 
 // apiWithRetry retries one API call until it succeeds, hits a terminal
 // (non-transient) error, or the budget elapses — so a control plane still
@@ -817,13 +903,10 @@ func transientAPIError(err error) bool {
 	}
 }
 
-// agentShutdownSweep runs after the agent's manager stops (SIGTERM). A
-// cordoned node is being drained for a reboot or upgrade: release Secondary
-// backings so the backend pool can export. Gated on cordon because an
-// ungated teardown would disconnect idle replicas on every pod rollout. A
-// leftover write barrier is also kernel state that must not outlive the
-// process.
-func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeName string) {
+// agentShutdownDownSecondaries releases Secondary backings only for a
+// cordoned node. The early signal path deliberately does not perform API
+// access, so it can start before manager shutdown has completed.
+func agentShutdownDownSecondaries(cordon *agent.CordonWatcher, driver *drbd.Driver) {
 	if cordon.Cordoned() {
 		ctx, cancel := context.WithTimeout(context.Background(), drbdShutdownTimeout)
 		defer cancel()
@@ -832,6 +915,9 @@ func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeNa
 			setupLog.Error(err, "DRBD shutdown teardown failed; node reboot may stall")
 		}
 	}
+}
+
+func agentShutdownBarrierSweep(driver *drbd.Driver, nodeName string) {
 	// Short API budget: the chart grants 60s of termination grace and the
 	// manager stop + DownSecondaries already spend up to 45s of it. A
 	// stranded barrier missed here is lifted by the startup sweep on the
@@ -839,6 +925,12 @@ func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeNa
 	if err := resumeStaleBarriers(driver, agent.NewFreezer(), nodeName, apiShutdownWait); err != nil {
 		setupLog.Error(err, "shutdown barrier sweep failed")
 	}
+}
+
+// agentShutdownSweep is the final idempotent shutdown pass.
+func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeName string) {
+	agentShutdownDownSecondaries(cordon, driver)
+	agentShutdownBarrierSweep(driver, nodeName)
 }
 
 // sweepOrphans removes DRBD state with no owning volume on this node,

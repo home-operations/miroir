@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/agent"
 )
 
 func TestCSIServerRunsOnEveryReplica(t *testing.T) {
@@ -150,4 +152,103 @@ func TestCacheOptionsAgentPinsOwnNode(t *testing.T) {
 	if byNode.Field == nil || byNode.Field.String() != "metadata.name=node-a" {
 		t.Fatalf("Node informer must be pinned to the node's own object, got %v", byNode.Field)
 	}
+}
+
+func TestArmSignalShutdownRunsCleanupOnSignal(t *testing.T) {
+	signalCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cleaned := make(chan struct{})
+	shutdown := armSignalShutdown(signalCtx, func() { close(cleaned) })
+	cancel()
+	if !shutdown.finish() {
+		t.Fatal("signal cleanup must win after signal cancellation")
+	}
+	select {
+	case <-cleaned:
+	case <-time.After(time.Second):
+		t.Fatal("signal cleanup did not run")
+	}
+}
+
+func TestArmSignalShutdownFinishesForInternalRestart(t *testing.T) {
+	signalCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cleaned := make(chan struct{})
+	shutdown := armSignalShutdown(signalCtx, func() { close(cleaned) })
+	if shutdown.finish() {
+		t.Fatal("internal restart must win before signal cancellation")
+	}
+	select {
+	case <-cleaned:
+		t.Fatal("internal manager cancellation ran shutdown cleanup")
+	default:
+	}
+}
+
+func TestFinishManagerShutdownInternalRestartOnlySweepsBarrier(t *testing.T) {
+	signalCtx, cancelSignal := context.WithCancel(t.Context())
+	defer cancelSignal()
+	managerCtx, cancelManager := context.WithCancel(t.Context())
+	cancelManager()
+	var full, barrier int
+	unexpectedCleanup := make(chan struct{}, 1)
+	shutdown := armSignalShutdown(signalCtx, func() { unexpectedCleanup <- struct{}{} })
+	if err := finishManagerShutdown(nil, signalCtx, managerCtx,
+		func() { full++ }, func() { barrier++ }, shutdown); err != nil {
+		t.Fatalf("finish manager shutdown: %v", err)
+	}
+	if full != 0 || barrier != 1 {
+		t.Fatalf("full = %d, barrier = %d; want 0, 1", full, barrier)
+	}
+	select {
+	case <-unexpectedCleanup:
+		t.Fatal("internal restart ran early cleanup")
+	default:
+	}
+}
+
+func TestFinishManagerShutdownSignalBeforeManagerStopRunsFullSweep(t *testing.T) {
+	signalCtx, cancelSignal := context.WithCancel(t.Context())
+	managerCtx, cancelManager := context.WithCancel(t.Context())
+	cancelSignal()
+	cancelManager()
+	var full, barrier int
+	shutdown := armSignalShutdown(signalCtx, func() {})
+	if err := finishManagerShutdown(nil, signalCtx, managerCtx,
+		func() { full++ }, func() { barrier++ }, shutdown); err != nil {
+		t.Fatalf("finish manager shutdown: %v", err)
+	}
+	if full != 1 || barrier != 0 {
+		t.Fatalf("full = %d, barrier = %d; want 1, 0", full, barrier)
+	}
+}
+
+func TestFinishManagerShutdownSignalDuringBarrierRunsFullSweep(t *testing.T) {
+	signalCtx, cancelSignal := context.WithCancel(t.Context())
+	defer cancelSignal()
+	managerCtx, cancelManager := context.WithCancel(t.Context())
+	cancelManager()
+	earlyCleaned := make(chan struct{})
+	var full, barrier int
+	shutdown := armSignalShutdown(signalCtx, func() { close(earlyCleaned) })
+	if err := finishManagerShutdown(nil, signalCtx, managerCtx, func() { full++ }, func() {
+		barrier++
+		cancelSignal()
+	}, shutdown); err != nil {
+		t.Fatalf("finish manager shutdown: %v", err)
+	}
+	if full != 1 || barrier != 1 {
+		t.Fatalf("full = %d, barrier = %d; want 1, 1", full, barrier)
+	}
+	select {
+	case <-earlyCleaned:
+	default:
+		t.Fatal("signal cleanup did not complete")
+	}
+}
+
+func TestAgentShutdownDownSecondariesRequiresCordon(_ *testing.T) {
+	// A nil driver is intentional: an uncordoned node must return before any
+	// teardown is attempted.
+	agentShutdownDownSecondaries(&agent.CordonWatcher{}, nil)
 }
