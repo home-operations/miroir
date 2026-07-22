@@ -49,6 +49,8 @@ var ganeshaTemplate = template.Must(template.New("ganesha.conf").Parse(
 	`NFS_CORE_PARAM {
 	NFS_Port = {{.Port}};
 	Protocols = 4;
+	Enable_UDP = false;
+	Enable_RQUOTA = false;
 }
 
 NFSv4 {

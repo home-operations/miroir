@@ -90,6 +90,7 @@ func (c *Config) withDefaults() {
 
 const (
 	ganeshaPort   = 2049
+	ganeshaPID    = "/run/ganesha.pid"
 	gracePeriod   = 60
 	leaseLifetime = 30
 )
@@ -181,7 +182,7 @@ func writeGaneshaConf(cfg Config, mountPath string) error {
 // the fs grow). It returns nil on a clean ctx-cancelled stop and an error
 // if ganesha exits on its own — a dead server must restart the pod.
 func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Config, dev, mountPath string, h *health, healthErr <-chan error, log logr.Logger) error {
-	cmd := exec.Command(ganeshaBin, "-F", "-f", cfg.GaneshaConf, "-N", "NIV_EVENT")
+	cmd := exec.Command(ganeshaBin, "-F", "-p", ganeshaPID, "-L", "STDOUT", "-f", cfg.GaneshaConf, "-N", "NIV_EVENT")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
