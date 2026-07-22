@@ -44,12 +44,14 @@ jobs:
           - suite: conformance
             testdriver: testdriver-local.yaml
             specs: "1"
+            capacity: "true"
           # The upstream suite against the replicated (DRBD, replicas:2) class,
           # group snapshots included.
           - suite: replicated
             testdriver: testdriver.yaml
           - suite: zfs
             testdriver: testdriver-zfs.yaml
+            capacity: "true"
           # Filesystem-only multi-node access through the NFS gateway. Keeping this
           # separate avoids advertising unsupported raw-block RWX.
           - suite: rwx

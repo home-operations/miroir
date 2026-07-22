@@ -11,6 +11,11 @@ DriverInfo:
     Max: 10Gi
   SupportedFsType:
     ext4: {}
+    xfs: {}
+  SupportedMountOption:
+    noatime: {}
+  TopologyKeys:
+    - miroir.home-operations.com/node
   Capabilities:
     persistence: true
     block: true
@@ -27,5 +32,6 @@ DriverInfo:
     singleNodeVolume: true
     # RWX needs the replicated (DRBD) path; the local driver can't exercise it.
     RWX: false
+    multiplePVsSameID: true
     readWriteOncePod: true
-    capacity: false
+    capacity: true
