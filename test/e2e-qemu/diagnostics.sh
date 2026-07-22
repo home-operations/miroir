@@ -21,6 +21,9 @@ echo "---- controller logs ----"
 kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/component=controller --tail=200 --all-containers
 echo "---- agent logs ----"
 kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/component=agent --tail=200 --all-containers
+echo "---- gateway logs ----"
+kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/component=gateway --tail=200 --all-containers --prefix
+kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/component=gateway --tail=200 --all-containers --prefix --previous
 echo "---- drbd state ----"
 for n in $workers; do
     echo "== $n =="

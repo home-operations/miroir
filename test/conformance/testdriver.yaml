@@ -16,6 +16,9 @@ DriverInfo:
     Max: 10Gi
   SupportedFsType:
     ext4: {}
+    xfs: {}
+  SupportedMountOption:
+    noatime: {}
   Capabilities:
     persistence: true
     block: true
@@ -31,9 +34,13 @@ DriverInfo:
     pvcDataSource: true
     topology: true
     singleNodeVolume: false
-    # RWX is implemented (NFS gateway over a replicated volume) but the
-    # upstream RWX specs need real DRBD + ganesha, not kind. Flip to true
-    # once the smoke suite's RWX scenario passes on a real cluster.
+    # The filesystem-only testdriver-rwx.yaml covers multi-node access without
+    # also enabling unsupported raw-block RWX patterns in this block-capable run.
     RWX: false
+    multiplePVsSameID: true
     readWriteOncePod: true
+    # Left off on the replicated block lane: DRBD reserves the full size on
+    # every replica, so published capacity runs tight and the scheduler
+    # starves the parallel-clone specs. testdriver-zfs.yaml covers capacity on
+    # the same 2-replica shape.
     capacity: false
