@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.11.8](https://github.com/home-operations/miroir/compare/0.11.7...0.11.8) (2026-07-22)
+
+
+### Features
+
+* **csi:** reshape replica count on restore (grow and shrink) ([#322](https://github.com/home-operations/miroir/issues/322)) ([bf7f583](https://github.com/home-operations/miroir/commit/bf7f58357083722bbae1efd3566f178e488286a4))
+
+
+### Bug Fixes
+
+* **agent:** include connectivity in volume readiness ([#336](https://github.com/home-operations/miroir/issues/336)) ([16403fc](https://github.com/home-operations/miroir/commit/16403fc29063f79e2b3ab9f6b58afa58c0ae5480))
+* conformance stabilization (drbd, csi, stage) ([#333](https://github.com/home-operations/miroir/issues/333)) ([c333ded](https://github.com/home-operations/miroir/commit/c333dedb6bdcd667fbcc1b0f334e87fcbfa84b61))
+* **csi:** honor topology when shrinking restores ([#326](https://github.com/home-operations/miroir/issues/326)) ([980c0b3](https://github.com/home-operations/miroir/commit/980c0b36e9627b786359dbb34185ef8210d410b8))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool aqua:astral-sh/uv (0.11.30 → 0.11.31) ([#330](https://github.com/home-operations/miroir/issues/330)) ([3322d69](https://github.com/home-operations/miroir/commit/3322d69921a946b23b2aa6fb2f2da291692b5b1f))
+* **mise:** Update tool oxfmt (0.59.0 → 0.60.0) ([#329](https://github.com/home-operations/miroir/issues/329)) ([6657d7a](https://github.com/home-operations/miroir/commit/6657d7a0f855a2adf8835ff73cfe601fb64169dc))
+* **mise:** Update tool zizmor (1.27.0 → 1.28.0) ([#324](https://github.com/home-operations/miroir/issues/324)) ([91c09c8](https://github.com/home-operations/miroir/commit/91c09c8e6d7cf804ac1615a442c70b3878f330ee))
+
 ## [0.11.7](https://github.com/home-operations/miroir/compare/0.11.6...0.11.7) (2026-07-21)
 
 
