@@ -203,7 +203,7 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 
 		// FormatAndMount formats only when the device has no filesystem —
 		// the mkfs-if-blank step.
-		if err := d.Mounter.FormatAndMount(dev, target, fsType, flags); err != nil {
+		if err := d.Mounter.FormatAndMount(dev, target, fsType, xfsCloneMountFlags(vol, format, flags)); err != nil {
 			if rerr := recoverFrozenBdev(ctx, d, vol, dev, err); rerr != nil {
 				return rerr
 			}
@@ -248,6 +248,16 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 		return status.Errorf(codes.Internal, "record activated flag: %v", err)
 	}
 	return nil
+}
+
+// XFS refuses to mount a snapshot-derived filesystem while its source with
+// the same on-disk UUID is mounted on the node. nouuid gives each mount an
+// in-memory identity without mutating the crash-consistent snapshot image.
+func xfsCloneMountFlags(vol *miroirv1alpha1.MiroirVolume, format string, flags []string) []string {
+	if format != "xfs" || vol.Spec.Source == nil || slices.Contains(flags, "nouuid") {
+		return flags
+	}
+	return append(slices.Clone(flags), "nouuid")
 }
 
 // resourceRestarter is the optional Deps.DRBD upgrade the frozen-bdev

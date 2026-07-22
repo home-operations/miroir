@@ -1077,8 +1077,10 @@ func (d *Driver) Restart(ctx context.Context, name string) error {
 // keep the minor assignment (see RemoveConfig): the kernel minor stays
 // pinned until a reboot, releasing the number would hand it to a new
 // volume, and the startup orphan sweep reaps it once the reboot clears
-// the state. Already-detached (Diskless) and not-in-kernel are
-// no-ops so a retry after a failed backing delete converges. A resource
+// the state. Remaining peer connections are removed after the detach so
+// the zombie resource releases its replication port. Already-detached
+// resources still shed those connections, while not-in-kernel resources
+// are no-ops so a retry after a failed backing delete converges. A resource
 // wearing the teardown wedge signature is refused like everywhere else —
 // mid-detach is exactly the state a second detach would race.
 func (d *Driver) ForceDetach(ctx context.Context, name string, minor int32) error {
@@ -1093,14 +1095,19 @@ func (d *Driver) ForceDetach(ctx context.Context, name string, minor int32) erro
 		if res.wedgeSignature() {
 			return fmt.Errorf("force-detach %s: %w", name, ErrWedged)
 		}
-		if len(res.Devices) == 0 || res.Devices[0].DiskState == DiskDiskless {
-			return nil
-		}
-		if err := d.disconnectPeers(ctx, name, res.peerIDs()); err != nil {
+		peerIDs := res.peerIDs()
+		if err := d.disconnectPeers(ctx, name, peerIDs); err != nil {
 			return err
 		}
-		if _, err := d.Exec(ctx, "drbdsetup", "detach", strconv.Itoa(int(minor)), "--force"); err != nil {
-			return fmt.Errorf("force-detach %s: %w", name, err)
+		if len(res.Devices) > 0 && res.Devices[0].DiskState != DiskDiskless {
+			if _, err := d.Exec(ctx, "drbdsetup", "detach", strconv.Itoa(int(minor)), "--force"); err != nil {
+				return fmt.Errorf("force-detach %s: %w", name, err)
+			}
+		}
+		for _, id := range peerIDs {
+			if _, err := d.Exec(ctx, "drbdsetup", "del-peer", name, strconv.Itoa(int(id))); err != nil {
+				return fmt.Errorf("remove %s peer %d: %w", name, id, err)
+			}
 		}
 		return nil
 	}
