@@ -193,9 +193,6 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 			return status.Errorf(codes.DataLoss,
 				"volume %s was formatted before but %s reads blank — refusing to reformat", vol.Name, dev)
 		}
-		if err := renewCloneXFSUUID(ctx, d, vol, dev, format); err != nil {
-			return err
-		}
 		if format != "" {
 			// Record before mounting so a clone that arrived with a
 			// filesystem is protected from then on.
@@ -206,7 +203,7 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 
 		// FormatAndMount formats only when the device has no filesystem —
 		// the mkfs-if-blank step.
-		if err := d.Mounter.FormatAndMount(dev, target, fsType, flags); err != nil {
+		if err := d.Mounter.FormatAndMount(dev, target, fsType, xfsCloneMountFlags(vol, format, flags)); err != nil {
 			if rerr := recoverFrozenBdev(ctx, d, vol, dev, err); rerr != nil {
 				return rerr
 			}
@@ -254,17 +251,13 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 }
 
 // XFS refuses to mount a snapshot-derived filesystem while its source with
-// the same UUID is mounted on the node. Renew the clone before its first
-// successful stage; retries before Activated may safely renew it again.
-func renewCloneXFSUUID(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVolume, dev, format string) error {
-	if format != "xfs" || vol.Spec.Source == nil || vol.Status.Activated {
-		return nil
+// the same on-disk UUID is mounted on the node. nouuid gives each mount an
+// in-memory identity without mutating the crash-consistent snapshot image.
+func xfsCloneMountFlags(vol *miroirv1alpha1.MiroirVolume, format string, flags []string) []string {
+	if format != "xfs" || vol.Spec.Source == nil || slices.Contains(flags, "nouuid") {
+		return flags
 	}
-	out, err := d.Mounter.Exec.CommandContext(ctx, "xfs_admin", "-U", "generate", dev).CombinedOutput()
-	if err != nil {
-		return status.Errorf(codes.Internal, "renew XFS UUID on %s: %v: %s", dev, err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return append(slices.Clone(flags), "nouuid")
 }
 
 // resourceRestarter is the optional Deps.DRBD upgrade the frozen-bdev

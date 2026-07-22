@@ -19,14 +19,12 @@ package stage
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	mount "k8s.io/mount-utils"
-	utilexec "k8s.io/utils/exec"
-	testingexec "k8s.io/utils/exec/testing"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/drbd"
@@ -117,39 +115,32 @@ func TestRecoverFrozenBdevNeedsRestarter(t *testing.T) {
 	}
 }
 
-func TestRenewCloneXFSUUID(t *testing.T) {
-	fakeExec := &testingexec.FakeExec{
-		ExactOrder: true,
-		CommandScript: []testingexec.FakeCommandAction{func(_ string, _ ...string) utilexec.Cmd {
-			return testingexec.InitFakeCmd(&testingexec.FakeCmd{CombinedOutputScript: []testingexec.FakeAction{
-				func() ([]byte, []byte, error) { return nil, nil, nil },
-			}}, "xfs_admin", "-U", "generate", "/dev/drbd1001")
-		}},
-	}
+func TestXFSCloneMountFlags(t *testing.T) {
+	const noatime = "noatime"
 	vol := replicatedVolume()
 	vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-1"}
-	d := Deps{Mounter: mount.NewSafeFormatAndMount(nil, fakeExec)}
-	if err := renewCloneXFSUUID(t.Context(), d, vol, "/dev/drbd1001", "xfs"); err != nil {
-		t.Fatal(err)
+	original := []string{noatime}
+	got := xfsCloneMountFlags(vol, "xfs", original)
+	if !slices.Equal(got, []string{noatime, "nouuid"}) {
+		t.Fatalf("flags = %v, want noatime,nouuid", got)
 	}
-	if fakeExec.CommandCalls != 1 {
-		t.Fatalf("expected one xfs_admin call, got %d", fakeExec.CommandCalls)
+	if !slices.Equal(original, []string{noatime}) {
+		t.Fatalf("input flags were mutated: %v", original)
 	}
 }
 
-func TestRenewCloneXFSUUIDSkipsNonCloneAndActivated(t *testing.T) {
-	fakeExec := &testingexec.FakeExec{}
-	d := Deps{Mounter: mount.NewSafeFormatAndMount(nil, fakeExec)}
+func TestXFSCloneMountFlagsSkipsOtherFilesystemsAndSources(t *testing.T) {
 	vol := replicatedVolume()
-	if err := renewCloneXFSUUID(t.Context(), d, vol, "/dev/drbd1001", "xfs"); err != nil {
-		t.Fatal(err)
+	flags := []string{"relatime"}
+	if got := xfsCloneMountFlags(vol, "xfs", flags); !slices.Equal(got, flags) {
+		t.Fatalf("non-clone flags = %v, want %v", got, flags)
 	}
 	vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-1"}
-	vol.Status.Activated = true
-	if err := renewCloneXFSUUID(t.Context(), d, vol, "/dev/drbd1001", "xfs"); err != nil {
-		t.Fatal(err)
+	if got := xfsCloneMountFlags(vol, "ext4", flags); !slices.Equal(got, flags) {
+		t.Fatalf("ext4 clone flags = %v, want %v", got, flags)
 	}
-	if fakeExec.CommandCalls != 0 {
-		t.Fatalf("xfs_admin must not run, got %d calls", fakeExec.CommandCalls)
+	withNoUUID := []string{"nouuid"}
+	if got := xfsCloneMountFlags(vol, "xfs", withNoUUID); !slices.Equal(got, withNoUUID) {
+		t.Fatalf("existing nouuid flags = %v, want %v", got, withNoUUID)
 	}
 }
