@@ -92,4 +92,8 @@ RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     nfs-ganesha \
     nfs-ganesha-vfs && \
+    # Docker synthesizes this link at runtime, but containerd expects it in
+    # the image. The VFS FSAL cannot discover mounted exports without it.
+    rm -f /etc/mtab && \
+    ln -s /proc/mounts /etc/mtab && \
     rm -rf /var/lib/apt/lists/*
