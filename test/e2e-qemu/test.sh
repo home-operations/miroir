@@ -217,6 +217,8 @@ install_chart() {
         --set agent.image.tag="$agent_tag" \
         --set agent.image.pullPolicy=Always \
         --set groupSnapshots.enabled=true \
+        --set gateway.enabled="${GATEWAY_ENABLED:-false}" \
+        --set storageCapacity.enabled="${STORAGE_CAPACITY_ENABLED:-false}" \
         --wait --timeout 10m
 }
 

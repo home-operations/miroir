@@ -15,11 +15,13 @@ tests.
 The legs run the same document and differ in what `test.sh` drives against it, so a
 failure names the path that broke:
 
-| Leg           | Runs                                       | Class               |
-| ------------- | ------------------------------------------ | ------------------- |
-| `conformance` | miroir's Go specs, then the upstream suite | `miroir-local`      |
-| `replicated`  | the upstream suite                         | `miroir-replicated` |
-| `zfs`         | the upstream suite                         | `miroir-zfs`        |
+| Leg           | Runs                                                | Class               |
+| ------------- | --------------------------------------------------- | ------------------- |
+| `conformance` | miroir's Go specs, then the parallel upstream suite | `miroir-local`      |
+| `replicated`  | the parallel upstream block/filesystem suite        | `miroir-replicated` |
+| `zfs`         | the parallel upstream block/filesystem suite        | `miroir-zfs`        |
+| `rwx`         | the parallel upstream filesystem-only RWX/ROX suite | `miroir-replicated` |
+| `serial`      | upstream `[Serial]` specs, one process              | `miroir-replicated` |
 
 miroir's Go specs (`test/e2e`) assert the local lifecycle, snapshot/restore, block and
 placement behaviour the upstream suite does not; the conformance leg runs them
@@ -27,9 +29,12 @@ placement behaviour the upstream suite does not; the conformance leg runs them
 external-storage run. The replicated leg drives that upstream suite against the DRBD
 (replicas: 2) class, group snapshots included; the zfs leg drives it against the same
 DRBD shape backed by the zfs pool instead, so replication pairs zvol with zvol and
-the zfs snapshot/restore path runs under the suite. Real per-node kernels and real
-block devices are the point: the DRBD path needs the DRBD 9 module, which only a real
-Talos node has.
+the zfs snapshot/restore path runs under the suite. The rwx leg enables the NFS
+gateway and advertises only filesystem volume modes, while the serial leg gives
+exclusive-cluster specs a single Ginkgo process. Every leg enables CSI storage
+capacity publication; the upstream definitions exercise ext4, xfs, topology and
+mount options. Real per-node kernels and real block devices are the point: the DRBD
+path needs the DRBD 9 module, which only a real Talos node has.
 
 ```text
 cluster.yaml              the one cluster shape every leg boots
@@ -78,8 +83,11 @@ talosctl kubeconfig /tmp/miroir-e2e/kubeconfig --nodes 10.5.0.2 --force
 set -gx CLUSTER_NAME miroir-e2e
 set -gx KUBECONFIG /tmp/miroir-e2e/kubeconfig
 set -gx TALOSCONFIG /tmp/miroir-e2e/talosconfig
-set -gx TESTDRIVER testdriver.yaml # or testdriver-local.yaml / testdriver-zfs.yaml
-set -gx RUN_SPECS 1                 # also run the Go specs (the conformance leg does)
+set -gx TESTDRIVER testdriver.yaml # or testdriver-local.yaml / testdriver-zfs.yaml / testdriver-rwx.yaml
+set -gx RUN_SPECS 1                # also run the Go specs (the conformance leg does)
+set -gx STORAGE_CAPACITY_ENABLED true
+# Required with testdriver-rwx.yaml:
+set -gx GATEWAY_ENABLED true
 ./test.sh
 
 sudo -E (mise which talosctl) cluster destroy --name miroir-e2e -f

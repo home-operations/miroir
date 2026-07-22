@@ -1,10 +1,8 @@
-# Driver definition for the upstream Kubernetes external-storage e2e
-# suite (test/e2e/storage/external). Run via ./run.sh.
-#
-# Drives the replicated zfs class (pool: zfs, replicas: 2), so DRBD pairs
-# a zvol with a zvol -- the zfs analogue of testdriver.yaml.
+# Driver definition for the upstream Kubernetes external-storage e2e suite's
+# filesystem-only multi-node tests. The replicated LVM-thin class is exported
+# through Miroir's NFS gateway; raw-block RWX is intentionally not advertised.
 StorageClass:
-  FromExistingClassName: miroir-zfs
+  FromExistingClassName: miroir-replicated
 SnapshotClass:
   FromExistingClassName: miroir-snap
 GroupSnapshotClass:
@@ -23,7 +21,7 @@ DriverInfo:
     - miroir.home-operations.com/node
   Capabilities:
     persistence: true
-    block: true
+    block: false
     exec: true
     fsGroup: true
     multipods: true
@@ -36,9 +34,8 @@ DriverInfo:
     pvcDataSource: true
     topology: true
     singleNodeVolume: false
-    # The filesystem-only testdriver-rwx.yaml covers multi-node access without
-    # also enabling unsupported raw-block RWX patterns in this block-capable run.
-    RWX: false
+    RWX: true
+    capReadOnlyMany: true
     multiplePVsSameID: true
     readWriteOncePod: true
     capacity: true

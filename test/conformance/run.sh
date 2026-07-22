@@ -3,10 +3,11 @@
 # cluster kubectl currently points at, using testdriver.yaml.
 #
 #   ./test/conformance/run.sh                 # parallel-safe set
-#   SKIP='\[Disruptive\]' ./run.sh PROCS=1    # include [Serial] specs
+#   SKIP='\[Disruptive\]' PROCS=1 ./run.sh    # include [Serial] specs
 #   FOCUS='.*snapshot.*' ./run.sh             # narrow down
 #   TESTDRIVER=testdriver-local.yaml ./run.sh # miroir-local (lvmthin)
 #   TESTDRIVER=testdriver-zfs.yaml ./run.sh   # miroir-zfs (replicated zfs)
+#   TESTDRIVER=testdriver-rwx.yaml ./run.sh   # filesystem-only RWX/ROX
 #   VERBOSE=1 ./run.sh                        # per-spec live output
 #
 # The e2e.test/ginkgo binaries are fetched to match the server version
@@ -35,7 +36,7 @@ PROCS=${PROCS:-4}
 mkdir -p report
 
 exec "$bin/ginkgo" -procs="$PROCS" ${VERBOSE:+-v} \
-    -focus="$FOCUS" -skip="$SKIP" -timeout=3h \
+    -focus="$FOCUS" -skip="$SKIP" -fail-on-empty -timeout=3h \
     "$bin/e2e.test" -- \
     -storage.testdriver="$PWD/$TESTDRIVER" \
     -kubeconfig="$KUBECONFIG" \

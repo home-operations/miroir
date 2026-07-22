@@ -16,6 +16,11 @@ DriverInfo:
     Max: 10Gi
   SupportedFsType:
     ext4: {}
+    xfs: {}
+  SupportedMountOption:
+    noatime: {}
+  TopologyKeys:
+    - miroir.home-operations.com/node
   Capabilities:
     persistence: true
     block: true
@@ -31,9 +36,9 @@ DriverInfo:
     pvcDataSource: true
     topology: true
     singleNodeVolume: false
-    # RWX is implemented (NFS gateway over a replicated volume) but the
-    # upstream RWX specs need real DRBD + ganesha, not kind. Flip to true
-    # once the smoke suite's RWX scenario passes on a real cluster.
+    # The filesystem-only testdriver-rwx.yaml covers multi-node access without
+    # also enabling unsupported raw-block RWX patterns in this block-capable run.
     RWX: false
+    multiplePVsSameID: true
     readWriteOncePod: true
-    capacity: false
+    capacity: true

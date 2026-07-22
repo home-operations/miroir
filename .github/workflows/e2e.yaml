@@ -50,6 +50,19 @@ jobs:
             testdriver: testdriver.yaml
           - suite: zfs
             testdriver: testdriver-zfs.yaml
+          # Filesystem-only multi-node access through the NFS gateway. Keeping this
+          # separate avoids advertising unsupported raw-block RWX.
+          - suite: rwx
+            testdriver: testdriver-rwx.yaml
+            gateway: "true"
+            focus: "miroir.home-operations.com.*(ROX mode|concurrently access the single volume from pods on different node)"
+          # Serial specs need exclusive use of their cluster. The focus keeps this
+          # lane on upstream [Serial] coverage instead of replaying the parallel set.
+          - suite: serial
+            testdriver: testdriver.yaml
+            procs: "1"
+            focus: 'miroir.home-operations.com.*\[Serial\]'
+            skip: '\[Disruptive\]|should not mount / map unused volumes'
     env:
       # Two names for one image in the runner-local registry. The nodes pull
       # registry.e2e, which the Talos mirror in patches/registry.yaml points at the
@@ -171,11 +184,15 @@ jobs:
         env:
           TESTDRIVER: ${{ matrix.testdriver }}
           RUN_SPECS: ${{ matrix.specs }}
+          GATEWAY_ENABLED: ${{ matrix.gateway || 'false' }}
+          STORAGE_CAPACITY_ENABLED: "true"
           CLUSTER_NAME: ${{ steps.cluster.outputs.cluster-name }}
           ENDPOINT: ${{ steps.cluster.outputs.endpoint }}
           KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig }}
           TALOSCONFIG: ${{ steps.cluster.outputs.talosconfig }}
-          PROCS: "4"
+          PROCS: ${{ matrix.procs || '4' }}
+          FOCUS: ${{ matrix.focus }}
+          SKIP: ${{ matrix.skip }}
           VERBOSE: "1"
 
       - name: Diagnostics
