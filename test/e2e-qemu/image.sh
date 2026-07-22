@@ -13,7 +13,7 @@ cd "$REPO_ROOT"
 
 GO_VERSION="${GO_VERSION:-$(mise config get tools.go)}"
 
-# Both images are stages of the one Dockerfile; --target selects which.
+# The images are stages of the one Dockerfile; --target selects which.
 build_push() {
     local target=$1 image=$2
     log "Building $target image $image..."
@@ -24,5 +24,10 @@ build_push() {
 
 build_push controller "$CONTROLLER_IMAGE"
 build_push agent "$AGENT_IMAGE"
-
-log "Images ready: $CONTROLLER_IMAGE, $AGENT_IMAGE"
+if [[ "${GATEWAY_ENABLED:-false}" == "true" ]]; then
+    : "${GATEWAY_IMAGE:?must be set when GATEWAY_ENABLED=true}"
+    build_push gateway "$GATEWAY_IMAGE"
+    log "Images ready: $CONTROLLER_IMAGE, $AGENT_IMAGE, $GATEWAY_IMAGE"
+else
+    log "Images ready: $CONTROLLER_IMAGE, $AGENT_IMAGE"
+fi

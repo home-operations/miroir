@@ -71,8 +71,10 @@ jobs:
       # tag, so the host:port push form would parse wrong there.
       CONTROLLER_IMAGE: registry.e2e/miroir-controller:e2e
       AGENT_IMAGE: registry.e2e/miroir-agent:e2e
+      GATEWAY_IMAGE: registry.e2e/miroir-gateway:e2e
       PUSH_CONTROLLER_IMAGE: localhost:5000/miroir-controller:e2e
       PUSH_AGENT_IMAGE: localhost:5000/miroir-agent:e2e
+      PUSH_GATEWAY_IMAGE: localhost:5000/miroir-gateway:e2e
       # test.sh packages the chart, pushes it here, and installs it back over OCI, so
       # the run exercises the distributed artifact rather than the working tree.
       CHART_REGISTRY: oci://localhost:5000/charts
@@ -172,6 +174,20 @@ jobs:
           cache-to: ${{ matrix.suite == 'replicated' && 'type=gha,mode=max,scope=e2e-agent' || '' }}
 
       - wait: [cluster, controller-image, agent-image]
+
+      # Only the RWX lane needs the gateway target. Build it after the agent so
+      # Buildx can reuse the agent stage that the gateway extends.
+      - name: Build gateway image
+        if: matrix.gateway == 'true'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          target: gateway
+          tags: ${{ env.PUSH_GATEWAY_IMAGE }}
+          build-args: GO_VERSION=${{ steps.tools.outputs.go }}
+          cache-from: type=gha,scope=e2e-gateway
+          cache-to: type=gha,mode=max,scope=e2e-gateway
 
       - name: Cache conformance test binaries
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
