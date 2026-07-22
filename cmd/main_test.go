@@ -197,7 +197,7 @@ func TestArmSignalShutdownDisarmAfterSignalRunsCleanup(t *testing.T) {
 	}
 }
 
-func TestAgentShutdownDownSecondariesRequiresCordon(t *testing.T) {
+func TestAgentShutdownDownSecondariesRequiresCordon(_ *testing.T) {
 	// A nil driver is intentional: an uncordoned node must return before any
 	// teardown is attempted.
 	agentShutdownDownSecondaries(&agent.CordonWatcher{}, nil)

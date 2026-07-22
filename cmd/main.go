@@ -756,31 +756,36 @@ func main() {
 			shutdownEarly)
 	}
 	err = mgr.Start(managerCtx)
-	if shutdownSweep != nil {
-		if signalCtx.Err() != nil {
-			// The early pass starts as soon as SIGTERM arrives, while the
-			// manager is still stopping. Repeat after it stops to cover races
-			// with reconciliation that was active at signal time.
-			waitEarlyCleanup()
-			shutdownSweep()
-		} else {
-			// A topology-triggered manager restart is not a node shutdown.
-			disarmEarlyCleanup()
-			if err != nil && managerCtx.Err() == nil {
-				// Preserve the defensive cleanup for an unexpected manager
-				// failure, even though no OS signal was observed.
-				shutdownSweep()
-			} else {
-				// Barrier recovery remains useful after every manager stop,
-				// but topology restarts must not tear down Secondaries.
-				shutdownBarrierSweep()
-			}
-		}
-	}
+	err = finishManagerShutdown(err, signalCtx, managerCtx, shutdownSweep,
+		shutdownBarrierSweep, waitEarlyCleanup, disarmEarlyCleanup)
 	if err != nil {
 		setupLog.Error(err, "manager exited")
 		os.Exit(1)
 	}
+}
+
+// finishManagerShutdown completes the shutdown coordination after the
+// manager has stopped. Signal shutdown repeats the early teardown; an
+// internal restart only recovers barriers, while an unexpected manager error
+// keeps the defensive full sweep.
+func finishManagerShutdown(err error, signalCtx, managerCtx context.Context,
+	shutdownSweep, shutdownBarrierSweep, waitEarlyCleanup, disarmEarlyCleanup func(),
+) error {
+	if shutdownSweep == nil {
+		return err
+	}
+	if signalCtx.Err() != nil {
+		waitEarlyCleanup()
+		shutdownSweep()
+		return err
+	}
+	disarmEarlyCleanup()
+	if err != nil && managerCtx.Err() == nil {
+		shutdownSweep()
+		return err
+	}
+	shutdownBarrierSweep()
+	return err
 }
 
 // apiStartupWait bounds how long the startup sweeps wait for the API server,
@@ -801,7 +806,7 @@ const apiShutdownWait = 5 * time.Second
 // armSignalShutdown starts cleanup as soon as the OS signal arrives, rather
 // than waiting for controller-runtime to finish stopping its runnables. The
 // disarm path is used for an internal manager restart.
-func armSignalShutdown(signalCtx context.Context, cleanup func()) (wait, disarm func()) {
+func armSignalShutdown(signalCtx context.Context, cleanup func()) (waitForCleanup, disarm func()) {
 	done := make(chan struct{})
 	stop := make(chan struct{})
 	var once sync.Once
