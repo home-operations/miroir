@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/agent"
 )
 
 func TestCSIServerRunsOnEveryReplica(t *testing.T) {
@@ -150,4 +152,53 @@ func TestCacheOptionsAgentPinsOwnNode(t *testing.T) {
 	if byNode.Field == nil || byNode.Field.String() != "metadata.name=node-a" {
 		t.Fatalf("Node informer must be pinned to the node's own object, got %v", byNode.Field)
 	}
+}
+
+func TestArmSignalShutdownRunsCleanupOnSignal(t *testing.T) {
+	signalCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cleaned := make(chan struct{})
+	wait, _ := armSignalShutdown(signalCtx, func() { close(cleaned) })
+	cancel()
+	wait()
+	select {
+	case <-cleaned:
+	case <-time.After(time.Second):
+		t.Fatal("signal cleanup did not run")
+	}
+}
+
+func TestArmSignalShutdownDisarmsForInternalCancellation(t *testing.T) {
+	signalCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cleaned := make(chan struct{})
+	wait, disarm := armSignalShutdown(signalCtx, func() { close(cleaned) })
+	disarm()
+	wait()
+	select {
+	case <-cleaned:
+		t.Fatal("internal manager cancellation ran shutdown cleanup")
+	default:
+	}
+}
+
+func TestArmSignalShutdownDisarmAfterSignalRunsCleanup(t *testing.T) {
+	signalCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	cleaned := make(chan struct{})
+	wait, disarm := armSignalShutdown(signalCtx, func() { close(cleaned) })
+	cancel()
+	disarm()
+	wait()
+	select {
+	case <-cleaned:
+	case <-time.After(time.Second):
+		t.Fatal("signal cleanup did not run when disarmed after signal")
+	}
+}
+
+func TestAgentShutdownDownSecondariesRequiresCordon(t *testing.T) {
+	// A nil driver is intentional: an uncordoned node must return before any
+	// teardown is attempted.
+	agentShutdownDownSecondaries(&agent.CordonWatcher{}, nil)
 }
