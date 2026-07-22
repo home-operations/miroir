@@ -750,14 +750,13 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	var waitEarlyCleanup, disarmEarlyCleanup func()
+	var earlyCleanup *signalShutdown
 	if shutdownSweep != nil {
-		waitEarlyCleanup, disarmEarlyCleanup = armSignalShutdown(signalCtx,
-			shutdownEarly)
+		earlyCleanup = armSignalShutdown(signalCtx, shutdownEarly)
 	}
 	err = mgr.Start(managerCtx)
 	err = finishManagerShutdown(err, signalCtx, managerCtx, shutdownSweep,
-		shutdownBarrierSweep, waitEarlyCleanup, disarmEarlyCleanup)
+		shutdownBarrierSweep, earlyCleanup)
 	if err != nil {
 		setupLog.Error(err, "manager exited")
 		os.Exit(1)
@@ -769,22 +768,25 @@ func main() {
 // internal restart only recovers barriers, while an unexpected manager error
 // keeps the defensive full sweep.
 func finishManagerShutdown(err error, signalCtx, managerCtx context.Context,
-	shutdownSweep, shutdownBarrierSweep, waitEarlyCleanup, disarmEarlyCleanup func(),
+	shutdownSweep, shutdownBarrierSweep func(), earlyCleanup *signalShutdown,
 ) error {
 	if shutdownSweep == nil {
 		return err
 	}
 	if signalCtx.Err() != nil {
-		waitEarlyCleanup()
+		earlyCleanup.finish()
 		shutdownSweep()
 		return err
 	}
-	disarmEarlyCleanup()
 	if err != nil && managerCtx.Err() == nil {
+		earlyCleanup.finish()
 		shutdownSweep()
 		return err
 	}
 	shutdownBarrierSweep()
+	if earlyCleanup.finish() {
+		shutdownSweep()
+	}
 	return err
 }
 
@@ -803,30 +805,57 @@ const drbdShutdownTimeout = 15 * time.Second
 // guarantee a SIGKILL mid-sweep.
 const apiShutdownWait = 5 * time.Second
 
-// armSignalShutdown starts cleanup as soon as the OS signal arrives, rather
-// than waiting for controller-runtime to finish stopping its runnables. The
-// disarm path is used for an internal manager restart.
-func armSignalShutdown(signalCtx context.Context, cleanup func()) (waitForCleanup, disarm func()) {
-	done := make(chan struct{})
-	stop := make(chan struct{})
-	var once sync.Once
+// signalShutdown starts cleanup as soon as the OS signal arrives, rather
+// than waiting for controller-runtime to finish stopping its runnables. Its
+// finish method commits an internal restart only after the barrier sweep; its
+// result reports whether signal cleanup won that race.
+type signalShutdown struct {
+	signalCtx context.Context
+	cleanup   func()
+
+	mu        sync.Mutex
+	committed bool
+	done      chan struct{}
+	stop      chan struct{}
+}
+
+func armSignalShutdown(signalCtx context.Context, cleanup func()) *signalShutdown {
+	s := &signalShutdown{
+		signalCtx: signalCtx,
+		cleanup:   cleanup,
+		done:      make(chan struct{}),
+		stop:      make(chan struct{}),
+	}
 	go func() {
 		select {
 		case <-signalCtx.Done():
-			cleanup()
-		case <-stop:
-			select {
-			case <-signalCtx.Done():
-				cleanup()
-			default:
+			s.mu.Lock()
+			committed := s.committed
+			s.mu.Unlock()
+			if !committed {
+				s.cleanup()
 			}
+		case <-s.stop:
 		}
-		close(done)
+		close(s.done)
 	}()
-	return func() { <-done }, func() {
-		once.Do(func() { close(stop) })
-		<-done
+	return s
+}
+
+// finish joins the helper. It linearizes an internal restart against signal
+// cancellation: a signal observed before the commit wins and returns true.
+func (s *signalShutdown) finish() bool {
+	s.mu.Lock()
+	if s.signalCtx.Err() != nil {
+		s.mu.Unlock()
+		<-s.done
+		return true
 	}
+	s.committed = true
+	close(s.stop)
+	s.mu.Unlock()
+	<-s.done
+	return false
 }
 
 // apiWithRetry retries one API call until it succeeds, hits a terminal

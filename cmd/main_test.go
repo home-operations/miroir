@@ -158,9 +158,11 @@ func TestArmSignalShutdownRunsCleanupOnSignal(t *testing.T) {
 	signalCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	cleaned := make(chan struct{})
-	wait, _ := armSignalShutdown(signalCtx, func() { close(cleaned) })
+	shutdown := armSignalShutdown(signalCtx, func() { close(cleaned) })
 	cancel()
-	wait()
+	if !shutdown.finish() {
+		t.Fatal("signal cleanup must win after signal cancellation")
+	}
 	select {
 	case <-cleaned:
 	case <-time.After(time.Second):
@@ -168,13 +170,14 @@ func TestArmSignalShutdownRunsCleanupOnSignal(t *testing.T) {
 	}
 }
 
-func TestArmSignalShutdownDisarmsForInternalCancellation(t *testing.T) {
+func TestArmSignalShutdownFinishesForInternalRestart(t *testing.T) {
 	signalCtx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	cleaned := make(chan struct{})
-	wait, disarm := armSignalShutdown(signalCtx, func() { close(cleaned) })
-	disarm()
-	wait()
+	shutdown := armSignalShutdown(signalCtx, func() { close(cleaned) })
+	if shutdown.finish() {
+		t.Fatal("internal restart must win before signal cancellation")
+	}
 	select {
 	case <-cleaned:
 		t.Fatal("internal manager cancellation ran shutdown cleanup")
@@ -182,18 +185,59 @@ func TestArmSignalShutdownDisarmsForInternalCancellation(t *testing.T) {
 	}
 }
 
-func TestArmSignalShutdownDisarmAfterSignalRunsCleanup(t *testing.T) {
-	signalCtx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	cleaned := make(chan struct{})
-	wait, disarm := armSignalShutdown(signalCtx, func() { close(cleaned) })
-	cancel()
-	disarm()
-	wait()
+func TestFinishManagerShutdownInternalRestartOnlySweepsBarrier(t *testing.T) {
+	signalCtx, cancelSignal := context.WithCancel(t.Context())
+	defer cancelSignal()
+	managerCtx, cancelManager := context.WithCancel(t.Context())
+	cancelManager()
+	var full, barrier int
+	unexpectedCleanup := make(chan struct{}, 1)
+	shutdown := armSignalShutdown(signalCtx, func() { unexpectedCleanup <- struct{}{} })
+	finishManagerShutdown(nil, signalCtx, managerCtx,
+		func() { full++ }, func() { barrier++ }, shutdown)
+	if full != 0 || barrier != 1 {
+		t.Fatalf("full = %d, barrier = %d; want 0, 1", full, barrier)
+	}
 	select {
-	case <-cleaned:
-	case <-time.After(time.Second):
-		t.Fatal("signal cleanup did not run when disarmed after signal")
+	case <-unexpectedCleanup:
+		t.Fatal("internal restart ran early cleanup")
+	default:
+	}
+}
+
+func TestFinishManagerShutdownSignalBeforeManagerStopRunsFullSweep(t *testing.T) {
+	signalCtx, cancelSignal := context.WithCancel(t.Context())
+	managerCtx, cancelManager := context.WithCancel(t.Context())
+	cancelSignal()
+	cancelManager()
+	var full, barrier int
+	shutdown := armSignalShutdown(signalCtx, func() {})
+	finishManagerShutdown(nil, signalCtx, managerCtx,
+		func() { full++ }, func() { barrier++ }, shutdown)
+	if full != 1 || barrier != 0 {
+		t.Fatalf("full = %d, barrier = %d; want 1, 0", full, barrier)
+	}
+}
+
+func TestFinishManagerShutdownSignalDuringBarrierRunsFullSweep(t *testing.T) {
+	signalCtx, cancelSignal := context.WithCancel(t.Context())
+	defer cancelSignal()
+	managerCtx, cancelManager := context.WithCancel(t.Context())
+	cancelManager()
+	earlyCleaned := make(chan struct{})
+	var full, barrier int
+	shutdown := armSignalShutdown(signalCtx, func() { close(earlyCleaned) })
+	finishManagerShutdown(nil, signalCtx, managerCtx, func() { full++ }, func() {
+		barrier++
+		cancelSignal()
+	}, shutdown)
+	if full != 1 || barrier != 1 {
+		t.Fatalf("full = %d, barrier = %d; want 1, 1", full, barrier)
+	}
+	select {
+	case <-earlyCleaned:
+	default:
+		t.Fatal("signal cleanup did not complete")
 	}
 }
 
