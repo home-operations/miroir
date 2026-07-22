@@ -193,6 +193,9 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 			return status.Errorf(codes.DataLoss,
 				"volume %s was formatted before but %s reads blank — refusing to reformat", vol.Name, dev)
 		}
+		if err := renewCloneXFSUUID(ctx, d, vol, dev, format); err != nil {
+			return err
+		}
 		if format != "" {
 			// Record before mounting so a clone that arrived with a
 			// filesystem is protected from then on.
@@ -246,6 +249,20 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 	// auto-recovery.
 	if err := MarkActivated(ctx, d.Client, vol); err != nil {
 		return status.Errorf(codes.Internal, "record activated flag: %v", err)
+	}
+	return nil
+}
+
+// XFS refuses to mount a snapshot-derived filesystem while its source with
+// the same UUID is mounted on the node. Renew the clone before its first
+// successful stage; retries before Activated may safely renew it again.
+func renewCloneXFSUUID(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVolume, dev, format string) error {
+	if format != "xfs" || vol.Spec.Source == nil || vol.Status.Activated {
+		return nil
+	}
+	out, err := d.Mounter.Exec.CommandContext(ctx, "xfs_admin", "-U", "generate", dev).CombinedOutput()
+	if err != nil {
+		return status.Errorf(codes.Internal, "renew XFS UUID on %s: %v: %s", dev, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

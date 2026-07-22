@@ -17,8 +17,6 @@ DriverInfo:
     xfs: {}
   SupportedMountOption:
     noatime: {}
-  TopologyKeys:
-    - miroir.home-operations.com/node
   Capabilities:
     persistence: true
     block: false

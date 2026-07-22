@@ -63,23 +63,11 @@ func TestCreateVolumeGroupSnapshotCreatesMembersAndGroup(t *testing.T) {
 	c := &Controller{Client: cl}
 
 	// Deliberately unsorted: member order must not depend on it.
-	resp, err := c.CreateVolumeGroupSnapshot(t.Context(), &csi.CreateVolumeGroupSnapshotRequest{
+	_, err := c.CreateVolumeGroupSnapshot(t.Context(), &csi.CreateVolumeGroupSnapshotRequest{
 		Name: groupGsnap1, SourceVolumeIds: []string{volSrc, volPvc1},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	gs := resp.GetGroupSnapshot()
-	if gs.GetGroupSnapshotId() != groupGsnap1 || gs.GetReadyToUse() {
-		t.Fatalf("fresh group must report not ready under its id: %+v", gs)
-	}
-	if len(gs.GetSnapshots()) != 2 {
-		t.Fatalf("want 2 member snapshots, got %+v", gs.GetSnapshots())
-	}
-	for _, m := range gs.GetSnapshots() {
-		if m.GetGroupSnapshotId() != groupGsnap1 {
-			t.Fatalf("members must carry the group id: %+v", m)
-		}
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("fresh group must remain pending, got %v", err)
 	}
 
 	grp := &miroirv1alpha1.MiroirSnapshotGroup{}
@@ -118,14 +106,40 @@ func TestCreateVolumeGroupSnapshotIdempotent(t *testing.T) {
 		Name: groupGsnap1, SourceVolumeIds: []string{volSrc, volPvc1},
 	}
 
-	if _, err := c.CreateVolumeGroupSnapshot(t.Context(), req); err != nil {
-		t.Fatal(err)
+	if _, err := c.CreateVolumeGroupSnapshot(t.Context(), req); status.Code(err) != codes.Aborted {
+		t.Fatalf("fresh group must remain pending, got %v", err)
 	}
-	if _, err := c.CreateVolumeGroupSnapshot(t.Context(), req); err != nil {
-		t.Fatalf("identical retry must succeed: %v", err)
+	if _, err := c.CreateVolumeGroupSnapshot(t.Context(), req); status.Code(err) != codes.Aborted {
+		t.Fatalf("identical pending retry must remain pending, got %v", err)
 	}
 
-	_, err := c.CreateVolumeGroupSnapshot(t.Context(), &csi.CreateVolumeGroupSnapshotRequest{
+	grp := &miroirv1alpha1.MiroirSnapshotGroup{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: groupGsnap1}, grp); err != nil {
+		t.Fatal(err)
+	}
+	grp.Status.ReadyToUse = true
+	if err := cl.Status().Update(t.Context(), grp); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range grp.Spec.SnapshotNames {
+		snap := &miroirv1alpha1.MiroirSnapshot{}
+		if err := cl.Get(t.Context(), types.NamespacedName{Name: name}, snap); err != nil {
+			t.Fatal(err)
+		}
+		snap.Status.ReadyToUse = true
+		if err := cl.Status().Update(t.Context(), snap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := c.CreateVolumeGroupSnapshot(t.Context(), req)
+	if err != nil {
+		t.Fatalf("ready identical retry must succeed: %v", err)
+	}
+	if !resp.GetGroupSnapshot().GetReadyToUse() || len(resp.GetGroupSnapshot().GetSnapshots()) != 2 {
+		t.Fatalf("ready retry must return every usable member: %+v", resp.GetGroupSnapshot())
+	}
+
+	_, err = c.CreateVolumeGroupSnapshot(t.Context(), &csi.CreateVolumeGroupSnapshotRequest{
 		Name: groupGsnap1, SourceVolumeIds: []string{volSrc},
 	})
 	if status.Code(err) != codes.AlreadyExists {
