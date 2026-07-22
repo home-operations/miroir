@@ -50,6 +50,13 @@ jobs:
             testdriver: testdriver.yaml
           - suite: zfs
             testdriver: testdriver-zfs.yaml
+          # Serial specs need exclusive use of their cluster. The focus keeps this
+          # lane on upstream [Serial] coverage instead of replaying the parallel set.
+          - suite: serial
+            testdriver: testdriver.yaml
+            procs: "1"
+            focus: 'miroir.home-operations.com.*\[Serial\]'
+            skip: '\[Disruptive\]|should not mount / map unused volumes'
     env:
       # Two names for one image in the runner-local registry. The nodes pull
       # registry.e2e, which the Talos mirror in patches/registry.yaml points at the
@@ -175,7 +182,9 @@ jobs:
           ENDPOINT: ${{ steps.cluster.outputs.endpoint }}
           KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig }}
           TALOSCONFIG: ${{ steps.cluster.outputs.talosconfig }}
-          PROCS: "4"
+          PROCS: ${{ matrix.procs || '4' }}
+          FOCUS: ${{ matrix.focus }}
+          SKIP: ${{ matrix.skip }}
           VERBOSE: "1"
 
       - name: Diagnostics
