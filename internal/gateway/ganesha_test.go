@@ -36,6 +36,7 @@ func TestRenderGanesha(t *testing.T) {
 	for _, want := range []string{
 		"NFS_Port = 2049;",
 		"Protocols = 4;",
+		"Enable_UDP = false;",
 		"RecoveryBackend = fs;",
 		"RecoveryRoot = /export/pvc-abc/.ganesha-recovery;",
 		"Grace_Period = 60;",
