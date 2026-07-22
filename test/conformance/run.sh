@@ -3,7 +3,7 @@
 # cluster kubectl currently points at, using testdriver.yaml.
 #
 #   ./test/conformance/run.sh                 # parallel-safe set
-#   SKIP='\[Disruptive\]' ./run.sh PROCS=1    # include [Serial] specs
+#   SKIP='\[Disruptive\]' PROCS=1 ./run.sh    # include [Serial] specs
 #   FOCUS='.*snapshot.*' ./run.sh             # narrow down
 #   TESTDRIVER=testdriver-local.yaml ./run.sh # miroir-local (lvmthin)
 #   TESTDRIVER=testdriver-zfs.yaml ./run.sh   # miroir-zfs (replicated zfs)
@@ -35,7 +35,7 @@ PROCS=${PROCS:-4}
 mkdir -p report
 
 exec "$bin/ginkgo" -procs="$PROCS" ${VERBOSE:+-v} \
-    -focus="$FOCUS" -skip="$SKIP" -timeout=3h \
+    -focus="$FOCUS" -skip="$SKIP" -fail-on-empty -timeout=3h \
     "$bin/e2e.test" -- \
     -storage.testdriver="$PWD/$TESTDRIVER" \
     -kubeconfig="$KUBECONFIG" \
