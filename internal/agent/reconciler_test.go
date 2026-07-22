@@ -1530,7 +1530,8 @@ func orphanHoldFixture(t *testing.T, procDir string) (*VolumeReconciler, *fakeBa
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fe := &fakeDRBDExec{
 		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
-			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[]}]`,
+			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
 		errOn: map[string]error{cmdDownPvc1: errors.New(heldOpenWithOpeners)},
 	}
 	rec := events.NewFakeRecorder(8)
@@ -1580,6 +1581,7 @@ func TestReconcileTeardownOrphanHoldReclaims(t *testing.T) {
 		t.Fatalf("the reclaim cycle must complete teardown: %v", err)
 	}
 	fe.calledWith(t, "drbdsetup detach 1422 --force")
+	fe.calledWith(t, "drbdsetup del-peer pvc-1 1")
 	fe.notCalledWith(t, "wipe-md")
 	if fb.existing[volPvc1] {
 		t.Fatal("the backing device must be destroyed by the reclaim")

@@ -1216,10 +1216,11 @@ func TestMetadataAdoptedTracksMarker(t *testing.T) {
 	}
 }
 
-// ForceDetach disconnects the peers, then force-detaches the backing by
-// minor — the escape hatch for a deletion whose down is permanently
-// refused by an orphaned opener (issue #319). No down is spawned and the
-// rendered config survives: the caller keeps the zombie minor reserved
+// ForceDetach disconnects the peers, force-detaches the backing by minor,
+// then removes the peer definitions. It is the escape hatch for a deletion
+// whose down is permanently refused by an orphaned opener (issue #319).
+// No down is spawned and the rendered config survives: the caller keeps
+// the zombie minor reserved
 // until the post-reboot orphan sweep reaps it.
 func TestForceDetachDisconnectsAndDetaches(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
@@ -1237,6 +1238,7 @@ func TestForceDetachDisconnectsAndDetaches(t *testing.T) {
 	}
 	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
 	fe.calledWith(t, "drbdsetup detach 1422 --force")
+	fe.calledWith(t, "drbdsetup del-peer pvc-1 1")
 	fe.notCalledWith(t, "drbdsetup down")
 	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
 		t.Fatalf("rendered config must survive a force-detach: %v", err)
@@ -1261,6 +1263,24 @@ func TestForceDetachAlreadyDisklessNoop(t *testing.T) {
 	if err := d.ForceDetach(t.Context(), volPvc1, 1422); err != nil {
 		t.Fatal(err)
 	}
+	fe.notCalledWith(t, "drbdsetup detach")
+}
+
+// A retry after the backing was detached must still remove connections
+// that reserve the deleted volume's endpoint in the kernel.
+func TestForceDetachDisklessRemovesPeers(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"Diskless"}],
+			"connections":[{"peer-node-id":1,"connection-state":"StandAlone"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.ForceDetach(t.Context(), volPvc1, 1422); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup del-peer pvc-1 1")
 	fe.notCalledWith(t, "drbdsetup detach")
 }
 
