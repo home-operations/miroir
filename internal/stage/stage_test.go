@@ -19,6 +19,7 @@ package stage
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"google.golang.org/grpc/codes"
@@ -111,5 +112,35 @@ func TestRecoverFrozenBdevNeedsRestarter(t *testing.T) {
 	err := recoverFrozenBdev(t.Context(), Deps{DRBD: statusOnlyDRBD{}}, replicatedVolume(), "/dev/drbd1378", errFrozenMount)
 	if err != nil {
 		t.Fatalf("a status-only DRBD dep must fall through to the generic wrap, got %v", err)
+	}
+}
+
+func TestXFSCloneMountFlags(t *testing.T) {
+	const noatime = "noatime"
+	vol := replicatedVolume()
+	vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-1"}
+	original := []string{noatime}
+	got := xfsCloneMountFlags(vol, "xfs", original)
+	if !slices.Equal(got, []string{noatime, "nouuid"}) {
+		t.Fatalf("flags = %v, want noatime,nouuid", got)
+	}
+	if !slices.Equal(original, []string{noatime}) {
+		t.Fatalf("input flags were mutated: %v", original)
+	}
+}
+
+func TestXFSCloneMountFlagsSkipsOtherFilesystemsAndSources(t *testing.T) {
+	vol := replicatedVolume()
+	flags := []string{"relatime"}
+	if got := xfsCloneMountFlags(vol, "xfs", flags); !slices.Equal(got, flags) {
+		t.Fatalf("non-clone flags = %v, want %v", got, flags)
+	}
+	vol.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-1"}
+	if got := xfsCloneMountFlags(vol, "ext4", flags); !slices.Equal(got, flags) {
+		t.Fatalf("ext4 clone flags = %v, want %v", got, flags)
+	}
+	withNoUUID := []string{"nouuid"}
+	if got := xfsCloneMountFlags(vol, "xfs", withNoUUID); !slices.Equal(got, withNoUUID) {
+		t.Fatalf("existing nouuid flags = %v, want %v", got, withNoUUID)
 	}
 }

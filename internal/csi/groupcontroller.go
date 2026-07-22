@@ -47,8 +47,7 @@ func (c *Controller) GroupControllerGetCapabilities(_ context.Context, _ *csi.Gr
 
 // CreateVolumeGroupSnapshot provisions one MiroirSnapshot per source
 // volume plus the MiroirSnapshotGroup that cuts them under one shared
-// write barrier, and reports readiness as-is: the external-snapshotter
-// polls until ready_to_use. Idempotent by name.
+// write barrier. Idempotent by name.
 func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.CreateVolumeGroupSnapshotRequest) (*csi.CreateVolumeGroupSnapshotResponse, error) {
 	if req.GetName() == "" || len(req.GetSourceVolumeIds()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "group snapshot name and source volumes are required")
@@ -138,7 +137,14 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 		}
 		grp = existing
 	}
-	return &csi.CreateVolumeGroupSnapshotResponse{GroupSnapshot: csiGroupSnapshot(grp, snaps, vols)}, nil
+	result := csiGroupSnapshot(grp, snaps, vols)
+	if !result.GetReadyToUse() {
+		// external-snapshotter records member readiness only from the
+		// successful Create response; keep the operation pending until it
+		// can persist a complete, usable member set.
+		return nil, status.Errorf(codes.Aborted, "group snapshot %s is not ready", grp.Name)
+	}
+	return &csi.CreateVolumeGroupSnapshotResponse{GroupSnapshot: result}, nil
 }
 
 // refuseMemberMismatch fails fast when the named group already exists
