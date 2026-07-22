@@ -50,6 +50,13 @@ jobs:
             testdriver: testdriver.yaml
           - suite: zfs
             testdriver: testdriver-zfs.yaml
+          # Filesystem-only multi-node access through the NFS gateway. Keeping this
+          # separate avoids advertising unsupported raw-block RWX.
+          - suite: rwx
+            testdriver: testdriver-rwx.yaml
+            gateway: "true"
+            capacity: "true"
+            focus: "miroir.home-operations.com.*(ROX mode|concurrently access the single volume from pods on different node)"
           # Serial specs need exclusive use of their cluster. The focus keeps this
           # lane on upstream [Serial] coverage instead of replaying the parallel set.
           - suite: serial
@@ -65,8 +72,10 @@ jobs:
       # tag, so the host:port push form would parse wrong there.
       CONTROLLER_IMAGE: registry.e2e/miroir-controller:e2e
       AGENT_IMAGE: registry.e2e/miroir-agent:e2e
+      GATEWAY_IMAGE: registry.e2e/miroir-gateway:e2e
       PUSH_CONTROLLER_IMAGE: localhost:5000/miroir-controller:e2e
       PUSH_AGENT_IMAGE: localhost:5000/miroir-agent:e2e
+      PUSH_GATEWAY_IMAGE: localhost:5000/miroir-gateway:e2e
       # test.sh packages the chart, pushes it here, and installs it back over OCI, so
       # the run exercises the distributed artifact rather than the working tree.
       CHART_REGISTRY: oci://localhost:5000/charts
@@ -165,7 +174,22 @@ jobs:
           cache-from: type=gha,scope=e2e-agent
           cache-to: ${{ matrix.suite == 'replicated' && 'type=gha,mode=max,scope=e2e-agent' || '' }}
 
-      - wait: [cluster, controller-image, agent-image]
+      # Gateway extends the agent stage, so buildx reuses it and only layers on
+      # the ganesha packages.
+      - name: Build gateway image
+        id: gateway-image
+        background: true
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          push: true
+          target: gateway
+          tags: ${{ env.PUSH_GATEWAY_IMAGE }}
+          build-args: GO_VERSION=${{ steps.tools.outputs.go }}
+          cache-from: type=gha,scope=e2e-gateway
+          cache-to: ${{ matrix.suite == 'replicated' && 'type=gha,mode=max,scope=e2e-gateway' || '' }}
+
+      - wait: [cluster, controller-image, agent-image, gateway-image]
 
       - name: Cache conformance test binaries
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -178,6 +202,8 @@ jobs:
         env:
           TESTDRIVER: ${{ matrix.testdriver }}
           RUN_SPECS: ${{ matrix.specs }}
+          GATEWAY_ENABLED: ${{ matrix.gateway || 'false' }}
+          STORAGE_CAPACITY_ENABLED: ${{ matrix.capacity || 'false' }}
           CLUSTER_NAME: ${{ steps.cluster.outputs.cluster-name }}
           ENDPOINT: ${{ steps.cluster.outputs.endpoint }}
           KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig }}

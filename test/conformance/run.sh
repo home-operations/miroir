@@ -7,6 +7,7 @@
 #   FOCUS='.*snapshot.*' ./run.sh             # narrow down
 #   TESTDRIVER=testdriver-local.yaml ./run.sh # miroir-local (lvmthin)
 #   TESTDRIVER=testdriver-zfs.yaml ./run.sh   # miroir-zfs (replicated zfs)
+#   TESTDRIVER=testdriver-rwx.yaml ./run.sh   # filesystem-only RWX/ROX
 #   VERBOSE=1 ./run.sh                        # per-spec live output
 #
 # The e2e.test/ginkgo binaries are fetched to match the server version

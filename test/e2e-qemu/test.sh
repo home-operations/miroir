@@ -24,19 +24,24 @@ guard_cluster() {
         die "node '$node' does not start with '$CLUSTER_NAME'; refusing to proceed"
 }
 
-# CI sets CONTROLLER_IMAGE and AGENT_IMAGE and builds them concurrently with the
-# cluster, so by the time we get here they are already in the registry. A local run
-# leaves them unset; build both to ttl.sh so it needs no registry of its own.
+# CI builds the requested images concurrently with the cluster, so by the time we
+# get here they are already in the registry. A local run builds them to ttl.sh so it
+# needs no registry of its own.
 build_images_if_needed() {
-    if [[ -n "${CONTROLLER_IMAGE:-}" && -n "${AGENT_IMAGE:-}" ]]; then
-        log "Using pre-built images: $CONTROLLER_IMAGE, $AGENT_IMAGE"
+    local gateway_enabled=${GATEWAY_ENABLED:-false}
+    if [[ -n "${CONTROLLER_IMAGE:-}" && -n "${AGENT_IMAGE:-}" ]] &&
+        [[ "$gateway_enabled" != "true" || -n "${GATEWAY_IMAGE:-}" ]]; then
+        log "Using pre-built controller and agent images"
         return
     fi
     local stamp
     stamp=$(date +%s)
     CONTROLLER_IMAGE="ttl.sh/miroir-controller-e2e-${stamp}:2h"
     AGENT_IMAGE="ttl.sh/miroir-agent-e2e-${stamp}:2h"
-    export CONTROLLER_IMAGE AGENT_IMAGE
+    if [[ "$gateway_enabled" == "true" ]]; then
+        GATEWAY_IMAGE="ttl.sh/miroir-gateway-e2e-${stamp}:2h"
+    fi
+    export CONTROLLER_IMAGE AGENT_IMAGE GATEWAY_IMAGE
     "${SCRIPT_DIR}/image.sh"
 }
 
@@ -182,6 +187,18 @@ install_chart() {
     IFS=':' read -r controller_repo controller_tag <<<"$CONTROLLER_IMAGE"
     IFS=':' read -r agent_repo agent_tag <<<"$AGENT_IMAGE"
 
+    local gateway_args=()
+    if [[ "${GATEWAY_ENABLED:-false}" == "true" ]]; then
+        : "${GATEWAY_IMAGE:?must be set when GATEWAY_ENABLED=true}"
+        local gateway_repo gateway_tag
+        IFS=':' read -r gateway_repo gateway_tag <<<"$GATEWAY_IMAGE"
+        gateway_args=(
+            --set gateway.image.repository="$gateway_repo"
+            --set gateway.image.tag="$gateway_tag"
+            --set gateway.image.pullPolicy=Always
+        )
+    fi
+
     log "Packaging the chart..."
     local chart_dir chart_ref
     chart_dir=$(mktemp -d)
@@ -216,7 +233,10 @@ install_chart() {
         --set agent.image.repository="$agent_repo" \
         --set agent.image.tag="$agent_tag" \
         --set agent.image.pullPolicy=Always \
+        "${gateway_args[@]}" \
         --set groupSnapshots.enabled=true \
+        --set gateway.enabled="${GATEWAY_ENABLED:-false}" \
+        --set storageCapacity.enabled="${STORAGE_CAPACITY_ENABLED:-false}" \
         --wait --timeout 10m
 }
 

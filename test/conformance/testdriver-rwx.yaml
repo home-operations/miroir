@@ -1,0 +1,39 @@
+# Driver definition for the upstream Kubernetes external-storage e2e suite's
+# filesystem-only multi-node tests. The replicated LVM-thin class is exported
+# through Miroir's NFS gateway; raw-block RWX is intentionally not advertised.
+StorageClass:
+  FromExistingClassName: miroir-replicated
+SnapshotClass:
+  FromExistingClassName: miroir-snap
+GroupSnapshotClass:
+  FromExistingClassName: miroir-group-snap
+DriverInfo:
+  Name: miroir.home-operations.com
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 10Gi
+  SupportedFsType:
+    ext4: {}
+    xfs: {}
+  SupportedMountOption:
+    noatime: {}
+  Capabilities:
+    persistence: true
+    block: false
+    exec: true
+    fsGroup: true
+    multipods: true
+    controllerExpansion: true
+    nodeExpansion: true
+    onlineExpansion: true
+    offlineExpansion: true
+    snapshotDataSource: true
+    groupSnapshot: true
+    pvcDataSource: true
+    topology: true
+    singleNodeVolume: false
+    RWX: true
+    capReadOnlyMany: true
+    multiplePVsSameID: true
+    readWriteOncePod: true
+    capacity: true
