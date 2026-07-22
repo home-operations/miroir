@@ -70,12 +70,14 @@ func superviseCfg() (Config, *mount.SafeFormatAndMount) {
 // A ganesha that exits on its own must surface an error: a dead server
 // restarts the pod, silence would leave every NFS client hanging.
 func TestSuperviseFailsWhenGaneshaExits(t *testing.T) {
-	stubGanesha(t, "exit 3")
+	stubGanesha(t, `test "$*" = "-F -p /run/ganesha.pid -L STDOUT -f /etc/ganesha/ganesha.conf -N NIV_EVENT" || exit 4
+exit 3`)
 	cfg, m := superviseCfg()
+	cfg.GaneshaConf = "/etc/ganesha/ganesha.conf"
 
 	err := supervise(t.Context(), m, cfg, "/dev/null", t.TempDir(), &health{},
 		make(chan error), logr.Discard())
-	if err == nil || !strings.Contains(err.Error(), "ganesha exited") {
+	if err == nil || !strings.Contains(err.Error(), "ganesha exited: exit status 3") {
 		t.Fatalf("self-exit must error, got %v", err)
 	}
 }
