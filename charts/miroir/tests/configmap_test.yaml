@@ -43,11 +43,11 @@ tests:
       - matchRegex:
           path: data["global_common.conf"]
           pattern: "on-io-error detach;"
-      # disk-timeout 600 (60s) is the default: bounds DRBD metadata I/O so
-      # a failing backing disk cannot wedge a reboot in drbd_md_sync_page_io.
-      - matchRegex:
+      # disk-timeout is opt-in (upstream warns aborted requests can corrupt
+      # reused pages); the default 0 must render no line at all.
+      - notMatchRegex:
           path: data["global_common.conf"]
-          pattern: "disk-timeout 600;"
+          pattern: "disk-timeout"
       # c-min-rate is defaulted so a degraded volume heals in hours, not
       # days, under application I/O.
       - matchRegex:
@@ -86,6 +86,16 @@ tests:
       - matchRegex:
           path: data["global_common.conf"]
           pattern: "on-io-error pass_on;"
+
+  - it: renders disk-timeout when opted in
+    set:
+      drbd:
+        diskTimeout: 600
+    documentIndex: 0
+    asserts:
+      - matchRegex:
+          path: data["global_common.conf"]
+          pattern: "disk-timeout 600;"
 
   - it: renders discard granularity and verify-alg when set
     set:

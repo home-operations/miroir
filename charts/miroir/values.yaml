@@ -333,10 +333,13 @@ drbd:
   # type: [integer, string]
   # @schema
   # -- disk-timeout in 0.1s units: how long DRBD waits for a backing-device
-  # I/O before force-detaching. DRBD's default is 0 (infinite), which wedges
-  # a reboot in drbd_md_sync_page_io when the backing disk is failing.
-  # Defaulted to 600 (60s). Set to 0 for the DRBD default (not recommended).
-  diskTimeout: 600
+  # I/O before force-detaching, e.g. 600 (60s). At the DRBD default of 0
+  # (infinite) a failing backing disk can wedge a reboot in
+  # drbd_md_sync_page_io; but DRBD's manual warns that aborting a request
+  # whose completion later arrives can corrupt reused pages or panic the
+  # kernel, which is why upstream ships it disabled. Opt in deliberately
+  # on hardware known to hang instead of erroring.
+  diskTimeout: 0
   # @schema
   # type: [integer, string]
   # @schema

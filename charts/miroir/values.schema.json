@@ -212,8 +212,8 @@
           ]
         },
         "diskTimeout": {
-          "default": 600,
-          "description": "disk-timeout in 0.1s units: how long DRBD waits for a backing-device\nI/O before force-detaching. DRBD's default is 0 (infinite), which wedges\na reboot in drbd_md_sync_page_io when the backing disk is failing.\nDefaulted to 600 (60s). Set to 0 for the DRBD default (not recommended).",
+          "default": 0,
+          "description": "disk-timeout in 0.1s units: how long DRBD waits for a backing-device\nI/O before force-detaching, e.g. 600 (60s). At the DRBD default of 0\n(infinite) a failing backing disk can wedge a reboot in\ndrbd_md_sync_page_io; but DRBD's manual warns that aborting a request\nwhose completion later arrives can corrupt reused pages or panic the\nkernel, which is why upstream ships it disabled. Opt in deliberately\non hardware known to hang instead of erroring.",
           "required": [],
           "title": "diskTimeout",
           "type": [
