@@ -2041,6 +2041,52 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 	}
 }
 
+// A replicated restore whose source snapshot is gone (deleted by a backup
+// tool like kopiur after the mover job) must fall back to a fresh backing
+// and let DRBD full-sync from the peer — not park the volume as Failed.
+func TestRealizeBackingReplicatedSourceGoneFallsBackToFresh(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-gone"}
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	// No MiroirSnapshot in the client — it's been deleted.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fb := newFakeBackend()
+	r := &VolumeReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fb)}
+
+	if _, err := r.realizeBacking(t.Context(), fb, v, false); err != nil {
+		t.Fatalf("replicated restore with gone snapshot must not fail: %v", err)
+	}
+	if len(fb.fromSnapVol) != 0 {
+		t.Fatalf("must not clone a gone snapshot: %v", fb.fromSnapVol)
+	}
+	if !slices.Contains(fb.createVol, volPvc1) {
+		t.Fatalf("must create a fresh backing for full-sync: %v", fb.createVol)
+	}
+}
+
+// An unreplicated restore whose source snapshot is gone must still fail —
+// the data is truly lost with no peer to sync from.
+func TestRealizeBackingUnreplicatedSourceGoneFails(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-gone"}
+	// No DRBD spec — unreplicated. No MiroirSnapshot — it's been deleted.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fb := newFakeBackend()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+
+	_, err := r.realizeBacking(t.Context(), fb, v, false)
+	if err == nil {
+		t.Fatal("unreplicated restore with gone snapshot must fail")
+	}
+	if !strings.Contains(err.Error(), "restore source snapshot no longer exists") {
+		t.Fatalf("want errRestoreSourceGone, got %v", err)
+	}
+}
+
 func TestRealizeBackingRecloneInvalidatesForeignMetadataWipe(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeA)

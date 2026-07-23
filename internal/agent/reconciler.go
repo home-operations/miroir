@@ -599,6 +599,18 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 	snap := &miroirv1alpha1.MiroirSnapshot{}
 	if err := r.Get(ctx, types.NamespacedName{Name: vol.Spec.Source.SnapshotName}, snap); err != nil {
 		if apierrors.IsNotFound(err) {
+			// The source snapshot is gone — deleted by a backup
+			// tool (kopiur) after the mover job, or by miroir's own
+			// clone cleanup. For a replicated volume, a peer may
+			// already have the cloned data; fall back to a fresh
+			// backing and let DRBD full-sync from the peer, the same
+			// path a wiped node takes when rejoining. For an
+			// unreplicated volume, the data is truly lost.
+			if vol.Spec.DRBD != nil {
+				ctrl.LoggerFrom(ctx).Info("restore source snapshot gone; creating fresh backing for DRBD full-sync",
+					"volume", vol.Name, "snapshot", vol.Spec.Source.SnapshotName)
+				return be.Create(ctx, vol.Name, backingBytes(vol))
+			}
 			return "", fmt.Errorf("snapshot %q: %w", vol.Spec.Source.SnapshotName, errRestoreSourceGone)
 		}
 		return "", err
