@@ -194,6 +194,7 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 	ctx := context.Background()
 
 	var dsName, excludeNode string
+	var keepNodes []string
 	var failed bool
 
 	BeforeAll(func() {
@@ -202,6 +203,7 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 		}))).To(Succeed())
 		nodes := replicaNodes(ctx)
 		excludeNode = nodes[0]
+		keepNodes = nodes[1:]
 		dsName = agentDaemonSetName()
 	})
 	AfterEach(func() { failed = failed || CurrentSpecReport().Failed() })
@@ -212,9 +214,11 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 		_ = exec.Command("kubectl", "patch", "daemonset", "-n", agentNamespace, dsName,
 			"--type=json", "-p",
 			`[{"op":"remove","path":"/spec/template/spec/nodeSelector"}]`).Run()
-		// Remove the exclusion label from the node.
-		_ = exec.Command("kubectl", "label", "node", excludeNode,
-			"miroir-e2e-test/excluded-").Run()
+		// Remove the exclusion labels from every node we touched.
+		for _, n := range append(keepNodes, excludeNode) {
+			_ = exec.Command("kubectl", "label", "node", n,
+				"miroir-e2e-test/excluded-").Run()
+		}
 
 		if failed {
 			GinkgoWriter.Printf("specs failed — leaving namespace %q for diagnostics\n", ns)
@@ -224,10 +228,18 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 	})
 
 	It("evicts the agent from one node and verifies NodeUnreachable surfaces", func() {
-		// 1. Label the node to exclude the DaemonSet and patch the
-		//    DaemonSet's nodeSelector to skip labeled nodes.
+		// 1. Label every storage node: the excluded one "true", the
+		//    rest "false", then patch the DaemonSet's nodeSelector to
+		//    keep only nodes labeled "false". A nodeSelector requires
+		//    the label to be present — without labeling the keep nodes,
+		//    the DaemonSet evicts every agent and no CSI driver
+		//    survives to call CreateVolume.
 		kubectlLabelNode(excludeNode,
 			"miroir-e2e-test/excluded=true", "label")
+		for _, n := range keepNodes {
+			kubectlLabelNode(n,
+				"miroir-e2e-test/excluded=false", "label")
+		}
 		kubectlPatch("daemonset", agentNamespace, dsName,
 			fmt.Sprintf(`{"spec":{"template":{"spec":{"nodeSelector":{"miroir-e2e-test/excluded":"false"}}}}}`))
 
