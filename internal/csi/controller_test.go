@@ -18,6 +18,7 @@ package csi
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -2372,5 +2374,354 @@ func TestCreateVolumeCloneRefusesLegacyPrefixedSnapshot(t *testing.T) {
 	})
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("a legacy snapshot on the reserved name must refuse the clone, got %v", err)
+	}
+}
+
+// --- Phase 3: Node unreachability surfacing in waitReady ---
+
+// frozenClient returns a client that stores objects but never flips them to
+// Ready/Degraded on Get — waitReady will always time out against it.
+func frozenClient(s *runtime.Scheme, objs ...client.Object) client.WithWatch {
+	return fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(objs...).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}, &miroirv1alpha1.MiroirSnapshot{}).
+		Build()
+}
+
+// testRecorder is a simple in-memory EventRecorder for tests.
+type testRecorder struct {
+	events []recordedEvent
+}
+
+type recordedEvent struct {
+	regarding runtime.Object
+	eventType string
+	reason    string
+	action    string
+	note      string
+}
+
+func (r *testRecorder) Eventf(regarding, _ runtime.Object, eventType, reason, action, noteFmt string, args ...any) {
+	r.events = append(r.events, recordedEvent{
+		regarding: regarding,
+		eventType: eventType,
+		reason:    reason,
+		action:    action,
+		note:      fmt.Sprintf(noteFmt, args...),
+	})
+}
+
+func (r *testRecorder) hasNodeUnreachableEvent() bool {
+	for _, e := range r.events {
+		if e.reason == "NodeUnreachable" {
+			return true
+		}
+	}
+	return false
+}
+
+// probeTime stamps a metav1.Time at the given offset from now.
+func probeTime(offset time.Duration) *metav1.Time {
+	t := metav1.NewTime(time.Now().Add(offset))
+	return &t
+}
+
+// volumeWithStatus creates a minimal volume stuck in Creating for timeout
+// tests (2 diskful replicas, node-a lvmthin, node-b zfs).
+func volumeWithStatus(name string, perNode map[string]miroirv1alpha1.ReplicaStatus) *miroirv1alpha1.MiroirVolume {
+	return &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendZFS},
+			},
+		},
+		Status: miroirv1alpha1.MiroirVolumeStatus{
+			Phase:   miroirv1alpha1.VolumeCreating,
+			PerNode: perNode,
+		},
+	}
+}
+
+// TestWaitReadyNodeUnreachableAbsentPerNode: waitReady times out, one
+// expected node has no PerNode entry → FailedPrecondition, NodeUnreachable
+// condition set, event emitted.
+func TestWaitReadyNodeUnreachableAbsentPerNode(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	// node-b has no PerNode entry — the agent never reported.
+	vol := volumeWithStatus("pvc-absent", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+	})
+	c := &Controller{
+		Client:           frozenClient(s, vol),
+		Recorder:         rec,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-absent")
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("absent PerNode must be FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), nodeB) {
+		t.Fatalf("error must name the unreachable node %s: %v", nodeB, err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-absent"}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("NodeUnreachable condition must be True, got %+v", cond)
+	}
+	if !rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must be emitted")
+	}
+}
+
+// TestWaitReadyNodeUnreachableStalePerNode: waitReady times out, one
+// expected node has LastProbedAt 15 minutes ago → FailedPrecondition,
+// NodeUnreachable condition set.
+func TestWaitReadyNodeUnreachableStalePerNode(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	vol := volumeWithStatus("pvc-stale", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+		nodeB: {SizeBytes: 5 << 30, LastProbedAt: probeTime(-15 * time.Minute)},
+	})
+	c := &Controller{
+		Client:           frozenClient(s, vol),
+		Recorder:         rec,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-stale")
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("stale probe must be FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), nodeB) {
+		t.Fatalf("error must name %s: %v", nodeB, err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-stale"}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("NodeUnreachable condition must be True, got %+v", cond)
+	}
+	if !rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must be emitted")
+	}
+}
+
+// TestWaitReadyGenuineTimeoutAllNodesFresh: waitReady times out, all
+// expected nodes have fresh PerNode but phase is Creating →
+// DeadlineExceeded (not FailedPrecondition), no NodeUnreachable condition.
+func TestWaitReadyGenuineTimeoutAllNodesFresh(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	vol := volumeWithStatus("pvc-genuine", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+		nodeB: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+	})
+	c := &Controller{
+		Client:           frozenClient(s, vol),
+		Recorder:         rec,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-genuine")
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("all nodes fresh must be DeadlineExceeded, got %v", err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-genuine"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable) != nil {
+		t.Fatal("NodeUnreachable condition must not be set when all nodes are fresh")
+	}
+	if rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must not be emitted for a genuine timeout")
+	}
+}
+
+// TestWaitReadyClearsNodeUnreachableCondition: waitReady succeeds with a
+// pre-existing NodeUnreachable condition → condition set to False.
+func TestWaitReadyClearsNodeUnreachableCondition(t *testing.T) {
+	s := newScheme(t)
+	now := metav1.NewTime(time.Now().Truncate(time.Second))
+	vol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-clear"},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin},
+			},
+		},
+		Status: miroirv1alpha1.MiroirVolumeStatus{
+			Phase: miroirv1alpha1.VolumeCreating,
+			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+			},
+			Conditions: []metav1.Condition{{
+				Type:               miroirv1alpha1.ConditionNodeUnreachable,
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: now,
+				Reason:             "AgentUnreachable",
+			}},
+		},
+	}
+	c := &Controller{
+		Client:           readyOnGet(s, vol),
+		ProvisionTimeout: time.Second,
+	}
+
+	if err := c.waitReady(t.Context(), "pvc-clear"); err != nil {
+		t.Fatalf("waitReady must succeed: %v", err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-clear"}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("NodeUnreachable condition must be cleared to False, got %+v", cond)
+	}
+}
+
+// TestWaitReadyNoConditionOnDegraded: waitReady succeeds with
+// Phase == Degraded → no NodeUnreachable condition is set (Degraded is a
+// valid terminal state).
+func TestWaitReadyNoConditionOnDegraded(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	vol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pvc-degraded"},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin},
+			},
+		},
+	}
+	c := &Controller{
+		Client:           degradedOnGet(s),
+		Recorder:         rec,
+		ProvisionTimeout: time.Second,
+	}
+	// Seed the volume before the interceptor flips it.
+	if err := c.Client.Create(t.Context(), vol.DeepCopy()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.waitReady(t.Context(), "pvc-degraded"); err != nil {
+		t.Fatalf("Degraded must succeed: %v", err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-degraded"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable) != nil {
+		t.Fatal("NodeUnreachable condition must not be set on Degraded success")
+	}
+	if rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must not be emitted on Degraded success")
+	}
+}
+
+// TestWaitReadyNilLastProbedAtLegacyVolume: waitReady times out with a
+// legacy volume whose PerNode entry exists but LastProbedAt is nil (volume
+// created before Phase 1 upgrade). The nil probe is treated as fresh, not
+// stale → DeadlineExceeded returned, no NodeUnreachable condition, no
+// event. Verifies backward compatibility.
+func TestWaitReadyNilLastProbedAtLegacyVolume(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	// 2 diskful replicas, nodeB has PerNode but nil LastProbedAt.
+	vol := volumeWithStatus("pvc-legacy", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+		nodeB: {SizeBytes: 5 << 30, LastProbedAt: nil},
+	})
+	c := &Controller{
+		Client:           frozenClient(s, vol),
+		Recorder:         rec,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-legacy")
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("nil LastProbedAt must be DeadlineExceeded, got %v", err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-legacy"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable) != nil {
+		t.Fatal("NodeUnreachable condition must not be set for nil LastProbedAt")
+	}
+	if rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must not be emitted for nil LastProbedAt")
+	}
+}
+
+// TestWaitReadyPolledNilColdCache: the informer cache has not warmed up,
+// so every poll Get returns NotFound → polled stays nil → after timeout
+// the fallback Get also fails → DeadlineExceeded returned, no condition
+// set. This is the path where the controller can't even read the volume
+// after the timeout.
+func TestWaitReadyPolledNilColdCache(t *testing.T) {
+	s := newScheme(t)
+	// Client with no objects at all — every Get returns NotFound.
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	c := &Controller{
+		Client:           cl,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-ghost")
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("absent volume must be DeadlineExceeded, got %v", err)
+	}
+}
+
+// TestWaitReadyNodeUnreachableRecorderNil: exercises the timeout path with
+// Recorder == nil — condition must still be set, no panic must occur.
+func TestWaitReadyNodeUnreachableRecorderNil(t *testing.T) {
+	s := newScheme(t)
+	vol := volumeWithStatus("pvc-nilrec", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+	})
+	c := &Controller{
+		Client:           frozenClient(s, vol),
+		Recorder:         nil,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-nilrec")
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("absent PerNode must be FailedPrecondition, got %v", err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-nilrec"}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("NodeUnreachable condition must be True even with nil Recorder, got %+v", cond)
 	}
 }

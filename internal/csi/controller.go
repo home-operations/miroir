@@ -33,13 +33,17 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/agent"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/nodemap"
 	"github.com/home-operations/miroir/internal/stage"
@@ -85,6 +89,10 @@ type Controller struct {
 	// Configurable so operators can move the range off host-network tenants
 	// like the Ceph mgr dashboard (default 7000). See issue #148.
 	DRBDPortBase int32
+
+	// Recorder emits the NodeUnreachable event when waitReady times
+	// out on a node whose agent has gone silent; optional.
+	Recorder events.EventRecorder
 
 	// allocMu serialises CreateVolume RPCs that run concurrently within
 	// the single controller pod: two interleaved List→Create spans would
@@ -1218,6 +1226,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 	ctx, cancel := context.WithTimeout(ctx, cmp.Or(c.ProvisionTimeout, defaultProvisionTimeout))
 	defer cancel()
 
+	var polled *miroirv1alpha1.MiroirVolume
 	err := wait.PollUntilContextCancel(ctx, 500*time.Millisecond, true,
 		func(ctx context.Context) (bool, error) {
 			vol := &miroirv1alpha1.MiroirVolume{}
@@ -1227,6 +1236,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 				}
 				return false, err
 			}
+			polled = vol
 			switch vol.Status.Phase {
 			case miroirv1alpha1.VolumeReady, miroirv1alpha1.VolumeDegraded:
 				return true, nil
@@ -1237,6 +1247,11 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 			}
 		})
 	if err == nil {
+		// Clear any stale NodeUnreachable condition so it doesn't persist
+		// after recovery.
+		if polled != nil {
+			clearNodeUnreachableCondition(c.Client, ctx, polled)
+		}
 		return nil
 	}
 	if failed, ok := errors.AsType[*errVolumeFailed](err); ok {
@@ -1244,9 +1259,94 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 		// would make the provisioner retry forever.
 		return status.Errorf(codes.ResourceExhausted, "volume %s failed: %s", name, failed.detail)
 	}
-	// Genuine timeout: the provisioner retries CreateVolume and finds the
-	// existing CR, so the CR is deliberately left in place.
+	// Post-timeout node reachability check: before returning
+	// DeadlineExceeded, inspect whether the timeout was caused by an
+	// unreachable node agent rather than a genuine provisioning delay.
+	vol := polled
+	if vol == nil {
+		vol = &miroirv1alpha1.MiroirVolume{}
+		if err := c.Client.Get(context.Background(), types.NamespacedName{Name: name}, vol); err != nil {
+			// Can't even read the volume — return the original timeout.
+			return status.Errorf(codes.DeadlineExceeded, "volume %s not ready: %v", name, err)
+		}
+	}
+	unreachable := c.checkNodeUnreachable(ctx, vol)
+	if len(unreachable) > 0 {
+		return status.Errorf(codes.FailedPrecondition,
+			"volume %s cannot provision: node %s agent is unreachable (no status received within %s)",
+			name, strings.Join(unreachable, ", "), agent.StaleProbeThreshold)
+	}
+	// All expected nodes have fresh PerNode — genuine provisioning timeout.
 	return status.Errorf(codes.DeadlineExceeded, "volume %s not ready: %v", name, err)
+}
+
+// checkNodeUnreachable inspects PerNode for each expected replica node
+// after waitReady times out. It returns the names of nodes whose agent is
+// unreachable (PerNode entry absent OR LastProbedAt stale), surfaces them
+// as a NodeUnreachable condition and event, and leaves the volume ready
+// for a retry: the external provisioner re-queues with exponential
+// backoff, then resyncs on the next informer cycle (~15 min), so recovery
+// is automatic after the node agent returns. An empty return means all
+// nodes are fresh — the timeout is genuine, not due to node
+// unreachability.
+//
+// agent.StaleProbeThreshold is defined in internal/agent; the CSI
+// controller imports the agent package for this one constant. The constant
+// could live in internal/constants (imported by both packages), but moving
+// it would touch the agent package which Phase 3 deliberately avoids.
+func (c *Controller) checkNodeUnreachable(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) []string {
+	now := time.Now()
+	var unreachable []string
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Diskless {
+			continue
+		}
+		ps, ok := vol.Status.PerNode[rep.Node]
+		if !ok {
+			// Agent never reported for this node.
+			unreachable = append(unreachable, rep.Node)
+			continue
+		}
+		if ps.LastProbedAt != nil && now.Sub(ps.LastProbedAt.Time) > agent.StaleProbeThreshold {
+			// Agent was alive but has gone silent — stale probe.
+			unreachable = append(unreachable, rep.Node)
+		}
+	}
+	if len(unreachable) > 0 {
+		cond := metav1.Condition{
+			Type:   miroirv1alpha1.ConditionNodeUnreachable,
+			Status: metav1.ConditionTrue,
+			Reason: "AgentUnreachable",
+			Message: fmt.Sprintf("Node agent unreachable on %s (no status received within %s)",
+				strings.Join(unreachable, ", "), agent.StaleProbeThreshold),
+		}
+		meta.SetStatusCondition(&vol.Status.Conditions, cond)
+		// Best-effort: the volume object is the CR we just read; a
+		// conflict on this incidental write is fine, and the caller's
+		// FailedPrecondition return is the primary signal.
+		_ = c.Client.Status().Update(ctx, vol)
+		if c.Recorder != nil {
+			c.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "NodeUnreachable", "Provision",
+				"Node agent unreachable on %s (no status received within %s); volume %s cannot provision",
+				strings.Join(unreachable, ", "), agent.StaleProbeThreshold, vol.Name)
+		}
+	}
+	return unreachable
+}
+
+// clearNodeUnreachableCondition sets any existing NodeUnreachable condition
+// to False so it doesn't persist after the agent recovers.
+func clearNodeUnreachableCondition(cl client.Client, ctx context.Context, vol *miroirv1alpha1.MiroirVolume) {
+	cond := meta.FindStatusCondition(vol.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond != nil && cond.Status == metav1.ConditionTrue {
+		meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+			Type:   miroirv1alpha1.ConditionNodeUnreachable,
+			Status: metav1.ConditionFalse,
+			Reason: "NodeReachable",
+		})
+		// Best-effort: the condition is incidental; don't block success.
+		_ = cl.Status().Update(ctx, vol)
+	}
 }
 
 // ControllerExpandVolume grows the volume online: bump the desired size

@@ -43,9 +43,11 @@ const (
 
 // Condition types for standard Kubernetes conditions (Phase 3 readiness work).
 const (
-	// ConditionNodeUnreachable is set when a node's agent has not probed
-	// its replica within the staleness threshold — the replica's live state
-	// is unknown. Phase 3 (CSI controller) will read this to gate staging.
+	// ConditionNodeUnreachable indicates that volume provisioning was
+	// blocked because a node's agent has not reported status within the
+	// staleness threshold. Set by the CSI controller when waitReady times
+	// out; cleared when provisioning succeeds. Informational — does not
+	// gate staging.
 	ConditionNodeUnreachable = "NodeUnreachable"
 	// ConditionTypeReady is the standard Kubernetes ready condition,
 	// summarizing volume readiness for the controller and humans.
