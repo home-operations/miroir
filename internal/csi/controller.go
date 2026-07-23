@@ -1248,9 +1248,15 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 		})
 	if err == nil {
 		// Clear any stale NodeUnreachable condition so it doesn't persist
-		// after recovery.
+		// after recovery. Use a fresh context: the poll context may be
+		// expiring or expired by the time the volume reaches Ready.
 		if polled != nil {
-			clearNodeUnreachableCondition(c.Client, c.reader(), ctx, polled)
+			clearCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := clearNodeUnreachableCondition(c.Client, c.reader(), clearCtx, polled); err != nil {
+				log.Error(err, "failed to clear stale NodeUnreachable condition",
+					"volume", name)
+			}
 		}
 		return nil
 	}
@@ -1349,7 +1355,7 @@ func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1
 
 // clearNodeUnreachableCondition sets any existing NodeUnreachable condition
 // to False so it doesn't persist after the agent recovers.
-func clearNodeUnreachableCondition(cl client.Client, reader client.Reader, ctx context.Context, vol *miroirv1alpha1.MiroirVolume) {
+func clearNodeUnreachableCondition(cl client.Client, reader client.Reader, ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
 	cond := meta.FindStatusCondition(vol.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
 	if cond != nil && cond.Status == metav1.ConditionTrue {
 		clear := metav1.Condition{
@@ -1357,10 +1363,11 @@ func clearNodeUnreachableCondition(cl client.Client, reader client.Reader, ctx c
 			Status: metav1.ConditionFalse,
 			Reason: "NodeReachable",
 		}
-		_ = retryOnConflict(ctx, cl, reader, vol, func(v *miroirv1alpha1.MiroirVolume) {
+		return retryOnConflict(ctx, cl, reader, vol, func(v *miroirv1alpha1.MiroirVolume) {
 			meta.SetStatusCondition(&v.Status.Conditions, clear)
 		})
 	}
+	return nil
 }
 
 // retryOnConflict applies mutate to vol's status and retries on
@@ -1369,8 +1376,14 @@ func clearNodeUnreachableCondition(cl client.Client, reader client.Reader, ctx c
 // It gives up after 3 attempts; the caller treats the condition as best-effort.
 func retryOnConflict(ctx context.Context, cl client.Client, reader client.Reader, vol *miroirv1alpha1.MiroirVolume, mutate func(*miroirv1alpha1.MiroirVolume)) error {
 	for range 3 {
+		base := vol.DeepCopy()
 		mutate(vol)
-		if err := cl.Status().Update(ctx, vol); err == nil {
+		// Patch with MergeFrom sends only the condition diff, not the
+		// entire status — so a concurrent PerNode update from an agent
+		// cannot cause a conflict on fields the condition write didn't
+		// touch. Update sends the whole object and conflicts on any
+		// changed field.
+		if err := cl.Status().Patch(ctx, vol, client.MergeFrom(base)); err == nil {
 			return nil
 		} else if !apierrors.IsConflict(err) {
 			return err
