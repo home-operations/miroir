@@ -570,6 +570,7 @@ func main() {
 			AutoTieBreaker:   autoTieBreaker,
 			RWXEnabled:       gatewayImage != "",
 			DRBDPortBase:     int32(drbdPortBase),
+			Recorder:         mgr.GetEventRecorder("miroir-controller"),
 		}
 		if err := setupMembership(mgr, nodes, autoTieBreaker, autoDiskfulAfter, autoEvictAfter); err != nil {
 			setupLog.Error(err, "unable to set up membership reconcilers")

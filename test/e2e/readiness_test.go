@@ -19,29 +19,20 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
-// replicaNodes returns the node names of all schedulable nodes that have
-// an agent pod running, or all cluster nodes if agents are absent.
+// replicaNodes returns the names of nodes that have a MiroirNode
+// (i.e. nodes that actually hold storage and run an agent). This avoids
+// including control-plane nodes that have no storage in e2e clusters
+// with 3+ nodes where only workers hold storage.
 func replicaNodes(ctx context.Context) []string {
-	var nodes corev1.NodeList
-	Expect(k8s.List(ctx, &nodes)).To(Succeed())
+	var mns miroirv1alpha1.MiroirNodeList
+	Expect(k8s.List(ctx, &mns)).To(Succeed())
+	Expect(mns.Items).NotTo(BeEmpty(), "no MiroirNodes found — cluster must have storage nodes")
 	var out []string
-	for _, n := range nodes.Items {
-		// Exclude nodes that are unschedulable (control-planes) unless
-		// they run an agent — a 2-node home-lab cluster may have only
-		// control-planes. In that case count every node.
-		if n.Spec.Unschedulable {
-			continue
-		}
-		out = append(out, n.Name)
-	}
-	if len(out) < 2 {
-		out = nil
-		for _, n := range nodes.Items {
-			out = append(out, n.Name)
-		}
+	for _, mn := range mns.Items {
+		out = append(out, mn.Name)
 	}
 	Expect(len(out)).To(BeNumerically(">=", 2),
-		"need at least 2 cluster nodes for replicated e2e tests")
+		"need at least 2 storage nodes for replicated e2e tests")
 	return out
 }
 

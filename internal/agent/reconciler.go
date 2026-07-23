@@ -1359,9 +1359,12 @@ func (r *VolumeReconciler) clearStaleBacking(ctx context.Context, vol *miroirv1a
 	}
 	ctrl.LoggerFrom(ctx).Info("backing device missing while status says DeviceCreated; clearing the stale flag",
 		"volume", vol.Name)
+	// No Message: computePhase treats DeviceCreated=false + Message as a
+	// hard failure (VolumeFailed), which would abort any in-flight
+	// waitReady poll. Without a Message, the replica reads as
+	// not-realized → Phase=Creating, accurately reflecting re-creation.
 	return r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: false,
-		Message:       "backing device missing (node wipe or out-of-band deletion); agent will recreate it as a fresh leg",
 		Pool:          poolName,
 		LastProbedAt:  probeNow(),
 	})

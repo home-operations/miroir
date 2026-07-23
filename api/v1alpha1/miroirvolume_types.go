@@ -41,18 +41,12 @@ const (
 	VolumeFailed   VolumePhase = "Failed"
 )
 
-// Condition types for standard Kubernetes conditions (Phase 3 readiness work).
-const (
-	// ConditionNodeUnreachable indicates that volume provisioning was
-	// blocked because a node's agent has not reported status within the
-	// staleness threshold. Set by the CSI controller when waitReady times
-	// out; cleared when provisioning succeeds. Informational — does not
-	// gate staging.
-	ConditionNodeUnreachable = "NodeUnreachable"
-	// ConditionTypeReady is the standard Kubernetes ready condition,
-	// summarizing volume readiness for the controller and humans.
-	ConditionTypeReady = "Ready"
-)
+// ConditionNodeUnreachable indicates that volume provisioning was
+// blocked because a node's agent has not reported status within the
+// staleness threshold. Set by the CSI controller when waitReady times
+// out; cleared when provisioning succeeds. Informational — does not
+// gate staging.
+const ConditionNodeUnreachable = "NodeUnreachable"
 
 // Replica is one placement of the volume's data — a DRBD peer when the
 // volume is replicated.

@@ -108,6 +108,7 @@ func deviceMountedAnywhere(procDir string, minor int32) (bool, error) {
 	return false, nil
 }
 
+// mountinfoListsDevice reports whether one mountinfo table references
 // /dev/drbd<minor>: a filesystem mount carries the device's major:minor
 // in field 3 (the mounted fs's st_dev), and a raw-block publish is a
 // devtmpfs bind whose root (field 4) is the device node's path.

@@ -1250,7 +1250,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 		// Clear any stale NodeUnreachable condition so it doesn't persist
 		// after recovery.
 		if polled != nil {
-			clearNodeUnreachableCondition(c.Client, ctx, polled)
+			clearNodeUnreachableCondition(c.Client, c.reader(), ctx, polled)
 		}
 		return nil
 	}
@@ -1284,11 +1284,11 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 // after waitReady times out. It returns the names of nodes whose agent is
 // unreachable (PerNode entry absent OR LastProbedAt stale), surfaces them
 // as a NodeUnreachable condition and event, and leaves the volume ready
-// for a retry: the external provisioner re-queues with exponential
-// backoff, then resyncs on the next informer cycle (~15 min), so recovery
-// is automatic after the node agent returns. An empty return means all
-// nodes are fresh — the timeout is genuine, not due to node
-// unreachability.
+// for a retry: the external provisioner treats FailedPrecondition as
+// terminal (ProvisioningFinished), so recovery happens on the next
+// provisioner resync cycle (~15 min by default), not via exponential
+// backoff. An empty return means all nodes are fresh — the timeout is
+// genuine, not due to node unreachability.
 //
 // agent.StaleProbeThreshold is defined in internal/agent; the CSI
 // controller imports the agent package for this one constant. The constant
@@ -1328,10 +1328,16 @@ func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1
 		defer cancel()
 		// The agent may have updated the volume between our poll and
 		// this write, causing a resource-version conflict. Retry with
-		// a fresh read so the condition is actually persisted.
-		_ = retryOnConflict(updCtx, c.Client, vol, func(v *miroirv1alpha1.MiroirVolume) {
+		// a fresh read so the condition is actually persisted. If it
+		// still fails (non-conflict error, failed re-read, or exhausted
+		// retries), the FailedPrecondition return still surfaces the
+		// problem to the provisioner, but log it so it's observable.
+		if err := retryOnConflict(updCtx, c.Client, c.reader(), vol, func(v *miroirv1alpha1.MiroirVolume) {
 			meta.SetStatusCondition(&v.Status.Conditions, cond)
-		})
+		}); err != nil {
+			log.Error(err, "failed to persist NodeUnreachable condition",
+				"volume", vol.Name, "unreachable", unreachable)
+		}
 		if c.Recorder != nil {
 			c.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "NodeUnreachable", "Provision",
 				"Node agent unreachable on %s (no status received within %s); volume %s cannot provision",
@@ -1343,7 +1349,7 @@ func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1
 
 // clearNodeUnreachableCondition sets any existing NodeUnreachable condition
 // to False so it doesn't persist after the agent recovers.
-func clearNodeUnreachableCondition(cl client.Client, ctx context.Context, vol *miroirv1alpha1.MiroirVolume) {
+func clearNodeUnreachableCondition(cl client.Client, reader client.Reader, ctx context.Context, vol *miroirv1alpha1.MiroirVolume) {
 	cond := meta.FindStatusCondition(vol.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
 	if cond != nil && cond.Status == metav1.ConditionTrue {
 		clear := metav1.Condition{
@@ -1351,16 +1357,17 @@ func clearNodeUnreachableCondition(cl client.Client, ctx context.Context, vol *m
 			Status: metav1.ConditionFalse,
 			Reason: "NodeReachable",
 		}
-		_ = retryOnConflict(ctx, cl, vol, func(v *miroirv1alpha1.MiroirVolume) {
+		_ = retryOnConflict(ctx, cl, reader, vol, func(v *miroirv1alpha1.MiroirVolume) {
 			meta.SetStatusCondition(&v.Status.Conditions, clear)
 		})
 	}
 }
 
 // retryOnConflict applies mutate to vol's status and retries on
-// resource-version conflict by re-reading the volume first. It gives
-// up after 3 attempts; the caller treats the condition as best-effort.
-func retryOnConflict(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume, mutate func(*miroirv1alpha1.MiroirVolume)) error {
+// resource-version conflict by re-reading the volume from the API server
+// (bypassing the informer cache, which may lag a concurrent agent write).
+// It gives up after 3 attempts; the caller treats the condition as best-effort.
+func retryOnConflict(ctx context.Context, cl client.Client, reader client.Reader, vol *miroirv1alpha1.MiroirVolume, mutate func(*miroirv1alpha1.MiroirVolume)) error {
 	for range 3 {
 		mutate(vol)
 		if err := cl.Status().Update(ctx, vol); err == nil {
@@ -1368,8 +1375,9 @@ func retryOnConflict(ctx context.Context, cl client.Client, vol *miroirv1alpha1.
 		} else if !apierrors.IsConflict(err) {
 			return err
 		}
-		// Conflict: re-read and retry with the fresh resource version.
-		if err := cl.Get(ctx, client.ObjectKey{Name: vol.Name}, vol); err != nil {
+		// Conflict: re-read from the API server (not the cache) to get
+		// the fresh resource version before retrying.
+		if err := reader.Get(ctx, client.ObjectKey{Name: vol.Name}, vol); err != nil {
 			return err
 		}
 	}
