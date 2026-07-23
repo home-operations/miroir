@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -102,5 +103,40 @@ func TestPhaseReconcilerSchedulesFreshProbeExpiry(t *testing.T) {
 	if res.RequeueAfter < StaleProbeThreshold-2*time.Minute ||
 		res.RequeueAfter > StaleProbeThreshold {
 		t.Fatalf("requeue = %v, want the remaining probe lifetime", res.RequeueAfter)
+	}
+}
+
+// A Ready volume contradicts a lingering NodeUnreachable condition: the
+// waitReady success-path clear is one-shot, so when its patch fails the
+// PhaseReconciler must clear the condition on the next status event.
+func TestPhaseReconcilerClearsLingeringNodeUnreachable(t *testing.T) {
+	vol := phaseVolume(time.Now().Add(-time.Minute))
+	vol.Status.Conditions = []metav1.Condition{{
+		Type:               miroirv1alpha1.ConditionNodeUnreachable,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "AgentUnreachable",
+	}}
+	cl := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(vol).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &PhaseReconciler{Client: cl}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: vol.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %q, want %q", got.Status.Phase, miroirv1alpha1.VolumeReady)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("NodeUnreachable condition must be cleared to False on a Ready volume, got %+v", cond)
 	}
 }

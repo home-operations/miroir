@@ -20,6 +20,8 @@ import (
 	"context"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -43,10 +45,23 @@ func (r *PhaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	now := time.Now()
 	phase, readyReplicas := computePhaseAt(vol, now)
-	if phase != vol.Status.Phase || readyReplicas != vol.Status.ReadyReplicas {
+	// Ready contradicts a lingering NodeUnreachable condition (Ready requires
+	// every diskful replica fresh). waitReady's success-path clear is one-shot
+	// — provisioning succeeded, so no further CreateVolume will retry a failed
+	// patch — so this reconciler is the backstop that eventually clears it.
+	clearUnreachable := phase == miroirv1alpha1.VolumeReady &&
+		meta.IsStatusConditionTrue(vol.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if phase != vol.Status.Phase || readyReplicas != vol.Status.ReadyReplicas || clearUnreachable {
 		base := vol.DeepCopy()
 		vol.Status.Phase = phase
 		vol.Status.ReadyReplicas = readyReplicas
+		if clearUnreachable {
+			meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+				Type:   miroirv1alpha1.ConditionNodeUnreachable,
+				Status: metav1.ConditionFalse,
+				Reason: "NodeReachable",
+			})
+		}
 		if err := r.Status().Patch(ctx, vol, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, err
 		}
