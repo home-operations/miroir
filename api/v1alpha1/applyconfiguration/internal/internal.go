@@ -461,6 +461,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: drbdMinor
       type:
         scalar: numeric
+    - name: lastProbedAt
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
     - name: lastVerifyOutOfSyncBytes
       type:
         scalar: numeric

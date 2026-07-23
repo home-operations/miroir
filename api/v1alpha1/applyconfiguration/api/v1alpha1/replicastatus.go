@@ -88,6 +88,13 @@ type ReplicaStatusApplyConfiguration struct {
 	// they persist in the out-of-sync metric until then. A pointer so a
 	// clean verify (0) reads differently from "never verified" (nil).
 	LastVerifyOutOfSyncBytes *int64 `json:"lastVerifyOutOfSyncBytes,omitempty"`
+	// LastProbedAt is when this agent last successfully probed the
+	// replica's live state (backing device, DRBD status). A stale probe
+	// means the agent can no longer reach the node-local resources —
+	// computePhase treats it as Degraded even when persisted fields still
+	// read as healthy, mirroring the Linstor pattern of distinguishing
+	// "exists in CRD" from "live and reachable."
+	LastProbedAt *v1.Time `json:"lastProbedAt,omitempty"`
 }
 
 // ReplicaStatusApplyConfiguration constructs a declarative configuration of the ReplicaStatus type for use with
@@ -213,5 +220,13 @@ func (b *ReplicaStatusApplyConfiguration) WithLastVerifyTime(value v1.Time) *Rep
 // If called multiple times, the LastVerifyOutOfSyncBytes field is set to the value of the last call.
 func (b *ReplicaStatusApplyConfiguration) WithLastVerifyOutOfSyncBytes(value int64) *ReplicaStatusApplyConfiguration {
 	b.LastVerifyOutOfSyncBytes = &value
+	return b
+}
+
+// WithLastProbedAt sets the LastProbedAt field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LastProbedAt field is set to the value of the last call.
+func (b *ReplicaStatusApplyConfiguration) WithLastProbedAt(value v1.Time) *ReplicaStatusApplyConfiguration {
+	b.LastProbedAt = &value
 	return b
 }

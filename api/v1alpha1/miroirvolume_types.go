@@ -41,6 +41,17 @@ const (
 	VolumeFailed   VolumePhase = "Failed"
 )
 
+// Condition types for standard Kubernetes conditions (Phase 3 readiness work).
+const (
+	// ConditionNodeUnreachable is set when a node's agent has not probed
+	// its replica within the staleness threshold — the replica's live state
+	// is unknown. Phase 3 (CSI controller) will read this to gate staging.
+	ConditionNodeUnreachable = "NodeUnreachable"
+	// ConditionTypeReady is the standard Kubernetes ready condition,
+	// summarizing volume readiness for the controller and humans.
+	ConditionTypeReady = "Ready"
+)
+
 // Replica is one placement of the volume's data — a DRBD peer when the
 // volume is replicated.
 type Replica struct {
@@ -341,6 +352,14 @@ type ReplicaStatus struct {
 	// clean verify (0) reads differently from "never verified" (nil).
 	// +optional
 	LastVerifyOutOfSyncBytes *int64 `json:"lastVerifyOutOfSyncBytes,omitempty"`
+	// LastProbedAt is when this agent last successfully probed the
+	// replica's live state (backing device, DRBD status). A stale probe
+	// means the agent can no longer reach the node-local resources —
+	// computePhase treats it as Degraded even when persisted fields still
+	// read as healthy, mirroring the Linstor pattern of distinguishing
+	// "exists in CRD" from "live and reachable."
+	// +optional
+	LastProbedAt *metav1.Time `json:"lastProbedAt,omitempty"`
 }
 
 // ExportStatus is the observed state of an RWX volume's NFS gateway,
