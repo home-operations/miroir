@@ -64,6 +64,8 @@ const (
 	addrC                 = "192.168.1.43"
 	// cmdDownPvc1 keys fakeDRBDExec.errOn for `drbdsetup down pvc-1`.
 	cmdDownPvc1 = "drbdsetup down pvc-1"
+	// snapGone names a deleted source snapshot in restore-source-gone tests.
+	snapGone = "snap-gone"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -2024,7 +2026,7 @@ func TestReconcileSecondaryDoesNotLatchActivated(t *testing.T) {
 func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeA, nodeB)
-	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-gone"}
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapGone}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	fb := newFakeBackend()
@@ -2047,7 +2049,7 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 func TestRealizeBackingReplicatedSourceGoneFallsBackToFresh(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeA, nodeB)
-	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-gone"}
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapGone}
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
 	// No MiroirSnapshot in the client — it's been deleted.
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
@@ -2071,7 +2073,7 @@ func TestRealizeBackingReplicatedSourceGoneFallsBackToFresh(t *testing.T) {
 func TestRealizeBackingUnreplicatedSourceGoneFails(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeA)
-	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: "snap-gone"}
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapGone}
 	// No DRBD spec — unreplicated. No MiroirSnapshot — it's been deleted.
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
