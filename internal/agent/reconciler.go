@@ -615,12 +615,15 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 		if apierrors.IsNotFound(err) {
 			// The source snapshot is gone — deleted by a backup
 			// tool (kopiur) after the mover job, or by miroir's own
-			// clone cleanup. For a replicated volume, a peer may
-			// already have the cloned data; fall back to a fresh
-			// backing and let DRBD full-sync from the peer, the same
-			// path a wiped node takes when rejoining. For an
-			// unreplicated volume, the data is truly lost.
-			if vol.Spec.DRBD != nil {
+			// clone cleanup. When a peer already realized its clone,
+			// fall back to a fresh backing and let DRBD full-sync
+			// from it, the same path a wiped node takes when
+			// rejoining. Without a realized clone somewhere the data
+			// is truly lost and the volume must park: falling back
+			// on the padded-restore seed would satisfy every
+			// restoreSeedPending gate and mint the empty backing
+			// UpToDate, replicating zeros as a "successful" restore.
+			if vol.Spec.DRBD != nil && peerCloneRealized(vol, r.NodeName) {
 				ctrl.LoggerFrom(ctx).Info("restore source snapshot gone; creating fresh backing for DRBD full-sync",
 					"volume", vol.Name, "snapshot", vol.Spec.Source.SnapshotName)
 				return be.Create(ctx, vol.Name, backingBytes(vol))
@@ -638,6 +641,23 @@ func (r *VolumeReconciler) realizeBacking(ctx context.Context, be backend.Backen
 		return "", err
 	}
 	return r.finishClone(ctx, be, vol)
+}
+
+// peerCloneRealized reports whether another non-FullSync diskful replica
+// has realized its backing — proof a data-bearing clone exists for DRBD
+// to full-sync from. FullSync joiners don't count: their backings are
+// fresh by construction, DeviceCreated without data. The padded-restore
+// seed has only FullSync peers, so it can never pass this gate.
+func peerCloneRealized(vol *miroirv1alpha1.MiroirVolume, self string) bool {
+	for _, rep := range vol.Spec.DiskfulReplicas() {
+		if rep.Node == self || rep.FullSync {
+			continue
+		}
+		if vol.Status.PerNode[rep.Node].DeviceCreated {
+			return true
+		}
+	}
+	return false
 }
 
 // finishClone re-activates an existing clone and settles the shape a

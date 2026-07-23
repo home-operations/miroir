@@ -2097,11 +2097,16 @@ func TestRealizeBackingFullSyncJoinerCreatesFresh(t *testing.T) {
 // A replicated restore whose source snapshot is gone (deleted by a backup
 // tool like kopiur after the mover job) must fall back to a fresh backing
 // and let DRBD full-sync from the peer — not park the volume as Failed.
+// The peer's realized clone (non-FullSync, DeviceCreated) is what proves
+// the data exists somewhere to sync from.
 func TestRealizeBackingReplicatedSourceGoneFallsBackToFresh(t *testing.T) {
 	s := newScheme(t)
 	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapGone}
 	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true},
+	}
 	// No MiroirSnapshot in the client — it's been deleted.
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
@@ -2116,6 +2121,62 @@ func TestRealizeBackingReplicatedSourceGoneFallsBackToFresh(t *testing.T) {
 	}
 	if !slices.Contains(fb.createVol, volPvc1) {
 		t.Fatalf("must create a fresh backing for full-sync: %v", fb.createVol)
+	}
+}
+
+// A replicated restore whose snapshot is gone before ANY leg cloned has
+// nothing to sync from — it must park like the unreplicated case, not
+// come up as two blank replicas wearing the restore's Formatted flag.
+func TestRealizeBackingReplicatedSourceGoneNoRealizedPeerFails(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapGone}
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fb := newFakeBackend()
+	r := &VolumeReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fb)}
+
+	_, err := r.realizeBacking(t.Context(), fb, v, false)
+	if err == nil {
+		t.Fatal("no realized peer clone: the fallback has nothing to sync from and must fail")
+	}
+	if !strings.Contains(err.Error(), "restore source snapshot no longer exists") {
+		t.Fatalf("want errRestoreSourceGone, got %v", err)
+	}
+	if len(fb.createVol) != 0 {
+		t.Fatalf("must not create a fresh backing without a data-bearing peer: %v", fb.createVol)
+	}
+}
+
+// The padded-restore seed is the only data-bearing leg — its joiners are
+// FullSync fresh creates. Falling back to a fresh seed would satisfy every
+// restoreSeedPending gate and mint the empty backing UpToDate, replicating
+// zeros as a "successful" restore. The seed must park instead; a FullSync
+// joiner's DeviceCreated must not count as proof of data.
+func TestRealizeBackingPaddedSeedSourceGoneFails(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapGone, PadForMetadata: true}
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[1].FullSync = true
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeB: {DeviceCreated: true},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fb := newFakeBackend()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+
+	_, err := r.realizeBacking(t.Context(), fb, v, false)
+	if err == nil {
+		t.Fatal("padded seed with gone snapshot must fail, not mint an empty full-sync source")
+	}
+	if !strings.Contains(err.Error(), "restore source snapshot no longer exists") {
+		t.Fatalf("want errRestoreSourceGone, got %v", err)
+	}
+	if len(fb.createVol) != 0 {
+		t.Fatalf("must not create a fresh seed backing: %v", fb.createVol)
 	}
 }
 
