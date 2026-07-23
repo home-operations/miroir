@@ -273,19 +273,27 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{Namespace: agentNamespace, Name: agentName},
 		})
 
-		// 3. Create a replicated PVC and a pod. The pod will stay
-		//    Pending because the volume cannot provision — one
-		//    replica's agent is absent. The CSI controller's waitReady
-		//    will time out and surface a NodeUnreachable condition.
+		// 3. Create a replicated PVC and a pod pinned to a SURVIVING
+		//    node. Evicting the agent also unregisters the CSI driver
+		//    from the excluded node's CSINode, so a WaitForFirstConsumer
+		//    pod pinned there would never schedule and provisioning
+		//    would never even start. On a keep node the pod schedules,
+		//    CreateVolume runs, and — with two storage nodes and a
+		//    2-replica class — placement is forced to pin the second
+		//    replica to the excluded node, whose agent never reports.
 		Expect(k8s.Create(ctx, pvc(ns, "data", replicatedClass, "1Gi", nil))).To(Succeed())
 		consumer := pod(ns, "consumer", "data")
-		consumer.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": excludeNode}
+		consumer.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": keepNodes[0]}
 		Expect(k8s.Create(ctx, consumer)).To(Succeed())
 
 		// 4. Wait for the NodeUnreachable condition to appear on the
-		//    MiroirVolume. The CSI controller's waitReady times out
-		//    after provisionTimeout (~120s) and then checkNodeUnreachable
-		//    fires if a replica node's PerNode is absent.
+		//    MiroirVolume. Each waitReady pass times out after
+		//    provisionTimeout (~120s), but an absent PerNode entry is
+		//    only branded unreachable once the excluded node's MiroirNode
+		//    heartbeat also goes stale (StatsStaleAfter, 5 min) — earlier
+		//    passes read as a genuine timeout and the provisioner
+		//    retries. The condition therefore lands on the second or
+		//    third CreateVolume attempt, ~6-7 min after the eviction.
 		var mvName string
 		Eventually(func(g Gomega) {
 			var v miroirv1alpha1.MiroirVolume
@@ -316,14 +324,14 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 			g.Expect(cond).NotTo(BeNil(),
 				"NodeUnreachable condition not yet set on %s", mvName)
 			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-		}).WithTimeout(4*time.Minute).Should(Succeed(),
-			"NodeUnreachable condition must appear within provision timeout window")
+		}).WithTimeout(10*time.Minute).WithPolling(5*time.Second).Should(Succeed(),
+			"NodeUnreachable condition must appear once the agent heartbeat goes stale")
 
 		// 5. Assert a NodeUnreachable event was emitted.
 		Eventually(func(g Gomega) {
 			found, err := eventWithReason(ctx, "NodeUnreachable", mvName)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(found).To(BeTrue(), "want a NodeUnreachable event for %s", mvName)
-		}).Should(Succeed())
+		}).WithTimeout(time.Minute).WithPolling(2 * time.Second).Should(Succeed())
 	})
 })
