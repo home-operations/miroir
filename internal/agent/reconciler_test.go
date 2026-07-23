@@ -2304,7 +2304,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 			},
 			want:      miroirv1alpha1.VolumeReady,
-			wantReady: "1/1",
+			wantReady: oneOfOne,
 		},
 		{
 			name: "one ready, one not (replicated, degraded)",
@@ -2619,7 +2619,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 			},
 			want:      miroirv1alpha1.VolumeReady,
-			wantReady: "1/1",
+			wantReady: oneOfOne,
 		},
 	}
 	for _, tc := range cases {

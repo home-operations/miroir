@@ -1238,8 +1238,12 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 			}
 			polled = vol
 			switch vol.Status.Phase {
-			case miroirv1alpha1.VolumeReady, miroirv1alpha1.VolumeDegraded:
+			case miroirv1alpha1.VolumeReady:
 				return true, nil
+			case miroirv1alpha1.VolumeDegraded:
+				// Degraded is provisionable while fresh replicas finish
+				// syncing, but not while a replica agent is absent or stale.
+				return len(unreachableReplicaNodes(vol, time.Now())) == 0, nil
 			case miroirv1alpha1.VolumeFailed:
 				return false, &errVolumeFailed{detail: fmt.Sprintf("%+v", vol.Status.PerNode)}
 			default:
@@ -1301,7 +1305,44 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 // could live in internal/constants (imported by both packages), but moving
 // it would touch the agent package which Phase 3 deliberately avoids.
 func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1.MiroirVolume) []string {
-	now := time.Now()
+	unreachable := unreachableReplicaNodes(vol, time.Now())
+	if len(unreachable) == 0 {
+		return nil
+	}
+
+	cond := metav1.Condition{
+		Type:   miroirv1alpha1.ConditionNodeUnreachable,
+		Status: metav1.ConditionTrue,
+		Reason: "AgentUnreachable",
+		Message: fmt.Sprintf("Node agent unreachable on %s (no status received within %s)",
+			strings.Join(unreachable, ", "), agent.StaleProbeThreshold),
+	}
+	// Use a fresh context: the caller's ctx is already canceled
+	// (waitReady timed out), so the status update would silently
+	// fail and the condition would never be written.
+	updCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// The agent may have updated the volume between our poll and
+	// this write, causing a resource-version conflict. Retry with
+	// a fresh read so the condition is actually persisted. If it
+	// still fails (non-conflict error, failed re-read, or exhausted
+	// retries), the FailedPrecondition return still surfaces the
+	// problem to the provisioner, but log it so it's observable.
+	if err := retryOnConflict(updCtx, c.Client, c.reader(), vol, func(v *miroirv1alpha1.MiroirVolume) {
+		meta.SetStatusCondition(&v.Status.Conditions, cond)
+	}); err != nil {
+		log.Error(err, "failed to persist NodeUnreachable condition",
+			"volume", vol.Name, "unreachable", unreachable)
+	}
+	if c.Recorder != nil {
+		c.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "NodeUnreachable", "Provision",
+			"Node agent unreachable on %s (no status received within %s); volume %s cannot provision",
+			strings.Join(unreachable, ", "), agent.StaleProbeThreshold, vol.Name)
+	}
+	return unreachable
+}
+
+func unreachableReplicaNodes(vol *miroirv1alpha1.MiroirVolume, now time.Time) []string {
 	var unreachable []string
 	for _, rep := range vol.Spec.Replicas {
 		if rep.Diskless {
@@ -1316,38 +1357,6 @@ func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1
 		if ps.LastProbedAt != nil && now.Sub(ps.LastProbedAt.Time) > agent.StaleProbeThreshold {
 			// Agent was alive but has gone silent — stale probe.
 			unreachable = append(unreachable, rep.Node)
-		}
-	}
-
-	if len(unreachable) > 0 {
-		cond := metav1.Condition{
-			Type:   miroirv1alpha1.ConditionNodeUnreachable,
-			Status: metav1.ConditionTrue,
-			Reason: "AgentUnreachable",
-			Message: fmt.Sprintf("Node agent unreachable on %s (no status received within %s)",
-				strings.Join(unreachable, ", "), agent.StaleProbeThreshold),
-		}
-		// Use a fresh context: the caller's ctx is already canceled
-		// (waitReady timed out), so the status update would silently
-		// fail and the condition would never be written.
-		updCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		// The agent may have updated the volume between our poll and
-		// this write, causing a resource-version conflict. Retry with
-		// a fresh read so the condition is actually persisted. If it
-		// still fails (non-conflict error, failed re-read, or exhausted
-		// retries), the FailedPrecondition return still surfaces the
-		// problem to the provisioner, but log it so it's observable.
-		if err := retryOnConflict(updCtx, c.Client, c.reader(), vol, func(v *miroirv1alpha1.MiroirVolume) {
-			meta.SetStatusCondition(&v.Status.Conditions, cond)
-		}); err != nil {
-			log.Error(err, "failed to persist NodeUnreachable condition",
-				"volume", vol.Name, "unreachable", unreachable)
-		}
-		if c.Recorder != nil {
-			c.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "NodeUnreachable", "Provision",
-				"Node agent unreachable on %s (no status received within %s); volume %s cannot provision",
-				strings.Join(unreachable, ", "), agent.StaleProbeThreshold, vol.Name)
 		}
 	}
 	return unreachable

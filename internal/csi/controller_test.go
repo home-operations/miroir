@@ -126,6 +126,14 @@ func degradedOnGet(s *runtime.Scheme) client.WithWatch {
 				}
 				if vol, ok := obj.(*miroirv1alpha1.MiroirVolume); ok {
 					vol.Status.Phase = miroirv1alpha1.VolumeDegraded
+					if vol.Status.PerNode == nil {
+						vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
+					}
+					for _, rep := range vol.Spec.DiskfulReplicas() {
+						vol.Status.PerNode[rep.Node] = miroirv1alpha1.ReplicaStatus{
+							LastProbedAt: probeTime(0),
+						}
+					}
 				}
 				return nil
 			},
@@ -2514,6 +2522,31 @@ func TestWaitReadyNodeUnreachableStalePerNode(t *testing.T) {
 	cond := meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
 	if cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Fatalf("NodeUnreachable condition must be True, got %+v", cond)
+	}
+	if !rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must be emitted")
+	}
+}
+
+func TestWaitReadyRejectsDegradedWithUnreachableReplica(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	vol := volumeWithStatus("pvc-degraded-unreachable", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+	})
+	vol.Status.Phase = miroirv1alpha1.VolumeDegraded
+	c := &Controller{
+		Client:           frozenClient(s, vol),
+		Recorder:         rec,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), vol.Name)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("Degraded with an unreachable replica must not provision, got %v", err)
+	}
+	if !strings.Contains(err.Error(), nodeB) {
+		t.Fatalf("error must name the unreachable node %s: %v", nodeB, err)
 	}
 	if !rec.hasNodeUnreachableEvent() {
 		t.Fatal("NodeUnreachable event must be emitted")

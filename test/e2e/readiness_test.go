@@ -75,11 +75,22 @@ func mivCondition(vol *miroirv1alpha1.MiroirVolume, condType string) *metav1.Con
 
 // eventWithReason returns true if there is a core/v1 Event with the given
 // reason for the named regarding object.
-func eventWithReason(ctx context.Context, reason, name string) bool {
+func eventWithReason(ctx context.Context, reason, name string) (bool, error) {
 	var evs eventsv1.EventList
-	Expect(k8s.List(ctx, &evs, client.InNamespace("default"))).To(Succeed())
+	if err := k8s.List(ctx, &evs, client.InNamespace("default")); err != nil {
+		return false, err
+	}
 	for _, e := range evs.Items {
 		if e.Reason == reason && e.Regarding.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func hasDiskfulReplicaOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {
+	for _, rep := range vol.Spec.DiskfulReplicas() {
+		if rep.Node == node {
 			return true
 		}
 	}
@@ -102,9 +113,6 @@ var _ = Describe("stale readiness detection (LastProbedAt)", Ordered, func() {
 		Expect(client.IgnoreAlreadyExists(k8s.Create(ctx, &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{Name: ns},
 		}))).To(Succeed())
-		nodes := replicaNodes(ctx)
-		nodeA = nodes[0]
-		nodeB = nodes[1]
 	})
 	AfterEach(func() { failed = failed || CurrentSpecReport().Failed() })
 	AfterAll(func() {
@@ -124,6 +132,10 @@ var _ = Describe("stale readiness detection (LastProbedAt)", Ordered, func() {
 
 		var v miroirv1alpha1.MiroirVolume
 		Expect(k8s.Get(ctx, client.ObjectKey{Name: pv}, &v)).To(Succeed())
+		replicas := v.Spec.DiskfulReplicas()
+		Expect(replicas).To(HaveLen(2))
+		nodeA = replicas[0].Node
+		nodeB = replicas[1].Node
 
 		// Both nodes must have PerNode entries with non-nil LastProbedAt.
 		psA, okA := v.Status.PerNode[nodeA]
@@ -159,12 +171,17 @@ var _ = Describe("stale readiness detection (LastProbedAt)", Ordered, func() {
 		})).To(Succeed())
 		// Wait for the new agent pod to be ready.
 		Eventually(func(g Gomega) {
-			var p corev1.Pod
-			g.Expect(k8s.Get(ctx, client.ObjectKey{
-				Namespace: agentNamespace,
-				Name:      agentPodOn(ctx, nodeA),
-			}, &p)).To(Succeed())
-			g.Expect(podReady(&p)).To(BeTrue(), "new agent pod on %s not ready yet", nodeA)
+			var pods corev1.PodList
+			g.Expect(k8s.List(ctx, &pods, client.InNamespace(agentNamespace),
+				client.MatchingLabels{"app.kubernetes.io/component": "agent"})).To(Succeed())
+			for i := range pods.Items {
+				p := &pods.Items[i]
+				if p.Spec.NodeName == nodeA && p.Name != origPod {
+					g.Expect(podReady(p)).To(BeTrue(), "new agent pod on %s not ready yet", nodeA)
+					return
+				}
+			}
+			g.Expect(false).To(BeTrue(), "replacement agent pod on %s not created yet", nodeA)
 		}).WithTimeout(2 * time.Minute).Should(Succeed())
 
 		// Now check LastProbedAt was refreshed.
@@ -261,7 +278,9 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 		//    replica's agent is absent. The CSI controller's waitReady
 		//    will time out and surface a NodeUnreachable condition.
 		Expect(k8s.Create(ctx, pvc(ns, "data", replicatedClass, "1Gi", nil))).To(Succeed())
-		Expect(k8s.Create(ctx, pod(ns, "consumer", "data"))).To(Succeed())
+		consumer := pod(ns, "consumer", "data")
+		consumer.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": excludeNode}
+		Expect(k8s.Create(ctx, consumer)).To(Succeed())
 
 		// 4. Wait for the NodeUnreachable condition to appear on the
 		//    MiroirVolume. The CSI controller's waitReady times out
@@ -291,6 +310,8 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 				v = mvs.Items[0]
 				mvName = v.Name
 			}
+			g.Expect(hasDiskfulReplicaOn(&v, excludeNode)).To(BeTrue(),
+				"MiroirVolume %s is not pinned to excluded node %s", mvName, excludeNode)
 			cond := mivCondition(&v, miroirv1alpha1.ConditionNodeUnreachable)
 			g.Expect(cond).NotTo(BeNil(),
 				"NodeUnreachable condition not yet set on %s", mvName)
@@ -299,7 +320,10 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 			"NodeUnreachable condition must appear within provision timeout window")
 
 		// 5. Assert a NodeUnreachable event was emitted.
-		Expect(eventWithReason(ctx, "NodeUnreachable", mvName)).
-			To(BeTrue(), "want a NodeUnreachable event for %s", mvName)
+		Eventually(func(g Gomega) {
+			found, err := eventWithReason(ctx, "NodeUnreachable", mvName)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(found).To(BeTrue(), "want a NodeUnreachable event for %s", mvName)
+		}).Should(Succeed())
 	})
 })

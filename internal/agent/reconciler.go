@@ -1635,11 +1635,14 @@ func detachedDiskMessage(diskFailed bool) string {
 // controller waits on, plus the "ready/total" diskful summary backing the
 // Replicas printcolumn.
 func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase, string) {
+	return computePhaseAt(vol, time.Now())
+}
+
+func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alpha1.VolumePhase, string) {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
 	realized := 0
 	failed := false
-	now := time.Now()
 	for _, rep := range diskfulReplicas {
 		st, ok := vol.Status.PerNode[rep.Node]
 		replicated := vol.Spec.DRBD != nil
