@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.9](https://github.com/home-operations/miroir/compare/0.11.8...0.11.9) (2026-07-23)
+
+
+### Bug Fixes
+
+* **agent:** fence snapshot barrier writes against stale rounds ([#342](https://github.com/home-operations/miroir/issues/342)) ([9cf42a8](https://github.com/home-operations/miroir/commit/9cf42a80f1e30c99d891970d454ebc32e14c6afb))
+* **container:** update image registry.k8s.io/kubectl (v1.36.2 → v1.36.3) ([#339](https://github.com/home-operations/miroir/issues/339)) ([37f0f17](https://github.com/home-operations/miroir/commit/37f0f172298c20c31960c967154cd3bfe955ccc1))
+* **deps:** update kubernetes monorepo (v0.36.2 → v0.36.3) ([#341](https://github.com/home-operations/miroir/issues/341)) ([8384aeb](https://github.com/home-operations/miroir/commit/8384aeb92d03efb9c838fd4c1605942f7791eb89))
+* detect stale replica readiness, surface busy-teardown live consumers and unreachable CSI nodes ([#344](https://github.com/home-operations/miroir/issues/344)) ([4619407](https://github.com/home-operations/miroir/commit/461940769b6e564b3f9a51039b182e34389f8d58))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool kubectl (1.36.2 → 1.36.3) ([#340](https://github.com/home-operations/miroir/issues/340)) ([6794e1c](https://github.com/home-operations/miroir/commit/6794e1c7de1d231d4869885b62318802e1033843))
+
 ## [0.11.8](https://github.com/home-operations/miroir/compare/0.11.7...0.11.8) (2026-07-22)
 
 
