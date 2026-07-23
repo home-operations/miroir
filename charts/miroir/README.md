@@ -166,7 +166,7 @@ Kubernetes: `>=1.31.0`
 | sidecars.snapshotter.timeout | string | `"120s"` |  |
 | storageCapacity.enabled | bool | `false` |  |
 | uninstall.confirmation | string | `""` | Consent to destroy all volume data on `helm uninstall`: set to the literal "yes-really-destroy-data" to render the pre-delete hook Job that deletes every MiroirSnapshot and MiroirVolume — the agents then tear down each DRBD resource and backing device, including volumes whose PV reclaimPolicy is Retain. Hooks are baked into the release at install/upgrade time, so set this with a `helm upgrade` *before* running `helm uninstall`. Any other non-empty value fails the render. |
-| uninstall.image | string | `"registry.k8s.io/kubectl:v1.36.2"` | Image for the uninstall hook Job (needs only `kubectl`). |
+| uninstall.image | string | `"registry.k8s.io/kubectl:v1.36.3"` | Image for the uninstall hook Job (needs only `kubectl`). |
 | unreachableNodeTolerationSeconds | int | `5` | Seconds the controller pod stays bound to an unreachable node before eviction. The Kubernetes default (300) leaves a single-replica controller unable to provision, expand, or snapshot for five minutes after its node dies; 5 reschedules it almost immediately (the controller is stateless). |
 
 ---

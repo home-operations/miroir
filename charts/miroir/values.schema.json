@@ -1071,7 +1071,7 @@
           "type": "string"
         },
         "image": {
-          "default": "registry.k8s.io/kubectl:v1.36.2",
+          "default": "registry.k8s.io/kubectl:v1.36.3",
           "description": "Image for the uninstall hook Job (needs only `kubectl`).",
           "title": "image",
           "type": "string"
