@@ -497,6 +497,16 @@ spec:
                         Zero means unassigned (fresh volume or unreplicated).
                       format: int32
                       type: integer
+                    lastProbedAt:
+                      description: |-
+                        LastProbedAt is when this agent last successfully probed the
+                        replica's live state (backing device, DRBD status). A stale probe
+                        means the agent can no longer reach the node-local resources —
+                        computePhase treats it as Degraded even when persisted fields still
+                        read as healthy, mirroring the Linstor pattern of distinguishing
+                        "exists in CRD" from "live and reachable."
+                      format: date-time
+                      type: string
                     lastVerifyOutOfSyncBytes:
                       description: |-
                         LastVerifyOutOfSyncBytes is the out-of-sync total the last verify

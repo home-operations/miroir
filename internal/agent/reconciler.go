@@ -118,6 +118,24 @@ const deepCheckInterval = 5 * time.Minute
 // changes in the kernel without generating Kubernetes events.
 const drbdPollInterval = 30 * time.Second
 
+// StaleProbeThreshold bounds how long a replica's LastProbedAt can age
+// before computePhase reads it as stale — the agent can no longer reach
+// the node-local resources, so the replica is Degraded even if its
+// persisted fields still read healthy. Must be longer than deepCheckInterval
+// (the full pipeline, which stamps LastProbedAt, runs at most every 5 min):
+// the fast path does not stamp LastProbedAt, so a healthy replica parked
+// in the fast path can appear stale after one missed deep-check. 2× gives
+// one missed-cycle tolerance — the first deep-check expires the fingerprint
+// naturally (deepCheckInterval), and only if the second also fails does the
+// phase flip Degraded.
+const StaleProbeThreshold = 2 * deepCheckInterval
+
+// probeNow stamps the current time as a probe timestamp for status writes.
+func probeNow() *metav1.Time {
+	t := metav1.Now()
+	return &t
+}
+
 // errSplitBrain gives the split-brain transition log a real error value.
 var errSplitBrain = errors.New("DRBD split-brain detected")
 
@@ -201,6 +219,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		// Realize: create (or grow) the backing device — a CoW clone when the
 		// volume restores from a snapshot.
+		if err := r.clearStaleBacking(ctx, vol, pool, poolName); err != nil {
+			return ctrl.Result{}, r.reportError(ctx, vol, err)
+		}
 		dev, err = r.realizeBacking(ctx, pool.Backend, vol, vol.Spec.Replicas[idx].FullSync)
 		if err != nil {
 			return r.reportRealizeError(ctx, vol, err)
@@ -208,17 +229,8 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// Record the device before growing it: computePhase treats errors
 		// with DeviceCreated=false as hard provisioning failures, and a
 		// transient resize error must not be one.
-		if !vol.Status.PerNode[r.NodeName].DeviceCreated {
-			if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
-				DeviceCreated: true,
-				DevicePath:    dev,
-				Pool:          poolName,
-			}); err != nil {
-				return ctrl.Result{}, err
-			}
-			vol.Status.PerNode[r.NodeName] = miroirv1alpha1.ReplicaStatus{
-				DeviceCreated: true, DevicePath: dev, Pool: poolName,
-			}
+		if err := r.stampDeviceCreated(ctx, vol, dev, poolName); err != nil {
+			return ctrl.Result{}, err
 		}
 		if vol.Spec.DRBD == nil {
 			// A restore clone is born at the snapshot's size; grow the
@@ -241,6 +253,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				SizeBytes:     vol.Spec.SizeBytes,
 				Connected:     true,
 				Pool:          poolName,
+				LastProbedAt:  probeNow(),
 			}); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -330,6 +343,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		Pool:                    statusPool,
 		Message:                 detachedDiskMessage(diskFailed),
 		PrimarySince:            primarySince(vol, r.NodeName, st.Primary),
+		LastProbedAt:            probeNow(),
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -957,6 +971,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 		r.clearBusyFails(vol.Name)
 		st := vol.Status.PerNode[r.NodeName]
 		st.Message = "replica removal blocked: " + reason
+		st.LastProbedAt = probeNow()
 		if err := r.patchStatus(ctx, vol, st); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -1039,6 +1054,13 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			if r.orphanHold(ctx, vol, slot, busy) {
 				return r.reclaimOrphanHold(ctx, vol, slot, busy)
 			}
+			// When the orphan hold check returns false with a cause
+			// containing "held open" (live opener, mounted, or scan error),
+			// continue normal reportBusy parking as before Phase 2. No
+			// force-detach escalation — destroying a backing under a live
+			// consumer causes I/O errors and permanent data loss (#195).
+			// The orphan-hold reclaim already solves the real production
+			// problem (dead openers).
 			return busy
 		}
 		// With the resource down, wipe the DRBD metadata before the sweep
@@ -1127,6 +1149,7 @@ func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1
 func (r *VolumeReconciler) parkWithMessage(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error, requeue time.Duration) (ctrl.Result, error) {
 	st := vol.Status.PerNode[r.NodeName]
 	st.Message = cause.Error()
+	st.LastProbedAt = probeNow()
 	if err := r.patchStatus(ctx, vol, st); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -1201,6 +1224,18 @@ func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.M
 			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownBusy", "Teardown",
 				"cannot tear down %s on node %s after %d attempts: %v; something still holds the device (or its backing) open",
 				vol.Name, r.NodeName, fails, cause)
+			// When the hold is a live consumer (held open with a live
+			// opener or a still-mounted device), emit a distinct event
+			// so operators can see deletion is blocked by a live consumer
+			// — the only path out is the consumer releasing the device,
+			// not orphan-hold reclaim. The guard below prevents
+			// re-emission on every parked cycle.
+			if strings.Contains(cause.Error(), "held open") && !strings.Contains(vol.Status.PerNode[r.NodeName].Message, "live consumer") {
+				r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownLiveConsumer", "Teardown",
+					"deletion of %s on node %s is blocked by a live consumer still holding the device open; "+
+						"teardown will retry once the consumer releases it — no force-detach will be attempted",
+					vol.Name, r.NodeName)
+			}
 		}
 	}
 	if vol.Status.PerNode[r.NodeName].Message == cause.Error() {
@@ -1304,6 +1339,54 @@ func (r *VolumeReconciler) reclaimOrphanHold(ctx context.Context, vol *miroirv1a
 			vol.Name, r.NodeName, slot.DRBDMinor)
 	}
 	return nil
+}
+
+// clearStaleBacking probes the backing device when the status slot still
+// says DeviceCreated. If it is gone (node wipe, out-of-band deletion),
+// the stale flag is cleared with a message so computePhase does not treat
+// the vanished device as realized. Returns nil when healthy.
+func (r *VolumeReconciler) clearStaleBacking(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, pool PoolBackend, poolName string) error {
+	prev := vol.Status.PerNode[r.NodeName]
+	if !prev.DeviceCreated {
+		return nil
+	}
+	exists, err := pool.Backend.Exists(ctx, vol.Name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	ctrl.LoggerFrom(ctx).Info("backing device missing while status says DeviceCreated; clearing the stale flag",
+		"volume", vol.Name)
+	// No Message: computePhase treats DeviceCreated=false + Message as a
+	// hard failure (VolumeFailed), which would abort any in-flight
+	// waitReady poll. Without a Message, the replica reads as
+	// not-realized → Phase=Creating, accurately reflecting re-creation.
+	return r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: false,
+		Pool:          poolName,
+		LastProbedAt:  probeNow(),
+	})
+}
+
+// stampDeviceCreated patches the per-node slot to mark the backing device
+// as created, unless it was already recorded. computePhase treats errors
+// with DeviceCreated=false as hard provisioning failures, so the stamp
+// must run before any transient operation (e.g. resize) that could error.
+func (r *VolumeReconciler) stampDeviceCreated(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, dev, poolName string) error {
+	if vol.Status.PerNode[r.NodeName].DeviceCreated {
+		return nil
+	}
+	// patchStatus writes the slot back into vol.Status.PerNode, so a later
+	// error in the same pass (reportError re-applies the slot) carries the
+	// stamp instead of clearing the value just persisted.
+	return r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: true,
+		DevicePath:    dev,
+		Pool:          poolName,
+		LastProbedAt:  probeNow(),
+	})
 }
 
 // reportRealizeError routes a realizeBacking failure: an impossible
@@ -1439,6 +1522,9 @@ func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusA
 	if st.Message != "" {
 		ac = ac.WithMessage(st.Message)
 	}
+	if st.LastProbedAt != nil {
+		ac = ac.WithLastProbedAt(*st.LastProbedAt)
+	}
 	return ac
 }
 
@@ -1546,6 +1632,10 @@ func detachedDiskMessage(diskFailed bool) string {
 // controller waits on, plus the "ready/total" diskful summary backing the
 // Replicas printcolumn.
 func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase, string) {
+	return computePhaseAt(vol, time.Now())
+}
+
+func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alpha1.VolumePhase, string) {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
 	realized := 0
@@ -1561,7 +1651,17 @@ func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase,
 			// established but disconnected volume is Degraded, not Creating.
 			realized++
 			if !replicated || st.Connected {
-				ready++
+				// Staleness gate: a replica whose LastProbedAt is set and
+				// exceeds StaleProbeThreshold means the agent can no longer
+				// reach the node-local resources. Treat it as realized but
+				// NOT ready — even if Connected=true — so the phase is
+				// Degraded, not Ready. Nil LastProbedAt (legacy volume) uses
+				// backward-compatible behavior: trust the persisted fields.
+				if st.LastProbedAt != nil && now.Sub(st.LastProbedAt.Time) > StaleProbeThreshold {
+					// stale: realized but not ready
+				} else {
+					ready++
+				}
 			}
 		case ok && st.Message != "" && !st.DeviceCreated:
 			// Hard failure: the backing device never materialised.

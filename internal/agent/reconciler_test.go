@@ -145,6 +145,12 @@ func (f *fakeBackend) CreateFromSnapshot(_ context.Context, vol, _, _ string) (s
 }
 
 func (f *fakeBackend) Delete(_ context.Context, vol string) error {
+	if f.failOn == "delete" || f.failOn == vol+":delete" {
+		return backend.ErrBusy
+	}
+	if f.failOn == vol+":delete-hard" {
+		return errBoom
+	}
 	delete(f.created, vol)
 	delete(f.existing, vol)
 	return nil
@@ -229,7 +235,7 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
 	}
-	if got.Status.PerNode[nodeA].DevicePath != "/dev/fake/pvc-1" {
+	if got.Status.PerNode[nodeA].DevicePath != fb.DevicePath(volPvc1) {
 		t.Fatalf("unexpected status %+v", got.Status.PerNode)
 	}
 	// No peers means fully in sync: the zero value would perma-fire any
@@ -379,7 +385,7 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 	if got.Status.Phase != miroirv1alpha1.VolumeReady {
 		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
 	}
-	if got.Status.PerNode[nodeA].DevicePath != "/dev/fake/pvc-1" {
+	if got.Status.PerNode[nodeA].DevicePath != fb.DevicePath(volPvc1) {
 		t.Fatalf("backing not recovered: %+v", got.Status.PerNode)
 	}
 }
@@ -1418,13 +1424,13 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 	if res.RequeueAfter != busyRetryAfter {
 		t.Fatalf("want %v parked retry, got %v", busyRetryAfter, res.RequeueAfter)
 	}
-	select {
-	case e := <-rec.Events:
-		if !strings.Contains(e, "TeardownBusy") {
-			t.Fatalf("want a TeardownBusy warning, got %q", e)
-		}
-	default:
+	// The escalation cycle emits both TeardownBusy and (because the
+	// cause contains "held open") a one-shot TeardownLiveConsumer.
+	if !drainEvents(rec, "TeardownBusy") {
 		t.Fatal("want a TeardownBusy warning event")
+	}
+	if !drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("want a TeardownLiveConsumer warning event")
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
@@ -1440,10 +1446,8 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 	if err != nil || res.RequeueAfter != busyRetryAfter {
 		t.Fatalf("post-escalation cycle must stay parked, got %v / %v", res.RequeueAfter, err)
 	}
-	select {
-	case e := <-rec.Events:
-		t.Fatalf("parked cycles must not re-emit events, got %q", e)
-	default:
+	if drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("parked cycles must not re-emit TeardownLiveConsumer")
 	}
 
 	// The hold clears: teardown completes, this node's finalizer releases,
@@ -1654,6 +1658,53 @@ func TestReconcileTeardownOrphanHoldMountedStaysParked(t *testing.T) {
 	fe.notCalledWith(t, "drbdsetup detach")
 	if !fb.existing[volPvc1] {
 		t.Fatal("the backing must survive while the device is mounted somewhere")
+	}
+}
+
+// When teardown is blocked by a live consumer (orphanHold returns false,
+// cause contains "held open"), a TeardownLiveConsumer Warning event is
+// emitted at the busyFailLimit crossing so operators can see the deletion
+// is blocked by a live consumer — not by a dead-held orphan. The teardown
+// stays parked (no force-detach, no backing destruction) and the event is
+// not re-emitted on subsequent parked cycles.
+func TestReconcileTeardownLiveConsumerEmitsEvent(t *testing.T) {
+	procDir := procFixture(t, map[int]string{4242424: unrelatedMountinfo})
+	r, fb, fe, rec := orphanHoldFixture(t, procDir)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+
+	// Ride up to busyFailLimit — orphanHold returns false (pid 4242424 alive).
+	for i := 1; i < busyFailLimit; i++ {
+		res, err := r.Reconcile(t.Context(), req)
+		if err != nil || res.RequeueAfter != 10*time.Second {
+			t.Fatalf("attempt %d must ride the 10s busy retry, got %v / %v", i, res.RequeueAfter, err)
+		}
+	}
+
+	// The crossing cycle: escalation fires, TeardownLiveConsumer event emitted.
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil {
+		t.Fatalf("the escalation must park, not error: %v", err)
+	}
+	if res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("want %v parked retry, got %v", busyRetryAfter, res.RequeueAfter)
+	}
+	// No force-detach must have been attempted.
+	fe.notCalledWith(t, "drbdsetup detach")
+	if !fb.existing[volPvc1] {
+		t.Fatal("the backing must survive while a live consumer holds the device")
+	}
+	// The TeardownLiveConsumer event must have been emitted.
+	if !drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("want a TeardownLiveConsumer warning event")
+	}
+
+	// One more parked cycle: the event must not re-emit.
+	res, err = r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("post-escalation cycle must stay parked, got %v / %v", res.RequeueAfter, err)
+	}
+	if drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("TeardownLiveConsumer event must not re-emit on parked cycles")
 	}
 }
 
@@ -2231,6 +2282,7 @@ func TestComputePhaseMixing(t *testing.T) {
 		noneOfTwo = "0/2"
 		oneOfTwo  = "1/2"
 		twoOfTwo  = "2/2"
+		zeroOfOne = "0/1"
 	)
 	cases := []struct {
 		name      string
@@ -2252,7 +2304,7 @@ func TestComputePhaseMixing(t *testing.T) {
 				},
 			},
 			want:      miroirv1alpha1.VolumeReady,
-			wantReady: "1/1",
+			wantReady: oneOfOne,
 		},
 		{
 			name: "one ready, one not (replicated, degraded)",
@@ -2413,6 +2465,161 @@ func TestComputePhaseMixing(t *testing.T) {
 			},
 			want:      miroirv1alpha1.VolumeReady,
 			wantReady: twoOfTwo,
+		},
+		// --- Staleness detection (LastProbedAt) ---
+		{
+			name: "fresh probe + healthy replicated → Ready",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": freshProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "stale probe + healthy persisted → Degraded",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": staleProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": staleProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "nil LastProbedAt (legacy) + healthy → Ready (backward compatible)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true, LastProbedAt: nil},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true, LastProbedAt: nil},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "probe aged under deepCheckInterval (4 min) + healthy → Ready (steady-state false-positive guard)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": nearProbe(4*time.Minute, deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": nearProbe(4*time.Minute, deviceCreated, upToDate, connected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "fresh probe + disconnected → Degraded (preserves existing behavior)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": freshProbe(deviceCreated, upToDate, disconnected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
+		},
+		{
+			name: "fresh probe + DeviceCreated=false → not realized",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceNotCreated, "", false, 0),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: zeroOfOne,
+		},
+		{
+			name: "DeviceCreated cleared after missing probe + message → Failed (hard provisioning failure)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: false, SizeBytes: 1 << 30, LastProbedAt: probeNow(), Message: "backing device missing"},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeFailed,
+			wantReady: zeroOfOne,
+		},
+		{
+			name: "stale probe + unreplicated volume → Degraded",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": staleProbe(deviceCreated, "", true, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: zeroOfOne,
+		},
+		{
+			name: "fresh probe + unreplicated volume → Ready",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceCreated, "", true, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: oneOfOne,
 		},
 	}
 	for _, tc := range cases {
@@ -2678,6 +2885,55 @@ func countCalls(fe *fakeDRBDExec, substr string) int {
 		}
 	}
 	return n
+}
+
+// --- computePhase staleness helpers ------------------------------------------
+
+const (
+	deviceCreated    = true
+	deviceNotCreated = false
+	upToDate         = diskStateUpToDate
+	connected        = true
+	disconnected     = false
+)
+
+func sized(s int64) int64 { return s }
+
+func probeTime(d time.Duration) *metav1.Time {
+	t := metav1.NewTime(time.Now().Add(d))
+	return &t
+}
+
+func freshProbe(dev bool, disk string, conn bool, size int64) miroirv1alpha1.ReplicaStatus {
+	return miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: dev,
+		DiskState:     disk,
+		Connected:     conn,
+		SizeBytes:     size,
+		LastProbedAt:  probeNow(),
+	}
+}
+
+func staleProbe(dev bool, disk string, conn bool, size int64) miroirv1alpha1.ReplicaStatus {
+	return miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: dev,
+		DiskState:     disk,
+		Connected:     conn,
+		SizeBytes:     size,
+		LastProbedAt:  probeTime(-11 * time.Minute),
+	}
+}
+
+// nearProbe is a probe aged by the given (negative) duration — used to test
+// probes that are stale-ish but still within the StaleProbeThreshold.
+func nearProbe(age time.Duration, dev bool, disk string, conn bool, size int64) miroirv1alpha1.ReplicaStatus {
+	return miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: dev,
+		DiskState:     disk,
+		Connected:     conn,
+		SizeBytes:     size,
+		LastProbedAt:  probeTime(-age),
+	}
 }
 
 // steadyVolume builds a settled replicated volume + exec fake for the
@@ -3472,5 +3728,98 @@ func TestFastPathMissesOnPrimaryWithoutActivatedLatch(t *testing.T) {
 	}
 	if !got.Status.Activated {
 		t.Fatal("the full pipeline must run and latch Activated for a Primary leg")
+	}
+}
+
+// --- readiness staleness detection reconcile-level tests ---------------------
+
+// When the backing-device probe fails (Exists returns false while status
+// says DeviceCreated=true), the agent must clear DeviceCreated and set a
+// message so computePhase does not treat the vanished device as realized.
+func TestReconcileMissingBackingClearsDeviceCreated(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	// No existing device — simulate the backing being wiped.
+	v := vol(volPvc1, nodeA)
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DevicePath: "/dev/fake/pvc-1", SizeBytes: 1 << 30, Connected: true},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
+
+	reconcile(t, r, volPvc1)
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status.PerNode[nodeA]
+	if !st.DeviceCreated {
+		t.Fatalf("backing was re-created by the reconcile; DeviceCreated must be true: %+v", st)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeReady {
+		t.Fatalf("after realizing the fresh backing, phase = %s, want Ready", got.Status.Phase)
+	}
+	// DeviceCreated reflects the current reality, and LastProbedAt is fresh.
+	if st.LastProbedAt == nil {
+		t.Fatal("LastProbedAt must be stamped after the successful reconcile")
+	}
+}
+
+// When the DRBD status probe fails, the agent must NOT stamp a fresh
+// LastProbedAt — staleness is detectable because the previous probe
+// timestamp ages out. Connected/DiskState are already not updated (the
+// error path returns before patchStatus).
+func TestReconcileDRBDStatusProbeFailurePreservesLastProbedAt(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID, v.Spec.Replicas[0].Address = 0, addrA
+	v.Spec.Replicas[1].NodeID, v.Spec.Replicas[1].Address = 1, addrB
+	// Pre-populate a fresh probe timestamp so we can detect staleness.
+	oldProbe := probeTime(-30 * time.Second)
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true, LastProbedAt: oldProbe},
+	}
+	fb := newFakeBackend()
+	fb.existing[volPvc1] = true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	// DRBD status probe fails; the adjust succeeds so we get through to Status.
+	fe := &fakeDRBDExec{
+		errOn: map[string]error{
+			"drbdsetup status --json " + volPvc1: errors.New("drbdsetup: connection refused"),
+		},
+	}
+	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }}}
+
+	// The reconcile should fail (status probe error), returning an error.
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err == nil {
+		t.Fatal("DRBD status probe failure must surface as an error")
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	st := got.Status.PerNode[nodeA]
+	// reportError preserves the old slot fields; LastProbedAt must not have
+	// been updated with a fresh timestamp.
+	if st.LastProbedAt == nil {
+		t.Fatal("LastProbedAt must not be nil after probe failure")
+	}
+	// The old probe was ~30 seconds ago; a fresh probeNow() would be within
+	// a few seconds of now.
+	if time.Since(st.LastProbedAt.Time) < 25*time.Second {
+		t.Fatalf("LastProbedAt appears freshly stamped (%v ago); want it to preserve the old value from ~30s ago", time.Since(st.LastProbedAt.Time))
+	}
+	// Connected and DiskState must not have been overwritten with stale values.
+	if !st.Connected || st.DiskState != diskStateUpToDate {
+		t.Fatalf("Connected/DiskState must not be overwritten on probe failure: %+v", st)
 	}
 }

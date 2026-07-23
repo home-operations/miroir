@@ -130,6 +130,13 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Source, autoTieBreaker bool
 	return nil
 }
 
+func setupPhaseReconciler(mgr ctrl.Manager) {
+	if err := (&agent.PhaseReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up volume phase reconciler")
+		os.Exit(1)
+	}
+}
+
 // setupTopology registers the cross-object topology reconcilers: the
 // conflict pass (duplicate replication addresses reported as MiroirNode
 // conditions — a CRD validates one object at a time, and placement
@@ -570,7 +577,9 @@ func main() {
 			AutoTieBreaker:   autoTieBreaker,
 			RWXEnabled:       gatewayImage != "",
 			DRBDPortBase:     int32(drbdPortBase),
+			Recorder:         mgr.GetEventRecorder("miroir-controller"),
 		}
+		setupPhaseReconciler(mgr)
 		if err := setupMembership(mgr, nodes, autoTieBreaker, autoDiskfulAfter, autoEvictAfter); err != nil {
 			setupLog.Error(err, "unable to set up membership reconcilers")
 			os.Exit(1)

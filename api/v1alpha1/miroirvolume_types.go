@@ -41,6 +41,13 @@ const (
 	VolumeFailed   VolumePhase = "Failed"
 )
 
+// ConditionNodeUnreachable indicates that volume provisioning was
+// blocked because a node's agent has not reported status within the
+// staleness threshold. Set by the CSI controller when waitReady times
+// out; cleared when provisioning succeeds. Informational — does not
+// gate staging.
+const ConditionNodeUnreachable = "NodeUnreachable"
+
 // Replica is one placement of the volume's data — a DRBD peer when the
 // volume is replicated.
 type Replica struct {
@@ -341,6 +348,14 @@ type ReplicaStatus struct {
 	// clean verify (0) reads differently from "never verified" (nil).
 	// +optional
 	LastVerifyOutOfSyncBytes *int64 `json:"lastVerifyOutOfSyncBytes,omitempty"`
+	// LastProbedAt is when this agent last successfully probed the
+	// replica's live state (backing device, DRBD status). A stale probe
+	// means the agent can no longer reach the node-local resources —
+	// computePhase treats it as Degraded even when persisted fields still
+	// read as healthy, mirroring the Linstor pattern of distinguishing
+	// "exists in CRD" from "live and reachable."
+	// +optional
+	LastProbedAt *metav1.Time `json:"lastProbedAt,omitempty"`
 }
 
 // ExportStatus is the observed state of an RWX volume's NFS gateway,
