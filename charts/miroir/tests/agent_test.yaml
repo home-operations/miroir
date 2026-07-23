@@ -70,6 +70,20 @@ tests:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.port
           value: metrics
 
+  - it: agent container has a preStop hook that force-demotes all DRBD resources
+    set:
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command[0]
+          value: /bin/sh
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command[1]
+          value: -c
+      - matchRegex:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command[2]
+          pattern: "drbdadm secondary all --force"
+
   - it: pod runs with hostNetwork, hostPID and ClusterFirstWithHostNet
     set:
     documentIndex: 0

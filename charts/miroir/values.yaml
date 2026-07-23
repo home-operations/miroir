@@ -332,6 +332,14 @@ drbd:
   # @schema
   # type: [integer, string]
   # @schema
+  # -- disk-timeout in 0.1s units: how long DRBD waits for a backing-device
+  # I/O before force-detaching. DRBD's default is 0 (infinite), which wedges
+  # a reboot in drbd_md_sync_page_io when the backing disk is failing.
+  # Defaulted to 600 (60s). Set to 0 for the DRBD default (not recommended).
+  diskTimeout: 600
+  # @schema
+  # type: [integer, string]
+  # @schema
   # -- al-extents, the DRBD activity-log size (number of 4 MiB extents kept
   # "hot"). DRBD's default (1237) forces frequent metadata updates under a
   # scattered random-write workload; raising it (e.g. 6007) cuts that write

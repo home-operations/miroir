@@ -878,6 +878,67 @@ func TestDownSecondariesContinuesOnError(t *testing.T) {
 	fe.calledWith(t, "drbdsetup down pvc-3")
 }
 
+// DemoteAll force-demotes every Primary so the OS can release backing
+// devices during shutdown. Secondaries are skipped (already not Primary).
+func TestDemoteAllForceDemotesPrimaries(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Primary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]},
+			{"name":"pvc-2","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.DemoteAll(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// Primary is demoted with --force (terminates pending I/O, no metadata flush wait).
+	fe.calledWith(t, "drbdadm secondary --force pvc-1")
+	// Secondary is already not Primary — skipped.
+	fe.notCalledWith(t, "drbdadm secondary pvc-2")
+	// No down calls — DemoteAll only demotes; DownSecondaries does the down.
+	fe.notCalledWith(t, "drbdsetup down")
+}
+
+// A wedged resource is skipped, not force-demoted: a demote against the
+// wedge signature can only hang (issue #195), same as down does.
+func TestDemoteAllSkipsWedged(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Primary","devices":[{"disk-state":"Detaching"}],"connections":[{"peer-node-id":1,"connection-state":"StandAlone"}]},
+			{"name":"pvc-2","role":"Primary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	err := d.DemoteAll(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "wedged") {
+		t.Fatalf("want a joined error naming the wedged resource, got %v", err)
+	}
+	// Wedged pvc-1 is not touched.
+	fe.notCalledWith(t, "drbdadm secondary pvc-1")
+	// Healthy pvc-2 is still demoted.
+	fe.calledWith(t, "drbdadm secondary --force pvc-2")
+}
+
+// One stuck demote must not strand the rest of the sweep.
+func TestDemoteAllContinuesOnError(t *testing.T) {
+	fe := &fakeExec{
+		responses: map[string]string{
+			cmdDrbdsetupStatus: `[
+				{"name":"pvc-1","role":"Primary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]},
+				{"name":"pvc-2","role":"Primary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+		},
+		errOn: map[string]error{"secondary --force pvc-1": errors.New("device busy")},
+	}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	err := d.DemoteAll(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "pvc-1") {
+		t.Fatalf("want a joined error naming pvc-1, got %v", err)
+	}
+	// The failed demote of pvc-1 must not strand pvc-2.
+	fe.calledWith(t, "drbdadm secondary --force pvc-2")
+}
+
 func TestSweepOrphansContinuesOnError(t *testing.T) {
 	fe := &fakeExec{
 		responses: map[string]string{

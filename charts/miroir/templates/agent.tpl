@@ -84,6 +84,19 @@ spec:
             httpGet: { path: /readyz, port: metrics }
             initialDelaySeconds: 5
             periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                # Last-resort unblock if the agent's in-process shutdown
+                # demote (agentShutdownDownSecondaries) never ran — a stale
+                # cordon watch, a wedged agent, or a SIGKILL race. Force-
+                # demotes every DRBD resource so the OS can tear down
+                # storage pools without EIO wedging the reboot. The agent
+                # container is privileged with drbdadm in PATH.
+                command:
+                  - /bin/sh
+                  - -c
+                  - "drbdadm secondary all --force 2>/dev/null; sleep 5"
           resources: {{- toYaml .Values.agent.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir
