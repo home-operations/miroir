@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -55,7 +56,7 @@ func snapObj(name, volume string, nodes ...string) *miroirv1alpha1.MiroirSnapsho
 			APIVersion: miroirv1alpha1.GroupVersion.String(),
 			Kind:       "MiroirSnapshot",
 		},
-		ObjectMeta: metav1.ObjectMeta{Name: name, Finalizers: finalizers},
+		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name), Finalizers: finalizers},
 		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volume},
 	}
 }
@@ -528,6 +529,11 @@ func TestSnapshotPeerRecordsOnlyOwnSlot(t *testing.T) {
 			},
 		}).
 		Build()
+	activeRound := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, activeRound); err != nil {
+		t.Fatal(err)
+	}
+	roundAt := activeRound.Status.SuspendedAt
 
 	feP := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
@@ -541,15 +547,55 @@ func TestSnapshotPeerRecordsOnlyOwnSlot(t *testing.T) {
 	if len(patchData) == 0 {
 		t.Fatal("expected a status patch from the peer")
 	}
+	type operation struct {
+		Op    string          `json:"op"`
+		Path  string          `json:"path"`
+		Value json.RawMessage `json:"value"`
+	}
 	for i, data := range patchData {
-		if patchTypes[i] != types.MergePatchType {
-			t.Errorf("patch %d is %q, want a merge patch (a peer must not apply the whole status)", i, patchTypes[i])
+		if patchTypes[i] != types.JSONPatchType {
+			t.Errorf("patch %d is %q, want a JSON patch", i, patchTypes[i])
+			continue
 		}
-		if strings.Contains(data, "ioSuspended") || strings.Contains(data, "suspendedAt") {
-			t.Errorf("patch %d touches the coordinator's barrier fields: %s", i, data)
+		var ops []operation
+		if err := json.Unmarshal([]byte(data), &ops); err != nil {
+			t.Errorf("patch %d is not a JSON Patch: %v", i, err)
+			continue
 		}
-		if !strings.Contains(data, nodeB) {
-			t.Errorf("patch %d does not record this node's slot: %s", i, data)
+		var sawSuspended, sawSuspendedAt, sawOwnSlot bool
+		for _, op := range ops {
+			switch op.Op {
+			case "test": //nolint:goconst // JSON Patch operation name
+				switch op.Path {
+				case "/status/ioSuspended":
+					var value bool
+					if err := json.Unmarshal(op.Value, &value); err != nil || !value {
+						t.Errorf("patch %d has invalid ioSuspended precondition: %s", i, op.Value)
+					}
+					sawSuspended = true
+				case "/status/suspendedAt":
+					var value metav1.Time
+					if err := json.Unmarshal(op.Value, &value); err != nil || !value.Equal(roundAt) {
+						t.Errorf("patch %d has invalid suspendedAt precondition: %s", i, op.Value)
+					}
+					sawSuspendedAt = true
+				}
+			case "add", "replace":
+				if op.Path != "/status/perNode/"+nodeB {
+					t.Errorf("patch %d mutates %q; peer may mutate only its own slot", i, op.Path)
+					continue
+				}
+				var value miroirv1alpha1.SnapshotNodeState
+				if err := json.Unmarshal(op.Value, &value); err != nil || value != miroirv1alpha1.SnapshotSuspended {
+					t.Errorf("patch %d has invalid peer state mutation: %s", i, op.Value)
+				}
+				sawOwnSlot = true
+			default:
+				t.Errorf("patch %d has unsupported operation %q on %q", i, op.Op, op.Path)
+			}
+		}
+		if !sawSuspended || !sawSuspendedAt || !sawOwnSlot {
+			t.Errorf("patch %d lacks required round preconditions or own-slot mutation: %s", i, data)
 		}
 	}
 
@@ -676,6 +722,195 @@ func TestSnapshotExpiredRoundResetsPeersAndRecuts(t *testing.T) {
 	if len(fb.snapCalls) != 2 || fb.snapCalls[0] != want[0] || fb.snapCalls[1] != want[1] {
 		t.Fatalf("retry must delete before recutting, got %v", fb.snapCalls)
 	}
+}
+
+// A peer may finish cutting R1 after its coordinator has voided it and opened
+// R2. Its stale view must not turn R2's Pending slot into Done: that could
+// make the coordinator publish a snapshot containing legs from two rounds.
+func TestSnapshotRejectsLateDoneFromPreviousRoundAfterReopen(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	snap := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
+	r1 := metav1.NewTime(time.Now().Add(-time.Minute))
+	snap.Status.IOSuspended = true
+	snap.Status.SuspendedAt = &r1
+	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+		nodeA: miroirv1alpha1.SnapshotSuspended,
+		nodeB: miroirv1alpha1.SnapshotSuspended,
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	staleR1View := snap.DeepCopy()
+	current := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, current); err != nil {
+		t.Fatal(err)
+	}
+	r2 := metav1.Now()
+	current.Status.SuspendedAt = &r2
+	current.Status.PerNode[nodeA] = miroirv1alpha1.SnapshotSuspended
+	current.Status.PerNode[nodeB] = miroirv1alpha1.SnapshotPending
+	if err := c.Status().Update(t.Context(), current); err != nil {
+		t.Fatal(err)
+	}
+
+	peer := &SnapshotReconciler{Client: c, NodeName: nodeB}
+	if err := peer.patchOwnState(t.Context(), staleR1View, miroirv1alpha1.SnapshotDone); err == nil {
+		t.Fatal("late R1 Done patch must be rejected after R2 opens")
+	}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.PerNode[nodeB] != miroirv1alpha1.SnapshotPending {
+		t.Fatalf("late Done changed R2 peer state: %+v", current.Status.PerNode)
+	}
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[{"connection-state":"Connected"}]}]`}
+	fb := newFakeBackend()
+	coordinator := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, coordinator, snapSnap1)
+	if len(fb.snapCalls) != 0 {
+		t.Fatalf("stale Done must not cut or publish R2: %v", fb.snapCalls)
+	}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Status.ReadyToUse {
+		t.Fatalf("stale Done must not publish snapshot: %+v", current.Status)
+	}
+}
+
+// A peer that suspended against R1 must not lift the shared barrier after its
+// R1 status write is rejected because the coordinator has opened R2.
+func TestSnapshotStaleRaiseDoesNotResumeNewerSameSnapshotRound(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	live := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
+	r2 := metav1.Now()
+	live.Status.IOSuspended = true
+	live.Status.SuspendedAt = &r2
+	live.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{
+		nodeA: miroirv1alpha1.SnapshotSuspended,
+		nodeB: miroirv1alpha1.SnapshotPending,
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, live).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	before := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, before); err != nil {
+		t.Fatal(err)
+	}
+	staleR1 := before.DeepCopy()
+	r1 := metav1.NewTime(r2.Add(-time.Second))
+	staleR1.Status.SuspendedAt = &r1
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	if _, err := r.raiseBarrier(t.Context(), staleR1, v, false); err == nil {
+		t.Fatal("stale R1 patch must be rejected by active R2")
+	}
+	fe.calledWith(t, "drbdadm suspend-io pvc-1")
+	fe.notCalledWith(t, "resume-io")
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.IOSuspended || !got.Status.SuspendedAt.Equal(before.Status.SuspendedAt) ||
+		got.Status.PerNode[nodeB] != miroirv1alpha1.SnapshotPending {
+		t.Fatalf("stale raise changed live R2: %+v", got.Status)
+	}
+}
+
+// A cached inactive object cannot prove the held kernel barrier is stale: the
+// uncached API reader may already show a newer active round on the same name.
+func TestSnapshotStaleInactiveViewDoesNotResumeNewerSameSnapshotRound(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	cachedSnap := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
+	liveR2 := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
+	r2 := metav1.Now()
+	liveR2.Status.IOSuspended = true
+	liveR2.Status.SuspendedAt = &r2
+	cached := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, cachedSnap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+	apiServer := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(liveR2).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}).
+		Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: cached, Reader: apiServer, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	reconcileSnap(t, r, snapSnap1)
+	fe.notCalledWith(t, "resume-io")
+}
+
+// A response error after the API accepted the peer state is indistinguishable
+// from a rejection to the caller; both outcomes must leave the barrier held.
+func TestSnapshotAppliedPatchResponseErrorDoesNotResume(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	snap := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
+	now := metav1.Now()
+	snap.Status.IOSuspended = true
+	snap.Status.SuspendedAt = &now
+	snap.Status.PerNode = map[string]miroirv1alpha1.SnapshotNodeState{nodeB: miroirv1alpha1.SnapshotPending}
+	var applied bool
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, cl client.Client, sub string,
+				obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				if err := cl.Status().Patch(ctx, obj, patch, opts...); err != nil {
+					return err
+				}
+				applied = true
+				return errors.New("synthetic response loss")
+			},
+		}).
+		Build()
+	stale := snap.DeepCopy()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],"connections":[{"connection-state":"Connected"}]}]`}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+	if _, err := r.raiseBarrier(t.Context(), stale, v, false); err == nil {
+		t.Fatal("synthetic response error must surface")
+	}
+	if !applied {
+		t.Fatal("patch must be applied before the synthetic response error")
+	}
+	fe.notCalledWith(t, "resume-io")
 }
 
 // Regression: a volume whose peer link is down writes alone (quorum

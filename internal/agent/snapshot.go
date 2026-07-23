@@ -18,9 +18,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -443,10 +444,9 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 		err = r.patchOwnState(ctx, snap, miroirv1alpha1.SnapshotSuspended)
 	}
 	if err != nil {
-		// The barrier is only real once recorded; a failed patch must
-		// not leave IO frozen until the retry — but a barrier a sibling
-		// round co-holds is the sibling's to lift, not this round's.
-		_ = r.resumeUnlessSiblingRound(ctx, snap, vol)
+		// Fail closed: the API may have committed before its response was
+		// lost, or a newer round may own this shared kernel barrier now.
+		// The active round's close (or deadline recovery) releases it.
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Second}, nil
@@ -564,13 +564,32 @@ func (r *SnapshotReconciler) openRound(ctx context.Context, snap *miroirv1alpha1
 }
 
 // otherRoundActive reports whether a different MiroirSnapshot round or a
-// MiroirSnapshotGroup round over the same volume is mid-flight (its
-// owner holds status.ioSuspended). The kernel suspend-io flag is
-// per-resource, not per-snapshot: concurrent rounds would lift each
-// other's barrier and cut non-identical legs, so every barrier touch
-// outside a round defers to a live sibling.
+// MiroirSnapshotGroup round over the same volume is mid-flight (its owner
+// holds status.ioSuspended). The kernel suspend-io flag is per-resource, not
+// per-snapshot: concurrent rounds would lift each other's barrier and cut
+// non-identical legs, so every barrier touch outside a round defers to a live
+// sibling. A same-name object is excluded only when its live UID and round
+// timestamp exactly match this observed view.
 func (r *SnapshotReconciler) otherRoundActive(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot) (bool, error) {
-	return volumeRoundActive(ctx, r.snapReader(), snap.Spec.VolumeName, snap.Name, "")
+	rd := r.snapReader()
+	live := &miroirv1alpha1.MiroirSnapshot{}
+	if err := rd.Get(ctx, types.NamespacedName{Name: snap.Name}, live); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	} else if live.Status.IOSuspended && !sameSnapshotRound(snap, live) {
+		return true, nil
+	}
+	return volumeRoundActive(ctx, rd, snap.Spec.VolumeName, snap.Name, "")
+}
+
+// sameSnapshotRound identifies a live status round observed on the same
+// object. UID and SuspendedAt are both required: an absent identity or clock
+// is never safe to treat as this round.
+func sameSnapshotRound(observed, live *miroirv1alpha1.MiroirSnapshot) bool {
+	return observed.UID != "" && live.UID != "" && observed.UID == live.UID &&
+		observed.Status.SuspendedAt != nil && live.Status.SuspendedAt != nil &&
+		observed.Status.SuspendedAt.Equal(live.Status.SuspendedAt)
 }
 
 // volumeRoundActive reports whether any live round other than the
@@ -709,13 +728,27 @@ func (r *SnapshotReconciler) disklessOn(vol *miroirv1alpha1.MiroirVolume) bool {
 	})
 }
 
-// patchOwnState records only this node's slot in the snapshot barrier via a
-// merge patch. A peer must not apply the whole status: that would force-own
-// the coordinator's round fields (ioSuspended, suspendedAt) and could revert
-// a resume or void it raced. The merge patch touches nothing else.
+// patchOwnState records only this node's slot in the active snapshot barrier.
+// A peer must not apply the whole status: that would force-own the
+// coordinator's round fields (ioSuspended, suspendedAt) and could revert a
+// resume or void it raced. The JSON Patch also fences the slot write to the
+// round this view observed, so a delayed Done cannot land in a reopened round.
 func (r *SnapshotReconciler) patchOwnState(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, state miroirv1alpha1.SnapshotNodeState) error {
-	patch := fmt.Appendf(nil, `{"status":{"perNode":{%q:%q}}}`, r.NodeName, state)
-	return r.Status().Patch(ctx, snap, client.RawPatch(types.MergePatchType, patch))
+	if !snap.Status.IOSuspended || snap.Status.SuspendedAt == nil {
+		return errors.New("cannot patch snapshot node state without an active round")
+	}
+	// RFC 6901 escapes ~ before /; add replaces an existing object member
+	// while preserving all concurrent writes to other members.
+	node := strings.ReplaceAll(strings.ReplaceAll(r.NodeName, "~", "~0"), "/", "~1")
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/status/ioSuspended", "value": true}, //nolint:goconst // JSON Patch field keys
+		{"op": "test", "path": "/status/suspendedAt", "value": snap.Status.SuspendedAt},
+		{"op": "add", "path": "/status/perNode/" + node, "value": state},
+	})
+	if err != nil {
+		return err
+	}
+	return r.Status().Patch(ctx, snap, client.RawPatch(types.JSONPatchType, patch))
 }
 
 func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, mutate func(*miroirv1alpha1.MiroirSnapshot)) error {
