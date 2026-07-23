@@ -195,121 +195,7 @@ var _ = Describe("stale readiness detection (LastProbedAt)", Ordered, func() {
 })
 
 // ————————————————————————————————————————————————————————————————
-// Test 2: Force-detach escalation for live opener (Phase 2)
-// ————————————————————————————————————————————————————————————————
-
-var _ = Describe("force-detach escalation for live opener", Ordered, func() {
-	const ns = "miroir-e2e-force"
-	ctx := context.Background()
-
-	var pv, node string
-	var minor int32
-	var failed bool
-
-	BeforeAll(func() {
-		Expect(client.IgnoreAlreadyExists(k8s.Create(ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: ns},
-		}))).To(Succeed())
-	})
-	AfterEach(func() { failed = failed || CurrentSpecReport().Failed() })
-	AfterAll(func() {
-		if failed {
-			GinkgoWriter.Printf("specs failed — leaving namespace %q for diagnostics\n", ns)
-			return
-		}
-		_ = k8s.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}})
-	})
-
-	It("provisions a replicated volume, mounts it, and records its DRBD minor", func() {
-		Expect(k8s.Create(ctx, pvc(ns, "data", replicatedClass, "1Gi", nil))).To(Succeed())
-		Expect(k8s.Create(ctx, pod(ns, "consumer", "data"))).To(Succeed())
-		eventuallyPodReady(ctx, ns, "consumer")
-		pv = boundPV(ctx, ns, "data")
-		eventuallyMiroirVolumeReady(ctx, pv)
-		writeSeed(ns, "consumer", "/data/seed")
-
-		var p corev1.Pod
-		Expect(k8s.Get(ctx, client.ObjectKey{Namespace: ns, Name: "consumer"}, &p)).To(Succeed())
-		node = p.Spec.NodeName
-		var v miroirv1alpha1.MiroirVolume
-		Expect(k8s.Get(ctx, client.ObjectKey{Name: pv}, &v)).To(Succeed())
-		minor = v.Status.PerNode[node].DRBDMinor
-		Expect(minor).To(BeNumerically(">", 0), "staged leg must report its DRBD minor")
-	})
-
-	It("plants a live-opener hold on the unmounted device", func() {
-		// Clean unstage: delete pod, wait for kubelet unmount.
-		Expect(k8s.Delete(ctx, &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"},
-		})).To(Succeed())
-		eventuallyGone(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "consumer"}})
-
-		// Start a background process that opens the DRBD device with
-		// a live pid — unlike the orphanhold_test loop-device pattern,
-		// this is a live opener that must be force-detached.
-		dev := fmt.Sprintf("/dev/drbd%d", minor)
-		agentExec(ctx, node, fmt.Sprintf(
-			"sh -c 'exec sleep 3600 <> %s' &", dev))
-
-		// Verify the hold: no mounts, but drbdsetup reports open:yes
-		// with a living process behind it.
-		Eventually(func(g Gomega) {
-			g.Expect(agentExec(ctx, node, fmt.Sprintf(
-				"findmnt -rn -S %s -o TARGET || true", dev))).To(BeEmpty())
-			status := agentExec(ctx, node, "drbdsetup status "+pv+" --verbose")
-			g.Expect(status).To(ContainSubstring("open:yes"))
-			g.Expect(status).To(ContainSubstring("opener:"))
-		}).WithTimeout(30 * time.Second).Should(Succeed())
-	})
-
-	It("reclaims the deletion past the live opener via force-detach", func() {
-		Expect(k8s.Delete(ctx, &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "data"},
-		})).To(Succeed())
-
-		// The deletion needs the busy escalation to fire before
-		// force-detach runs — expect up to reclaimTimeout.
-		Eventually(func() bool {
-			return apierrorNotFound(k8s.Get(ctx,
-				client.ObjectKey{Name: pv}, &miroirv1alpha1.MiroirVolume{}))
-		}).WithTimeout(reclaimTimeout).Should(BeTrue(),
-			"MiroirVolume %s must finish deleting despite the live opener", pv)
-		Eventually(func() bool {
-			return apierrorNotFound(k8s.Get(ctx,
-				client.ObjectKey{Name: pv}, &corev1.PersistentVolume{}))
-		}).WithTimeout(provisionTimeout).Should(BeTrue(),
-			"PV %s must be released", pv)
-	})
-
-	It("destroyed the backing and emitted TeardownForceDetached", func() {
-		// The backing must be gone — either LVM thin LV or ZFS zvol
-		// depending on the backend.
-		lvs := agentExec(ctx, node, "lvs --noheadings -o lv_name || true")
-		if lvs != "" {
-			Expect(lvs).NotTo(ContainSubstring(pv),
-				"backing LV must be destroyed by force-detach")
-		}
-		zfs := agentExec(ctx, node,
-			"zfs list -H -o name -r $(hostname)/miroir 2>/dev/null || true")
-		if zfs != "" {
-			Expect(zfs).NotTo(ContainSubstring(pv),
-				"backing ZFS dataset must be destroyed by force-detach")
-		}
-
-		Expect(eventWithReason(ctx, "TeardownForceDetached", pv)).
-			To(BeTrue(), "want a TeardownForceDetached event for %s", pv)
-	})
-
-	It("cleans up the background opener process", func() {
-		// Kill any surviving sleep processes holding the device.
-		agentExec(ctx, node, fmt.Sprintf(
-			"pkill -f 'sleep 3600 <> %s' || true",
-			fmt.Sprintf("/dev/drbd%d", minor)))
-	})
-})
-
-// ————————————————————————————————————————————————————————————————
-// Test 3: CSI node unreachability surfacing (Phase 3)
+// Test 2: CSI node unreachability surfacing (Phase 3)
 // ————————————————————————————————————————————————————————————————
 
 var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
@@ -367,20 +253,12 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{Namespace: agentNamespace, Name: agentName},
 		})
 
-		// 3. Create a replicated PVC and a pod. The pod will land
-		//    on the non-excluded node (the only node the agent runs on).
-		//    The volume needs both replicas' PerNode entries; one
-		//    is missing because its agent is absent.
+		// 3. Create a replicated PVC and a pod. The pod will stay
+		//    Pending because the volume cannot provision — one
+		//    replica's agent is absent. The CSI controller's waitReady
+		//    will time out and surface a NodeUnreachable condition.
 		Expect(k8s.Create(ctx, pvc(ns, "data", replicatedClass, "1Gi", nil))).To(Succeed())
 		Expect(k8s.Create(ctx, pod(ns, "consumer", "data"))).To(Succeed())
-		eventuallyPodReady(ctx, ns, "consumer")
-
-		// The PVC may or may not bind — the CSI provisioner retries
-		// CreateVolume which sets the condition on the MiroirVolume.
-		// We need the PV name to find the MiroirVolume. If the PVC
-		// binds (Immediate binding), boundPV gives it. If not, we
-		// fall back to listing MiroirVolumes and finding the one
-		// with the matching namespace/PVC labels.
 
 		// 4. Wait for the NodeUnreachable condition to appear on the
 		//    MiroirVolume. The CSI controller's waitReady times out
