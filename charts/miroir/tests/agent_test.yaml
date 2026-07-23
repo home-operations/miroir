@@ -83,6 +83,12 @@ tests:
       - matchRegex:
           path: spec.template.spec.containers[0].lifecycle.preStop.exec.command[2]
           pattern: "drbdadm secondary all --force"
+      # The force-demote must be gated on the cordon sentinel: preStop runs
+      # on every pod termination, and ungated it would EIO every in-use
+      # volume on a routine chart rollout.
+      - matchRegex:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command[2]
+          pattern: "if \\[ -f /run/miroir/cordoned \\]"
 
   - it: pod runs with hostNetwork, hostPID and ClusterFirstWithHostNet
     set:

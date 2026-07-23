@@ -17,6 +17,8 @@ limitations under the License.
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -60,5 +62,46 @@ func TestCordonWatcherTracksUnschedulable(t *testing.T) {
 	}
 	if w.Cordoned() {
 		t.Fatal("must follow the node back to schedulable")
+	}
+}
+
+// The sentinel file mirrors the cordon state for the DaemonSet preStop
+// hook: present while cordoned, absent otherwise — the hook's force-demote
+// must never fire on a routine pod restart or chart rollout.
+func TestCordonWatcherSyncsSentinel(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
+		Spec:       corev1.NodeSpec{Unschedulable: true},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(node).Build()
+	sentinel := filepath.Join(t.TempDir(), "sub", "cordoned")
+	w := &CordonWatcher{Client: c, NodeName: nodeA, SentinelPath: sentinel}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: nodeA}}
+	if _, err := w.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("sentinel must exist while cordoned: %v", err)
+	}
+
+	node.Spec.Unschedulable = false
+	if err := c.Update(t.Context(), node); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("sentinel must be removed on uncordon, got %v", err)
+	}
+
+	// Removing an already-absent sentinel must not error the reconcile.
+	if _, err := w.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
 	}
 }

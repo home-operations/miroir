@@ -88,15 +88,20 @@ spec:
             preStop:
               exec:
                 # Last-resort unblock if the agent's in-process shutdown
-                # demote (agentShutdownDownSecondaries) never ran — a stale
-                # cordon watch, a wedged agent, or a SIGKILL race. Force-
+                # demote (agentShutdownDownSecondaries) never ran — a
+                # wedged agent or a missed early-signal path. Force-
                 # demotes every DRBD resource so the OS can tear down
-                # storage pools without EIO wedging the reboot. The agent
-                # container is privileged with drbdadm in PATH.
+                # storage pools without EIO wedging the reboot. Gated on
+                # the cordon sentinel the agent mirrors from the node's
+                # unschedulable state (agent.CordonSentinelPath): preStop
+                # runs on EVERY pod termination, and an ungated force-
+                # demote would EIO every in-use volume on a routine chart
+                # rollout or pod restart. The agent container is
+                # privileged with drbdadm in PATH.
                 command:
                   - /bin/sh
                   - -c
-                  - "drbdadm secondary all --force 2>/dev/null; sleep 5"
+                  - "if [ -f /run/miroir/cordoned ]; then drbdadm secondary all --force 2>/dev/null; sleep 5; fi"
           resources: {{- toYaml .Values.agent.resources | nindent 12 }}
           volumeMounts:
             - name: socket-dir

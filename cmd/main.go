@@ -667,7 +667,12 @@ func main() {
 		}
 		// Tracks this node's cordon state so shutdownSweep can tell a node
 		// reboot/upgrade (drained, so cordoned) from a routine pod restart.
-		cordon := &agent.CordonWatcher{Client: mgr.GetClient(), NodeName: nodeName}
+		// The sentinel file gates the DaemonSet preStop hook the same way.
+		cordon := &agent.CordonWatcher{
+			Client:       mgr.GetClient(),
+			NodeName:     nodeName,
+			SentinelPath: agent.CordonSentinelPath,
+		}
 		if err := cordon.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up cordon watcher")
 			os.Exit(1)
