@@ -103,6 +103,14 @@ type Controller struct {
 
 const (
 	defaultProvisionTimeout = 120 * time.Second // matches sidecars.provisioner.timeout
+
+	// deadlineHeadroom is reserved from the caller's RPC deadline in
+	// waitReady: the post-timeout diagnosis (NodeUnreachable condition,
+	// event, the FailedPrecondition verdict) must return before the
+	// provisioner sidecar abandons the call, or the sidecar only ever
+	// observes its own DeadlineExceeded — which it treats as retryable,
+	// defeating the terminal error.
+	deadlineHeadroom = 5 * time.Second
 	// defaultOvercommitRatio caps provisioned-over-capacity per pool;
 	// 2× is the documented default.
 	defaultOvercommitRatio = 2.0
@@ -1223,7 +1231,18 @@ func (e *errVolumeFailed) Error() string { return e.detail }
 // retries forever and the PVC never binds). devicePath/NodeStage separately
 // refuses an Inconsistent local replica, so no pod lands on stale data.
 func (c *Controller) waitReady(ctx context.Context, name string) error {
-	ctx, cancel := context.WithTimeout(ctx, cmp.Or(c.ProvisionTimeout, defaultProvisionTimeout))
+	// The provisioner sidecar's --timeout deadline rides in on ctx and
+	// started before this one, so an equal inner timeout always loses the
+	// race: the sidecar records its own DeadlineExceeded (retryable) before
+	// the post-timeout diagnosis below can return FailedPrecondition.
+	// Reserve headroom so the verdict reaches a sidecar still listening.
+	timeout := cmp.Or(c.ProvisionTimeout, defaultProvisionTimeout)
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline) - deadlineHeadroom; remaining < timeout {
+			timeout = max(remaining, time.Second)
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var polled *miroirv1alpha1.MiroirVolume
@@ -1257,7 +1276,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 		if polled != nil {
 			clearCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := clearNodeUnreachableCondition(c.Client, c.reader(), clearCtx, polled); err != nil {
+			if err := clearNodeUnreachableCondition(clearCtx, c.Client, polled); err != nil {
 				log.Error(err, "failed to clear stale NodeUnreachable condition",
 					"volume", name)
 			}
@@ -1280,7 +1299,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 			return status.Errorf(codes.DeadlineExceeded, "volume %s not ready: %v", name, err)
 		}
 	}
-	unreachable := c.checkNodeUnreachable(ctx, vol)
+	unreachable := c.checkNodeUnreachable(vol)
 	if len(unreachable) > 0 {
 		return status.Errorf(codes.FailedPrecondition,
 			"volume %s cannot provision: node %s agent is unreachable (no status received within %s)",
@@ -1292,45 +1311,59 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 
 // checkNodeUnreachable inspects PerNode for each expected replica node
 // after waitReady times out. It returns the names of nodes whose agent is
-// unreachable (PerNode entry absent OR LastProbedAt stale), surfaces them
-// as a NodeUnreachable condition and event, and leaves the volume ready
-// for a retry: the external provisioner treats FailedPrecondition as
-// terminal (ProvisioningFinished), so recovery happens on the next
-// provisioner resync cycle (~15 min by default), not via exponential
-// backoff. An empty return means all nodes are fresh — the timeout is
-// genuine, not due to node unreachability.
+// unreachable, surfaces them as a NodeUnreachable condition and event, and
+// leaves the volume ready for a retry: the external provisioner treats
+// FailedPrecondition as terminal (ProvisioningFinished), so recovery
+// happens on the next provisioner resync cycle (~15 min by default), not
+// via exponential backoff. An empty return means the timeout is genuine,
+// not due to node unreachability.
+//
+// A stale LastProbedAt is unreachable outright, but an absent PerNode
+// entry alone is ambiguous — the agent may be down, or alive and merely
+// slow to first-touch this volume (a busy queue easily exceeds one
+// provision timeout). Branding a slow node unreachable would park the
+// claim until the resync cycle, so absence is confirmed against the
+// MiroirNode heartbeat: only a node whose agent also stopped publishing
+// pool stats is reported. A just-crashed agent therefore surfaces one or
+// two retries later, once its heartbeat crosses constants.StatsStaleAfter.
 //
 // agent.StaleProbeThreshold is defined in internal/agent; the CSI
 // controller imports the agent package for this one constant. The constant
 // could live in internal/constants (imported by both packages), but moving
 // it would touch the agent package which Phase 3 deliberately avoids.
-func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1.MiroirVolume) []string {
-	unreachable := unreachableReplicaNodes(vol, time.Now())
+func (c *Controller) checkNodeUnreachable(vol *miroirv1alpha1.MiroirVolume) []string {
+	// Fresh context for the reads and the status write: the caller's ctx
+	// is already canceled (waitReady timed out), so anything on it would
+	// silently fail and the condition would never be written.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	now := time.Now()
+	var unreachable []string
+	for _, node := range unreachableReplicaNodes(vol, now) {
+		if _, ok := vol.Status.PerNode[node]; !ok && c.agentHeartbeatFresh(ctx, node, now) {
+			continue // alive but slow — let the provisioner retry normally
+		}
+		unreachable = append(unreachable, node)
+	}
 	if len(unreachable) == 0 {
 		return nil
 	}
 
-	cond := metav1.Condition{
+	// MergeFrom sends only the condition diff without optimistic locking:
+	// a concurrent PerNode write from an agent can neither conflict with
+	// nor be clobbered by this patch, and conditions have a single writer
+	// (this controller). On failure the FailedPrecondition return still
+	// surfaces the problem to the provisioner; log so it's observable.
+	base := vol.DeepCopy()
+	meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
 		Type:   miroirv1alpha1.ConditionNodeUnreachable,
 		Status: metav1.ConditionTrue,
 		Reason: "AgentUnreachable",
 		Message: fmt.Sprintf("Node agent unreachable on %s (no status received within %s)",
 			strings.Join(unreachable, ", "), agent.StaleProbeThreshold),
-	}
-	// Use a fresh context: the caller's ctx is already canceled
-	// (waitReady timed out), so the status update would silently
-	// fail and the condition would never be written.
-	updCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	// The agent may have updated the volume between our poll and
-	// this write, causing a resource-version conflict. Retry with
-	// a fresh read so the condition is actually persisted. If it
-	// still fails (non-conflict error, failed re-read, or exhausted
-	// retries), the FailedPrecondition return still surfaces the
-	// problem to the provisioner, but log it so it's observable.
-	if err := retryOnConflict(updCtx, c.Client, c.reader(), vol, func(v *miroirv1alpha1.MiroirVolume) {
-		meta.SetStatusCondition(&v.Status.Conditions, cond)
-	}); err != nil {
+	})
+	if err := c.Client.Status().Patch(ctx, vol, client.MergeFrom(base)); err != nil {
 		log.Error(err, "failed to persist NodeUnreachable condition",
 			"volume", vol.Name, "unreachable", unreachable)
 	}
@@ -1340,6 +1373,18 @@ func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1
 			strings.Join(unreachable, ", "), agent.StaleProbeThreshold, vol.Name)
 	}
 	return unreachable
+}
+
+// agentHeartbeatFresh reports whether the node's agent published MiroirNode
+// pool stats recently enough to be considered alive. An absent MiroirNode
+// or a read failure vouches for nothing — the caller treats the node as
+// unreachable.
+func (c *Controller) agentHeartbeatFresh(ctx context.Context, node string, now time.Time) bool {
+	mn := &miroirv1alpha1.MiroirNode{}
+	if err := c.reader().Get(ctx, types.NamespacedName{Name: node}, mn); err != nil {
+		return false
+	}
+	return mn.Status.ObservedAt != nil && now.Sub(mn.Status.ObservedAt.Time) <= constants.StatsStaleAfter
 }
 
 func unreachableReplicaNodes(vol *miroirv1alpha1.MiroirVolume, now time.Time) []string {
@@ -1363,47 +1408,21 @@ func unreachableReplicaNodes(vol *miroirv1alpha1.MiroirVolume, now time.Time) []
 }
 
 // clearNodeUnreachableCondition sets any existing NodeUnreachable condition
-// to False so it doesn't persist after the agent recovers.
-func clearNodeUnreachableCondition(cl client.Client, reader client.Reader, ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+// to False so it doesn't persist after the agent recovers. MergeFrom sends
+// only the condition diff without optimistic locking — conditions have a
+// single writer (this controller), so last-writer-wins is safe.
+func clearNodeUnreachableCondition(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume) error {
 	cond := meta.FindStatusCondition(vol.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
-	if cond != nil && cond.Status == metav1.ConditionTrue {
-		clear := metav1.Condition{
-			Type:   miroirv1alpha1.ConditionNodeUnreachable,
-			Status: metav1.ConditionFalse,
-			Reason: "NodeReachable",
-		}
-		return retryOnConflict(ctx, cl, reader, vol, func(v *miroirv1alpha1.MiroirVolume) {
-			meta.SetStatusCondition(&v.Status.Conditions, clear)
-		})
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		return nil
 	}
-	return nil
-}
-
-// retryOnConflict applies mutate to vol's status and retries on
-// resource-version conflict by re-reading the volume from the API server
-// (bypassing the informer cache, which may lag a concurrent agent write).
-// It gives up after 3 attempts; the caller treats the condition as best-effort.
-func retryOnConflict(ctx context.Context, cl client.Client, reader client.Reader, vol *miroirv1alpha1.MiroirVolume, mutate func(*miroirv1alpha1.MiroirVolume)) error {
-	for range 3 {
-		base := vol.DeepCopy()
-		mutate(vol)
-		// Patch with MergeFrom sends only the condition diff, not the
-		// entire status — so a concurrent PerNode update from an agent
-		// cannot cause a conflict on fields the condition write didn't
-		// touch. Update sends the whole object and conflicts on any
-		// changed field.
-		if err := cl.Status().Patch(ctx, vol, client.MergeFrom(base)); err == nil {
-			return nil
-		} else if !apierrors.IsConflict(err) {
-			return err
-		}
-		// Conflict: re-read from the API server (not the cache) to get
-		// the fresh resource version before retrying.
-		if err := reader.Get(ctx, client.ObjectKey{Name: vol.Name}, vol); err != nil {
-			return err
-		}
-	}
-	return errors.New("status update failed after 3 conflict retries")
+	base := vol.DeepCopy()
+	meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+		Type:   miroirv1alpha1.ConditionNodeUnreachable,
+		Status: metav1.ConditionFalse,
+		Reason: "NodeReachable",
+	})
+	return cl.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
 // ControllerExpandVolume grows the volume online: bump the desired size

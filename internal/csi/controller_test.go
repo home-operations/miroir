@@ -2758,3 +2758,107 @@ func TestWaitReadyNodeUnreachableRecorderNil(t *testing.T) {
 		t.Fatalf("NodeUnreachable condition must be True even with nil Recorder, got %+v", cond)
 	}
 }
+
+// TestWaitReadyAbsentPerNodeFreshHeartbeat: waitReady times out with one
+// node's PerNode entry absent, but that node's MiroirNode heartbeat is
+// fresh — the agent is alive and merely slow to first-touch the volume.
+// → DeadlineExceeded (retryable), no NodeUnreachable condition, no event.
+func TestWaitReadyAbsentPerNodeFreshHeartbeat(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	vol := volumeWithStatus("pvc-slow-agent", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+	})
+	mn := &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
+		Status:     miroirv1alpha1.MiroirNodeStatus{ObservedAt: probeTime(0)},
+	}
+	c := &Controller{
+		Client:           frozenClient(s, vol, mn),
+		Recorder:         rec,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-slow-agent")
+	if status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("absent PerNode with a fresh heartbeat must be DeadlineExceeded, got %v", err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-slow-agent"}, got); err != nil {
+		t.Fatal(err)
+	}
+	if meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable) != nil {
+		t.Fatal("NodeUnreachable condition must not be set while the agent heartbeat is fresh")
+	}
+	if rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must not be emitted while the agent heartbeat is fresh")
+	}
+}
+
+// TestWaitReadyAbsentPerNodeStaleHeartbeat: absent PerNode entry AND a
+// stale MiroirNode heartbeat — the agent is genuinely down.
+// → FailedPrecondition, condition set, event emitted.
+func TestWaitReadyAbsentPerNodeStaleHeartbeat(t *testing.T) {
+	s := newScheme(t)
+	rec := &testRecorder{}
+	vol := volumeWithStatus("pvc-dead-agent", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+	})
+	mn := &miroirv1alpha1.MiroirNode{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
+		Status:     miroirv1alpha1.MiroirNodeStatus{ObservedAt: probeTime(-10 * time.Minute)},
+	}
+	c := &Controller{
+		Client:           frozenClient(s, vol, mn),
+		Recorder:         rec,
+		ProvisionTimeout: time.Millisecond,
+	}
+
+	err := c.waitReady(t.Context(), "pvc-dead-agent")
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("absent PerNode with a stale heartbeat must be FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), nodeB) {
+		t.Fatalf("error must name the unreachable node %s: %v", nodeB, err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: "pvc-dead-agent"}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("NodeUnreachable condition must be True, got %+v", cond)
+	}
+	if !rec.hasNodeUnreachableEvent() {
+		t.Fatal("NodeUnreachable event must be emitted")
+	}
+}
+
+// TestWaitReadyBeatsCallerDeadline: with the RPC deadline in ctx tighter
+// than ProvisionTimeout, waitReady must reserve headroom and return its
+// verdict (FailedPrecondition here) before the caller's deadline — a
+// verdict returned after the sidecar hung up is only ever observed as the
+// sidecar's own retryable DeadlineExceeded.
+func TestWaitReadyBeatsCallerDeadline(t *testing.T) {
+	s := newScheme(t)
+	vol := volumeWithStatus("pvc-deadline", map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
+	})
+	c := &Controller{
+		Client:           frozenClient(s, vol),
+		ProvisionTimeout: time.Hour,
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	err := c.waitReady(ctx, "pvc-deadline")
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("absent PerNode must be FailedPrecondition, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed >= 6*time.Second {
+		t.Fatalf("waitReady must return before the caller's deadline, took %v", elapsed)
+	}
+}
