@@ -1321,13 +1321,17 @@ func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1
 			Message: fmt.Sprintf("Node agent unreachable on %s (no status received within %s)",
 				strings.Join(unreachable, ", "), agent.StaleProbeThreshold),
 		}
-		meta.SetStatusCondition(&vol.Status.Conditions, cond)
 		// Use a fresh context: the caller's ctx is already canceled
 		// (waitReady timed out), so the status update would silently
 		// fail and the condition would never be written.
 		updCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = c.Client.Status().Update(updCtx, vol)
+		// The agent may have updated the volume between our poll and
+		// this write, causing a resource-version conflict. Retry with
+		// a fresh read so the condition is actually persisted.
+		_ = retryOnConflict(updCtx, c.Client, vol, func(v *miroirv1alpha1.MiroirVolume) {
+			meta.SetStatusCondition(&v.Status.Conditions, cond)
+		})
 		if c.Recorder != nil {
 			c.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "NodeUnreachable", "Provision",
 				"Node agent unreachable on %s (no status received within %s); volume %s cannot provision",
@@ -1342,14 +1346,34 @@ func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1
 func clearNodeUnreachableCondition(cl client.Client, ctx context.Context, vol *miroirv1alpha1.MiroirVolume) {
 	cond := meta.FindStatusCondition(vol.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
 	if cond != nil && cond.Status == metav1.ConditionTrue {
-		meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+		clear := metav1.Condition{
 			Type:   miroirv1alpha1.ConditionNodeUnreachable,
 			Status: metav1.ConditionFalse,
 			Reason: "NodeReachable",
+		}
+		_ = retryOnConflict(ctx, cl, vol, func(v *miroirv1alpha1.MiroirVolume) {
+			meta.SetStatusCondition(&v.Status.Conditions, clear)
 		})
-		// Best-effort: the condition is incidental; don't block success.
-		_ = cl.Status().Update(ctx, vol)
 	}
+}
+
+// retryOnConflict applies mutate to vol's status and retries on
+// resource-version conflict by re-reading the volume first. It gives
+// up after 3 attempts; the caller treats the condition as best-effort.
+func retryOnConflict(ctx context.Context, cl client.Client, vol *miroirv1alpha1.MiroirVolume, mutate func(*miroirv1alpha1.MiroirVolume)) error {
+	for range 3 {
+		mutate(vol)
+		if err := cl.Status().Update(ctx, vol); err == nil {
+			return nil
+		} else if !apierrors.IsConflict(err) {
+			return err
+		}
+		// Conflict: re-read and retry with the fresh resource version.
+		if err := cl.Get(ctx, client.ObjectKey{Name: vol.Name}, vol); err != nil {
+			return err
+		}
+	}
+	return errors.New("status update failed after 3 conflict retries")
 }
 
 // ControllerExpandVolume grows the volume online: bump the desired size
