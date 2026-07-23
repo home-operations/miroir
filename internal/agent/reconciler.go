@@ -912,10 +912,10 @@ func (r *VolumeReconciler) handleSplitBrain(ctx context.Context, vol *miroirv1al
 // every diskful peer's disk sit Inconsistent over established connections.
 // The Activated/Formatted gate means divergent real data can never be
 // declared clean; a FullSync joiner means the volume already has a
-// generation, so this is birth only. Clone restores never qualify — their
-// adopted metadata attaches past Inconsistent.
+// generation, so this is birth only. Fail closed: every snapshot-derived
+// volume is ineligible, even if its metadata appears Inconsistent.
 func birthInitPending(vol *miroirv1alpha1.MiroirVolume, st drbd.Status, self string, localDiskless bool) bool {
-	if vol.Spec.DRBD == nil || localDiskless {
+	if vol.Spec.DRBD == nil || vol.Spec.Source != nil || localDiskless {
 		return false
 	}
 	if vol.Status.Activated || vol.Status.Formatted {

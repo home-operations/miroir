@@ -3149,6 +3149,27 @@ func TestReconcileBirthSkipsActivatedVolume(t *testing.T) {
 	fe.notCalledWith(t, "new-current-uuid")
 }
 
+// A restored backing contains snapshot data even when its DRBD metadata looks
+// freshly created. Never mint a birth UUID over it: that destructive command
+// is reserved for volumes born empty.
+func TestReconcileBirthSkipsSnapshotDerivedVolume(t *testing.T) {
+	r, fe, v := birthSetup(t, nodeA, 1, birthReadyJSON)
+	if err := r.Create(t.Context(), snapObj(snapSnap1, "source-volume")); err != nil {
+		t.Fatal(err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), types.NamespacedName{Name: v.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	got.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapSnap1}
+	if err := r.Update(t.Context(), got); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "new-current-uuid")
+}
+
 // A failed mint surfaces as a reconcile error (retried with backoff) and
 // keeps DeviceCreated so the phase never reads as a hard provisioning
 // failure.
