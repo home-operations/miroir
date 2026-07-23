@@ -1378,18 +1378,15 @@ func (r *VolumeReconciler) stampDeviceCreated(ctx context.Context, vol *miroirv1
 	if vol.Status.PerNode[r.NodeName].DeviceCreated {
 		return nil
 	}
-	if err := r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
+	// patchStatus writes the slot back into vol.Status.PerNode, so a later
+	// error in the same pass (reportError re-applies the slot) carries the
+	// stamp instead of clearing the value just persisted.
+	return r.patchStatus(ctx, vol, miroirv1alpha1.ReplicaStatus{
 		DeviceCreated: true,
 		DevicePath:    dev,
 		Pool:          poolName,
 		LastProbedAt:  probeNow(),
-	}); err != nil {
-		return err
-	}
-	vol.Status.PerNode[r.NodeName] = miroirv1alpha1.ReplicaStatus{
-		DeviceCreated: true, DevicePath: dev, Pool: poolName,
-	}
-	return nil
+	})
 }
 
 // reportRealizeError routes a realizeBacking failure: an impossible
