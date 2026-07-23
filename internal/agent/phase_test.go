@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/drbd"
 )
 
 const oneOfOne = "1/1"
@@ -138,5 +139,102 @@ func TestPhaseReconcilerClearsLingeringNodeUnreachable(t *testing.T) {
 	cond := apimeta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
 	if cond == nil || cond.Status != metav1.ConditionFalse {
 		t.Fatalf("NodeUnreachable condition must be cleared to False on a Ready volume, got %+v", cond)
+	}
+}
+
+// degradedReachableVolume: replicated, both agents probing fresh, but one
+// leg disconnected — Degraded yet fully reachable. This is where recovery
+// settles when waitReady provisions a Degraded volume, so the backstop
+// must clear the condition here too, not only on Ready.
+func degradedReachableVolume(name string) *miroirv1alpha1.MiroirVolume {
+	return &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 1 << 30,
+			DRBD:      &miroirv1alpha1.DRBDSpec{},
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA}, {Node: nodeB}},
+		},
+		Status: miroirv1alpha1.MiroirVolumeStatus{
+			Phase:         miroirv1alpha1.VolumeDegraded,
+			ReadyReplicas: "1/2",
+			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {
+					DeviceCreated: true,
+					SizeBytes:     1 << 30,
+					DiskState:     drbd.DiskUpToDate,
+					Connected:     true,
+					LastProbedAt:  ptrTime(time.Now().Add(-time.Minute)),
+				},
+				nodeB: {
+					DeviceCreated: true,
+					SizeBytes:     1 << 30,
+					DiskState:     drbd.DiskUpToDate,
+					Connected:     false,
+					LastProbedAt:  ptrTime(time.Now().Add(-time.Minute)),
+				},
+			},
+			Conditions: []metav1.Condition{{
+				Type:               miroirv1alpha1.ConditionNodeUnreachable,
+				Status:             metav1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             "AgentUnreachable",
+			}},
+		},
+	}
+}
+
+func TestPhaseReconcilerClearsNodeUnreachableOnDegradedButReachable(t *testing.T) {
+	vol := degradedReachableVolume(volPvc1)
+	cl := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(vol).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &PhaseReconciler{Client: cl}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: vol.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeDegraded {
+		t.Fatalf("phase = %q, want %q", got.Status.Phase, miroirv1alpha1.VolumeDegraded)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("NodeUnreachable must clear on a Degraded volume whose replicas all probe fresh, got %+v", cond)
+	}
+}
+
+func TestPhaseReconcilerKeepsNodeUnreachableWhileProbesStale(t *testing.T) {
+	vol := degradedReachableVolume(volPvc1)
+	vol.Status.PerNode[nodeB] = miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: true,
+		SizeBytes:     1 << 30,
+		DiskState:     drbd.DiskUpToDate,
+		Connected:     true,
+		LastProbedAt:  ptrTime(time.Now().Add(-StaleProbeThreshold - time.Minute)),
+	}
+	cl := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(vol).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &PhaseReconciler{Client: cl}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: vol.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("NodeUnreachable must stay True while a replica's probe is stale, got %+v", cond)
 	}
 }

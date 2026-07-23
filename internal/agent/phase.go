@@ -45,11 +45,13 @@ func (r *PhaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 
 	now := time.Now()
 	phase, readyReplicas := computePhaseAt(vol, now)
-	// Ready contradicts a lingering NodeUnreachable condition (Ready requires
-	// every diskful replica fresh). waitReady's success-path clear is one-shot
-	// — provisioning succeeded, so no further CreateVolume will retry a failed
+	// Every diskful replica reporting a fresh probe contradicts a lingering
+	// NodeUnreachable condition. waitReady's success-path clear is one-shot —
+	// provisioning succeeded, so no further CreateVolume will retry a failed
 	// patch — so this reconciler is the backstop that eventually clears it.
-	clearUnreachable := phase == miroirv1alpha1.VolumeReady &&
+	// Gate on reachability, not phase: recovery can settle at Degraded (a
+	// replica still syncing provisions fine) and must still clear.
+	clearUnreachable := replicasReachable(vol, now) &&
 		meta.IsStatusConditionTrue(vol.Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable)
 	if phase != vol.Status.Phase || readyReplicas != vol.Status.ReadyReplicas || clearUnreachable {
 		base := vol.DeepCopy()
@@ -67,6 +69,23 @@ func (r *PhaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		}
 	}
 	return ctrl.Result{RequeueAfter: nextProbeExpiry(vol, now)}, nil
+}
+
+// replicasReachable reports whether every diskful replica has a PerNode
+// entry with a fresh (or legacy-nil) probe — the inverse of the criteria
+// the CSI controller brands nodes unreachable by, so the clear cannot
+// fight a concurrent set: an absent entry or a stale probe blocks it.
+func replicasReachable(vol *miroirv1alpha1.MiroirVolume, now time.Time) bool {
+	for _, rep := range vol.Spec.DiskfulReplicas() {
+		st, ok := vol.Status.PerNode[rep.Node]
+		if !ok {
+			return false
+		}
+		if st.LastProbedAt != nil && now.Sub(st.LastProbedAt.Time) > StaleProbeThreshold {
+			return false
+		}
+	}
+	return true
 }
 
 // nextProbeExpiry returns the nearest future point at which computePhase can
