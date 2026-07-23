@@ -1294,7 +1294,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 // controller imports the agent package for this one constant. The constant
 // could live in internal/constants (imported by both packages), but moving
 // it would touch the agent package which Phase 3 deliberately avoids.
-func (c *Controller) checkNodeUnreachable(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) []string {
+func (c *Controller) checkNodeUnreachable(_ context.Context, vol *miroirv1alpha1.MiroirVolume) []string {
 	now := time.Now()
 	var unreachable []string
 	for _, rep := range vol.Spec.Replicas {
@@ -1312,6 +1312,7 @@ func (c *Controller) checkNodeUnreachable(ctx context.Context, vol *miroirv1alph
 			unreachable = append(unreachable, rep.Node)
 		}
 	}
+
 	if len(unreachable) > 0 {
 		cond := metav1.Condition{
 			Type:   miroirv1alpha1.ConditionNodeUnreachable,
@@ -1321,10 +1322,12 @@ func (c *Controller) checkNodeUnreachable(ctx context.Context, vol *miroirv1alph
 				strings.Join(unreachable, ", "), agent.StaleProbeThreshold),
 		}
 		meta.SetStatusCondition(&vol.Status.Conditions, cond)
-		// Best-effort: the volume object is the CR we just read; a
-		// conflict on this incidental write is fine, and the caller's
-		// FailedPrecondition return is the primary signal.
-		_ = c.Client.Status().Update(ctx, vol)
+		// Use a fresh context: the caller's ctx is already canceled
+		// (waitReady timed out), so the status update would silently
+		// fail and the condition would never be written.
+		updCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = c.Client.Status().Update(updCtx, vol)
 		if c.Recorder != nil {
 			c.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "NodeUnreachable", "Provision",
 				"Node agent unreachable on %s (no status received within %s); volume %s cannot provision",

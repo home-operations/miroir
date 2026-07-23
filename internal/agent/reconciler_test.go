@@ -1424,13 +1424,13 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 	if res.RequeueAfter != busyRetryAfter {
 		t.Fatalf("want %v parked retry, got %v", busyRetryAfter, res.RequeueAfter)
 	}
-	select {
-	case e := <-rec.Events:
-		if !strings.Contains(e, "TeardownBusy") {
-			t.Fatalf("want a TeardownBusy warning, got %q", e)
-		}
-	default:
+	// The escalation cycle emits both TeardownBusy and (because the
+	// cause contains "held open") a one-shot TeardownLiveConsumer.
+	if !drainEvents(rec, "TeardownBusy") {
 		t.Fatal("want a TeardownBusy warning event")
+	}
+	if !drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("want a TeardownLiveConsumer warning event")
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
@@ -1446,10 +1446,8 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 	if err != nil || res.RequeueAfter != busyRetryAfter {
 		t.Fatalf("post-escalation cycle must stay parked, got %v / %v", res.RequeueAfter, err)
 	}
-	select {
-	case e := <-rec.Events:
-		t.Fatalf("parked cycles must not re-emit events, got %q", e)
-	default:
+	if drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("parked cycles must not re-emit TeardownLiveConsumer")
 	}
 
 	// The hold clears: teardown completes, this node's finalizer releases,
@@ -1663,282 +1661,58 @@ func TestReconcileTeardownOrphanHoldMountedStaysParked(t *testing.T) {
 	}
 }
 
+// When teardown is blocked by a live consumer (orphanHold returns false,
+// cause contains "held open"), a TeardownLiveConsumer Warning event is
+// emitted at the busyFailLimit crossing so operators can see the deletion
+// is blocked by a live consumer — not by a dead-held orphan. The teardown
+// stays parked (no force-detach, no backing destruction) and the event is
+// not re-emitted on subsequent parked cycles.
+func TestReconcileTeardownLiveConsumerEmitsEvent(t *testing.T) {
+	procDir := procFixture(t, map[int]string{4242424: unrelatedMountinfo})
+	r, fb, fe, rec := orphanHoldFixture(t, procDir)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+
+	// Ride up to busyFailLimit — orphanHold returns false (pid 4242424 alive).
+	for i := 1; i < busyFailLimit; i++ {
+		res, err := r.Reconcile(t.Context(), req)
+		if err != nil || res.RequeueAfter != 10*time.Second {
+			t.Fatalf("attempt %d must ride the 10s busy retry, got %v / %v", i, res.RequeueAfter, err)
+		}
+	}
+
+	// The crossing cycle: escalation fires, TeardownLiveConsumer event emitted.
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil {
+		t.Fatalf("the escalation must park, not error: %v", err)
+	}
+	if res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("want %v parked retry, got %v", busyRetryAfter, res.RequeueAfter)
+	}
+	// No force-detach must have been attempted.
+	fe.notCalledWith(t, "drbdsetup detach")
+	if !fb.existing[volPvc1] {
+		t.Fatal("the backing must survive while a live consumer holds the device")
+	}
+	// The TeardownLiveConsumer event must have been emitted.
+	if !drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("want a TeardownLiveConsumer warning event")
+	}
+
+	// One more parked cycle: the event must not re-emit.
+	res, err = r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != busyRetryAfter {
+		t.Fatalf("post-escalation cycle must stay parked, got %v / %v", res.RequeueAfter, err)
+	}
+	if drainEvents(rec, "TeardownLiveConsumer") {
+		t.Fatal("TeardownLiveConsumer event must not re-emit on parked cycles")
+	}
+}
+
 // A kernel-wedged resource (stuck Detaching with the connections gone,
 // LINBIT/drbd#137) must leave the fast busy-retry without ever spawning
 // another down: the first sighting defers on the busy cadence, the second
 // parks at wedgedRequeue with the TeardownWedged warning, wedged gauge,
 // actionable Message, and the finalizer retained.
-// forceDetachFixture assembles a deletion with a live opener: the
-// orphanHold check returns false (opener pid alive, device not mounted in
-// any namespace), and the busy streak is counted from zero — the caller
-// rides the required number of cycles.
-func forceDetachFixture(t *testing.T) (*VolumeReconciler, *fakeBackend, *fakeDRBDExec, *events.FakeRecorder) {
-	t.Helper()
-	s := newScheme(t)
-	fb := newFakeBackend()
-	fb.existing[volPvc1] = true
-	v := vol(volPvc1, nodeA, nodeB)
-	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
-	now := metav1.NewTime(time.Now())
-	v.DeletionTimestamp = &now
-	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
-		nodeA: {DeviceCreated: true, DRBDMinor: 1422},
-	}
-	stateDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(stateDir, "minor.assign"), []byte("pvc-1 1422\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
-		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
-	fe := &fakeDRBDExec{
-		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
-			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
-			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
-		errOn: map[string]error{cmdDownPvc1: errors.New(heldOpenWithOpeners)},
-	}
-	// The opener pid 4242424 *exists* in /proc — orphanHold returns false.
-	procDir := procFixture(t, map[int]string{4242424: unrelatedMountinfo})
-	rec := events.NewFakeRecorder(8)
-	r := &VolumeReconciler{
-		Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec, ProcDir: procDir,
-		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
-	}
-	return r, fb, fe, rec
-}
-
-// Force-detach escalation after extended busy: when a live opener has
-// kept the device busy past busyForceDetachLimit, teardown attempts a
-// one-shot force-detach. If the subsequent sweep succeeds, teardown
-// completes and releases the finalizer.
-func TestReconcileTeardownForceDetachSucceeds(t *testing.T) {
-	r, fb, fe, _ := forceDetachFixture(t)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
-
-	// Ride the entire busy window — the escalation must not fire before
-	// busyForceDetachLimit.
-	for range busyForceDetachLimit {
-		if _, err := r.Reconcile(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The force-detach must not have fired yet.
-	fe.notCalledWith(t, "drbdsetup detach")
-
-	// The next cycle escalates: force-detach fires, sweep succeeds,
-	// teardown completes.
-	if _, err := r.Reconcile(t.Context(), req); err != nil {
-		t.Fatalf("the force-detach escalation cycle must complete teardown: %v", err)
-	}
-	fe.calledWith(t, "drbdsetup detach 1422 --force")
-	if fb.existing[volPvc1] {
-		t.Fatal("the backing device must be destroyed by the force-detach escalation")
-	}
-	got := &miroirv1alpha1.MiroirVolume{}
-	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err == nil {
-		if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeA) {
-			t.Fatalf("this node's finalizer must release after force-detach escalation: %v", got.Finalizers)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(r.DRBD.StateDir, "pvc-1.res")); !os.IsNotExist(err) {
-		t.Fatalf("rendered config must be removed by the force-detach escalation: %v", err)
-	}
-}
-
-// Force-detach escalation attempted but the backing device remains busy:
-// stays parked, a TeardownForceDetached warning event is emitted,
-// force-detach is called exactly once at the threshold — no loop.
-func TestReconcileTeardownForceDetachStillBusy(t *testing.T) {
-	r, fb, fe, rec := forceDetachFixture(t)
-	// Make sweep-delete fail with ErrBusy after the force-detach.
-	fb.failOn = volPvc1 + ":delete"
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
-
-	for range busyForceDetachLimit {
-		if _, err := r.Reconcile(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	res, err := r.Reconcile(t.Context(), req)
-	if err != nil {
-		t.Fatalf("the force-detach escalation must park, not error: %v", err)
-	}
-	if res.RequeueAfter != busyRetryAfter {
-		t.Fatalf("want %v parked retry, got %v", busyRetryAfter, res.RequeueAfter)
-	}
-	fe.calledWith(t, "drbdsetup detach 1422 --force")
-	if !fb.existing[volPvc1] {
-		t.Fatal("the backing must survive when sweep-delete remains busy")
-	}
-	if !drainEvents(rec, "TeardownForceDetached") {
-		t.Fatal("want a TeardownForceDetached warning event")
-	}
-	// One more cycle: force-detach must not fire again (no loop).
-	fe.calls = nil
-	res, err = r.Reconcile(t.Context(), req)
-	if err != nil || res.RequeueAfter != busyRetryAfter {
-		t.Fatalf("post-escalation cycle must stay parked, got %v / %v", res.RequeueAfter, err)
-	}
-	fe.notCalledWith(t, "drbdsetup detach")
-}
-
-// Force-detach itself fails (e.g. DRBD resource not found): stays parked,
-// no crash, continues normal busy retry.
-func TestReconcileTeardownForceDetachFails(t *testing.T) {
-	r, _, fe, rec := forceDetachFixture(t)
-	// ForceDetach's status listing fails.
-	fe.errOn["drbdsetup status"] = errors.New("connection refused")
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
-
-	for range busyForceDetachLimit {
-		if _, err := r.Reconcile(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	res, err := r.Reconcile(t.Context(), req)
-	if err != nil {
-		t.Fatalf("failed force-detach must park, not error: %v", err)
-	}
-	if res.RequeueAfter != busyRetryAfter {
-		t.Fatalf("want %v parked retry, got %v", busyRetryAfter, res.RequeueAfter)
-	}
-	// ForceDetach was attempted but returned an error; event emitted.
-	if !drainEvents(rec, "TeardownForceDetached") {
-		t.Fatal("want a TeardownForceDetached warning event")
-	}
-}
-
-// Regression guard: the orphan path (all openers dead, nothing mounted)
-// still uses reclaimOrphanHold and does NOT trigger force-detachLive.
-func TestReconcileTeardownOrphanPathUnaffected(t *testing.T) {
-	procDir := procFixture(t, map[int]string{1: unrelatedMountinfo})
-	r, fb, _, rec := orphanHoldFixture(t, procDir)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
-
-	// Ride the entire escalation past busyForceDetachLimit — the orphan
-	// path reclaims at busyFailLimit (30), well before the force-detach
-	// threshold, so the force-detach path must never be entered.
-	for range busyForceDetachLimit + 1 {
-		if _, err := r.Reconcile(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The orphan reclaim cycle completes teardown; force-detach via
-	// forceDetachLive must not have been the path taken. But reclaimOrphanHold
-	// also calls ForceDetach as part of its internal logic. We just assert
-	// the tear down worked normally.
-	if fb.existing[volPvc1] {
-		t.Fatal("the backing device must be destroyed")
-	}
-	got := &miroirv1alpha1.MiroirVolume{}
-	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err == nil {
-		if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeA) {
-			t.Fatalf("this node's finalizer must release: %v", got.Finalizers)
-		}
-	}
-	if !drainEvents(rec, "TeardownReclaimed") {
-		t.Fatal("orphan path must emit TeardownReclaimed, not TeardownForceDetached")
-	}
-}
-
-// ForceDetachThresholdBoundary: busy with live opener, streak climbs to
-// busyForceDetachLimit-1 → parked, no ForceDetach. One more cycle crosses
-// the threshold and force-detach fires. Verifies the exact boundary.
-func TestReconcileTeardownForceDetachThresholdBoundary(t *testing.T) {
-	r, _, fe, _ := forceDetachFixture(t)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
-
-	// Ride up to busyFailLimit (30) — the escalation parking starts there,
-	// but force-detach must not fire.
-	for range busyFailLimit {
-		if _, err := r.Reconcile(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	fe.notCalledWith(t, "drbdsetup detach")
-
-	// Run until count is busyForceDetachLimit-1 (59): parked, no force-detach.
-	for range busyForceDetachLimit - busyFailLimit {
-		res, err := r.Reconcile(t.Context(), req)
-		if err != nil || res.RequeueAfter != busyRetryAfter {
-			t.Fatalf("below threshold must stay parked, got %v / %v", res.RequeueAfter, err)
-		}
-	}
-	fe.notCalledWith(t, "drbdsetup detach")
-
-	// The 61st cycle crosses the boundary: force-detach fires.
-	// If it succeeds, teardown completes (nil error, no requeue).
-	// The force-detach fixture has no sweep-delete blocker, so this succeeds.
-	_, err := r.Reconcile(t.Context(), req)
-	if err != nil {
-		t.Fatalf("force-detach at boundary must not error: %v", err)
-	}
-	fe.calledWith(t, "drbdsetup detach 1422 --force")
-}
-
-// Mounted device but no live opener: the device is still mounted in a
-// namespace but all opener PIDs are dead. busyForceDetachLimit is reached
-// but force-detach must NOT fire — destroying a backing under a consumer
-// violates #195.
-func TestReconcileTeardownMountedNoLiveOpenerNoForceDetach(t *testing.T) {
-	// One dir with unrelated mountinfo (dead pid), one with drbd mount.
-	procDir := procFixture(t, map[int]string{
-		1:    unrelatedMountinfo,
-		4321: drbd1422Mountinfo,
-	})
-	// orphanHoldFixture: all openers dead, but the proc dir has a DRBD mount.
-	r, fb, fe, _ := orphanHoldFixture(t, procDir)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
-
-	// Ride past busyForceDetachLimit — force-detach must never fire.
-	for range busyForceDetachLimit + 1 {
-		if _, err := r.Reconcile(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	res, err := r.Reconcile(t.Context(), req)
-	if err != nil || res.RequeueAfter != busyRetryAfter {
-		t.Fatalf("mounted device must stay parked, got %v / %v", res.RequeueAfter, err)
-	}
-	fe.notCalledWith(t, "drbdsetup detach")
-	if !fb.existing[volPvc1] {
-		t.Fatal("the backing must survive while the device is mounted")
-	}
-}
-
-// ForceDetach succeeds but SweepDelete returns a non-Busy hard error:
-// the error must propagate (no silent swallow), no loop.
-func TestReconcileTeardownForceDetachSweepHardError(t *testing.T) {
-	r, fb, fe, _ := forceDetachFixture(t)
-	// Make Delete fail with a hard error (not ErrBusy).
-	fb.failOn = volPvc1 + ":delete-hard"
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
-
-	for range busyForceDetachLimit {
-		if _, err := r.Reconcile(t.Context(), req); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// The escalation cycle: force-detach fires, sweep attempt fails.
-	// The hard error from forceDetachLive flows to handleTeardownError which
-	// is not ErrBusy → resets streak, returns hard error.
-	_, err := r.Reconcile(t.Context(), req)
-	if err == nil {
-		t.Fatal("a non-Busy hard error from SweepDelete must propagate")
-	}
-	fe.calledWith(t, "drbdsetup detach 1422 --force")
-	// The error resets the busy streak, so the next cycle won't fire again.
-	fe.calls = nil
-	res, err := r.Reconcile(t.Context(), req)
-	if err != nil {
-		t.Fatal("error was already surfaced, next cycle should not loop")
-	}
-	fe.notCalledWith(t, "drbdsetup detach")
-	_ = res
-}
-
 func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()

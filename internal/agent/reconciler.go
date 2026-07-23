@@ -1054,17 +1054,13 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			if r.orphanHold(ctx, vol, slot, busy) {
 				return r.reclaimOrphanHold(ctx, vol, slot, busy)
 			}
-			// Force-detach escalation after extended busy: when a live
-			// opener PID has kept the device busy past busyForceDetachLimit
-			// (~10 min), attempt a one-shot force-detach to free the
-			// backing — matching Linstor's pattern of escalating teardown
-			// strategy instead of parking forever. A mounted device whose
-			// openers have exited, a scan error, or a cause without opener
-			// pids stays in normal parking (#195: never destroy a backing
-			// under a consumer).
-			if r.busyFailCount(vol.Name) == busyForceDetachLimit && hasLiveOpener(r.procDir(), err.Error()) {
-				return r.forceDetachLive(ctx, vol, slot, busy)
-			}
+			// When the orphan hold check returns false with a cause
+			// containing "held open" (live opener, mounted, or scan error),
+			// continue normal reportBusy parking as before Phase 2. No
+			// force-detach escalation — destroying a backing under a live
+			// consumer causes I/O errors and permanent data loss (#195).
+			// The orphan-hold reclaim already solves the real production
+			// problem (dead openers).
 			return busy
 		}
 		// With the resource down, wipe the DRBD metadata before the sweep
@@ -1194,13 +1190,6 @@ func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv
 const (
 	busyFailLimit  = 30 // ~5 minutes at the 10s cadence
 	busyRetryAfter = time.Minute
-
-	// busyForceDetachLimit is the extended busy threshold — ~10 minutes at
-	// the 10s cadence — past which teardown escalates from parking to a
-	// one-shot force-detach attempt even when a live opener is present,
-	// matching Linstor's pattern of escalating the teardown strategy after
-	// extended failure rather than parking forever.
-	busyForceDetachLimit = busyFailLimit * 2
 )
 
 // reportBusy paces one ErrBusy teardown outcome: the fast 10s retry below
@@ -1235,6 +1224,18 @@ func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.M
 			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownBusy", "Teardown",
 				"cannot tear down %s on node %s after %d attempts: %v; something still holds the device (or its backing) open",
 				vol.Name, r.NodeName, fails, cause)
+			// When the hold is a live consumer (held open with a live
+			// opener or a still-mounted device), emit a distinct event
+			// so operators can see deletion is blocked by a live consumer
+			// — the only path out is the consumer releasing the device,
+			// not orphan-hold reclaim. The guard below prevents
+			// re-emission on every parked cycle.
+			if strings.Contains(cause.Error(), "held open") && !strings.Contains(vol.Status.PerNode[r.NodeName].Message, "live consumer") {
+				r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownLiveConsumer", "Teardown",
+					"deletion of %s on node %s is blocked by a live consumer still holding the device open; "+
+						"teardown will retry once the consumer releases it — no force-detach will be attempted",
+					vol.Name, r.NodeName)
+			}
 		}
 	}
 	if vol.Status.PerNode[r.NodeName].Message == cause.Error() {
@@ -1336,53 +1337,6 @@ func (r *VolumeReconciler) reclaimOrphanHold(ctx context.Context, vol *miroirv1a
 		r.Recorder.Eventf(vol, nil, corev1.EventTypeNormal, "TeardownReclaimed", "Teardown",
 			"backing of %s reclaimed on node %s: the DRBD device was held open only by exited processes (leaked freeze, issue #311); orphaned minor %d frees itself on the next reboot",
 			vol.Name, r.NodeName, slot.DRBDMinor)
-	}
-	return nil
-}
-
-// forceDetachLive attempts a one-shot force-detach escalation when the
-// orphanHold check returns false (a live opener still holds the device)
-// and the busy streak has persisted past busyForceDetachLimit (~10 min).
-// If the force-detach frees the backing, teardown completes through its
-// normal tail (sweep, config removal, finalizer). If the device remains
-// busy after the detach, the original busy cause is returned for parking,
-// and a TeardownForceDetached Warning event explains the outcome. A failed
-// force-detach itself (e.g. DRBD resource already gone) also defers to
-// normal busy parking. The force-detach is attempted exactly once at the
-// threshold — no looping.
-func (r *VolumeReconciler) forceDetachLive(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, slot miroirv1alpha1.ReplicaStatus, cause error) error {
-	if err := r.DRBD.ForceDetach(ctx, vol.Name, slot.DRBDMinor); err != nil {
-		ctrl.LoggerFrom(ctx).Info("force-detach escalation failed; teardown stays parked",
-			"volume", vol.Name, "error", err)
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownForceDetached", "Teardown",
-				"force-detach of %s on node %s failed: %v; teardown stays parked",
-				vol.Name, r.NodeName, err)
-		}
-		return cause
-	}
-	if err := r.Pools.SweepDelete(ctx, vol.Name); err != nil {
-		if errors.Is(err, backend.ErrBusy) {
-			ctrl.LoggerFrom(ctx).Info("force-detach escalated but device remains busy; teardown stays parked",
-				"volume", vol.Name, "error", err)
-			if r.Recorder != nil {
-				r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownForceDetached", "Teardown",
-					"%s force-detached on node %s but the backing device remains busy: %v; teardown stays parked",
-					vol.Name, r.NodeName, err)
-			}
-			return cause
-		}
-		return err
-	}
-	if err := r.DRBD.RemoveConfig(vol.Name); err != nil {
-		return err
-	}
-	ctrl.LoggerFrom(ctx).Info("teardown completed via force-detach escalation; a live opener was holding the device",
-		"volume", vol.Name, "minor", slot.DRBDMinor)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownForceDetached", "Teardown",
-			"backing of %s force-detached and destroyed on node %s after %d busy attempts; kernel minor %d stays pinned until reboot",
-			vol.Name, r.NodeName, r.busyFailCount(vol.Name), slot.DRBDMinor)
 	}
 	return nil
 }

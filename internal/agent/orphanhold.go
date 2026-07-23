@@ -108,29 +108,6 @@ func deviceMountedAnywhere(procDir string, minor int32) (bool, error) {
 	return false, nil
 }
 
-// hasLiveOpener reports whether the busy-teardown cause originates from a
-// live opener — at least one reported opener PID is still alive — as opposed
-// to a still-mounted device whose openers have exited, a scan error, or a
-// cause without opener information. It is the live-opener gate for the
-// force-detach escalation: force-detaching under a mounted device destroys a
-// backing under a consumer (#195), so only a live opener PID warrants the
-// escalation.
-func hasLiveOpener(procDir, msg string) bool {
-	if !strings.Contains(msg, "held open") {
-		return false
-	}
-	pids := openerPids(msg)
-	if len(pids) == 0 {
-		return false
-	}
-	for _, pid := range pids {
-		if pidAlive(procDir, pid) {
-			return true
-		}
-	}
-	return false
-}
-
 // /dev/drbd<minor>: a filesystem mount carries the device's major:minor
 // in field 3 (the mounted fs's st_dev), and a raw-block publish is a
 // devtmpfs bind whose root (field 4) is the device node's path.
