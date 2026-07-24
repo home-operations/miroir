@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.11.11](https://github.com/home-operations/miroir/compare/0.11.10...0.11.11) (2026-07-24)
+
+
+### Bug Fixes
+
+* **deps:** update module github.com/prometheus/client_golang (v1.24.0 → v1.24.1) ([#348](https://github.com/home-operations/miroir/issues/348)) ([20ac78a](https://github.com/home-operations/miroir/commit/20ac78ac394c97fa03233deffd2d63282788dfaf))
+* **helm:** stamp Chart.yaml version on release ([#352](https://github.com/home-operations/miroir/issues/352)) ([e6e102a](https://github.com/home-operations/miroir/commit/e6e102a513b3a0fede69a1b3de707625be7ccc99))
+
+
+### Miscellaneous Chores
+
+* **github-release:** Update release helm-unittest/helm-unittest (v1.1.1 → v1.1.2) ([#351](https://github.com/home-operations/miroir/issues/351)) ([ff07360](https://github.com/home-operations/miroir/commit/ff07360f2edafcd3ae8caa39df92e7bf6d40788d))
+
 ## [0.11.10](https://github.com/home-operations/miroir/compare/0.11.9...0.11.10) (2026-07-24)
 
 
