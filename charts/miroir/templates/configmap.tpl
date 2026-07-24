@@ -34,6 +34,9 @@ data:
         {{- with .Values.drbd.onIoError }}
             on-io-error {{ . }};
         {{- end }}
+        {{- with .Values.drbd.diskTimeout }}
+            disk-timeout {{ . }};
+        {{- end }}
         {{- with .Values.drbd.alExtents }}
             al-extents {{ . }};
         {{- end }}

@@ -224,7 +224,20 @@ func (z *zfsBackend) Delete(ctx context.Context, vol string) error {
 	if err != nil || !ok {
 		return err
 	}
+	// The zvol's kernel device can still be releasing after DRBD detached
+	// — zfs destroy races the cleanup and returns "dataset is busy". A
+	// few short retries let the kernel finish within this call instead
+	// of escalating to the agent's 10s cadence, which parks at 30
+	// attempts when many volumes tear down at once.
 	_, derr := z.exec(ctx, "zfs", "destroy", z.name(vol))
+	for attempt := 0; derr != nil && strings.Contains(derr.Error(), "dataset is busy") && attempt < 3; attempt++ {
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return Busy(derr)
+		}
+		_, derr = z.exec(ctx, "zfs", "destroy", z.name(vol))
+	}
 	if derr == nil ||
 		(!strings.Contains(derr.Error(), "has children") &&
 			!strings.Contains(derr.Error(), "dependent clones")) {

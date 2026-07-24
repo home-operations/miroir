@@ -667,7 +667,12 @@ func main() {
 		}
 		// Tracks this node's cordon state so shutdownSweep can tell a node
 		// reboot/upgrade (drained, so cordoned) from a routine pod restart.
-		cordon := &agent.CordonWatcher{Client: mgr.GetClient(), NodeName: nodeName}
+		// The sentinel file gates the DaemonSet preStop hook the same way.
+		cordon := &agent.CordonWatcher{
+			Client:       mgr.GetClient(),
+			NodeName:     nodeName,
+			SentinelPath: agent.CordonSentinelPath,
+		}
 		if err := cordon.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up cordon watcher")
 			os.Exit(1)
@@ -912,14 +917,20 @@ func transientAPIError(err error) bool {
 	}
 }
 
-// agentShutdownDownSecondaries releases Secondary backings only for a
-// cordoned node. The early signal path deliberately does not perform API
-// access, so it can start before manager shutdown has completed.
+// agentShutdownDownSecondaries demotes all Primaries then brings down every
+// Secondary on a cordoned node, releasing backing devices so the OS can tear
+// down storage pools without EIO. The early signal path deliberately does not
+// perform API access, so it can start before manager shutdown has completed.
 func agentShutdownDownSecondaries(cordon *agent.CordonWatcher, driver *drbd.Driver) {
 	if cordon.Cordoned() {
 		ctx, cancel := context.WithTimeout(context.Background(), drbdShutdownTimeout)
 		defer cancel()
-		setupLog.Info("node cordoned; releasing Secondary DRBD backings for shutdown")
+		setupLog.Info("node cordoned; demoting Primaries and releasing DRBD backings for shutdown")
+		// Demote first: --force terminates pending I/O so the subsequent
+		// down and the OS teardown cannot wedge on a metadata flush.
+		if err := driver.DemoteAll(ctx); err != nil {
+			setupLog.Error(err, "DRBD shutdown demote failed; attempting down sweep anyway")
+		}
 		if err := driver.DownSecondaries(ctx); err != nil {
 			setupLog.Error(err, "DRBD shutdown teardown failed; node reboot may stall")
 		}

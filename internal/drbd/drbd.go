@@ -539,6 +539,35 @@ func (d *Driver) releaseOrphanedAssignments(owned func(name string) bool, inKern
 	return d.writeAssignments(assigned)
 }
 
+// DemoteAll force-demotes every Primary this node holds, releasing backing
+// devices so the OS can tear down storage pools at shutdown. --force
+// terminates pending I/O with errors instead of waiting for a metadata
+// flush, which is what wedges a reboot in drbd_md_sync_page_io when the
+// backing disk is failing. Best effort: errors are joined so one stuck
+// resource cannot strand the rest.
+func (d *Driver) DemoteAll(ctx context.Context) error {
+	parsed, err := d.listStatus(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, res := range parsed {
+		if res.Role != rolePrimary {
+			continue
+		}
+		// Never spawn a demote against the wedge signature (issue #195):
+		// it can only hang. DownSecondaries reports these separately.
+		if res.wedgeSignature() {
+			errs = append(errs, fmt.Errorf("%s: %w", res.Name, ErrWedged))
+			continue
+		}
+		if _, err := d.adm(ctx, "secondary", "--force", res.Name); err != nil {
+			errs = append(errs, fmt.Errorf("secondary --force %s: %w", res.Name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // DownSecondaries brings down every resource this node holds Secondary,
 // releasing its backing device so the backend pool can export on shutdown.
 // Primary (open) resources are skipped: drbdsetup down refuses an open

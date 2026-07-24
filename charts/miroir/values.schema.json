@@ -211,6 +211,16 @@
             "string"
           ]
         },
+        "diskTimeout": {
+          "default": 0,
+          "description": "disk-timeout in 0.1s units: how long DRBD waits for a backing-device\nI/O before force-detaching, e.g. 600 (60s). At the DRBD default of 0\n(infinite) a failing backing disk can wedge a reboot in\ndrbd_md_sync_page_io; but DRBD's manual warns that aborting a request\nwhose completion later arrives can corrupt reused pages or panic the\nkernel, which is why upstream ships it disabled. Opt in deliberately\non hardware known to hang instead of erroring.",
+          "required": [],
+          "title": "diskTimeout",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
         "extraConfig": {
           "description": "Free-form escape hatch for DRBD options the chart has no knob for:\nverbatim option lines (semicolons included) appended inside the matching\nsection of common{} in global_common.conf, inherited by every resource.\nOnly validated when an agent next runs drbdadm adjust, and a bad line\nbreaks every resource on the node — test on a throwaway cluster first.",
           "properties": {
