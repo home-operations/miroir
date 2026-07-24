@@ -105,9 +105,11 @@ tests:
       - equal:
           path: metadata.labels["app.kubernetes.io/managed-by"]
           value: Helm
-      - equal:
+      # The label floats with the release-please-stamped chart version; assert
+      # the name-semver shape rather than a hardcoded version.
+      - matchRegex:
           path: metadata.labels["helm.sh/chart"]
-          value: miroir-0.0.1
+          pattern: ^miroir-\d+\.\d+\.\d+$
       - equal:
           path: metadata.labels["app.kubernetes.io/component"]
           value: controller

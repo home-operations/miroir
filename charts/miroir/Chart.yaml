@@ -2,10 +2,11 @@ apiVersion: v2
 name: miroir
 description: Replicated block storage for small Kubernetes clusters — CSI on LVM thin, ZFS, or loopfile backends with synchronous DRBD9 replication
 type: application
-# Placeholder — CI overrides both at publish time (helm package
-# --version/--app-version from the release tag).
-version: 0.0.1
-appVersion: 0.0.1
+# release-please stamps both on release; the release workflow re-stamps them at
+# package time (helm package --version/--app-version), so this keeps the repo
+# copy from going stale rather than feeding the published chart.
+version: 0.11.10 # x-release-please-version
+appVersion: "0.11.10" # x-release-please-version
 kubeVersion: ">=1.31.0"
 home: https://github.com/home-operations/miroir
 sources:

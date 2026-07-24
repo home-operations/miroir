@@ -65,9 +65,11 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].name
           value: controller
-      - equal:
+      # The tag floats with the release-please-stamped appVersion; assert the
+      # repo:semver shape rather than a hardcoded version.
+      - matchRegex:
           path: spec.template.spec.containers[0].image
-          value: "ghcr.io/home-operations/miroir-controller:0.0.1"
+          pattern: ^ghcr\.io/home-operations/miroir-controller:\d+\.\d+\.\d+$
       - equal:
           path: spec.template.spec.containers[0].imagePullPolicy
           value: IfNotPresent
@@ -538,9 +540,8 @@ tests:
   - it: withholds the gateway args by default (RWX is opt-in)
     documentIndex: 0
     asserts:
-      - notContains:
-          path: spec.template.spec.containers[0].args
-          content: --gateway-image=ghcr.io/home-operations/miroir-gateway:0.0.1
+      - notExists:
+          path: spec.template.spec.containers[0].args[?(@ =~ /^--gateway-image=/)]
       - notContains:
           path: spec.template.spec.containers[0].args
           content: --gateway-service-account=miroir-gateway
@@ -552,9 +553,11 @@ tests:
     set:
       gateway.enabled: true
     asserts:
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --gateway-image=ghcr.io/home-operations/miroir-gateway:0.0.1
+      # The tag floats with the release-please-stamped appVersion; assert the
+      # repo:semver shape rather than a hardcoded version.
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[?(@ =~ /^--gateway-image=/)]
+          pattern: ^--gateway-image=ghcr\.io/home-operations/miroir-gateway:\d+\.\d+\.\d+$
       - contains:
           path: spec.template.spec.containers[0].args
           content: --gateway-service-account=miroir-gateway

@@ -1,6 +1,8 @@
 # miroir
 
-![Version: 0.0.1](https://img.shields.io/badge/Version-0.0.1-informational?style=flat-square) ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 0.0.1](https://img.shields.io/badge/AppVersion-0.0.1-informational?style=flat-square)
+![Version](https://img.shields.io/static/v1?label=Version&message=0.11.10&color=informational&style=flat-square) <!-- x-release-please-version -->
+![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
+![AppVersion](https://img.shields.io/static/v1?label=AppVersion&message=0.11.10&color=informational&style=flat-square) <!-- x-release-please-version -->
 
 Replicated block storage for small Kubernetes clusters — CSI on LVM thin, ZFS, or loopfile backends with synchronous DRBD9 replication
 
