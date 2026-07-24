@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.10](https://github.com/home-operations/miroir/compare/0.11.9...0.11.10) (2026-07-24)
+
+
+### Bug Fixes
+
+* **agent:** demote DRBD Primaries before OS teardown + ZFS busy retry + restore fallback ([#345](https://github.com/home-operations/miroir/issues/345)) ([ab36200](https://github.com/home-operations/miroir/commit/ab3620006405eb49eae8b288a290df1714dcb3f5))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool aqua:astral-sh/uv (0.11.31 → 0.11.32) ([#346](https://github.com/home-operations/miroir/issues/346)) ([0ac31d4](https://github.com/home-operations/miroir/commit/0ac31d428480a1e01eda5a5ea37492e5a6d7f055))
+
 ## [0.11.9](https://github.com/home-operations/miroir/compare/0.11.8...0.11.9) (2026-07-23)
 
 
