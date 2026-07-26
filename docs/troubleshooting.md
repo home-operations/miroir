@@ -28,3 +28,9 @@
   `7100`) to move miroir's range; existing volumes keep their ports.
   Full forensics in
   [#148](https://github.com/home-operations/miroir/issues/148).
+- **Resync activity on every kopiur backup**: kopiur's staged PVC
+  inherits the source PVC's StorageClass, so a replicated volume gets
+  a replicated (and therefore syncing) staging volume once per backup
+  cycle. Point `spec.staging.storageClassName` at a `replicas: "1"`
+  class naming the same pool, per
+  [Stage kopiur backups unreplicated](quickstart.md#stage-kopiur-backups-unreplicated).

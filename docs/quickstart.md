@@ -463,6 +463,76 @@ resource and schedules backups into it.
 
 ///
 
+### Stage kopiur backups unreplicated
+
+kopiur's `copyMethod: Snapshot` provisions a short-lived staged PVC
+from each VolumeSnapshot and deletes it once the mover job has
+uploaded (`Clone` stages the same way from a CSI clone). That staged
+PVC inherits the source PVC's StorageClass unless
+`spec.staging.storageClassName` overrides it, so a replicated
+application volume gets a replicated staging volume on every backup:
+a second DRBD leg comes up and syncs, plus a diskless tie-breaker on
+a 2-replica `freeze` class, for data that is deleted minutes later.
+On a frequent schedule that reads as constant resync activity.
+
+Give the staged PVC its own `replicas: "1"` class. A restore is a
+node-local copy-on-write clone, so that class must name the **same
+pool** as the source: the controller refuses a cross-pool restore
+with `restore must stay in the source volume's pool`, and kopiur
+rejects a class belonging to another CSI driver with
+`StagedClassMismatch`. Keep `csi.storage.k8s.io/fstype` in step with
+the source class too; the staged clone arrives already formatted.
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: miroir-replicated-fast
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  miroir.home-operations.com/replicas: "2"
+  miroir.home-operations.com/pool: fast
+  miroir.home-operations.com/quorum: freeze
+  csi.storage.k8s.io/fstype: ext4
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: miroir-replicated-fast-staging
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  miroir.home-operations.com/replicas: "1"
+  miroir.home-operations.com/pool: fast # must match the source class
+  csi.storage.k8s.io/fstype: ext4
+---
+apiVersion: kopiur.home-operations.com/v1alpha1
+kind: SnapshotPolicy
+metadata:
+  name: postgres
+  namespace: databases
+spec:
+  repository:
+    name: primary
+  copyMethod: Snapshot
+  volumeSnapshotClassName: miroir-snap
+  staging:
+    storageClassName: miroir-replicated-fast-staging
+  sources:
+    - pvc:
+        name: postgres-data
+  retention:
+    keepDaily: 14
+```
+
+The application PVC is untouched: `spec.staging` governs the staged
+copy only, and dropping replication from a throwaway volume costs
+nothing (the snapshot it clones still lives on the replicated
+source).
+
 ## 5. Expand online
 
 Edit the PVC's `spec.resources.requests.storage`. The agent grows
