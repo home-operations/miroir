@@ -45,9 +45,14 @@ flowchart LR
 
 ## When _not_ to use it
 
-- You need >3 replicas. DRBD9 itself supports more, but the
-  controller validates `1..3`, metadata reserves `--max-peers 7`, and
-  the quorum policies assume 2 data replicas plus a tie-breaker.
+- You need >3 replicas. DRBD9 itself allows up to 32 nodes on a
+  single resource, so this is a scope decision, not a DRBD limit: the
+  controller validates `1..3`, metadata reserves `--max-peers 7`
+  slots per leg (enough for 2 peer replicas, the tie-breaker, 2
+  remote clients, and rebuild headroom), and the quorum policies
+  assume 2 data replicas plus a tie-breaker. More than that means
+  redesigning the vote math and recreating on-disk metadata: LINSTOR
+  territory.
 - You need iSCSI targets or a standalone NFS/file server. miroir
   serves block devices, plus a per-volume NFS export for
   `ReadWriteMany` (see [ReadWriteMany (RWX)](rwx.md)); it
