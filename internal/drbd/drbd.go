@@ -268,7 +268,13 @@ func InternalMetaOverhead(sizeBytes int64) int64 {
 func (d *Driver) probeMetadata(ctx context.Context, name string) (hasMD, attached bool, dump string, err error) {
 	if parsed, perr := d.listStatus(ctx, name); perr == nil {
 		for _, res := range parsed {
+			// Positive test on purpose: disk-state is a plain string, so a
+			// device entry missing the key unmarshals to "" — and reading
+			// that as attached would adopt a blank backing and reinstate
+			// the error loop above. Unknown means "ask dump-md", which is
+			// authoritative either way.
 			if res.Name == name && len(res.Devices) > 0 &&
+				res.Devices[0].DiskState != "" &&
 				res.Devices[0].DiskState != DiskDiskless {
 				return true, true, "", nil
 			}
@@ -291,10 +297,6 @@ func (d *Driver) probeMetadata(ctx context.Context, name string) (hasMD, attache
 		return true, true, "", nil
 	case err == nil:
 		return true, false, out, nil
-	case strings.Contains(err.Error(), "is configured!"):
-		// drbdmeta's own refusal — covers a resource attached between
-		// the kernel probe and the dump.
-		return true, true, "", nil
 	case strings.Contains(err.Error(), "no valid meta data") ||
 		strings.Contains(err.Error(), "No valid meta data"):
 		return false, false, "", nil

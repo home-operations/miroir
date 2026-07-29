@@ -68,8 +68,11 @@ const (
 	snapGone = "snap-gone"
 	// statusNotInKernel is the status of a resource that is not up yet — the
 	// first --json read of a bring-up pass, which probeMetadata makes before
-	// create-md.
-	statusNotInKernel = "[]"
+	// create-md. drbdsetup does not answer that with an empty list: it
+	// writes "<name>: No such resource" to stderr and exits 10, which
+	// backend.RealExec surfaces as an error. fakeDRBDExec.run turns this
+	// sentinel into that error so fixtures exercise the real shape.
+	statusNotInKernel = "\x00no-such-resource"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -834,7 +837,7 @@ func TestReconcilePaddedRestoreSeedDemotesInterruptedMint(t *testing.T) {
 	up := `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{up, up, up, up}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, up, up, up, up}}
 
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj(snapSnap1, "src-vol")).
@@ -1087,6 +1090,9 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 	if strings.HasPrefix(line, "drbdsetup status --json") && len(f.statusSeq) > 0 {
 		out := f.statusSeq[0]
 		f.statusSeq = f.statusSeq[1:]
+		if out == statusNotInKernel {
+			return "", errNoSuchResource
+		}
 		return out, nil
 	}
 	if strings.HasPrefix(line, "drbdsetup status") {
@@ -1103,7 +1109,12 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 	return "", nil
 }
 
-var errFreshDevice = errors.New("no valid meta data")
+var (
+	errFreshDevice = errors.New("no valid meta data")
+	// errNoSuchResource is drbdsetup's exit-10 answer for a resource that
+	// is not up, as backend.RealExec reports it.
+	errNoSuchResource = errors.New("drbdsetup status: pvc-1: No such resource")
+)
 
 func (f *fakeDRBDExec) calledWith(t *testing.T, substr string) {
 	t.Helper()
@@ -2278,7 +2289,7 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 	reconcile(t, r, volPvc1)
 
 	fe.calledWith(t, "create-md")
-	fe.notCalledWith(t, "set-gi") // just-created metadata → full SyncTarget
+	fe.notCalledWith(t, "new-current-uuid") // just-created metadata → full SyncTarget
 }
 
 func TestReconcileDisklessTieBreaker(t *testing.T) {
@@ -2378,9 +2389,18 @@ func TestReconcileTieBreakerGainingADiskSeedsMetadata(t *testing.T) {
 		t.Fatalf("the converted leg must realize a backing device: %v", fb.createVol)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
-	fe.notCalledWith(t, "set-gi") // just-created metadata → full SyncTarget
+	fe.notCalledWith(t, "new-current-uuid") // just-created metadata → full SyncTarget
 	if _, err := os.Stat(filepath.Join(stateDir, volPvc1+".md-adopted")); !os.IsNotExist(err) {
 		t.Fatal("a blank backing must not be recorded as adopted metadata")
+	}
+	// A completed seed must leave the marker pair settled: .md-created
+	// written and the .md-seeding sentinel cleared. A sentinel left behind
+	// authorizes re-seeding a leg that has since full-synced real data.
+	if _, err := os.Stat(filepath.Join(stateDir, volPvc1+".md-created")); err != nil {
+		t.Fatal("a completed seed must be marked created")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, volPvc1+".md-seeding")); !os.IsNotExist(err) {
+		t.Fatal("a completed seed must clear the seeding sentinel")
 	}
 }
 
@@ -3496,7 +3516,6 @@ func TestReconcileBirthWinnerMintsInitialUUID(t *testing.T) {
 	// The full fresh path: metadata created and left just-created, then the
 	// one replicated generation minted over the live connections.
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
-	fe.notCalledWith(t, "set-gi")
 	fe.calledWith(t, "drbdadm new-current-uuid --clear-bitmap pvc-1/0")
 
 	got := &miroirv1alpha1.MiroirVolume{}

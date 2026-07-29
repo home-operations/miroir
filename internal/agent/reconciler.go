@@ -1636,11 +1636,17 @@ func (r *VolumeReconciler) growIfCoordinator(ctx context.Context, vol *miroirv1a
 // detach) and it must not be re-attached (drbdResource renders
 // adjust --skip-disk while latched). It is sticky — once a prior reconcile
 // recorded DiskFailed it stays latched even though prev DiskState is now
-// Diskless (the fresh-detach test alone would clear it). It clears only
-// when the leg reaches a non-Diskless state again (a re-add re-attaches a
-// fresh disk) or the replica is removed (removal drops this status slot).
+// Diskless (the fresh-detach test alone would clear it). In practice only
+// removing the replica clears it: the latch renders adjust --skip-disk, so
+// a latched leg is never re-attached and can never reach a non-Diskless
+// state on its own.
 // Gated on the leg having previously been attached so a normal bring-up
-// (briefly Diskless) does not cry wolf.
+// (briefly Diskless) does not cry wolf. That gate reads CRD status, which
+// outlives the agent process — so a leg recorded attached before a restart
+// and read Diskless after one latches whether or not a disk actually
+// failed, and only a replica re-add gets it back. Auto-diskful conversions
+// are the population most exposed to that, being the legs that go
+// Diskless -> attached in place.
 func diskFailedLatch(vol *miroirv1alpha1.MiroirVolume, self string, st drbd.Status, localDiskless bool) bool {
 	if localDiskless || st.DiskState != drbd.DiskDiskless {
 		return false

@@ -4,7 +4,9 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -38,8 +40,46 @@ func controllerArgs() string {
 // (the resource line and its device line). Scoped deliberately: the peer
 // lines below carry peer-disk: states that a whole-output substring match
 // would confuse for the local disk.
-func localLegStatus(ctx context.Context, node, name string) string {
-	return agentExec(ctx, node, "drbdsetup status "+name+" | awk 'NR<=2'")
+//
+// It returns an error rather than asserting, for two reasons. Inside an
+// Eventually(func(g Gomega)) the package-level Expect that agentExec uses
+// re-panics out of the poller, so a momentarily-unlisted agent pod fails
+// the spec instead of retrying. And the head-2 is taken here rather than
+// piped through awk, whose exit status would mask drbdsetup's own — a
+// not-in-kernel resource exits 10 and must not read as empty output.
+func localLegStatus(ctx context.Context, node, name string) (string, error) {
+	pod, err := agentPodOnE(ctx, node)
+	if err != nil {
+		return "", err
+	}
+	out, err := exec.CommandContext(ctx, "kubectl", "exec", "-n", agentNamespace, pod,
+		"-c", "agent", "--", "drbdsetup", "status", name).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("drbdsetup status %s on %s: %w: %s", name, node, err, string(out))
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return strings.Join(lines[:min(2, len(lines))], "\n"), nil
+}
+
+// legIdentity returns the DRBD node-id and address of node's replica entry.
+// The conversion's contract is that it flips the leg in place keeping both;
+// a regression that instead dropped the leg and re-added it would still end
+// at "3 diskful UpToDate replicas", so the identity is what distinguishes
+// a conversion from a remove-and-re-add.
+func legIdentity(vol *miroirv1alpha1.MiroirVolume, node string) (int32, string) {
+	GinkgoHelper()
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == node {
+			return rep.NodeID, rep.Address
+		}
+	}
+	for _, cl := range vol.Spec.Clients {
+		if cl.Node == node {
+			return cl.NodeID, cl.Address
+		}
+	}
+	Fail("no replica or client entry for node " + node)
+	return 0, ""
 }
 
 // disklessLegNode returns the node carrying the volume's diskless leg —
@@ -75,7 +115,8 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 	const ns = "miroir-e2e-diskful"
 	ctx := context.Background()
 
-	var pv, tieNode, seedSum string
+	var pv, tieNode, tieAddr, seedSum string
+	var tieID int32
 	var roamer, settled *corev1.Pod
 	var failed bool
 
@@ -113,6 +154,7 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 			g.Expect(v.Spec.DiskfulReplicas()).To(HaveLen(2))
 			tieNode = disklessLegNode(&v)
 			g.Expect(tieNode).NotTo(BeEmpty(), "no diskless leg on %s", pv)
+			tieID, tieAddr = legIdentity(&v, tieNode)
 		}).Should(Succeed())
 	})
 
@@ -132,7 +174,9 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 		// start — bounded tightly, because a leg that already converted
 		// only gets further from Diskless and waiting cannot recover it.
 		Eventually(func(g Gomega) {
-			g.Expect(localLegStatus(ctx, tieNode, pv)).To(ContainSubstring("disk:Diskless"))
+			st, err := localLegStatus(ctx, tieNode, pv)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(st).To(ContainSubstring("disk:Diskless"))
 			var v miroirv1alpha1.MiroirVolume
 			g.Expect(k8s.Get(ctx, client.ObjectKey{Name: pv}, &v)).To(Succeed())
 			g.Expect(v.Status.PerNode[tieNode].DiskState).To(Equal("Diskless"))
@@ -151,6 +195,12 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 			g.Expect(hasDiskfulReplicaOn(&v, tieNode)).To(BeTrue(),
 				"the settled leg on %s must be the one converted", tieNode)
 			g.Expect(disklessLegNode(&v)).To(BeEmpty(), "no diskless leg may survive the conversion")
+			// Converted in place, not dropped and re-added: same node-id,
+			// same address. A re-add would reach the same replica count
+			// with a fresh node-id and a full re-handshake.
+			gotID, gotAddr := legIdentity(&v, tieNode)
+			g.Expect(gotID).To(Equal(tieID), "the conversion must keep the leg's DRBD node-id")
+			g.Expect(gotAddr).To(Equal(tieAddr), "the conversion must keep the leg's address")
 		}).WithTimeout(conversionTimeout).Should(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -173,9 +223,13 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 		}).WithTimeout(conversionTimeout).Should(Succeed())
 
 		// On the node itself: a backing LV exists and the kernel attached it.
-		Expect(agentExec(ctx, tieNode, "lvs --noheadings -o lv_name")).To(ContainSubstring(pv),
+		// This leg runs the lvmthin testdriver, so lvs is the right probe;
+		// `|| true` keeps a non-zero lvs from aborting on its own output.
+		Expect(agentExec(ctx, tieNode, "lvs --noheadings -o lv_name || true")).To(ContainSubstring(pv),
 			"the conversion must leave a real backing device behind")
-		Expect(localLegStatus(ctx, tieNode, pv)).To(ContainSubstring("disk:UpToDate"))
+		st, err := localLegStatus(ctx, tieNode, pv)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(st).To(ContainSubstring("disk:UpToDate"))
 
 		// The pod rode the conversion out, and it now reads the seed it
 		// wrote before the node had a disk — off the local replica this
@@ -187,6 +241,12 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 		Expect(p.Status.Phase).To(Equal(corev1.PodRunning),
 			"the conversion must be transparent to the consumer")
 		Expect(podReady(&p)).To(BeTrue(), "consumer must still be Ready after the conversion")
-		Expect(sha(ns, settled.Name, "/data/seed")).To(Equal(seedSum))
+		// Drop the node's page cache first: this pod wrote /data/seed
+		// minutes ago, so an unqualified re-read can be served entirely
+		// from cache without a single block reaching the freshly synced
+		// backing — exactly the read this assertion exists to make.
+		agentExec(ctx, tieNode, "sync && echo 3 > /proc/sys/vm/drop_caches")
+		Expect(sha(ns, settled.Name, "/data/seed")).To(Equal(seedSum),
+			"the converted local replica must serve the data off its own disk")
 	})
 })

@@ -219,6 +219,16 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{Name: ns},
 		}))).To(Succeed())
 		nodes := replicaNodes(ctx)
+		// The mechanism below needs placement to have no choice but the
+		// excluded node for the second replica, which only holds at
+		// exactly two storage nodes. With a third, CreateVolume places
+		// both diskful replicas on the healthy pair — and once the
+		// excluded node's MiroirNode goes stale it leaves placement
+		// entirely — so hasDiskfulReplicaOn(excludeNode) never becomes
+		// true and the 10-minute wait below fails for the wrong reason.
+		if len(nodes) != 2 {
+			Skip(fmt.Sprintf("needs exactly 2 storage nodes to force placement onto the excluded node, cluster has %d", len(nodes)))
+		}
 		excludeNode = nodes[0]
 		keepNodes = nodes[1:]
 		dsName = agentDaemonSetName()

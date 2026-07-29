@@ -103,7 +103,13 @@ set -gx STORAGE_CAPACITY_ENABLED true
 set -gx GATEWAY_ENABLED true
 ./test.sh
 
-# The autodiskful leg, against a cluster booted with --workers 3 instead:
+# The autodiskful leg, against a cluster booted from cluster-spare.yaml
+# (a third worker, and 3GiB of memory each rather than 5GiB).
+# The exports above are global and would otherwise install a different
+# chart than the CI leg does — clear the ones it does not set first.
+set -e STORAGE_CAPACITY_ENABLED
+set -e GATEWAY_ENABLED
+set -gx TESTDRIVER testdriver.yaml
 set -gx RUN_SPECS 1
 set -gx SPEC_LABELS autodiskful     # the label every other leg excludes
 set -gx AUTO_DISKFUL_AFTER 2m       # installs the chart with the conversion on
