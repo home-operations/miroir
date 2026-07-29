@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.13](https://github.com/home-operations/miroir/compare/0.11.12...0.11.13) (2026-07-29)
+
+
+### Bug Fixes
+
+* **csi:** refuse to reformat a restore whose device reads blank ([#373](https://github.com/home-operations/miroir/issues/373)) ([b7ab14b](https://github.com/home-operations/miroir/commit/b7ab14beede53183b4a212b3920f2bd59ce690ad))
+
+
+### Continuous Integration
+
+* split the conformance leg and build the e2e images once ([#371](https://github.com/home-operations/miroir/issues/371)) ([3d58054](https://github.com/home-operations/miroir/commit/3d580542cd814f21b5a1e3320d4371e2db327735))
+
 ## [0.11.12](https://github.com/home-operations/miroir/compare/0.11.11...0.11.12) (2026-07-29)
 
 
