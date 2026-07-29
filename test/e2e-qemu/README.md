@@ -17,7 +17,8 @@ so a failure names the path that broke:
 
 | Leg           | Runs                                                   | Class               |
 | ------------- | ------------------------------------------------------ | ------------------- |
-| `conformance` | miroir's Go specs, then the parallel upstream suite    | `miroir-local`      |
+| `specs`       | miroir's own Go specs                                  | `miroir-local`      |
+| `local`       | the parallel upstream block/filesystem suite           | `miroir-local`      |
 | `replicated`  | the parallel upstream block/filesystem suite           | `miroir-replicated` |
 | `zfs`         | the parallel upstream block/filesystem suite           | `miroir-zfs`        |
 | `rwx`         | the parallel upstream filesystem-only RWX/ROX suite    | `miroir-replicated` |
@@ -25,14 +26,16 @@ so a failure names the path that broke:
 | `autodiskful` | the auto-diskful Go spec only, on `cluster-spare.yaml` | `miroir-replicated` |
 
 miroir's Go specs (`test/e2e`) assert the local lifecycle, snapshot/restore, block and
-placement behaviour the upstream suite does not; the conformance leg runs them
-(`RUN_SPECS=1`) against the miroir-local (lvmthin, replicas: 1) class before the long
-external-storage run. The replicated leg drives that upstream suite against the DRBD
-(replicas: 2) class, group snapshots included; the zfs leg drives it against the same
-DRBD shape backed by the zfs pool instead, so replication pairs zvol with zvol and
-the zfs snapshot/restore path runs under the suite. The rwx leg enables the NFS
-gateway and advertises only filesystem volume modes, while the serial leg gives
-exclusive-cluster specs a single Ginkgo process.
+placement behaviour the upstream suite does not; the specs leg runs them
+(`RUN_SPECS=1`, `RUN_CONFORMANCE=0`) against the miroir-local (lvmthin, replicas: 1)
+class, and the local leg drives the upstream suite against that same class. They used
+to share one leg and run back to back, which made it the longest by about fourteen
+minutes; a cluster of their own costs each about six. The replicated leg drives that
+upstream suite against the DRBD (replicas: 2) class, group snapshots included; the zfs
+leg drives it against the same DRBD shape backed by the zfs pool instead, so
+replication pairs zvol with zvol and the zfs snapshot/restore path runs under the
+suite. The rwx leg enables the NFS gateway and advertises only filesystem volume
+modes, while the serial leg gives exclusive-cluster specs a single Ginkgo process.
 
 The autodiskful leg is the one that boots a different shape. Auto-diskful converts a
 settled diskless leg into a local replica, and a 2-replica volume only gets a diskless
@@ -42,7 +45,7 @@ set. Its spec is the only one carrying the `autodiskful` Ginkgo label: every oth
 runs `SPEC_LABELS=!autodiskful` and skips it, and this leg selects it and skips the
 upstream suite (`RUN_CONFORMANCE=0`) rather than replaying it on a third cluster.
 
-The conformance and zfs legs enable CSI storage capacity publication (the replicated
+The specs, local and zfs legs enable CSI storage capacity publication (the replicated
 block lane keeps it off, where DRBD's full-size reservation on every replica starves
 the scheduler during parallel-clone specs); the upstream definitions exercise ext4,
 xfs, topology and mount options. Real per-node kernels and real block devices are the
@@ -97,7 +100,7 @@ set -gx CLUSTER_NAME miroir-e2e
 set -gx KUBECONFIG /tmp/miroir-e2e/kubeconfig
 set -gx TALOSCONFIG /tmp/miroir-e2e/talosconfig
 set -gx TESTDRIVER testdriver.yaml # or testdriver-local.yaml / testdriver-zfs.yaml / testdriver-rwx.yaml
-set -gx RUN_SPECS 1                # also run the Go specs (the conformance leg does)
+set -gx RUN_SPECS 1                # also run the Go specs (CI gives them their own leg)
 set -gx STORAGE_CAPACITY_ENABLED true
 # Required with testdriver-rwx.yaml:
 set -gx GATEWAY_ENABLED true
@@ -134,14 +137,17 @@ set -gx CONTROLLER_IMAGE ghcr.io/you/miroir-controller:dev
 set -gx AGENT_IMAGE ghcr.io/you/miroir-agent:dev
 ```
 
-CI instead fixes the tags up front and builds them concurrently with the cluster,
-since the build and the VMs share no inputs; `test.sh` then finds the images already
-built and skips straight to installing them. CI builds through
-`docker/build-push-action` rather than `image.sh` so the layers land in the GitHub
-Actions cache, which `image.sh` has no way to reach.
+CI instead builds all three once, in the `e2e-images` job that runs ahead of the
+matrix, and hands them to every leg as a single `docker save` tarball (~135MB, since
+gateway shares every agent layer). Each leg loads that tarball while its VMs boot and
+pushes it into its own registry, so the legs install identical bytes rather than
+whatever each rebuild produced, and one job owns each GitHub Actions cache scope
+instead of every leg racing for it. `test.sh` finds the images already tagged and
+skips straight to installing them. CI builds through `docker/build-push-action` rather
+than `image.sh` so the layers land in that cache, which `image.sh` has no way to reach.
 
-CI also runs its own registry on the runner and pushes there, so the images never
-cross the internet. The nodes reach them as `registry.e2e`, which the mirror in
+Each leg still runs its own registry on the runner, so the images never cross the
+internet. The nodes reach them as `registry.e2e`, which the mirror in
 `patches/registry.yaml` points at port 5000 on the QEMU bridge gateway. That mirror
 entry is inert for a local run, where nothing references `registry.e2e`.
 

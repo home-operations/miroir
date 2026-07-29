@@ -1,8 +1,8 @@
 //go:build e2e
 
 // Package e2e drives a Helm-deployed miroir through the CSI volume lifecycle on
-// the Talos QEMU cluster $KUBECONFIG points at (test/e2e-qemu runs it as part of
-// the conformance leg). It is build-tagged so `mise run test` never compiles it.
+// the Talos QEMU cluster $KUBECONFIG points at (test/e2e-qemu runs it as the
+// specs leg). It is build-tagged so `mise run test` never compiles it.
 //
 // Scope: the local backend (miroir-local / lvmthin / replicas:1), plus the
 // orphaned-hold teardown spec, which needs a replicated (DRBD) volume. The rest
