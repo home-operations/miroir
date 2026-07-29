@@ -24,31 +24,51 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
 
-// volumeCondition maps a volume's aggregated CRD status (the same signals the
+// Reasons a volume is reported unhealthy. The CSI spec has COs match on
+// these strings, so they are part of the driver's contract: rename one and
+// anything keyed off it stops firing.
+const (
+	reasonSplitBrain         = "SplitBrain"
+	reasonBackingDiskFailed  = "BackingDiskFailed"
+	reasonProvisioningFailed = "ProvisioningFailed"
+	reasonReplicaOutOfSync   = "ReplicaOutOfSync"
+)
+
+// volumeHealth maps a volume's aggregated CRD status (the same signals the
 // agent folds into Phase and the miroir_volume_* gauges) to a CSI
-// VolumeCondition. The external-health-monitor surfaces it as a PVC event and
-// kubelet as the volume-health metric, so operators see split-brain/degraded
-// without scraping Prometheus. Abnormal states are ranked most-urgent first so
-// the single message names the condition to act on.
-func volumeCondition(vol *miroirv1alpha1.MiroirVolume) *csi.VolumeCondition {
+// VolumeHealth, which a CO fetches through ControllerGetVolumeHealth or
+// NodeGetVolumeHealth — so operators see split-brain/degraded without
+// scraping Prometheus. An empty status list means healthy. Every condition
+// that holds is reported, ordered most-urgent first so a CO surfacing only
+// the head names the condition to act on.
+func volumeHealth(vol *miroirv1alpha1.MiroirVolume) *csi.VolumeHealth {
+	health := &csi.VolumeHealth{VolumeId: vol.Name}
 	// Split-brain: DRBD refused to reconnect diverged legs. Nothing heals it
-	// automatically — an operator must pick the loser.
+	// automatically — an operator must pick the loser, whose writes are lost.
 	if node, ok := firstNodeWhere(vol, func(s miroirv1alpha1.ReplicaStatus) bool { return s.SplitBrain }); ok {
-		return abnormalf("split-brain on node %s; manual resolution required", node)
+		health.HealthStatuses = append(health.HealthStatuses,
+			entryf(csi.VolumeHealthErrorType_DATA_LOSS, reasonSplitBrain,
+				"split-brain on node %s; manual resolution required", node))
 	}
 	// A backing disk DRBD detached on I/O error (on-io-error detach): serving
 	// continues via the peer, but this leg is latched failed and redundancy is
 	// gone until the disk is replaced.
 	if node, ok := firstNodeWhere(vol, func(s miroirv1alpha1.ReplicaStatus) bool { return s.DiskFailed }); ok {
-		return abnormalf("backing disk failed on node %s; replace the disk, then remove and re-add the replica", node)
+		health.HealthStatuses = append(health.HealthStatuses,
+			entryf(csi.VolumeHealthErrorType_DEGRADED, reasonBackingDiskFailed,
+				"backing disk failed on node %s; replace the disk, then remove and re-add the replica", node))
 	}
 	switch vol.Status.Phase {
 	case miroirv1alpha1.VolumeFailed:
-		return abnormalf("provisioning failed; a backing device never materialized")
+		health.HealthStatuses = append(health.HealthStatuses,
+			entryf(csi.VolumeHealthErrorType_INACCESSIBLE, reasonProvisioningFailed,
+				"provisioning failed; a backing device never materialized"))
 	case miroirv1alpha1.VolumeDegraded:
-		return abnormalf("degraded: a replica is missing current data (resyncing or its peer is unreachable)")
+		health.HealthStatuses = append(health.HealthStatuses,
+			entryf(csi.VolumeHealthErrorType_DEGRADED, reasonReplicaOutOfSync,
+				"degraded: a replica is missing current data (resyncing or its peer is unreachable)"))
 	}
-	return &csi.VolumeCondition{Abnormal: false, Message: "healthy"}
+	return health
 }
 
 // firstNodeWhere returns the lexically-first node whose status satisfies pred,
@@ -64,6 +84,10 @@ func firstNodeWhere(vol *miroirv1alpha1.MiroirVolume, pred func(miroirv1alpha1.R
 	return best, found
 }
 
-func abnormalf(format string, args ...any) *csi.VolumeCondition {
-	return &csi.VolumeCondition{Abnormal: true, Message: fmt.Sprintf(format, args...)}
+func entryf(status csi.VolumeHealthErrorType, reason, format string, args ...any) *csi.VolumeHealth_VolumeHealthEntry {
+	return &csi.VolumeHealth_VolumeHealthEntry{
+		Status:  status,
+		Reason:  reason,
+		Message: fmt.Sprintf(format, args...),
+	}
 }

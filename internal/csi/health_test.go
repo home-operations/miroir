@@ -18,6 +18,7 @@ package csi
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,72 +36,95 @@ func volWithStatus(name string, phase miroirv1alpha1.VolumePhase, perNode map[st
 	}
 }
 
-func TestVolumeCondition(t *testing.T) {
+// healthEntry is a status/reason/message triple flattened for comparison.
+type healthEntry struct {
+	status csi.VolumeHealthErrorType
+	reason string
+}
+
+func entriesOf(h *csi.VolumeHealth) []healthEntry {
+	out := make([]healthEntry, 0, len(h.GetHealthStatuses()))
+	for _, e := range h.GetHealthStatuses() {
+		out = append(out, healthEntry{e.GetStatus(), e.GetReason()})
+	}
+	return out
+}
+
+func TestVolumeHealth(t *testing.T) {
 	tests := []struct {
 		name         string
 		vol          *miroirv1alpha1.MiroirVolume
-		wantAbnormal bool
+		want         []healthEntry
 		wantContains string
 	}{
 		{
-			name:         "ready is healthy",
-			vol:          volWithStatus("v", miroirv1alpha1.VolumeReady, nil),
-			wantAbnormal: false,
-			wantContains: "healthy",
+			name: "ready reports no adverse status",
+			vol:  volWithStatus("v", miroirv1alpha1.VolumeReady, nil),
+			want: []healthEntry{},
 		},
 		{
-			name: "split-brain wins over everything",
+			name: "split-brain ranks above the degraded phase it implies",
 			vol: volWithStatus("v", miroirv1alpha1.VolumeDegraded, map[string]miroirv1alpha1.ReplicaStatus{
 				nodeB: {DiskFailed: true},
 				nodeA: {SplitBrain: true},
 			}),
-			wantAbnormal: true,
+			want: []healthEntry{
+				{csi.VolumeHealthErrorType_DATA_LOSS, reasonSplitBrain},
+				{csi.VolumeHealthErrorType_DEGRADED, reasonBackingDiskFailed},
+				{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaOutOfSync},
+			},
 			wantContains: "split-brain on node " + nodeA,
 		},
 		{
-			name: "disk failed when no split-brain",
+			name: "disk failed without split-brain",
 			vol: volWithStatus("v", miroirv1alpha1.VolumeReady, map[string]miroirv1alpha1.ReplicaStatus{
 				nodeB: {DiskFailed: true},
 			}),
-			wantAbnormal: true,
+			want:         []healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonBackingDiskFailed}},
 			wantContains: "backing disk failed on node " + nodeB,
 		},
 		{
-			name:         "failed phase",
+			name:         "failed phase is inaccessible",
 			vol:          volWithStatus("v", miroirv1alpha1.VolumeFailed, nil),
-			wantAbnormal: true,
+			want:         []healthEntry{{csi.VolumeHealthErrorType_INACCESSIBLE, reasonProvisioningFailed}},
 			wantContains: "provisioning failed",
 		},
 		{
 			name:         "degraded phase",
 			vol:          volWithStatus("v", miroirv1alpha1.VolumeDegraded, nil),
-			wantAbnormal: true,
+			want:         []healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaOutOfSync}},
 			wantContains: "degraded",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := volumeCondition(tt.vol)
-			if got.GetAbnormal() != tt.wantAbnormal {
-				t.Fatalf("abnormal = %v, want %v (msg %q)", got.GetAbnormal(), tt.wantAbnormal, got.GetMessage())
+			got := volumeHealth(tt.vol)
+			if got.GetVolumeId() != tt.vol.Name {
+				t.Fatalf("volume id = %q, want %q", got.GetVolumeId(), tt.vol.Name)
 			}
-			if !strings.Contains(got.GetMessage(), tt.wantContains) {
-				t.Fatalf("message %q does not contain %q", got.GetMessage(), tt.wantContains)
+			if !slices.Equal(entriesOf(got), tt.want) {
+				t.Fatalf("statuses = %v, want %v", entriesOf(got), tt.want)
+			}
+			if tt.wantContains == "" {
+				return
+			}
+			if msg := got.GetHealthStatuses()[0].GetMessage(); !strings.Contains(msg, tt.wantContains) {
+				t.Fatalf("message %q does not contain %q", msg, tt.wantContains)
 			}
 		})
 	}
 }
 
-// TestVolumeConditionDeterministic pins the message when several nodes match,
+// TestVolumeHealthDeterministic pins the message when several nodes match,
 // so a health event doesn't flap between reconciles.
-func TestVolumeConditionDeterministic(t *testing.T) {
+func TestVolumeHealthDeterministic(t *testing.T) {
 	vol := volWithStatus("v", miroirv1alpha1.VolumeReady, map[string]miroirv1alpha1.ReplicaStatus{
 		nodeB: {SplitBrain: true},
 		nodeA: {SplitBrain: true},
 		nodeC: {SplitBrain: true},
 	})
 	for range 5 {
-		if msg := volumeCondition(vol).GetMessage(); !strings.Contains(msg, nodeA) {
+		if msg := volumeHealth(vol).GetHealthStatuses()[0].GetMessage(); !strings.Contains(msg, nodeA) {
 			t.Fatalf("expected lexically-first node %s, got %q", nodeA, msg)
 		}
 	}
@@ -122,14 +146,76 @@ func TestControllerGetVolume(t *testing.T) {
 	if resp.GetVolume().GetCapacityBytes() != 1<<30 {
 		t.Fatalf("capacity = %d, want %d", resp.GetVolume().GetCapacityBytes(), 1<<30)
 	}
-	if !resp.GetStatus().GetVolumeCondition().GetAbnormal() {
-		t.Fatal("expected degraded volume to report abnormal")
-	}
 
 	if _, err := c.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{}); err == nil {
 		t.Fatal("expected error for empty volume id")
 	}
-	if _, err := c.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{VolumeId: "missing"}); err == nil {
+	if _, err := c.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{VolumeId: volMissing}); err == nil {
 		t.Fatal("expected NotFound for missing volume")
+	}
+}
+
+func TestControllerGetVolumeHealth(t *testing.T) {
+	s := newScheme(t)
+	vol := volWithStatus(volPvc1, miroirv1alpha1.VolumeDegraded, nil)
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(vol).Build()}
+
+	resp, err := c.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{VolumeId: volPvc1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entriesOf(resp.GetVolumeHealth()); !slices.Equal(got, []healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaOutOfSync}}) {
+		t.Fatalf("statuses = %v, want a single degraded entry", got)
+	}
+
+	if _, err := c.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{}); err == nil {
+		t.Fatal("expected error for empty volume id")
+	}
+	if _, err := c.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{VolumeId: volMissing}); err == nil {
+		t.Fatal("expected NotFound for missing volume")
+	}
+}
+
+// ControllerListVolumeHealth reports only the abnormal volumes, in a stable
+// order, and pages through them with positional tokens.
+func TestControllerListVolumeHealth(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(
+		volWithStatus("vol-c", miroirv1alpha1.VolumeFailed, nil),
+		volWithStatus("vol-a", miroirv1alpha1.VolumeReady, nil),
+		volWithStatus("vol-b", miroirv1alpha1.VolumeDegraded, nil),
+	).Build()}
+
+	all, err := c.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.GetEntries()) != 2 {
+		t.Fatalf("entries = %d, want the 2 abnormal volumes", len(all.GetEntries()))
+	}
+	if id := all.GetEntries()[0].GetVolumeId(); id != "vol-b" {
+		t.Fatalf("first entry = %q, want vol-b (healthy vol-a omitted, order stable)", id)
+	}
+	if all.GetNextToken() != "" {
+		t.Fatalf("next token = %q, want none on a complete listing", all.GetNextToken())
+	}
+
+	first, err := c.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{MaxEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.GetEntries()) != 1 || first.GetNextToken() != "1" {
+		t.Fatalf("page = %d entries, next %q; want 1 and \"1\"", len(first.GetEntries()), first.GetNextToken())
+	}
+	second, err := c.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{StartingToken: first.GetNextToken()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id := second.GetEntries()[0].GetVolumeId(); id != "vol-c" {
+		t.Fatalf("second page starts at %q, want vol-c", id)
+	}
+
+	if _, err := c.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{StartingToken: "nope"}); err == nil {
+		t.Fatal("expected Aborted for an invalid starting token")
 	}
 }

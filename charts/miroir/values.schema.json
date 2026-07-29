@@ -827,67 +827,6 @@
     "sidecars": {
       "description": "=============================================================================\nCSI sidecars (upstream sig-storage images)\n=============================================================================",
       "properties": {
-        "healthMonitor": {
-          "description": "external-health-monitor-controller: polls ControllerGetVolume and raises a\nPVC event when a volume reports split-brain/degraded/disk-failed (the same\nhealth the agents fold into status.phase). Off by default — the\nmiroir_volume_* metrics already carry this; enable for native PVC events.",
-          "properties": {
-            "enabled": {
-              "default": false,
-              "title": "enabled",
-              "type": "boolean"
-            },
-            "image": {
-              "default": "registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.18.0",
-              "title": "image",
-              "type": "string"
-            },
-            "interval": {
-              "default": "1m",
-              "description": "How often the monitor re-checks every volume's condition.",
-              "title": "interval",
-              "type": "string"
-            },
-            "resources": {
-              "description": "Health-monitor sidecar resources.",
-              "properties": {
-                "limits": {
-                  "properties": {
-                    "memory": {
-                      "default": "128Mi",
-                      "title": "memory",
-                      "type": "string"
-                    }
-                  },
-                  "required": [],
-                  "title": "limits",
-                  "type": "object"
-                },
-                "requests": {
-                  "properties": {
-                    "cpu": {
-                      "default": "10m",
-                      "title": "cpu",
-                      "type": "string"
-                    },
-                    "memory": {
-                      "default": "32Mi",
-                      "title": "memory",
-                      "type": "string"
-                    }
-                  },
-                  "required": [],
-                  "title": "requests",
-                  "type": "object"
-                }
-              },
-              "required": [],
-              "title": "resources",
-              "type": "object"
-            }
-          },
-          "required": [],
-          "title": "healthMonitor",
-          "type": "object"
-        },
         "provisioner": {
           "properties": {
             "image": {
