@@ -623,7 +623,7 @@ func main() {
 			// the probe's fatal below-floor exit would crash-loop a
 			// consumer-only node over a check that protects nothing here.
 			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
-			node := csi.NewNode(mgr.GetClient(), nodeName, clientDRBD)
+			node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, clientDRBD)
 			node.ClientOnly = true
 			serveCSI(mgr, csiSocket, identity, nil, node)
 			break
@@ -755,7 +755,7 @@ func main() {
 		// Scheduled online verify — the only cross-leg integrity check. Needs
 		// the DRBD kernel side, so it is gated on drbdReady like the sweeps.
 		addVerifyScheduler(mgr, nodeName, drbdReady, verifySchedule, drbdDriver)
-		node := csi.NewNode(mgr.GetClient(), nodeName, drbdDriver)
+		node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, drbdDriver)
 		serveCSI(mgr, csiSocket, identity, nil, node)
 
 	default:

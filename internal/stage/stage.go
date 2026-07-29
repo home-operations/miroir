@@ -53,6 +53,21 @@ type Deps struct {
 	// reconciler lags, and staging on a stale UpToDate mounts (or worse,
 	// formats) a diverged replica.
 	DRBD DRBDStatus
+	// Reader is the uncached API reader the blank-restore check needs: a
+	// clone inherits its source's Formatted flag from the controller
+	// moments before the first stage, and the node's informer cache still
+	// carries the volume as unformatted for as long as the watch takes to
+	// deliver it. Falls back to the cached client when unset (tests, and
+	// the gateway whose client is uncached already).
+	Reader client.Reader
+}
+
+// reader returns the uncached reader when one is wired, else the client.
+func (d Deps) reader() client.Reader {
+	if d.Reader != nil {
+		return d.Reader
+	}
+	return d.Client
 }
 
 // Device resolves the volume's local device from the CRD and verifies
@@ -189,11 +204,16 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 		if err != nil {
 			return status.Errorf(codes.Internal, "probe filesystem on %s: %v", dev, err)
 		}
-		if format == "" && vol.Status.Formatted {
-			return status.Errorf(codes.DataLoss,
-				"volume %s was formatted before but %s reads blank — refusing to reformat", vol.Name, dev)
-		}
-		if format != "" {
+		if format == "" {
+			formatted, err := formattedBefore(ctx, d, vol)
+			if err != nil {
+				return err
+			}
+			if formatted {
+				return status.Errorf(codes.DataLoss,
+					"volume %s was formatted before but %s reads blank — refusing to reformat", vol.Name, dev)
+			}
+		} else {
 			// Record before mounting so a clone that arrived with a
 			// filesystem is protected from then on.
 			if err := MarkFormatted(ctx, d.Client, vol); err != nil {
@@ -291,6 +311,27 @@ func recoverFrozenBdev(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVo
 	}
 	return status.Errorf(codes.Unavailable,
 		"cleared a leaked filesystem freeze on %s by restarting %s; retry the stage", dev, vol.Name)
+}
+
+// formattedBefore reports whether the volume ever carried a filesystem.
+// A restore whose cached answer is "never" is confirmed against the API
+// server first: the controller stamps the clone's inherited flag between
+// the Create and the first stage, so the node's cache can still be
+// showing the volume unformatted exactly while the blank-device refusal
+// matters. Left uncorroborated, a blank clone is mkfs'd instead of
+// refused — the silent half of the data loss the flag exists to catch. A
+// confirmation that cannot be read is Unavailable, not a licence to
+// format.
+func formattedBefore(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVolume) (bool, error) {
+	if vol.Status.Formatted || vol.Spec.Source == nil {
+		return vol.Status.Formatted, nil
+	}
+	live := &miroirv1alpha1.MiroirVolume{}
+	if err := d.reader().Get(ctx, types.NamespacedName{Name: vol.Name}, live); err != nil {
+		return false, status.Errorf(codes.Unavailable,
+			"volume %s: confirming the formatted flag before formatting a restore: %v", vol.Name, err)
+	}
+	return live.Status.Formatted, nil
 }
 
 // MarkFormatted flips the Formatted status flag once; shared by the

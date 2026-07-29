@@ -54,6 +54,9 @@ type Node struct {
 	// reconciler lags, and staging on a stale UpToDate mounts (or worse,
 	// formats) a diverged replica.
 	DRBD stage.DRBDStatus
+	// APIReader is the uncached read the staging pipeline confirms a
+	// restore's formatted flag with; see stage.Deps.Reader.
+	APIReader client.Reader
 	// ClientOnly marks a node with no MiroirNode: no volume reconciler
 	// runs there, so an added client leg would never be realized — the
 	// pod would wedge in ContainerCreating, the spec entry would burn one
@@ -74,19 +77,26 @@ type Thawer interface {
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
-func NewNode(c client.Client, nodeName string, d stage.DRBDStatus) *Node {
+func NewNode(c client.Client, r client.Reader, nodeName string, d stage.DRBDStatus) *Node {
 	return &Node{
-		Client:   c,
-		NodeName: nodeName,
-		Mounter:  mount.NewSafeFormatAndMount(mount.New(""), utilexec.New()),
-		DRBD:     d,
-		Freezer:  agent.NewFreezer(),
+		Client:    c,
+		APIReader: r,
+		NodeName:  nodeName,
+		Mounter:   mount.NewSafeFormatAndMount(mount.New(""), utilexec.New()),
+		DRBD:      d,
+		Freezer:   agent.NewFreezer(),
 	}
 }
 
 // deps bundles the node's tooling for the shared staging pipeline.
 func (n *Node) deps() stage.Deps {
-	return stage.Deps{Client: n.Client, NodeName: n.NodeName, Mounter: n.Mounter, DRBD: n.DRBD}
+	return stage.Deps{
+		Client:   n.Client,
+		Reader:   n.APIReader,
+		NodeName: n.NodeName,
+		Mounter:  n.Mounter,
+		DRBD:     n.DRBD,
+	}
 }
 
 // NodeGetInfo reports this node's name and topology segment (§6.5).
