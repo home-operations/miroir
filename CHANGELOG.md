@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.11.12](https://github.com/home-operations/miroir/compare/0.11.11...0.11.12) (2026-07-29)
+
+
+### Bug Fixes
+
+* **agent:** seed metadata when a diskless leg gains a disk ([#368](https://github.com/home-operations/miroir/issues/368)) ([46ed4f1](https://github.com/home-operations/miroir/commit/46ed4f10a6cb59cc651d5f8d035fd7f449f7c685))
+
+
+### Documentation
+
+* explain the replica and peer-slot limits as a scope decision ([#359](https://github.com/home-operations/miroir/issues/359)) ([8ad6f69](https://github.com/home-operations/miroir/commit/8ad6f693aa146fa52db9b0720a47b8a36c96023e))
+* stage kopiur backups on an unreplicated class ([#355](https://github.com/home-operations/miroir/issues/355)) ([c0bf4ec](https://github.com/home-operations/miroir/commit/c0bf4ec2fadeb88d80ad875448100f52a03017a5))
+
+
+### Build System
+
+* **mise:** add actionlint and refresh the lockfile ([#356](https://github.com/home-operations/miroir/issues/356)) ([6f4643f](https://github.com/home-operations/miroir/commit/6f4643f345693a8613da40436d0f25b4904fbd45))
+
+
+### Continuous Integration
+
+* adopt the shared workflow-lint and docs-build actions ([#358](https://github.com/home-operations/miroir/issues/358)) ([0f2450b](https://github.com/home-operations/miroir/commit/0f2450bc67ddba5e0ed2f58a98a4562487205264))
+* gate pull requests on Build Success and share the docs build ([#354](https://github.com/home-operations/miroir/issues/354)) ([b9720c9](https://github.com/home-operations/miroir/commit/b9720c9eb156a6cf13f25d50dfd33c316b4b8bb7))
+* **github-action:** Update action actions/stale (v10.4.0 → v11.0.0) ([#370](https://github.com/home-operations/miroir/issues/370)) ([1632489](https://github.com/home-operations/miroir/commit/1632489b5cc928e54da99f23302088d4eff2aef1))
+* **github-action:** Update action docker/login-action (v4.5.0 → v4.5.1) ([#361](https://github.com/home-operations/miroir/issues/361)) ([511c26a](https://github.com/home-operations/miroir/commit/511c26a6aeaa2c3c05dd3adb616d27312089a01b))
+* **github-action:** Update action jdx/mise-action (v4.2.1 → v4.2.2) ([#360](https://github.com/home-operations/miroir/issues/360)) ([5eae1e4](https://github.com/home-operations/miroir/commit/5eae1e4f37cbd89ed9b529b1deacc9ed83461e99))
+* **github-action:** Update action jdx/mise-action (v4.2.2 → v4.2.3) ([#363](https://github.com/home-operations/miroir/issues/363)) ([04e0d81](https://github.com/home-operations/miroir/commit/04e0d810f1318688a6cc9c0525d47003aa3f05aa))
+* **github-action:** Update github-actions ([#369](https://github.com/home-operations/miroir/issues/369)) ([8b3c3bf](https://github.com/home-operations/miroir/commit/8b3c3bf59b46dfcc061dd644a512454f288e02ee))
+* skip release-please PRs in checks and drop nightly e2e ([#353](https://github.com/home-operations/miroir/issues/353)) ([5442ee7](https://github.com/home-operations/miroir/commit/5442ee7af38847a603a8eb9d29deb487fbd4423f))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool aqua:astral-sh/uv (0.11.32 → 0.12.0) ([#366](https://github.com/home-operations/miroir/issues/366)) ([54590bd](https://github.com/home-operations/miroir/commit/54590bdb97e1ea499b5ffd715bec23b73be471db))
+* **mise:** Update tool oxfmt (0.60.0 → 0.61.0) ([#362](https://github.com/home-operations/miroir/issues/362)) ([2f52862](https://github.com/home-operations/miroir/commit/2f52862e1818c1d06f0e4cc50bd126eb7885741b))
+* standardize release-please changelog sections ([#365](https://github.com/home-operations/miroir/issues/365)) ([6b1f7cd](https://github.com/home-operations/miroir/commit/6b1f7cd6ea9fec4a61c58f4ca1bc61755abe2cf4))
+
 ## [0.11.11](https://github.com/home-operations/miroir/compare/0.11.10...0.11.11) (2026-07-24)
 
 
