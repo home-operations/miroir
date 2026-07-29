@@ -1,0 +1,33 @@
+---
+# yaml-language-server: $schema=https://raw.githubusercontent.com/home-operations/talosctl-cluster-action/main/schema/talos-cluster.json
+# cluster.yaml plus a third storage worker, for the one leg that needs a spare
+# storage node: a 2-replica volume only gets a diskless tie-breaker when some node
+# carries no replica, and auto-diskful has nothing to convert without one.
+#
+# Everything else matches cluster.yaml -- same name (the legs never share a runner,
+# and test.sh guards on the miroir-e2e prefix), same network, same schematic, same
+# disks, so the harness scripts need no special case. Only the memory differs: this
+# leg runs a single Go spec with two small pods rather than the parallel conformance
+# suite, so 3GiB a worker is ample and three of them still fit a runner.
+apiVersion: v1alpha1
+kind: TalosCluster
+metadata:
+  name: miroir-e2e
+spec:
+  controlplanes:
+    count: 1
+  workers:
+    count: 3
+    memory: 3GiB
+  network:
+    cidr: 10.5.0.0/24
+  qemu:
+    schematic: "@schematic.yaml"
+    disks:
+      - virtio:8GiB
+      - virtio:20GiB
+      - virtio:20GiB
+  config-patches:
+    cluster:
+      - "@patches/modules.yaml"
+      - "@patches/registry.yaml"

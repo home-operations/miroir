@@ -237,6 +237,7 @@ install_chart() {
         --set groupSnapshots.enabled=true \
         --set gateway.enabled="${GATEWAY_ENABLED:-false}" \
         --set storageCapacity.enabled="${STORAGE_CAPACITY_ENABLED:-false}" \
+        --set autoDiskfulAfter="${AUTO_DISKFUL_AFTER:-}" \
         --wait --timeout 10m
 }
 
@@ -281,9 +282,24 @@ main() {
     # them before the long external-storage run, so a miroir-specific break
     # fails fast. 35m: the orphaned-hold spec alone rides the full ~6-minute
     # busy escalation before its reclaim can fire.
+    #
+    # SPEC_LABELS gates the specs that need a cluster or an install this one is
+    # not: the default excludes them, and the leg that provides what they need
+    # selects them by label instead (see the autodiskful leg in ci.yaml).
     if [[ "${RUN_SPECS:-}" == "1" ]]; then
-        log "Running miroir's Go e2e specs..."
-        (cd "$REPO_ROOT" && go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 35m)
+        log "Running miroir's Go e2e specs (labels: ${SPEC_LABELS:-!autodiskful})..."
+        (cd "$REPO_ROOT" && go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 35m \
+            -ginkgo.label-filter="${SPEC_LABELS:-!autodiskful}")
+    fi
+
+    # A leg whose whole point is a Go spec has nothing to gain from replaying the
+    # external-storage suite on top of it.
+    if [[ "${RUN_CONFORMANCE:-1}" != "1" ]]; then
+        log "Skipping the external-storage conformance suite (RUN_CONFORMANCE=$RUN_CONFORMANCE)."
+        log "=========================================="
+        log "E2E QEMU SUITE PASSED (specs only)"
+        log "=========================================="
+        return
     fi
 
     log "Running the external-storage conformance suite ($TESTDRIVER)..."
