@@ -369,12 +369,9 @@ func (c *Controller) ValidateVolumeCapabilities(ctx context.Context, req *csi.Va
 	if len(req.GetVolumeCapabilities()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "volume capabilities are required")
 	}
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
-		}
-		return nil, status.Errorf(codes.Internal, "get MiroirVolume: %v", err)
+	vol, err := c.requireVolume(ctx, req.GetVolumeId())
+	if err != nil {
+		return nil, err
 	}
 	if err := validateCapabilities(req.GetVolumeCapabilities()); err != nil {
 		return &csi.ValidateVolumeCapabilitiesResponse{Message: err.Error()}, nil //nolint:nilerr
@@ -1436,12 +1433,9 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	if newSize == 0 {
 		return nil, status.Error(codes.InvalidArgument, "capacity range is required")
 	}
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
-		}
-		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
+	vol, err := c.requireVolume(ctx, req.GetVolumeId())
+	if err != nil {
+		return nil, err
 	}
 	// RWX volumes are grown by the gateway (it holds the only mount), and a
 	// block volume needs no filesystem grow — neither triggers node expansion.
@@ -1469,7 +1463,7 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	timeout := cmp.Or(c.ProvisionTimeout, defaultProvisionTimeout)
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	err := wait.PollUntilContextCancel(waitCtx, 500*time.Millisecond, true,
+	err = wait.PollUntilContextCancel(waitCtx, 500*time.Millisecond, true,
 		func(ctx context.Context) (bool, error) {
 			v := &miroirv1alpha1.MiroirVolume{}
 			if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, v); err != nil {
@@ -1506,12 +1500,9 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 		return nil, status.Errorf(codes.InvalidArgument,
 			"snapshot name prefix %q is reserved for clone-source snapshots", constants.CloneSnapshotPrefix)
 	}
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetSourceVolumeId()}, vol); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetSourceVolumeId())
-		}
-		return nil, status.Errorf(codes.Internal, "get volume: %v", err)
+	vol, err := c.requireVolume(ctx, req.GetSourceVolumeId())
+	if err != nil {
+		return nil, err
 	}
 	snap, err := c.ensureSnapshot(ctx, req.GetName(), vol, "", false)
 	if err != nil {
@@ -1643,12 +1634,16 @@ func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.Controlle
 			CapacityBytes:      vol.Spec.SizeBytes,
 			AccessibleTopology: accessibleTopology(vol),
 		},
+		// v1.13 reserved VolumeCondition inside VolumeStatus, not VolumeStatus
+		// itself, which is still a REQUIRED field. published_node_ids stays
+		// empty: it is OPTIONAL without LIST_VOLUMES_PUBLISHED_NODES.
+		Status: &csi.ControllerGetVolumeResponse_VolumeStatus{},
 	}, nil
 }
 
-// ControllerGetVolumeHealth reports one volume's replication health to a CO
-// polling cluster-wide health, which raises it as an event on the PVC. The
-// statuses are derived from the same aggregated status the agents publish.
+// ControllerGetVolumeHealth reports one volume's replication health, derived
+// from the same aggregated status the agents publish. A CO polling volume
+// health is what consumes it; see docs/monitoring.md for which ones do today.
 func (c *Controller) ControllerGetVolumeHealth(ctx context.Context, req *csi.ControllerGetVolumeHealthRequest) (*csi.ControllerGetVolumeHealthResponse, error) {
 	vol, err := c.requireVolume(ctx, req.GetVolumeId())
 	if err != nil {
@@ -1661,24 +1656,23 @@ func (c *Controller) ControllerGetVolumeHealth(ctx context.Context, req *csi.Con
 // adverse condition, so a CO can poll once instead of per volume. Healthy
 // volumes are omitted — the spec's entries list is the abnormal set.
 func (c *Controller) ControllerListVolumeHealth(ctx context.Context, req *csi.ControllerListVolumeHealthRequest) (*csi.ControllerListVolumeHealthResponse, error) {
-	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := c.Client.List(ctx, vols); err != nil {
-		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
+	vols, err := c.sortedVolumes(ctx)
+	if err != nil {
+		return nil, err
 	}
-	// Tokens are positional; the listing order must be stable across calls
-	// or pages skip and duplicate entries.
-	slices.SortFunc(vols.Items, func(a, b miroirv1alpha1.MiroirVolume) int {
-		return cmp.Compare(a.Name, b.Name)
-	})
-
 	var abnormal []*csi.VolumeHealth
-	for i := range vols.Items {
-		if h := volumeHealth(&vols.Items[i]); len(h.GetHealthStatuses()) > 0 {
+	for i := range vols {
+		if h := volumeHealth(&vols[i]); len(h.GetHealthStatuses()) > 0 {
 			abnormal = append(abnormal, h)
 		}
 	}
 
-	start, end, err := page(req.GetStartingToken(), req.GetMaxEntries(), len(abnormal))
+	// Unlike ListVolumes', this index space is the abnormal subset, so it
+	// also moves whenever a volume recovers, routinely between two pages of
+	// one listing. A token that has fallen off the end is therefore stale
+	// rather than bogus, and the spec lets that page come back empty ("the CO
+	// SHALL NOT expect a consistent view") instead of aborting the listing.
+	start, end, err := page(req.GetStartingToken(), req.GetMaxEntries(), len(abnormal), true)
 	if err != nil {
 		return nil, err
 	}
@@ -1814,24 +1808,18 @@ func (c *Controller) GetCapacity(ctx context.Context, req *csi.GetCapacityReques
 
 // ListVolumes returns all provisioned volumes for external-provisioner reconciliation.
 func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (*csi.ListVolumesResponse, error) {
-	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := c.Client.List(ctx, vols); err != nil {
-		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
+	vols, err := c.sortedVolumes(ctx)
+	if err != nil {
+		return nil, err
 	}
-	// Tokens are positional; the listing order must be stable across calls
-	// or pages skip and duplicate entries.
-	slices.SortFunc(vols.Items, func(a, b miroirv1alpha1.MiroirVolume) int {
-		return cmp.Compare(a.Name, b.Name)
-	})
-
-	start, end, err := page(req.GetStartingToken(), req.GetMaxEntries(), len(vols.Items))
+	start, end, err := page(req.GetStartingToken(), req.GetMaxEntries(), len(vols), false)
 	if err != nil {
 		return nil, err
 	}
 
 	resp := &csi.ListVolumesResponse{}
 	for i := start; i < end; i++ {
-		v := &vols.Items[i]
+		v := &vols[i]
 		resp.Entries = append(resp.Entries, &csi.ListVolumesResponse_Entry{
 			Volume: &csi.Volume{
 				VolumeId:           v.Name,
@@ -1841,20 +1829,45 @@ func (c *Controller) ListVolumes(ctx context.Context, req *csi.ListVolumesReques
 		})
 	}
 
-	if end < len(vols.Items) {
+	if end < len(vols) {
 		resp.NextToken = strconv.Itoa(end)
 	}
 	return resp, nil
 }
 
+// sortedVolumes lists every volume in name order, the stable order page()
+// requires: its tokens are positional, so two RPCs paging the same set must
+// order it the same way or pages skip and duplicate entries.
+func (c *Controller) sortedVolumes(ctx context.Context) ([]miroirv1alpha1.MiroirVolume, error) {
+	vols := &miroirv1alpha1.MiroirVolumeList{}
+	if err := c.Client.List(ctx, vols); err != nil {
+		return nil, status.Errorf(codes.Internal, "list volumes: %v", err)
+	}
+	slices.SortFunc(vols.Items, func(a, b miroirv1alpha1.MiroirVolume) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return vols.Items, nil
+}
+
 // page resolves a positional starting_token and max_entries against a total,
-// shared by the paginating list RPCs. Callers must list in a stable order or
-// pages skip and duplicate entries.
-func page(startingToken string, maxEntries int32, total int) (start, end int, err error) {
+// shared by the paginating list RPCs. Callers must list in a stable order (see
+// sortedVolumes) or pages skip and duplicate entries.
+//
+// clampPastEnd decides what a token beyond the end means. Over a set that only
+// moves when volumes are created or deleted it is a token from a listing the
+// caller must restart, which the spec has it learn through ABORTED; over one
+// that shrinks on its own it is expected, and the page comes back empty.
+func page(startingToken string, maxEntries int32, total int, clampPastEnd bool) (start, end int, err error) {
 	if startingToken != "" {
 		n, convErr := strconv.Atoi(startingToken)
-		if convErr != nil || n < 0 || n >= total {
+		if convErr != nil || n < 0 {
 			return 0, 0, status.Errorf(codes.Aborted, "invalid starting_token: %s", startingToken)
+		}
+		if n >= total {
+			if !clampPastEnd {
+				return 0, 0, status.Errorf(codes.Aborted, "invalid starting_token: %s", startingToken)
+			}
+			return total, total, nil
 		}
 		start = n
 	}

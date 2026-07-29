@@ -1,6 +1,9 @@
 {{- if hasKey .Values.drbd "verifyAlg" }}
 {{- fail "drbd.verifyAlg was renamed to drbd.verify.algorithm" }}
 {{- end }}
+{{- if hasKey .Values.sidecars "healthMonitor" }}
+{{- fail "the `sidecars.healthMonitor` value is gone: external-health-monitor refuses to start against a driver that no longer advertises VOLUME_CONDITION, which CSI v1.13 removed; the driver answers the replacement health RPCs and the miroir_volume_* metrics carry the same signals, see https://miroir.home-operations.com/upgrading/" }}
+{{- end }}
 {{- range $key := list "nodes" "storageClasses" "volumeSnapshotClasses" }}
 {{- if hasKey $.Values $key }}
 {{- fail (printf "the `%s` value is gone — topology and classes are plain manifests now (MiroirNode/MiroirNodeGroup CRs, StorageClasses) and the miroir chart installs only the driver; see https://miroir.home-operations.com/upgrading/" $key) }}

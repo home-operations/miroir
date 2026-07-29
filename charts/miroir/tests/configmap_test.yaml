@@ -138,6 +138,17 @@ tests:
       - failedTemplate:
           errorMessage: "drbd.verifyAlg was renamed to drbd.verify.algorithm"
 
+  # The sidecar is gone from the chart, so a leftover enabled: true would
+  # otherwise upgrade silently and take the PVC events with it.
+  - it: fails loudly when the pre-0.12 sidecars.healthMonitor key is still set
+    set:
+      sidecars:
+        healthMonitor:
+          enabled: true
+    asserts:
+      - failedTemplate:
+          errorMessage: "the `sidecars.healthMonitor` value is gone: external-health-monitor refuses to start against a driver that no longer advertises VOLUME_CONDITION, which CSI v1.13 removed; the driver answers the replacement health RPCs and the miroir_volume_* metrics carry the same signals, see https://miroir.home-operations.com/upgrading/"
+
   - it: appends drbd.extraConfig lines inside the matching common{} sections
     set:
       drbd:

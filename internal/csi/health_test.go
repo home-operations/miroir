@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -36,7 +38,28 @@ func volWithStatus(name string, phase miroirv1alpha1.VolumePhase, perNode map[st
 	}
 }
 
-// healthEntry is a status/reason/message triple flattened for comparison.
+// activated marks the volume as having been staged for a consumer, which is
+// what turns a self-healing birth split into operator-resolved data loss and a
+// provisioning verdict into a regression.
+func activated(vol *miroirv1alpha1.MiroirVolume) *miroirv1alpha1.MiroirVolume {
+	vol.Status.Activated = true
+	return vol
+}
+
+// withServingLeg adds a diskful replica whose backing device the agent
+// created, i.e. a leg that can still serve.
+func withServingLeg(vol *miroirv1alpha1.MiroirVolume, node string) *miroirv1alpha1.MiroirVolume {
+	vol.Spec.Replicas = append(vol.Spec.Replicas, miroirv1alpha1.Replica{Node: node})
+	if vol.Status.PerNode == nil {
+		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
+	}
+	st := vol.Status.PerNode[node]
+	st.DeviceCreated = true
+	vol.Status.PerNode[node] = st
+	return vol
+}
+
+// healthEntry is a status/reason pair flattened for comparison.
 type healthEntry struct {
 	status csi.VolumeHealthErrorType
 	reason string
@@ -48,6 +71,15 @@ func entriesOf(h *csi.VolumeHealth) []healthEntry {
 		out = append(out, healthEntry{e.GetStatus(), e.GetReason()})
 	}
 	return out
+}
+
+// headMessage is the message a CO surfacing only the most urgent condition
+// shows, or "" when nothing is reported.
+func headMessage(h *csi.VolumeHealth) string {
+	if len(h.GetHealthStatuses()) == 0 {
+		return ""
+	}
+	return h.GetHealthStatuses()[0].GetMessage()
 }
 
 func TestVolumeHealth(t *testing.T) {
@@ -63,17 +95,38 @@ func TestVolumeHealth(t *testing.T) {
 			want: []healthEntry{},
 		},
 		{
+			name: "creating is the expected state while provisioning",
+			vol:  volWithStatus("v", miroirv1alpha1.VolumeCreating, nil),
+			want: []healthEntry{},
+		},
+		{
+			name: "an un-reconciled volume has no phase and no condition",
+			vol:  volWithStatus("v", "", nil),
+			want: []healthEntry{},
+		},
+		{
 			name: "split-brain ranks above the degraded phase it implies",
-			vol: volWithStatus("v", miroirv1alpha1.VolumeDegraded, map[string]miroirv1alpha1.ReplicaStatus{
+			vol: activated(volWithStatus("v", miroirv1alpha1.VolumeDegraded, map[string]miroirv1alpha1.ReplicaStatus{
 				nodeB: {DiskFailed: true},
 				nodeA: {SplitBrain: true},
-			}),
+			})),
 			want: []healthEntry{
 				{csi.VolumeHealthErrorType_DATA_LOSS, reasonSplitBrain},
 				{csi.VolumeHealthErrorType_DEGRADED, reasonBackingDiskFailed},
 				{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaOutOfSync},
 			},
 			wantContains: "split-brain on node " + nodeA,
+		},
+		{
+			// The reconciler auto-resolves this one (recoverSplitBrain);
+			// DATA_LOSS would send a CO restoring a snapshot of an empty
+			// volume.
+			name: "a birth split-brain is degraded, not data loss",
+			vol: volWithStatus("v", miroirv1alpha1.VolumeCreating, map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {SplitBrain: true},
+			}),
+			want:         []healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonSplitBrainRecovering}},
+			wantContains: "resolves it automatically",
 		},
 		{
 			name: "disk failed without split-brain",
@@ -90,10 +143,37 @@ func TestVolumeHealth(t *testing.T) {
 			wantContains: "provisioning failed",
 		},
 		{
+			// Phase short-circuits to Failed on the first unrealized leg, so
+			// it says nothing about the peers still serving the pod.
+			name:         "failed phase with a surviving leg is degraded, not inaccessible",
+			vol:          withServingLeg(activated(volWithStatus("v", miroirv1alpha1.VolumeFailed, nil)), nodeA),
+			want:         []healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaUnrealized}},
+			wantContains: "serving from its remaining legs",
+		},
+		{
+			name:         "creating on a volume that has carried data is a regression",
+			vol:          activated(volWithStatus("v", miroirv1alpha1.VolumeCreating, nil)),
+			want:         []healthEntry{{csi.VolumeHealthErrorType_INACCESSIBLE, reasonBackingDeviceLost}},
+			wantContains: "cannot be staged",
+		},
+		{
 			name:         "degraded phase",
 			vol:          volWithStatus("v", miroirv1alpha1.VolumeDegraded, nil),
 			want:         []healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaOutOfSync}},
 			wantContains: "degraded",
+		},
+		{
+			// The disk-failure entry is built first; severity, not build
+			// order, decides what a CO reading only the head sees.
+			name: "a lesser condition found first does not head the list",
+			vol: volWithStatus("v", miroirv1alpha1.VolumeFailed, map[string]miroirv1alpha1.ReplicaStatus{
+				nodeB: {DiskFailed: true},
+			}),
+			want: []healthEntry{
+				{csi.VolumeHealthErrorType_INACCESSIBLE, reasonProvisioningFailed},
+				{csi.VolumeHealthErrorType_DEGRADED, reasonBackingDiskFailed},
+			},
+			wantContains: "provisioning failed",
 		},
 	}
 	for _, tt := range tests {
@@ -105,10 +185,7 @@ func TestVolumeHealth(t *testing.T) {
 			if !slices.Equal(entriesOf(got), tt.want) {
 				t.Fatalf("statuses = %v, want %v", entriesOf(got), tt.want)
 			}
-			if tt.wantContains == "" {
-				return
-			}
-			if msg := got.GetHealthStatuses()[0].GetMessage(); !strings.Contains(msg, tt.wantContains) {
+			if msg := headMessage(got); !strings.Contains(msg, tt.wantContains) {
 				t.Fatalf("message %q does not contain %q", msg, tt.wantContains)
 			}
 		})
@@ -118,13 +195,13 @@ func TestVolumeHealth(t *testing.T) {
 // TestVolumeHealthDeterministic pins the message when several nodes match,
 // so a health event doesn't flap between reconciles.
 func TestVolumeHealthDeterministic(t *testing.T) {
-	vol := volWithStatus("v", miroirv1alpha1.VolumeReady, map[string]miroirv1alpha1.ReplicaStatus{
+	vol := activated(volWithStatus("v", miroirv1alpha1.VolumeReady, map[string]miroirv1alpha1.ReplicaStatus{
 		nodeB: {SplitBrain: true},
 		nodeA: {SplitBrain: true},
 		nodeC: {SplitBrain: true},
-	})
+	}))
 	for range 5 {
-		if msg := volumeHealth(vol).GetHealthStatuses()[0].GetMessage(); !strings.Contains(msg, nodeA) {
+		if msg := headMessage(volumeHealth(vol)); !strings.Contains(msg, nodeA) {
 			t.Fatalf("expected lexically-first node %s, got %q", nodeA, msg)
 		}
 	}
@@ -146,12 +223,17 @@ func TestControllerGetVolume(t *testing.T) {
 	if resp.GetVolume().GetCapacityBytes() != 1<<30 {
 		t.Fatalf("capacity = %d, want %d", resp.GetVolume().GetCapacityBytes(), 1<<30)
 	}
-
-	if _, err := c.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{}); err == nil {
-		t.Fatal("expected error for empty volume id")
+	// status is REQUIRED even though v1.13 reserved the condition inside it;
+	// a non-Go CO dereferences the message rather than a nil-safe getter.
+	if resp.GetStatus() == nil {
+		t.Fatal("status is a REQUIRED field, got nil")
 	}
-	if _, err := c.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{VolumeId: volMissing}); err == nil {
-		t.Fatal("expected NotFound for missing volume")
+
+	if _, err := c.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty volume id must be InvalidArgument, got %v", err)
+	}
+	if _, err := c.ControllerGetVolume(context.Background(), &csi.ControllerGetVolumeRequest{VolumeId: volMissing}); status.Code(err) != codes.NotFound {
+		t.Fatalf("missing volume must be NotFound, got %v", err)
 	}
 }
 
@@ -168,11 +250,11 @@ func TestControllerGetVolumeHealth(t *testing.T) {
 		t.Fatalf("statuses = %v, want a single degraded entry", got)
 	}
 
-	if _, err := c.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{}); err == nil {
-		t.Fatal("expected error for empty volume id")
+	if _, err := c.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty volume id must be InvalidArgument, got %v", err)
 	}
-	if _, err := c.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{VolumeId: volMissing}); err == nil {
-		t.Fatal("expected NotFound for missing volume")
+	if _, err := c.ControllerGetVolumeHealth(context.Background(), &csi.ControllerGetVolumeHealthRequest{VolumeId: volMissing}); status.Code(err) != codes.NotFound {
+		t.Fatalf("missing volume must be NotFound, got %v", err)
 	}
 }
 
@@ -211,11 +293,39 @@ func TestControllerListVolumeHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(second.GetEntries()) != 1 {
+		t.Fatalf("second page = %d entries, want 1", len(second.GetEntries()))
+	}
 	if id := second.GetEntries()[0].GetVolumeId(); id != "vol-c" {
 		t.Fatalf("second page starts at %q, want vol-c", id)
 	}
 
-	if _, err := c.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{StartingToken: "nope"}); err == nil {
-		t.Fatal("expected Aborted for an invalid starting token")
+	if _, err := c.ControllerListVolumeHealth(context.Background(),
+		&csi.ControllerListVolumeHealthRequest{StartingToken: "nope"}); status.Code(err) != codes.Aborted {
+		t.Fatalf("an unparseable starting token must be Aborted, got %v", err)
+	}
+}
+
+// The abnormal set shrinks whenever a volume recovers, so a token this RPC
+// issued one poll earlier routinely lands past the end of the next listing.
+// That page is empty; aborting would make the CO restart the whole listing
+// every time a volume resynced mid-page.
+func TestControllerListVolumeHealthTokenPastEnd(t *testing.T) {
+	s := newScheme(t)
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(
+		volWithStatus("vol-a", miroirv1alpha1.VolumeReady, nil),
+	).Build()}
+
+	resp, err := c.ControllerListVolumeHealth(context.Background(), &csi.ControllerListVolumeHealthRequest{StartingToken: "2"})
+	if err != nil {
+		t.Fatalf("a stale token must not abort the listing: %v", err)
+	}
+	if len(resp.GetEntries()) != 0 || resp.GetNextToken() != "" {
+		t.Fatalf("entries = %d, next %q; want an empty final page", len(resp.GetEntries()), resp.GetNextToken())
+	}
+	// ListVolumes pages a set that only moves on create/delete, where the
+	// same token means the caller must restart.
+	if _, err := c.ListVolumes(context.Background(), &csi.ListVolumesRequest{StartingToken: "2"}); status.Code(err) != codes.Aborted {
+		t.Fatalf("ListVolumes must still abort a past-the-end token, got %v", err)
 	}
 }
