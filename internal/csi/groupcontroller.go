@@ -61,12 +61,9 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 
 	vols := make([]*miroirv1alpha1.MiroirVolume, 0, len(volIDs))
 	for _, id := range volIDs {
-		vol := &miroirv1alpha1.MiroirVolume{}
-		if err := c.Client.Get(ctx, types.NamespacedName{Name: id}, vol); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil, status.Errorf(codes.NotFound, "volume %s not found", id)
-			}
-			return nil, status.Errorf(codes.Internal, "get volume: %v", err)
+		vol, err := c.requireVolume(ctx, id)
+		if err != nil {
+			return nil, err
 		}
 		if vol.Spec.DRBD == nil {
 			// suspend-io is the only write barrier miroir has; an

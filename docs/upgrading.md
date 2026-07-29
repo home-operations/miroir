@@ -46,6 +46,35 @@ helm show crds oci://ghcr.io/home-operations/charts/miroir \
   --version <new-version> | kubectl apply --server-side -f -
 ```
 
+## 0.11.x → 0.12.0: the health-monitor sidecar is gone
+
+CSI v1.13 removed the `VolumeCondition` alpha API the driver used to report
+replication health, replacing it with dedicated health RPCs
+(`ControllerGetVolumeHealth`, `ControllerListVolumeHealth`,
+`NodeGetVolumeHealth`). The driver answers those instead, and no longer
+advertises the `VOLUME_CONDITION` capability.
+
+`csi-external-health-monitor-controller` has not adopted the new RPCs and
+refuses to start against a driver without `VOLUME_CONDITION`, so the sidecar
+and its `sidecars.healthMonitor` values are gone from the chart. Nothing else
+consumed the old condition.
+
+/// warning | Only if you turned it on
+
+`sidecars.healthMonitor.enabled` defaults to `false`, so most installs have
+nothing to do. If yours sets it, remove the whole `sidecars.healthMonitor`
+block from your values; leaving it fails the render with a message pointing
+here.
+
+///
+
+The PVC events the sidecar raised have no replacement yet: kubelet's
+volume-health manager is alpha and unreleased, and external-health-monitor has
+not adopted the new RPCs. The `miroir_volume_*` metrics carry the same signals
+(split-brain, disk failed, degraded replication) and the chart's starter alerts
+already fire on them, so alert there instead. See
+[Monitoring](monitoring.md).
+
 ## 0.10.x → 0.11.0: node topology becomes MiroirNode CRs
 
 The storage configuration moves out of the miroir chart entirely: the
