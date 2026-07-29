@@ -100,8 +100,7 @@ func TestConflictSinglePassCoversAllNodes(t *testing.T) {
 		cond := meta.FindStatusCondition(n.Status.Conditions, ConditionAddressConflict)
 		if cond == nil {
 			t.Fatalf("one pass must stamp the condition on %s", name)
-		}
-		if got := cond.Status == metav1.ConditionTrue; got != conflicted {
+		} else if got := cond.Status == metav1.ConditionTrue; got != conflicted {
 			t.Fatalf("%s: conflicted=%v, want %v (%+v)", name, got, conflicted, cond)
 		}
 	}
