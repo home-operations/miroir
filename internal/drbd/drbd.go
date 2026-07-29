@@ -244,17 +244,41 @@ func InternalMetaOverhead(sizeBytes int64) int64 {
 }
 
 // probeMetadata reports the backing device's DRBD metadata state.
-// attached means the kernel has the resource (which necessarily implies
-// metadata exists); dump is the raw dump-md output when readable.
+// attached means this leg holds its backing device in the kernel (which
+// necessarily implies metadata exists); dump is the raw dump-md output
+// when readable.
 //
 // Kernel state is probed first: an attached resource claims its backing
 // device exclusively, so dump-md only reports EBUSY — the same error a
 // foreign holder (stale mount, LVM) produces. Asking the kernel
-// disambiguates: resource present → attached; absent → any remaining
+// disambiguates: local disk attached → attached; otherwise any remaining
 // busy error is a foreign holder and surfaces.
+//
+// The probe keys on this node's own disk state, not the resource's mere
+// presence in the kernel — the same predicate drbdmeta itself uses to
+// refuse a busy device (is_attached() is dstate > Diskless, drbd-utils
+// user/shared/drbdmeta.c). An auto-diskful conversion (a tie-breaker or
+// client leg flipped diskful in place, keeping its node-id) is already up
+// as a diskless leg while the backing it is gaining is still blank: it
+// holds no backing device, so nothing claims the disk, dump-md reads it
+// fine and create-md is allowed. Reading presence alone as live metadata
+// would skip create-md and leave adjust attaching a blank device — which
+// fails "No valid meta data found", and Apply's recovery re-probes into
+// the same answer, so the leg never materializes.
 func (d *Driver) probeMetadata(ctx context.Context, name string) (hasMD, attached bool, dump string, err error) {
-	if out, err := d.Exec(ctx, "drbdsetup", "status", name); err == nil && strings.Contains(out, name) {
-		return true, true, "", nil
+	if parsed, perr := d.listStatus(ctx, name); perr == nil {
+		for _, res := range parsed {
+			// Positive test on purpose: disk-state is a plain string, so a
+			// device entry missing the key unmarshals to "" — and reading
+			// that as attached would adopt a blank backing and reinstate
+			// the error loop above. Unknown means "ask dump-md", which is
+			// authoritative either way.
+			if res.Name == name && len(res.Devices) > 0 &&
+				res.Devices[0].DiskState != "" &&
+				res.Devices[0].DiskState != DiskDiskless {
+				return true, true, "", nil
+			}
+		}
 	}
 	out, err := d.adm(ctx, "dump-md", name+"/0")
 	if err != nil && strings.Contains(err.Error(), "unclean") {
@@ -273,10 +297,6 @@ func (d *Driver) probeMetadata(ctx context.Context, name string) (hasMD, attache
 		return true, true, "", nil
 	case err == nil:
 		return true, false, out, nil
-	case strings.Contains(err.Error(), "is configured!"):
-		// drbdmeta's own refusal — covers a resource attached between
-		// the kernel probe and the dump.
-		return true, true, "", nil
 	case strings.Contains(err.Error(), "no valid meta data") ||
 		strings.Contains(err.Error(), "No valid meta data"):
 		return false, false, "", nil
@@ -1155,7 +1175,9 @@ const DiskInconsistent = "Inconsistent"
 // device — a quorum-only tie-breaker, or a diskful leg DRBD detached
 // after an I/O error (on-io-error detach). Do NOT use it to infer
 // tie-breaker-ness (that is spec-driven, see Replica.Diskless); it is
-// only meaningful for observing a detach on a leg the spec says is diskful.
+// only meaningful for observing whether this leg holds a backing device
+// right now — a detach on a leg the spec says is diskful, or the blank
+// interval of an auto-diskful conversion (see probeMetadata).
 const DiskDiskless = "Diskless"
 
 // diskDetaching is the transient disk state while the kernel drains a

@@ -32,16 +32,26 @@ const (
 // agentPodOn returns the miroir agent pod running on node.
 func agentPodOn(ctx context.Context, node string) string {
 	GinkgoHelper()
+	name, err := agentPodOnE(ctx, node)
+	Expect(err).NotTo(HaveOccurred())
+	return name
+}
+
+// agentPodOnE is agentPodOn for callers inside an Eventually: it reports a
+// missing pod as an error to retry on, where Fail/Expect would abort the
+// whole spec on a pod that is merely mid-reschedule.
+func agentPodOnE(ctx context.Context, node string) (string, error) {
 	var pods corev1.PodList
-	Expect(k8s.List(ctx, &pods, client.InNamespace(agentNamespace),
-		client.MatchingLabels{"app.kubernetes.io/component": "agent"})).To(Succeed())
+	if err := k8s.List(ctx, &pods, client.InNamespace(agentNamespace),
+		client.MatchingLabels{"app.kubernetes.io/component": "agent"}); err != nil {
+		return "", err
+	}
 	for _, p := range pods.Items {
 		if p.Spec.NodeName == node {
-			return p.Name
+			return p.Name, nil
 		}
 	}
-	Fail("no agent pod on node " + node)
-	return ""
+	return "", fmt.Errorf("no agent pod on node %s", node)
 }
 
 // agentExec runs sh -c inside the privileged agent container on node —

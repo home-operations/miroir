@@ -5,23 +5,24 @@ End-to-end tests for the miroir CSI driver against a local Talos cluster, booted
 
 ## Overview
 
-Every CI leg boots the same `cluster.yaml` -- a controller node and two storage
+Almost every CI leg boots the same `cluster.yaml` -- a controller node and two storage
 workers, with the DRBD and ZFS kernel modules baked in by an Image Factory schematic
 -- and drives the tests against it. The action boots the shape the document
 describes, exports a kubeconfig and talosconfig, and destroys the cluster in its post
 step; `test.sh` then installs the driver from a packaged Helm chart and runs the
 tests.
 
-The legs run the same document and differ in what `test.sh` drives against it, so a
-failure names the path that broke:
+The legs mostly run the same document and differ in what `test.sh` drives against it,
+so a failure names the path that broke:
 
-| Leg           | Runs                                                | Class               |
-| ------------- | --------------------------------------------------- | ------------------- |
-| `conformance` | miroir's Go specs, then the parallel upstream suite | `miroir-local`      |
-| `replicated`  | the parallel upstream block/filesystem suite        | `miroir-replicated` |
-| `zfs`         | the parallel upstream block/filesystem suite        | `miroir-zfs`        |
-| `rwx`         | the parallel upstream filesystem-only RWX/ROX suite | `miroir-replicated` |
-| `serial`      | upstream `[Serial]` specs, one process              | `miroir-replicated` |
+| Leg           | Runs                                                   | Class               |
+| ------------- | ------------------------------------------------------ | ------------------- |
+| `conformance` | miroir's Go specs, then the parallel upstream suite    | `miroir-local`      |
+| `replicated`  | the parallel upstream block/filesystem suite           | `miroir-replicated` |
+| `zfs`         | the parallel upstream block/filesystem suite           | `miroir-zfs`        |
+| `rwx`         | the parallel upstream filesystem-only RWX/ROX suite    | `miroir-replicated` |
+| `serial`      | upstream `[Serial]` specs, one process                 | `miroir-replicated` |
+| `autodiskful` | the auto-diskful Go spec only, on `cluster-spare.yaml` | `miroir-replicated` |
 
 miroir's Go specs (`test/e2e`) assert the local lifecycle, snapshot/restore, block and
 placement behaviour the upstream suite does not; the conformance leg runs them
@@ -31,16 +32,26 @@ external-storage run. The replicated leg drives that upstream suite against the 
 DRBD shape backed by the zfs pool instead, so replication pairs zvol with zvol and
 the zfs snapshot/restore path runs under the suite. The rwx leg enables the NFS
 gateway and advertises only filesystem volume modes, while the serial leg gives
-exclusive-cluster specs a single Ginkgo process. The conformance and zfs legs enable
-CSI storage capacity publication (the replicated block lane keeps it off, where DRBD's
-full-size reservation on every replica starves the scheduler during parallel-clone
-specs); the upstream definitions exercise ext4, xfs, topology and mount options. Real
-per-node kernels and real block devices are the point: the DRBD
-path needs the DRBD 9 module, which only a real Talos node has.
+exclusive-cluster specs a single Ginkgo process.
+
+The autodiskful leg is the one that boots a different shape. Auto-diskful converts a
+settled diskless leg into a local replica, and a 2-replica volume only gets a diskless
+tie-breaker when some storage node carries no replica -- so this leg boots
+`cluster-spare.yaml` (a third worker) and installs the chart with `autoDiskfulAfter`
+set. Its spec is the only one carrying the `autodiskful` Ginkgo label: every other leg
+runs `SPEC_LABELS=!autodiskful` and skips it, and this leg selects it and skips the
+upstream suite (`RUN_CONFORMANCE=0`) rather than replaying it on a third cluster.
+
+The conformance and zfs legs enable CSI storage capacity publication (the replicated
+block lane keeps it off, where DRBD's full-size reservation on every replica starves
+the scheduler during parallel-clone specs); the upstream definitions exercise ext4,
+xfs, topology and mount options. Real per-node kernels and real block devices are the
+point: the DRBD path needs the DRBD 9 module, which only a real Talos node has.
 
 ```text
-cluster.yaml              the one cluster shape every leg boots
-schematic.yaml            the drbd + zfs system extensions (referenced by cluster.yaml)
+cluster.yaml              the cluster shape every leg but autodiskful boots
+cluster-spare.yaml        the same plus a third worker, for the autodiskful leg
+schematic.yaml            the drbd + zfs system extensions (referenced by both)
 patches/modules.yaml      shared: the DRBD / dm-thin / zfs kernel modules
 patches/registry.yaml     shared: where the nodes pull the miroir images
 classes.yaml              the StorageClasses / snapshot classes under test
@@ -90,6 +101,19 @@ set -gx RUN_SPECS 1                # also run the Go specs (the conformance leg 
 set -gx STORAGE_CAPACITY_ENABLED true
 # Required with testdriver-rwx.yaml:
 set -gx GATEWAY_ENABLED true
+./test.sh
+
+# The autodiskful leg, against a cluster booted from cluster-spare.yaml
+# (a third worker, and 3GiB of memory each rather than 5GiB).
+# The exports above are global and would otherwise install a different
+# chart than the CI leg does — clear the ones it does not set first.
+set -e STORAGE_CAPACITY_ENABLED
+set -e GATEWAY_ENABLED
+set -gx TESTDRIVER testdriver.yaml
+set -gx RUN_SPECS 1
+set -gx SPEC_LABELS autodiskful     # the label every other leg excludes
+set -gx AUTO_DISKFUL_AFTER 2m       # installs the chart with the conversion on
+set -gx RUN_CONFORMANCE 0           # one spec is the whole leg
 ./test.sh
 
 sudo -E (mise which talosctl) cluster destroy --name miroir-e2e -f

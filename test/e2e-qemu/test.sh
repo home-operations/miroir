@@ -237,6 +237,7 @@ install_chart() {
         --set groupSnapshots.enabled=true \
         --set gateway.enabled="${GATEWAY_ENABLED:-false}" \
         --set storageCapacity.enabled="${STORAGE_CAPACITY_ENABLED:-false}" \
+        --set autoDiskfulAfter="${AUTO_DISKFUL_AFTER:-}" \
         --wait --timeout 10m
 }
 
@@ -281,9 +282,34 @@ main() {
     # them before the long external-storage run, so a miroir-specific break
     # fails fast. 35m: the orphaned-hold spec alone rides the full ~6-minute
     # busy escalation before its reclaim can fire.
+    #
+    # SPEC_LABELS gates the specs that need a cluster or an install this one is
+    # not: the default excludes them, and the leg that provides what they need
+    # selects them by label instead (see the autodiskful leg in ci.yaml).
+    # --fail-on-empty: Ginkgo defaults it off, so a label filter that selects
+    # nothing (a renamed Label, a typo in the leg's specLabels) would print
+    # "Ran 0 of N Specs" and exit 0 — a leg whose whole point is one spec
+    # would go green having asserted nothing.
     if [[ "${RUN_SPECS:-}" == "1" ]]; then
-        log "Running miroir's Go e2e specs..."
-        (cd "$REPO_ROOT" && go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 35m)
+        log "Running miroir's Go e2e specs (labels: ${SPEC_LABELS:-!autodiskful})..."
+        (cd "$REPO_ROOT" && go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 35m \
+            -ginkgo.fail-on-empty \
+            -ginkgo.label-filter="${SPEC_LABELS:-!autodiskful}")
+    fi
+
+    # A leg whose whole point is a Go spec has nothing to gain from replaying the
+    # external-storage suite on top of it.
+    if [[ "${RUN_CONFORMANCE:-1}" != "1" ]]; then
+        # The two gates are independent, so guard against the combination that
+        # would boot a cluster, install the chart, run nothing and still pass.
+        if [[ "${RUN_SPECS:-}" != "1" ]]; then
+            die "RUN_CONFORMANCE=$RUN_CONFORMANCE with RUN_SPECS unset would run no tests at all"
+        fi
+        log "Skipping the external-storage conformance suite (RUN_CONFORMANCE=$RUN_CONFORMANCE)."
+        log "=========================================="
+        log "E2E QEMU SUITE PASSED (specs only)"
+        log "=========================================="
+        return
     fi
 
     log "Running the external-storage conformance suite ($TESTDRIVER)..."

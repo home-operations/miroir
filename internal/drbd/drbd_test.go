@@ -310,7 +310,7 @@ func TestApplyFreshResource(t *testing.T) {
 	// Metadata stays at UUID_JUST_CREATED: the birth generation is minted
 	// once by the winner over live connections (InitialUUID), never
 	// manufactured per node.
-	fe.notCalledWith(t, "set-gi")
+	fe.notCalledWith(t, "new-current-uuid")
 	fe.calledWith(t, "drbdadm adjust pvc-1")
 
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.res")); err != nil {
@@ -502,7 +502,7 @@ func TestApplyRecreatesOnMissingMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
-	fe.notCalledWith(t, "set-gi")
+	fe.notCalledWith(t, "new-current-uuid")
 	// adjust attempted twice: the failing first, the succeeding retry.
 	var adjusts int
 	for _, c := range fe.calls {
@@ -512,6 +512,64 @@ func TestApplyRecreatesOnMissingMetadata(t *testing.T) {
 	}
 	if adjusts != 2 {
 		t.Fatalf("want 2 adjust attempts (fail + retry), got %d: %v", adjusts, fe.calls)
+	}
+}
+
+// An auto-diskful conversion is already up in the kernel as a diskless
+// leg while the backing it is gaining is still blank. The resource's
+// presence must not be read as live metadata: create-md has to run, or
+// adjust attaches a device with no metadata on it and the leg never
+// materializes — Apply's missing-metadata recovery re-probes into the
+// same adoption, so it error-loops "No valid meta data found" forever.
+func TestApplySeedsMetadataForDisklessLegGainingADisk(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"` + DiskDiskless + `"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"` + DiskUpToDate + `"}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
+	fe.notCalledWith(t, "new-current-uuid")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); !os.IsNotExist(err) {
+		t.Fatal("a blank backing must not be recorded as adopted metadata")
+	}
+	// The marker pair is the whole point of seeding under a live resource:
+	// .md-created must land and the .md-seeding sentinel must be gone, or
+	// the next restart re-seeds a leg that has since full-synced real data.
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
+		t.Fatal("a completed seed must be marked created")
+	}
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-seeding")); !os.IsNotExist(err) {
+		t.Fatal("a completed seed must clear the seeding sentinel")
+	}
+}
+
+// The converse of the seeding case: the same up-but-Diskless kernel state,
+// but the backing already carries live metadata. dump-md — not the kernel
+// probe — is the authority that keeps create-md --force off real data, so
+// this is the one path where that gate is load-bearing.
+func TestApplyAdoptsLiveMetadataOnDisklessLegGainingADisk(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"` + DiskDiskless + `"}],"connections":[]}]`,
+		// Neither day0 nor UUID_JUST_CREATED: a generation a Primary
+		// minted, i.e. real data.
+		cmdDumpMD: "current-uuid 0xB0FFEEB0FFEEB0FF;\nbitmap-uuid 0x0000000000000000;",
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
+		t.Fatal(err)
+	}
+	fe.notCalledWith(t, "create-md")
+	fe.notCalledWith(t, "new-current-uuid")
+	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); err != nil {
+		t.Fatal("live metadata under a diskless leg must be adopted, not re-seeded")
 	}
 }
 
@@ -576,16 +634,19 @@ func TestApplyAdoptsAttachedDevice(t *testing.T) {
 	// Markers lost but the kernel holds the minor: a previous life
 	// completed seeding and adjust — metadata is live, never touch it.
 	// dump-md succeeds read-only on an attached minor with a stale-output
-	// warning; the refusal form covers metadata-modifying probes.
+	// warning. There is deliberately no "Device is configured!" case:
+	// drbdmeta gates that refusal on `minor_attached && modifies_md`
+	// (drbd-utils user/shared/drbdmeta.c) and dump-md declares
+	// modifies_md = 0, so the probe never sees it. A busy open surfaces as
+	// EBUSY instead, which must error rather than adopt — see
+	// TestApplySurfacesNonDRBDBusyDevice.
 	for name, fe := range map[string]*fakeExec{
-		"kernel has resource": {responses: map[string]string{
-			"drbdsetup status pvc-1": "pvc-1 role:Secondary\n  disk:Inconsistent",
+		"local disk attached": {responses: map[string]string{
+			cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+				"devices":[{"disk-state":"` + DiskInconsistent + `"}],"connections":[]}]`,
 		}},
 		"stale warning": {responses: map[string]string{
 			cmdDumpMD: "# Output might be stale, since minor 1000 is attached\ncurrent-uuid 0x0000000000000004;",
-		}},
-		"configured refusal": {errOn: map[string]error{
-			cmdDumpMD: errors.New("Device 'pvc-1' is configured!"),
 		}},
 	} {
 		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
@@ -593,7 +654,7 @@ func TestApplyAdoptsAttachedDevice(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		fe.notCalledWith(t, "create-md")
-		fe.notCalledWith(t, "set-gi")
+		fe.notCalledWith(t, "new-current-uuid")
 		if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
 			t.Fatalf("%s: adopted device must be marked created", name)
 		}
@@ -621,7 +682,7 @@ func TestApplyAppliesALOnUncleanClone(t *testing.T) {
 	}
 	fe.calledWith(t, "drbdadm apply-al pvc-1/0")
 	fe.notCalledWith(t, "create-md")
-	fe.notCalledWith(t, "set-gi")
+	fe.notCalledWith(t, "new-current-uuid")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); err != nil {
 		t.Fatal("clone adoption must leave a breadcrumb")
 	}
@@ -660,7 +721,7 @@ func TestApplyFastPathCleansStaleSentinel(t *testing.T) {
 	if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
 		t.Fatal(err)
 	}
-	fe.notCalledWith(t, "set-gi")
+	fe.notCalledWith(t, "new-current-uuid")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-seeding")); !os.IsNotExist(err) {
 		t.Fatal("fast path must remove a stale seeding sentinel")
 	}
@@ -678,7 +739,7 @@ func TestApplyAdoptsLiveMetadataWithoutMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "create-md")
-	fe.notCalledWith(t, "set-gi")
+	fe.notCalledWith(t, "new-current-uuid")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-adopted")); err != nil {
 		t.Fatal("adoption must leave a breadcrumb")
 	}
@@ -697,7 +758,7 @@ func TestApplyClaimsVirginMetadataWithoutMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 	fe.notCalledWith(t, "create-md")
-	fe.notCalledWith(t, "set-gi")
+	fe.notCalledWith(t, "new-current-uuid")
 	if _, err := os.Stat(filepath.Join(d.StateDir, "pvc-1.md-created")); err != nil {
 		t.Fatal("virgin metadata must be claimed with the marker")
 	}

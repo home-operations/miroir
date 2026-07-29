@@ -66,6 +66,13 @@ const (
 	cmdDownPvc1 = "drbdsetup down pvc-1"
 	// snapGone names a deleted source snapshot in restore-source-gone tests.
 	snapGone = "snap-gone"
+	// statusNotInKernel is the status of a resource that is not up yet — the
+	// first --json read of a bring-up pass, which probeMetadata makes before
+	// create-md. drbdsetup does not answer that with an empty list: it
+	// writes "<name>: No such resource" to stderr and exits 10, which
+	// backend.RealExec surfaces as an error. fakeDRBDExec.run turns this
+	// sentinel into that error so fixtures exercise the real shape.
+	statusNotInKernel = "\x00no-such-resource"
 )
 
 // fakeBackend records calls and simulates a thin pool in memory.
@@ -623,13 +630,12 @@ func TestReconcilePaddedRestoreGrowsCloneBeforeCreateMD(t *testing.T) {
 	fb := newFakeBackend()
 	v := paddedRestoreVol()
 	stateDir := t.TempDir()
-	// Empty statusJSON: probeMetadata's kernel probe must see no attached
-	// resource, or the fresh clone reads as adopted metadata and create-md
-	// never runs. The --json status reads are served from statusSeq.
+	// The leading not-in-kernel read is probeMetadata's: the fresh clone must
+	// not read as adopted metadata, or create-md never runs.
 	up := `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{up, up, up, up}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, up, up, up, up}}
 	fb.seq = &fe.calls // interleave the backing resize into the DRBD call log
 
 	c := fake.NewClientBuilder().WithScheme(s).
@@ -765,7 +771,7 @@ func TestReconcilePaddedRestoreSeedMintsGeneration(t *testing.T) {
 	inc := `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateInconsistent + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{inc, inc, inc, inc}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, inc, inc, inc, inc}}
 
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj(snapSnap1, "src-vol")).
@@ -801,7 +807,7 @@ func TestReconcilePaddedRestoreSeedMintRefusesWhenPeerHasData(t *testing.T) {
 	inc := `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateInconsistent + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{inc, inc, inc, inc}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, inc, inc, inc, inc}}
 
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj(snapSnap1, "src-vol")).
@@ -831,7 +837,7 @@ func TestReconcilePaddedRestoreSeedDemotesInterruptedMint(t *testing.T) {
 	up := `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{up, up, up, up}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, up, up, up, up}}
 
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj(snapSnap1, "src-vol")).
@@ -1084,6 +1090,9 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 	if strings.HasPrefix(line, "drbdsetup status --json") && len(f.statusSeq) > 0 {
 		out := f.statusSeq[0]
 		f.statusSeq = f.statusSeq[1:]
+		if out == statusNotInKernel {
+			return "", errNoSuchResource
+		}
 		return out, nil
 	}
 	if strings.HasPrefix(line, "drbdsetup status") {
@@ -1100,7 +1109,12 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 	return "", nil
 }
 
-var errFreshDevice = errors.New("no valid meta data")
+var (
+	errFreshDevice = errors.New("no valid meta data")
+	// errNoSuchResource is drbdsetup's exit-10 answer for a resource that
+	// is not up, as backend.RealExec reports it.
+	errNoSuchResource = errors.New("drbdsetup status: pvc-1: No such resource")
+)
 
 func (f *fakeDRBDExec) calledWith(t *testing.T, substr string) {
 	t.Helper()
@@ -2258,12 +2272,12 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 
-	// The kernel probe fails (fresh boot, resource never configured);
-	// the post-Apply --json status still answers.
+	// The kernel probe finds nothing (fresh boot, resource never
+	// configured); the post-Apply --json status still answers.
 	fe := &fakeDRBDExec{
 		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Inconsistent"}],"connections":[]}]`,
-		errOn: map[string]error{"drbdsetup status " + volPvc1: errors.New("no such resource")},
+		statusSeq: []string{statusNotInKernel},
 	}
 	fb := newFakeBackend() // Exists() == false: the wipe took the device
 	r := &VolumeReconciler{
@@ -2275,7 +2289,7 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 	reconcile(t, r, volPvc1)
 
 	fe.calledWith(t, "create-md")
-	fe.notCalledWith(t, "set-gi") // just-created metadata → full SyncTarget
+	fe.notCalledWith(t, "new-current-uuid") // just-created metadata → full SyncTarget
 }
 
 func TestReconcileDisklessTieBreaker(t *testing.T) {
@@ -2328,6 +2342,65 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	}
 	if st.DevicePath == "" || st.DiskState != diskStateDiskless {
 		t.Fatalf("tie-breaker status not reported: %+v", st)
+	}
+}
+
+// Auto-diskful conversion: the spec flips the leg diskful in place while
+// the consumer keeps it open, so the resource is up in the kernel as a
+// diskless leg over a backing device that does not exist yet. The fresh
+// backing must be seeded — reading the live resource as metadata would
+// skip create-md and leave adjust attaching a blank device, which fails
+// "No valid meta data found" on every pass.
+func TestReconcileTieBreakerGainingADiskSeedsMetadata(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrA
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrB
+	// The converted leg: node-id and address kept, FullSync set — exactly
+	// what membership.convertTieBreaker leaves behind.
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: nodeC, NodeID: 2, Address: addrC, FullSync: true,
+	})
+	v.Finalizers = append(v.Finalizers, constants.FinalizerPrefix+nodeC)
+
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
+		"connections":[{"peer-node-id":0,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]},
+		{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`}
+	stateDir := t.TempDir()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeC, Pools: poolsOf(fb),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+
+	reconcile(t, r, volPvc1)
+
+	if len(fb.createVol) != 1 {
+		t.Fatalf("the converted leg must realize a backing device: %v", fb.createVol)
+	}
+	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
+	fe.notCalledWith(t, "new-current-uuid") // just-created metadata → full SyncTarget
+	if _, err := os.Stat(filepath.Join(stateDir, volPvc1+".md-adopted")); !os.IsNotExist(err) {
+		t.Fatal("a blank backing must not be recorded as adopted metadata")
+	}
+	// A completed seed must leave the marker pair settled: .md-created
+	// written and the .md-seeding sentinel cleared. A sentinel left behind
+	// authorizes re-seeding a leg that has since full-synced real data.
+	if _, err := os.Stat(filepath.Join(stateDir, volPvc1+".md-created")); err != nil {
+		t.Fatal("a completed seed must be marked created")
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, volPvc1+".md-seeding")); !os.IsNotExist(err) {
+		t.Fatal("a completed seed must clear the seeding sentinel")
 	}
 }
 
@@ -3410,18 +3483,19 @@ func birthSetup(t *testing.T, nodeName string, peerNodeID int, statusSeq ...stri
 	), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	seq := make([]string, len(statusSeq))
-	for i, tmpl := range statusSeq {
-		seq[i] = fmt.Sprintf(tmpl, peerNodeID)
-	}
-	fe := &fakeDRBDExec{statusSeq: seq}
-	if len(seq) > 0 {
+	fe := &fakeDRBDExec{}
+	if len(statusSeq) > 0 {
+		// The leading not-in-kernel read is probeMetadata's: a fresh volume
+		// must take the create-md path, not read the kernel view as adopted
+		// metadata.
+		seq := make([]string, 0, 1+len(statusSeq))
+		seq = append(seq, statusNotInKernel)
+		for _, tmpl := range statusSeq {
+			seq = append(seq, fmt.Sprintf(tmpl, peerNodeID))
+		}
+		fe.statusSeq = seq
 		fe.statusJSON = seq[len(seq)-1] // stable fallback once drained
 	}
-	// The kernel probe (plain, non-json status) must fail or probeMetadata
-	// reads the fallback JSON as "resource attached" and adopts — bypassing
-	// the create-md path a fresh volume must take.
-	fe.errOn = map[string]error{"drbdsetup status " + volPvc1: errors.New("no such resource")}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
@@ -3442,7 +3516,6 @@ func TestReconcileBirthWinnerMintsInitialUUID(t *testing.T) {
 	// The full fresh path: metadata created and left just-created, then the
 	// one replicated generation minted over the live connections.
 	fe.calledWith(t, "drbdadm create-md --force --max-peers 7 pvc-1/0")
-	fe.notCalledWith(t, "set-gi")
 	fe.calledWith(t, "drbdadm new-current-uuid --clear-bitmap pvc-1/0")
 
 	got := &miroirv1alpha1.MiroirVolume{}
@@ -3583,6 +3656,7 @@ func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
 	// The peer's disk turns Inconsistent; everything else is unchanged.
 	fe.statusSeq = []string{
 		fmt.Sprintf(birthReadyJSON, 1), // fastPath live check → fingerprint miss
+		fmt.Sprintf(birthReadyJSON, 1), // probeMetadata → attached, adopt
 		fmt.Sprintf(birthReadyJSON, 1), // pipeline status → trigger fires
 		fmt.Sprintf(birthDoneJSON, 1),  // post-mint re-read
 	}

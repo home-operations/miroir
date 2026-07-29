@@ -79,6 +79,20 @@ jobs:
             procs: "1"
             focus: 'miroir.home-operations.com.*\[Serial\]'
             skip: '\[Disruptive\]|should not mount / map unused volumes'
+          # Auto-diskful needs what no other leg has: a third storage worker, so a
+          # 2-replica volume gets a diskless tie-breaker to convert, and a
+          # controller installed with the conversion enabled. One Go spec drives
+          # the whole leg, so it skips the upstream suite.
+          - suite: autodiskful
+            cluster: cluster-spare.yaml
+            testdriver: testdriver.yaml
+            specs: "1"
+            specLabels: autodiskful
+            # The clock starts at NodeStageVolume, so the threshold has to
+            # outlast the consumer pod's own startup with room to spare —
+            # the spec asserts the leg is still diskless once that pod is up.
+            autoDiskfulAfter: 2m
+            conformance: "0"
     env:
       # Two names for one image in the runner-local registry. The nodes pull
       # registry.e2e, which the Talos mirror in patches/registry.yaml points at the
@@ -151,7 +165,7 @@ jobs:
         background: true
         uses: home-operations/talosctl-cluster-action@dc28a9d63dec2bc23d8777cdbd3a1f96e6988e5a # v0.1.5
         with:
-          config: test/e2e-qemu/cluster.yaml
+          config: test/e2e-qemu/${{ matrix.cluster || 'cluster.yaml' }}
 
       # network=host so the builder container can reach the registry published on the
       # runner's loopback.
@@ -217,6 +231,9 @@ jobs:
         env:
           TESTDRIVER: ${{ matrix.testdriver }}
           RUN_SPECS: ${{ matrix.specs }}
+          SPEC_LABELS: ${{ matrix.specLabels || '!autodiskful' }}
+          RUN_CONFORMANCE: ${{ matrix.conformance || '1' }}
+          AUTO_DISKFUL_AFTER: ${{ matrix.autoDiskfulAfter }}
           GATEWAY_ENABLED: ${{ matrix.gateway || 'false' }}
           STORAGE_CAPACITY_ENABLED: ${{ matrix.capacity || 'false' }}
           CLUSTER_NAME: ${{ steps.cluster.outputs.cluster-name }}
