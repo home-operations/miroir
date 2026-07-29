@@ -126,13 +126,19 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 		eventuallyPodReady(ctx, ns, settled.Name)
 
 		// The leg the conversion is about to act on: up, Primary for the
-		// pod, and serving every read and write over the network.
+		// pod, and serving every read and write over the network. The
+		// threshold clock is PrimarySince, stamped back at NodeStageVolume,
+		// so this races the conversion by however long the pod took to
+		// start — bounded tightly, because a leg that already converted
+		// only gets further from Diskless and waiting cannot recover it.
 		Eventually(func(g Gomega) {
 			g.Expect(localLegStatus(ctx, tieNode, pv)).To(ContainSubstring("disk:Diskless"))
 			var v miroirv1alpha1.MiroirVolume
 			g.Expect(k8s.Get(ctx, client.ObjectKey{Name: pv}, &v)).To(Succeed())
 			g.Expect(v.Status.PerNode[tieNode].DiskState).To(Equal("Diskless"))
-		}).Should(Succeed())
+		}).WithTimeout(20*time.Second).Should(Succeed(),
+			"the leg must still be diskless here; if it already converted, "+
+				"pod startup ate the whole --auto-diskful-after budget")
 		Expect(sha(ns, settled.Name, "/data/seed")).To(Equal(seedSum),
 			"the diskless client must serve the peers' data")
 	})
@@ -171,12 +177,16 @@ var _ = Describe("auto-diskful conversion", Ordered, Label("autodiskful"), func(
 			"the conversion must leave a real backing device behind")
 		Expect(localLegStatus(ctx, tieNode, pv)).To(ContainSubstring("disk:UpToDate"))
 
-		// The pod never restarted, and it now reads the seed it wrote
-		// before the node had a disk — off the local replica this time.
+		// The pod rode the conversion out, and it now reads the seed it
+		// wrote before the node had a disk — off the local replica this
+		// time. Phase and readiness, not RestartCount: these pods are
+		// RestartPolicy: Never, so a container the conversion killed would
+		// move the pod to Failed with its restart count still zero.
 		var p corev1.Pod
 		Expect(k8s.Get(ctx, client.ObjectKeyFromObject(settled), &p)).To(Succeed())
-		Expect(p.Status.ContainerStatuses[0].RestartCount).To(BeZero(),
+		Expect(p.Status.Phase).To(Equal(corev1.PodRunning),
 			"the conversion must be transparent to the consumer")
+		Expect(podReady(&p)).To(BeTrue(), "consumer must still be Ready after the conversion")
 		Expect(sha(ns, settled.Name, "/data/seed")).To(Equal(seedSum))
 	})
 })

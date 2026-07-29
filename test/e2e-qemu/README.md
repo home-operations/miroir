@@ -106,7 +106,7 @@ set -gx GATEWAY_ENABLED true
 # The autodiskful leg, against a cluster booted with --workers 3 instead:
 set -gx RUN_SPECS 1
 set -gx SPEC_LABELS autodiskful     # the label every other leg excludes
-set -gx AUTO_DISKFUL_AFTER 45s      # installs the chart with the conversion on
+set -gx AUTO_DISKFUL_AFTER 2m       # installs the chart with the conversion on
 set -gx RUN_CONFORMANCE 0           # one spec is the whole leg
 ./test.sh
 

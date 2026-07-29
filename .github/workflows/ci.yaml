@@ -88,7 +88,10 @@ jobs:
             testdriver: testdriver.yaml
             specs: "1"
             specLabels: autodiskful
-            autoDiskfulAfter: 45s
+            # The clock starts at NodeStageVolume, so the threshold has to
+            # outlast the consumer pod's own startup with room to spare —
+            # the spec asserts the leg is still diskless once that pod is up.
+            autoDiskfulAfter: 2m
             conformance: "0"
     env:
       # Two names for one image in the runner-local registry. The nodes pull
