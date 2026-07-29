@@ -30,8 +30,7 @@ their behavior is explained, and every StorageClass parameter.
 - **`agent` / `sidecars`** (and the root's image/resources): workload
   knobs for images, resources, `agent.kubeletDir`,
   `agent.loopfileBaseDirs` (hostPath mounts for loopfile pools: pod
-  spec the chart cannot derive from your CRs),
-  `sidecars.healthMonitor`.
+  spec the chart cannot derive from your CRs).
 - **`logging`**: level and encoder for both components.
 
 ## StorageClass parameters

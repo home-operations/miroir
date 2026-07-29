@@ -6,7 +6,7 @@ require (
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/container-storage-interface/spec v1.13.0
 	github.com/go-logr/logr v1.4.4
-	github.com/kubernetes-csi/csi-test/v5 v5.5.0
+	github.com/kubernetes-csi/csi-test/v5 v5.5.1-0.20260728125401-ae8a63a708ab
 	github.com/onsi/ginkgo/v2 v2.32.0
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.1

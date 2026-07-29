@@ -106,7 +106,7 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 		csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 		csi.NodeServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
-		csi.NodeServiceCapability_RPC_VOLUME_CONDITION,
+		csi.NodeServiceCapability_RPC_GET_VOLUME_HEALTH,
 	}
 	resp := &csi.NodeGetCapabilitiesResponse{}
 	for _, t := range caps {
@@ -529,7 +529,7 @@ func (n *Node) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeSta
 	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and path are required")
 	}
-	resp := &csi.NodeGetVolumeStatsResponse{VolumeCondition: n.lookupVolumeCondition(ctx, req.GetVolumeId())}
+	resp := &csi.NodeGetVolumeStatsResponse{}
 	// A raw-block publish path is a bind-mounted device file: statfs
 	// there reports the host filesystem backing the target dir, not the
 	// volume. No filesystem, no usage to report.
@@ -547,16 +547,23 @@ func (n *Node) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeSta
 	return resp, nil
 }
 
-// lookupVolumeCondition reports the volume's replication health for the stats
-// RPC. Best-effort: a lookup failure (volume mid-delete, transient API error)
-// must not fail NodeGetVolumeStats, whose primary job is capacity — the
-// controller's ControllerGetVolume reports the same condition regardless.
-func (n *Node) lookupVolumeCondition(ctx context.Context, volumeID string) *csi.VolumeCondition {
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
-		return nil
+// NodeGetVolumeHealth reports the volume's replication health to kubelet,
+// which folds it into the pod's volume health conditions. miroir's health is
+// a property of the volume rather than of the mount, so this answers with the
+// same aggregated status ControllerGetVolumeHealth reports; the request's
+// staging and publish paths are not needed to derive it.
+func (n *Node) NodeGetVolumeHealth(ctx context.Context, req *csi.NodeGetVolumeHealthRequest) (*csi.NodeGetVolumeHealthResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
-	return volumeCondition(vol)
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := n.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
+		}
+		return nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", req.GetVolumeId(), err)
+	}
+	return &csi.NodeGetVolumeHealthResponse{VolumeHealth: volumeHealth(vol)}, nil
 }
 
 type fsStatResult struct {

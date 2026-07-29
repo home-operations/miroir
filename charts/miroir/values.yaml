@@ -188,22 +188,6 @@ sidecars:
         memory: 32Mi
       limits:
         memory: 128Mi
-  # external-health-monitor-controller: polls ControllerGetVolume and raises a
-  # PVC event when a volume reports split-brain/degraded/disk-failed (the same
-  # health the agents fold into status.phase). Off by default — the
-  # miroir_volume_* metrics already carry this; enable for native PVC events.
-  healthMonitor:
-    enabled: false
-    image: registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.18.0
-    # How often the monitor re-checks every volume's condition.
-    interval: 1m
-    # -- Health-monitor sidecar resources.
-    resources:
-      requests:
-        cpu: 10m
-        memory: 32Mi
-      limits:
-        memory: 128Mi
 
 # =============================================================================
 # Agent (per-node DaemonSet: storage userland + CSI node service)
