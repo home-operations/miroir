@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.14](https://github.com/home-operations/miroir/compare/0.11.13...0.11.14) (2026-07-30)
+
+
+### Features
+
+* **go:** update module google.golang.org/grpc (v1.82.1 → v1.83.0) ([#375](https://github.com/home-operations/miroir/issues/375)) ([572e629](https://github.com/home-operations/miroir/commit/572e62936c8fd51f5d2c6214baf5293bbeba22f7))
+
+
+### Bug Fixes
+
+* **ci:** key the lint cache on the toolchain and drop the prefix fallback ([#374](https://github.com/home-operations/miroir/issues/374)) ([789e990](https://github.com/home-operations/miroir/commit/789e99085aa00958b2ab5c71565573c84185ba57))
+
 ## [0.11.13](https://github.com/home-operations/miroir/compare/0.11.12...0.11.13) (2026-07-29)
 
 
