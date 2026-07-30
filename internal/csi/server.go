@@ -114,12 +114,30 @@ func recoverInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo
 	return handler(ctx, req)
 }
 
+// retryableCode reports whether miroir's handlers use this status code as a
+// "call again" signal to the CO rather than a failure: Aborted for an
+// operation intentionally kept pending (a settling group snapshot), and
+// Unavailable/DeadlineExceeded for resources not ready yet. The sidecars
+// retry these until they succeed, so a healthy cluster emits them routinely.
+func retryableCode(c codes.Code) bool {
+	switch c {
+	case codes.Aborted, codes.Unavailable, codes.DeadlineExceeded:
+		return true
+	}
+	return false
+}
+
 func logInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	resp, err := handler(ctx, req)
-	if err != nil {
-		log.Error(err, "rpc failed", "method", info.FullMethod)
-	} else {
+	switch {
+	case err == nil:
 		log.V(1).Info("rpc ok", "method", info.FullMethod)
+	case retryableCode(status.Code(err)):
+		// Expected flow control, not a failure; error level (with its
+		// stacktrace) would make every retry round look like an outage.
+		log.V(1).Info("rpc pending, CO will retry", "method", info.FullMethod, "reason", err.Error())
+	default:
+		log.Error(err, "rpc failed", "method", info.FullMethod)
 	}
 	return resp, err
 }
