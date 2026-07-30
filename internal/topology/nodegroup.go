@@ -234,6 +234,9 @@ func (r *NodeGroupReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		func(ctx context.Context, _ client.Object) []ctrl.Request {
 			groups := &miroirv1alpha1.MiroirNodeGroupList{}
 			if err := r.List(ctx, groups, client.UnsafeDisableDeepCopy); err != nil {
+				// A map func has nothing to requeue against, so the event is
+				// lost: log it rather than let the controller look idle.
+				ctrl.LoggerFrom(ctx).Error(err, "listing node groups to enqueue")
 				return nil
 			}
 			reqs := make([]ctrl.Request, 0, len(groups.Items))

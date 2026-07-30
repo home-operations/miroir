@@ -194,7 +194,12 @@ func TestPoolStatsPublisherRaisesHighDataUsage(t *testing.T) {
 		t.Fatalf("expected DataUsageHigh True at 85%%, got %+v", c)
 	}
 	select {
-	case <-rec.Events:
+	case e := <-rec.Events:
+		// The note is Eventf's format string, and this message carries usage
+		// percentages: it has to reach the operator verbatim.
+		if !strings.Contains(e, c.Message) {
+			t.Fatalf("the event must carry the condition message %q, got %q", c.Message, e)
+		}
 	default:
 		t.Fatal("expected a PoolUsageHigh event on first crossing")
 	}

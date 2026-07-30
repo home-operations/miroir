@@ -22,6 +22,7 @@ package topology
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -79,24 +80,28 @@ func (r *ConflictReconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 	topo := nodemap.FromNodes(list.Items)
+	// One node's failed update — a 409 against the agent's per-minute status
+	// writes, say — must not leave the rest of the fleet unstamped and so
+	// invisible to placement, so per-node errors are collected and joined.
+	// The requeue replays the whole pass: SetStatusCondition skips the nodes
+	// that did land, so the retry is cheap and emits no duplicate events.
+	var errs []error
 	for i := range list.Items {
-		// A mid-pass failure retries the whole pass: SetStatusCondition
-		// skips already-updated nodes, so the retry is cheap and emits no
-		// duplicate events.
 		if err := r.reconcileNode(ctx, &list.Items[i], topo); err != nil {
-			return ctrl.Result{}, err
+			errs = append(errs, fmt.Errorf("node %s: %w", list.Items[i].Name, err))
 		}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, errors.Join(errs...)
 }
 
 // reconcileNode updates one node's AddressConflict condition on change.
 func (r *ConflictReconciler) reconcileNode(ctx context.Context, node *miroirv1alpha1.MiroirNode, topo nodemap.Map) error {
 	cond := metav1.Condition{
-		Type:    ConditionAddressConflict,
-		Status:  metav1.ConditionFalse,
-		Reason:  reasonAddressUnique,
-		Message: "replication address is unique (or unset)",
+		Type:               ConditionAddressConflict,
+		Status:             metav1.ConditionFalse,
+		Reason:             reasonAddressUnique,
+		Message:            "replication address is unique (or unset)",
+		ObservedGeneration: node.Generation,
 	}
 	if topo[node.Name].AddressConflict {
 		// Group by the same canonical key the fold conflicts on: a raw
@@ -127,8 +132,9 @@ func (r *ConflictReconciler) reconcileNode(ctx context.Context, node *miroirv1al
 		return client.IgnoreNotFound(err)
 	}
 	if cond.Status == metav1.ConditionTrue && !wasConflicted && r.Recorder != nil {
+		// The message is data, not a format string: it embeds spec.address.
 		r.Recorder.Eventf(node, nil, corev1.EventTypeWarning, ConditionAddressConflict, "Reconcile",
-			cond.Message)
+			"%s", cond.Message)
 	}
 	return nil
 }

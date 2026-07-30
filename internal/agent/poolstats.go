@@ -179,7 +179,8 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 			return err
 		}
 		if high && !wasHigh && p.Recorder != nil {
-			p.Recorder.Eventf(cur, nil, corev1.EventTypeWarning, ConditionPoolUsageHigh, "Sample", msg)
+			// The message is data, not a format string: it embeds usage percentages.
+			p.Recorder.Eventf(cur, nil, corev1.EventTypeWarning, ConditionPoolUsageHigh, "Sample", "%s", msg)
 		}
 		return nil
 	})
