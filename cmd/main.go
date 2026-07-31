@@ -713,37 +713,7 @@ func main() {
 			os.Exit(1)
 		}
 		freezer := agent.NewFreezer()
-		if drbdReady {
-			// Mid-runtime twin of the startup/shutdown barrier sweeps: a
-			// suspend-io that wedges (LINBIT/drbd#137) can set the kernel
-			// flag without the snapshot round recording it, leaving the
-			// volume frozen until the agent restarts. The sweep lifts any
-			// suspended-user barrier no recorded round claims (live rounds
-			// within SuspendDeadline are skipped by the fresh-round check
-			// inside resumeStaleBarriers). A round is briefly invisible
-			// between its suspend-io and its status patch; if a tick lands
-			// in that gap it can lift a live coordinator's barrier — the
-			// cut phase re-asserts suspend-io per leg, so the damage is a
-			// moment of unprotected writes, not divergent legs. API-list
-			// failures are logged, not fatal — the next tick retries.
-			if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-				ticker := time.NewTicker(barrierSweepInterval)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						return nil
-					case <-ticker.C:
-						if err := resumeStaleBarriers(drbdDriver, freezer, nodeName, apiShutdownWait); err != nil {
-							setupLog.Error(err, "periodic barrier sweep incomplete")
-						}
-					}
-				}
-			})); err != nil {
-				setupLog.Error(err, "unable to add periodic barrier sweep")
-				os.Exit(1)
-			}
-		}
+		addBarrierSweep(mgr, drbdReady, drbdDriver, freezer, nodeName)
 		snapReconciler := &agent.SnapshotReconciler{
 			Client:   mgr.GetClient(),
 			NodeName: nodeName,
@@ -844,9 +814,7 @@ const apiStartupWait = 45 * time.Second
 // drbdShutdownTimeout bounds the Secondary-teardown sweep at shutdown.
 const drbdShutdownTimeout = 15 * time.Second
 
-// barrierSweepInterval paces the mid-runtime stranded-barrier sweep (the
-// startup/shutdown sweeps' twin). Rounds are void at agent.SuspendDeadline
-// (60s), so a 5-minute cadence only touches barriers no live round owns.
+// barrierSweepInterval paces the periodic stranded-barrier sweep (addBarrierSweep).
 const barrierSweepInterval = 5 * time.Minute
 
 // apiShutdownWait bounds the shutdown barrier sweep's API access: the
@@ -988,6 +956,39 @@ func agentShutdownBarrierSweep(driver *drbd.Driver, nodeName string) {
 func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeName string) {
 	agentShutdownDownSecondaries(cordon, driver)
 	agentShutdownBarrierSweep(driver, nodeName)
+}
+
+// addBarrierSweep runs the startup/shutdown stranded-barrier sweep
+// mid-runtime too: a wedged suspend-io (LINBIT/drbd#137) can set the kernel
+// flag after drbdadm reported failure, leaving a frozen volume no recorded
+// round owns until the agent restarts. resumeStaleBarriers skips live rounds
+// (fresh ioSuspended timestamp); a round past agent.SuspendDeadline is void
+// by protocol anyway. A round is briefly invisible between its suspend-io
+// and its status patch, so a tick can in theory lift a live coordinator's
+// barrier — bounded: the cut phase re-asserts suspend-io per leg. API-list
+// failures are logged, not fatal: the next tick retries.
+func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, freezer *agent.Freezer,
+	nodeName string) {
+	if !drbdReady {
+		return
+	}
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(barrierSweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				if err := resumeStaleBarriers(driver, freezer, nodeName, apiShutdownWait); err != nil {
+					setupLog.Error(err, "periodic barrier sweep incomplete")
+				}
+			}
+		}
+	})); err != nil {
+		setupLog.Error(err, "unable to add periodic barrier sweep")
+		os.Exit(1)
+	}
 }
 
 // sweepOrphans removes DRBD state with no owning volume on this node,

@@ -43,6 +43,8 @@ const (
 	snapCallSnapshot = "snapshot " + volPvc1 + "@" + snapSnap1
 	// cmdStatus keys fakeDRBDExec.errOn for `drbdsetup status`.
 	cmdStatus = "status"
+	// cmdSuspendIO keys fakeDRBDExec.errOn for `drbdadm suspend-io`.
+	cmdSuspendIO = "suspend-io"
 )
 
 //nolint:unparam // future tests will vary the volume
@@ -191,7 +193,7 @@ func TestSnapshotBarrierStuckParksAfterLimit(t *testing.T) {
 		statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 			"connections":[{"connection-state":"Connected"}]}]`,
-		errOn: map[string]error{"suspend-io": errors.New(
+		errOn: map[string]error{cmdSuspendIO: errors.New(
 			"exit status 20: Command 'drbdsetup suspend-io 1001' did not terminate within 5 seconds")},
 	}
 	rec := events.NewFakeRecorder(8)
@@ -242,7 +244,7 @@ func TestSnapshotFailedSuspendLiftsKernelFlag(t *testing.T) {
 		statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 			"connections":[{"connection-state":"Connected"}]}]`,
-		errOn: map[string]error{"suspend-io": errors.New(
+		errOn: map[string]error{cmdSuspendIO: errors.New(
 			"exit status 20: Command 'drbdsetup suspend-io 1001' did not terminate within 5 seconds")},
 	}
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
@@ -286,7 +288,7 @@ func TestSnapshotFailedSuspendDefersToSiblingRound(t *testing.T) {
 			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 			"connections":[{"connection-state":"Connected","peer-role":"Primary",
 			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`,
-		errOn: map[string]error{"suspend-io": errors.New(
+		errOn: map[string]error{cmdSuspendIO: errors.New(
 			"exit status 20: Command 'drbdsetup suspend-io 1001' did not terminate within 5 seconds")},
 	}
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
@@ -716,7 +718,7 @@ func TestSnapshotSecondaryDefersToPeerPrimary(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, snapSnap1)
 
-	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, cmdSuspendIO)
 }
 
 // Regression: an expired round voids every leg, the retry backs off,
@@ -1023,7 +1025,7 @@ func TestSnapshotWaitsForHealthyReplication(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, snapSnap1)
 
-	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, cmdSuspendIO)
 	if len(fb.snapCalls) != 0 {
 		t.Fatalf("no leg may be cut while replication is degraded: %v", fb.snapCalls)
 	}
@@ -1203,7 +1205,7 @@ func TestSnapshotRoundWaitsForSibling(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	res := reconcileSnap(t, r, "snap-b")
 
-	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, cmdSuspendIO)
 	if res.RequeueAfter == 0 {
 		t.Fatal("must requeue to wait for the sibling round to close")
 	}
@@ -1389,7 +1391,7 @@ func TestSnapshotWaitsForResyncingPeer(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 	reconcileSnap(t, r, snapSnap1)
 
-	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, cmdSuspendIO)
 	if len(fb.snapCalls) != 0 {
 		t.Fatalf("no leg may be cut while a peer resyncs: %v", fb.snapCalls)
 	}
@@ -1429,13 +1431,13 @@ func TestSnapshotOpenDefersToKernelBarrier(t *testing.T) {
 	// Sibling round open: neither raise nor lift — the sibling owns it.
 	r, fe := build(t, true)
 	reconcileSnap(t, r, snapSnap1)
-	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, cmdSuspendIO)
 	fe.notCalledWith(t, "resume-io")
 
 	// No sibling round: the barrier is stale — lift it, raise next pass.
 	r, fe = build(t, false)
 	reconcileSnap(t, r, snapSnap1)
-	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, cmdSuspendIO)
 	fe.calledWith(t, "drbdadm resume-io pvc-1")
 }
 
@@ -1513,7 +1515,7 @@ func TestSnapshotSiblingCheckReadsThroughAPIReader(t *testing.T) {
 	reconcileSnap(t, r, snapSnap1)
 
 	fe.notCalledWith(t, "resume-io")
-	fe.notCalledWith(t, "suspend-io")
+	fe.notCalledWith(t, cmdSuspendIO)
 }
 
 // The filesystem freeze brackets the replicated round on the node that
@@ -1590,7 +1592,7 @@ func TestSnapshotSuspendFailureThawsFreeze(t *testing.T) {
 	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"connection-state":"Connected"}]}]`,
-		errOn: map[string]error{"suspend-io": errors.New("exit status 20")}}
+		errOn: map[string]error{cmdSuspendIO: errors.New("exit status 20")}}
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD:    &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run},
 		Freezer: mountedFreezer(rec, map[string]string{devDrbd1000: mntStage1})}
