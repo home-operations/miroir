@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -186,6 +187,32 @@ func TestGroupSnapshotBarrierSpansVolumes(t *testing.T) {
 	reconcileGroup(t, rP)
 	feP.calledWith(t, "drbdadm resume-io "+volPvc1)
 	feP.calledWith(t, "drbdadm resume-io "+volPvc2)
+}
+
+// A failed suspend-io mid-raise can still have set the kernel flag (the
+// wedge kills drbdadm after the ioctl landed). The failed leg must join
+// the half-raised sweep's resume — leaving it freezes the volume behind
+// a round the group never recorded.
+func TestGroupFailedSuspendLiftsKernelFlag(t *testing.T) {
+	c := groupClient(t, groupVol(volPvc1), groupVol(volPvc2),
+		memberObj(memberOf1, volPvc1), memberObj(memberOf2, volPvc2), groupObj())
+
+	fe := &fakeDRBDExec{statusJSON: groupStatusPrimary,
+		errOn: map[string]error{cmdSuspendIO + " " + volPvc2: errors.New(
+			"exit status 20: Command 'drbdsetup suspend-io 1002' did not terminate within 5 seconds")}}
+	r := &GroupSnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+
+	if _, err := r.Reconcile(t.Context(),
+		ctrl.Request{NamespacedName: types.NamespacedName{Name: groupG1}}); err == nil {
+		t.Fatal("the failed raise must surface as an error for the fast backoff")
+	}
+	// The half-raised leg resumes as before; the failed leg itself must
+	// join the sweep — its kernel flag may have landed despite the error.
+	fe.calledWith(t, "drbdadm suspend-io "+volPvc1)
+	fe.calledWith(t, "drbdadm suspend-io "+volPvc2)
+	fe.calledWith(t, "drbdadm resume-io "+volPvc1)
+	fe.calledWith(t, "drbdadm resume-io "+volPvc2)
 }
 
 // A round whose deadline passes with legs missing is voided whole: Done

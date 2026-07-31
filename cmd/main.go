@@ -660,7 +660,8 @@ func main() {
 			}
 			// Lift any IO barrier left by a previous agent crash; same
 			// fatal-only-on-API-failure contract.
-			if err := resumeStaleBarriers(drbdDriver, agent.NewFreezer(), nodeName, apiStartupWait); err != nil {
+			if err := resumeStaleBarriers(context.Background(), drbdDriver,
+				agent.NewFreezer(), nodeName, apiStartupWait); err != nil {
 				setupLog.Error(err, "barrier resume sweep failed")
 				os.Exit(1)
 			}
@@ -947,7 +948,8 @@ func agentShutdownBarrierSweep(driver *drbd.Driver, nodeName string) {
 	// manager stop + DownSecondaries already spend up to 45s of it. A
 	// stranded barrier missed here is lifted by the startup sweep on the
 	// next boot.
-	if err := resumeStaleBarriers(driver, agent.NewFreezer(), nodeName, apiShutdownWait); err != nil {
+	if err := resumeStaleBarriers(context.Background(), driver,
+		agent.NewFreezer(), nodeName, apiShutdownWait); err != nil {
 		setupLog.Error(err, "shutdown barrier sweep failed")
 	}
 }
@@ -965,8 +967,10 @@ func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeNa
 // (fresh ioSuspended timestamp); a round past agent.SuspendDeadline is void
 // by protocol anyway. A round is briefly invisible between its suspend-io
 // and its status patch, so a tick can in theory lift a live coordinator's
-// barrier — bounded: the cut phase re-asserts suspend-io per leg. API-list
-// failures are logged, not fatal: the next tick retries.
+// barrier — bounded: the cut phase re-asserts suspend-io per leg (though
+// not the thawed freeze, so that round's cut degrades from fs-consistent
+// to crash-consistent). API-list failures are logged, not fatal: the next
+// tick retries.
 func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, freezer *agent.Freezer,
 	nodeName string) {
 	if !drbdReady {
@@ -980,7 +984,7 @@ func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, f
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
-				if err := resumeStaleBarriers(driver, freezer, nodeName, apiShutdownWait); err != nil {
+				if err := resumeStaleBarriers(ctx, driver, freezer, nodeName, apiShutdownWait); err != nil {
 					setupLog.Error(err, "periodic barrier sweep incomplete")
 				}
 			}
@@ -1034,7 +1038,8 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 // Returns an error only when the snapshot list cannot be fetched; resume
 // failures are per-resource, logged here — one wedged resource must not
 // strand the other frozen volumes' barriers (issue #195).
-func resumeStaleBarriers(driver *drbd.Driver, freezer *agent.Freezer, nodeName string, apiBudget time.Duration) error {
+func resumeStaleBarriers(ctx context.Context, driver *drbd.Driver, freezer *agent.Freezer,
+	nodeName string, apiBudget time.Duration) error {
 	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
 		return err
@@ -1079,7 +1084,7 @@ func resumeStaleBarriers(driver *drbd.Driver, freezer *agent.Freezer, nodeName s
 			}
 		}
 	}
-	suspended, err := driver.UserSuspended(context.Background())
+	suspended, err := driver.UserSuspended(ctx)
 	if err != nil {
 		// No kernel view (e.g. module not loaded yet) also means nothing
 		// can be suspended — don't block agent startup on it.
@@ -1094,7 +1099,7 @@ func resumeStaleBarriers(driver *drbd.Driver, freezer *agent.Freezer, nodeName s
 		}
 		stale = append(stale, vol)
 		setupLog.Info("lifting stale IO barrier", "volume", vol)
-		if err := driver.ResumeIO(context.Background(), vol); err != nil {
+		if err := driver.ResumeIO(ctx, vol); err != nil {
 			errs = append(errs, fmt.Errorf("resume stale barrier on %s: %w", vol, err))
 		}
 	}
