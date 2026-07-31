@@ -7,7 +7,7 @@ type: application
 # copy from going stale rather than feeding the published chart.
 version: 0.11.15 # x-release-please-version
 appVersion: "0.11.15" # x-release-please-version
-kubeVersion: ">=1.31.0"
+kubeVersion: ">=1.31.0-0"
 home: https://github.com/home-operations/miroir
 sources:
   - https://github.com/home-operations/miroir
