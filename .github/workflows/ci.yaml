@@ -273,9 +273,10 @@ jobs:
       - name: Create cluster
         id: cluster
         background: true
-        uses: home-operations/talosctl-cluster-action@dc28a9d63dec2bc23d8777cdbd3a1f96e6988e5a # v0.1.5
+        uses: home-operations/talosctl-cluster-action@42a2d1c476f87245e2d1882ec825fb31368b9686 # v0.1.6
         with:
           config: test/e2e-qemu/${{ matrix.cluster || 'cluster.yaml' }}
+          cache: true
 
       - name: Download the images
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

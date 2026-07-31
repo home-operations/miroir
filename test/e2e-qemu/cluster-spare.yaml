@@ -19,8 +19,6 @@ spec:
   workers:
     count: 3
     memory: 3GiB
-  network:
-    cidr: 10.5.0.0/24
   qemu:
     schematic: "@schematic.yaml"
     disks:

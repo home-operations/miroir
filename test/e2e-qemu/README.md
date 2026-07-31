@@ -85,12 +85,10 @@ set -gx SCHEMATIC_ID (curl -sfX POST \
 
 sudo -E (mise which talosctl) cluster create qemu \
     --name miroir-e2e \
-    --cidr 10.5.0.0/24 \
     --schematic-id "$SCHEMATIC_ID" \
     --controlplanes 1 --workers 2 --memory-workers 5GiB \
     --disks virtio:8GiB,virtio:20GiB,virtio:20GiB \
     --config-patch @patches/modules.yaml \
-    --config-patch @patches/registry.yaml \
     --talosconfig-destination /tmp/miroir-e2e/talosconfig
 sudo chown -R (id -u):(id -g) /tmp/miroir-e2e
 
@@ -123,7 +121,9 @@ sudo -E (mise which talosctl) cluster destroy --name miroir-e2e -f
 ```
 
 That is `cluster.yaml` spelled out as flags, minus the ephemeral profile the action
-applies for you (see below); the document stays the source of truth for the shape.
+applies for you (see below) and minus `patches/registry.yaml`, whose `${GATEWAY}`
+placeholder only the action substitutes -- the CI-only mirror it configures is dead
+weight locally anyway. The document stays the source of truth for the shape.
 
 `test.sh` refuses to run unless `CLUSTER_NAME` looks like an e2e cluster and both the
 kubectl context and the node names agree with it, so it cannot be pointed at a real
@@ -148,8 +148,9 @@ than `image.sh` so the layers land in that cache, which `image.sh` has no way to
 
 Each leg still runs its own registry on the runner, so the images never cross the
 internet. The nodes reach them as `registry.e2e`, which the mirror in
-`patches/registry.yaml` points at port 5000 on the QEMU bridge gateway. That mirror
-entry is inert for a local run, where nothing references `registry.e2e`.
+`patches/registry.yaml` points at port 5000 on the QEMU bridge gateway through the
+action's `${GATEWAY}` substitution. That mirror entry is CI-only: a local run has no
+substitution and nothing references `registry.e2e` anyway, so leave the patch out.
 
 ## How the chart is installed
 
