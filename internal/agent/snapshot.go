@@ -411,6 +411,24 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 	}
 	if err := r.suspendIO(ctx, vol.Name); err != nil {
 		r.thaw(ctx, vol)
+		// A suspend-io that reports failure may still have set the kernel
+		// flag: the wedge (LINBIT/drbd#137) kills drbdadm after the ioctl
+		// landed. LINSTOR fixed the same wedge by resuming after a
+		// suspend-io timeout. otherRoundActive sees recorded rounds only —
+		// a sibling invisible since its own suspend-io (not yet patched)
+		// could theoretically have its barrier lifted here; accepted, same
+		// race family as resumeUnlessSiblingRound.
+		active, aerr := r.otherRoundActive(ctx, snap)
+		switch {
+		case aerr != nil:
+			ctrl.LoggerFrom(ctx).Info("sibling-round check failed after failed suspend-io; periodic sweep covers recovery",
+				"volume", vol.Name, "error", aerr.Error())
+		case !active:
+			if rerr := r.resumeIO(ctx, vol.Name); rerr != nil {
+				ctrl.LoggerFrom(ctx).Error(rerr, "cannot lift possibly-set barrier after failed suspend-io",
+					"volume", vol.Name)
+			}
+		}
 		return r.barrierFailed(ctx, snap, vol, err)
 	}
 	r.clearBarrierFails(snap.Name)

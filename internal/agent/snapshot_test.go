@@ -221,6 +221,85 @@ func TestSnapshotBarrierStuckParksAfterLimit(t *testing.T) {
 	}
 }
 
+// A failed suspend-io can still have set the kernel flag (the wedge kills
+// drbdadm after the ioctl landed). The failed raise must lift that
+// possibly-set flag itself — leaving it freezes the volume behind a round
+// the status machine never recorded.
+func TestSnapshotFailedSuspendLiftsKernelFlag(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{
+		statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+			"connections":[{"connection-state":"Connected"}]}]`,
+		errOn: map[string]error{"suspend-io": errors.New(
+			"exit status 20: Command 'drbdsetup suspend-io 1001' did not terminate within 5 seconds")},
+	}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	if _, err := r.Reconcile(t.Context(), req); err == nil {
+		t.Fatal("the failed raise must surface as an error for the fast backoff")
+	}
+	fe.calledWith(t, "drbdadm suspend-io "+volPvc1)
+	fe.calledWith(t, "drbdadm resume-io "+volPvc1)
+}
+
+// Same failed raise on the peer path, but a sibling snapshot's recorded
+// round co-holds the kernel barrier: resume-io must stay silent — lifting
+// it would tear the sibling's live barrier.
+func TestSnapshotFailedSuspendDefersToSiblingRound(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+	}
+	now := metav1.Now()
+	// The peer raise path: snap's own round is recorded (nodeB is the
+	// Primary/coordinator) and nodeA has not raised its barrier yet.
+	snap := snapObj(snapSnap1, volPvc1, nodeA, nodeB)
+	snap.Status.IOSuspended = true
+	snap.Status.SuspendedAt = &now
+	sibling := snapObj(snapSnap1+"-sibling", volPvc1, nodeA, nodeB)
+	sibling.Status.IOSuspended = true
+	sibling.Status.SuspendedAt = &now
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snap, sibling).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fe := &fakeDRBDExec{
+		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+			"connections":[{"connection-state":"Connected","peer-role":"Primary",
+			"peer_devices":[{"peer-disk-state":"` + diskStateUpToDate + `"}]}]}]`,
+		errOn: map[string]error{"suspend-io": errors.New(
+			"exit status 20: Command 'drbdsetup suspend-io 1001' did not terminate within 5 seconds")},
+	}
+	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	if _, err := r.Reconcile(t.Context(), req); err == nil {
+		t.Fatal("the failed raise must surface as an error for the fast backoff")
+	}
+	fe.calledWith(t, "drbdadm suspend-io "+volPvc1)
+	fe.notCalledWith(t, "drbdadm resume-io")
+}
+
 // On a wedged module the status read is the call that fails (hanging
 // until execTimeout kills it); it must ride the same bounded retry as
 // suspend-io or the give-up never engages.
