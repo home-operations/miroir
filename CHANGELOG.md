@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.15](https://github.com/home-operations/miroir/compare/0.11.14...0.11.15) (2026-07-31)
+
+
+### Bug Fixes
+
+* **csi:** log retryable status codes below error level ([#380](https://github.com/home-operations/miroir/issues/380)) ([4774d21](https://github.com/home-operations/miroir/commit/4774d2145746a8a8000dc905930d492882dfe2b9))
+* **snapshot:** lift possibly-set barrier on failed suspend-io and sweep mid-runtime ([#382](https://github.com/home-operations/miroir/issues/382)) ([09e3aa7](https://github.com/home-operations/miroir/commit/09e3aa778670fc94f57d3aae34d71bc5b6da5c6a))
+
 ## [0.11.14](https://github.com/home-operations/miroir/compare/0.11.13...0.11.14) (2026-07-30)
 
 
