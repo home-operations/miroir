@@ -3571,6 +3571,82 @@ func TestReconcileStuckResyncFingerprintLifecycle(t *testing.T) {
 	}
 }
 
+// staleBitmapStatusJSON is the stale one-sided-bitmap signature (issue
+// #389): out-of-sync bits toward a connected, UpToDate Primary peer with
+// replication Established and this leg Secondary — everything healthy but
+// the bits, which nothing drains.
+const staleBitmapStatusJSON = `[{"name":"pvc-1","role":"Secondary",
+	"devices":[{"disk-state":"UpToDate","quorum":true}],
+	"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Primary",
+		"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":5242880}]}]}]`
+
+// A stale one-sided bitmap toward a healthy Primary peer is cycled once the
+// signature outlives the confirmation window, exactly like a stranded
+// after-unstable bitmap.
+func TestReconcileStaleBitmapCyclesAfterConfirmation(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = staleBitmapStatusJSON
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup connect pvc-1 1")
+}
+
+// The same kernel shape with a verify finding on record is a genuine
+// data-difference report, not a stale bitmap: auto-resyncing it would
+// destroy the evidence of which leg was wrong, so it stays manual — the
+// confirmation clock never even arms.
+func TestReconcileStaleBitmapVerifyFindingStaysManual(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = staleBitmapStatusJSON
+	var v miroirv1alpha1.MiroirVolume
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
+		t.Fatal(err)
+	}
+	// node-a is the first diskful replica — the verify coordinator whose
+	// slot records findings.
+	finding := int64(4096)
+	slot := v.Status.PerNode[nodeA]
+	slot.LastVerifyOutOfSyncBytes = &finding
+	v.Status.PerNode[nodeA] = slot
+	if err := r.Status().Update(t.Context(), &v); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, volPvc1)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	r.recoveryMu.Lock()
+	_, armed := r.stuckSince[volPvc1]
+	r.recoveryMu.Unlock()
+	if armed {
+		t.Fatal("a verify finding must keep the confirmation clock unarmed")
+	}
+}
+
+// A resync already in flight anywhere on the volume defers the stale-bitmap
+// verdict — the state is not steady, so the clock never arms and nothing is
+// cycled, even though the stale signature itself is present toward peer 1.
+func TestReconcileStaleBitmapResyncInFlightStaysManual(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[
+			{"peer-node-id":1,"connection-state":"Connected","peer-role":"Primary",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":5242880}]},
+			{"peer-node-id":2,"connection-state":"Connected",
+				"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Inconsistent","percent-in-sync":50,"out-of-sync":1024}]}]}]`
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	r.recoveryMu.Lock()
+	_, armed := r.stuckSince[volPvc1]
+	r.recoveryMu.Unlock()
+	if armed {
+		t.Fatal("an in-flight resync must keep the confirmation clock unarmed")
+	}
+}
+
 // --- birth generation ---------------------------------------------------
 
 const (

@@ -235,8 +235,11 @@ spec:
             description: >-
               A peer has been out of sync for over an hour without a resync
               draining it — a down peer accumulating exposure, a stalled
-              resync, or blocks flagged by drbdadm verify. A verify finding
-              needs a disconnect/connect cycle to resync.
+              resync, or blocks flagged by drbdadm verify. Stale bitmaps on
+              healthy connections are auto-cycled by the agent, so a
+              persistent alert usually means a verify finding, which stays
+              manual: it needs a disconnect/connect cycle to resync (see
+              the troubleshooting guide).
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

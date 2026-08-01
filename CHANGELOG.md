@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.11.16](https://github.com/home-operations/miroir/compare/0.11.15...0.11.16) (2026-08-01)
+
+
+### Bug Fixes
+
+* **agent:** auto-recover a resync DRBD armed but never started ([#391](https://github.com/home-operations/miroir/issues/391)) ([4e4a60b](https://github.com/home-operations/miroir/commit/4e4a60bfd21b1308c303a636ab0497d5a8184a36))
+* **agent:** self-heal a stale out-of-sync bitmap instead of only alerting ([#392](https://github.com/home-operations/miroir/issues/392)) ([f51b469](https://github.com/home-operations/miroir/commit/f51b469452ea6ad5874304df6669df9088f23141))
+
+
+### Documentation
+
+* add AGENTS.md with Go conventions ([#393](https://github.com/home-operations/miroir/issues/393)) ([f7a8d67](https://github.com/home-operations/miroir/commit/f7a8d67b595c0ebcbf95e58b631afb1f163bc51f))
+
+
+### Continuous Integration
+
+* **e2e:** adopt talosctl-cluster-action v0.1.6 ([#383](https://github.com/home-operations/miroir/issues/383)) ([aaa1936](https://github.com/home-operations/miroir/commit/aaa193622a34dad70b562cfb5369ef3f01901b89))
+* **e2e:** bump talosctl-cluster-action to 0.2.0 (Talos 1.14) ([#385](https://github.com/home-operations/miroir/issues/385)) ([b8659c5](https://github.com/home-operations/miroir/commit/b8659c5166020ba331cddf6b2186a1842b218bc8))
+
+
+### Miscellaneous Chores
+
+* **deps:** lock file maintenance (pep621) ([#387](https://github.com/home-operations/miroir/issues/387)) ([223609d](https://github.com/home-operations/miroir/commit/223609dcc7868c7bc1ed18577863fdd5e73b7d46))
+* **mise:** Update tool aqua:astral-sh/uv (0.12.0 → 0.12.1) ([#386](https://github.com/home-operations/miroir/issues/386)) ([73065b5](https://github.com/home-operations/miroir/commit/73065b59c3b13ec624a06c4579b5a6f7d441e6e6))
+* **release-please:** standardize the release pull request title pattern ([#388](https://github.com/home-operations/miroir/issues/388)) ([8c42ead](https://github.com/home-operations/miroir/commit/8c42eaddffbbe3553117b1024a5397682b19b3aa))
+
 ## [0.11.15](https://github.com/home-operations/miroir/compare/0.11.14...0.11.15) (2026-07-31)
 
 
