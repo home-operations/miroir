@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.17](https://github.com/home-operations/miroir/compare/0.11.16...0.11.17) (2026-08-01)
+
+
+### Features
+
+* **agent:** trip a node-scoped breaker when the kernel strands storage commands ([#394](https://github.com/home-operations/miroir/issues/394)) ([3c41357](https://github.com/home-operations/miroir/commit/3c41357072d348f21418fa3d8031ad97d8dab4e5))
+
 ## [0.11.16](https://github.com/home-operations/miroir/compare/0.11.15...0.11.16) (2026-08-01)
 
 
