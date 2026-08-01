@@ -190,7 +190,7 @@ var (
 	})
 	metricNodeWedged = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "miroir_node_wedged",
-		Help: "1 while the node-scoped breaker is open: enough host commands have stranded in the kernel that miroir refuses to spawn more, because each further attempt strands another task and pushes the node further from a graceful reboot. Reboot the node to clear it.",
+		Help: "1 while the node-scoped breaker is open: enough host commands have stranded in the kernel that miroir refuses to spawn more, because each further attempt strands another task and pushes the node further from a graceful reboot. Only a reboot clears the kernel state; restarting the agent just forgets the count and re-trips.",
 	})
 )
 

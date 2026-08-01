@@ -17,6 +17,7 @@ limitations under the License.
 package backend
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -31,7 +32,8 @@ import (
 // drbd.ErrWedged, which names one resource the kernel cannot tear down, this
 // is node-scoped: once the DRBD/LVM/filesystem path jams, commands against
 // healthy resources wedge too, so the only safe move is to stop spawning.
-// Nothing but a node reboot clears it.
+// Only a reboot clears the kernel state behind it; an agent restart just
+// forgets the count and re-trips once more children strand.
 var ErrNodeWedged = errors.New("node storage stack wedged: node reboot required")
 
 // DefaultWedgeLimit is how many concurrently-stranded children trip the
@@ -40,19 +42,26 @@ var ErrNodeWedged = errors.New("node storage stack wedged: node reboot required"
 // a node-wide outage; by the third the jam is no longer resource-local.
 const DefaultWedgeLimit = 3
 
-// procState reads a task's scheduler state from /proc. The comm field can
-// contain spaces and parentheses, so the state always follows the final ')'.
-// Returns 0 when the task is gone.
+// procState reads a task's scheduler state from /proc, or 0 when the task is
+// gone.
 func procState(pid int) byte {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
 		return 0
 	}
-	i := strings.LastIndex(string(data), ")")
+	return parseProcState(data)
+}
+
+// parseProcState pulls the state character out of a /proc/<pid>/stat line.
+// comm (field 2) is unquoted and may contain spaces and parentheses, but
+// every field after it is numeric, so the state is the first field following
+// the final ')'. Returns 0 for anything malformed.
+func parseProcState(data []byte) byte {
+	i := bytes.LastIndexByte(data, ')')
 	if i < 0 {
 		return 0
 	}
-	fields := strings.Fields(string(data)[i+1:])
+	fields := strings.Fields(string(data[i+1:]))
 	if len(fields) == 0 {
 		return 0
 	}
@@ -103,6 +112,16 @@ func (w *Wedge) alive(pid int) bool {
 	return stranded(pid)
 }
 
+// note records pid as stranded if it really is in uninterruptible sleep.
+// Runner goes through here rather than calling stranded directly so the
+// detection shares the seam Stranded uses and can be tested.
+func (w *Wedge) note(pid int, cmd string) {
+	if w == nil || !w.alive(pid) {
+		return
+	}
+	w.record(pid, cmd)
+}
+
 // record notes that cmd's child stranded. Safe to call for a pid already
 // recorded: the map keys on pid, so a retry cannot inflate the count.
 func (w *Wedge) record(pid int, cmd string) {
@@ -119,16 +138,33 @@ func (w *Wedge) record(pid int, cmd string) {
 
 // Stranded reports how many children are still stuck, pruning any that have
 // since drained. Pruning on read is what makes the breaker reset itself.
+//
+// The /proc reads happen outside the lock. This mutex sits in front of every
+// host command and every staging unmount on the node, and the tasks being
+// read are by construction stuck in the kernel — holding it across their
+// /proc files would serialize all storage work behind them.
 func (w *Wedge) Stranded() int {
 	if w == nil {
 		return 0
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	pids := make([]int, 0, len(w.children))
 	for pid := range w.children {
+		pids = append(pids, pid)
+	}
+	w.mu.Unlock()
+
+	var drained []int
+	for _, pid := range pids {
 		if !w.alive(pid) {
-			delete(w.children, pid)
+			drained = append(drained, pid)
 		}
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, pid := range drained {
+		delete(w.children, pid)
 	}
 	return len(w.children)
 }

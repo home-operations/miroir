@@ -1275,7 +1275,8 @@ func removeNodeFinalizer(ctx context.Context, c client.Client, obj client.Object
 const wedgedRequeue = 5 * time.Minute
 
 // reportWedged surfaces a teardown the kernel can no longer finish
-// (drbd.ErrWedged) — Warning Event, status message, and the wedged gauge
+// (drbd.ErrWedged, or backend.ErrNodeWedged when the node-scoped breaker
+// refused the command) — Warning Event, status message, and the wedged gauge
 // the shipped alerts page on — then parks the retry at wedgedRequeue.
 // The escalation latches on the transition cycle: the park can outlive
 // the wedge only through a reboot, and re-emitting an identical Event,
@@ -1293,9 +1294,13 @@ func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1
 	}
 	ctrl.LoggerFrom(ctx).Error(cause, "teardown wedged in kernel", "volume", vol.Name)
 	if r.Recorder != nil {
+		detail := "device stuck Detaching with connections gone (LINBIT/drbd#137)"
+		if errors.Is(cause, backend.ErrNodeWedged) {
+			detail = "the node's storage stack has stranded enough commands that miroir stopped spawning them"
+		}
 		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownWedged", "Teardown",
-			"DRBD cannot tear down %s: device stuck Detaching with connections gone (LINBIT/drbd#137); reboot node %s to clear it",
-			vol.Name, r.NodeName)
+			"DRBD cannot tear down %s: %s; reboot node %s to clear it",
+			vol.Name, detail, r.NodeName)
 	}
 	return r.parkWithMessage(ctx, vol, cause, wedgedRequeue)
 }
@@ -1320,7 +1325,13 @@ func (r *VolumeReconciler) parkWithMessage(ctx context.Context, vol *miroirv1alp
 // reportBusy, anything else surfaces as a hard error. Every non-busy
 // outcome resets the busy streak.
 func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, err error) (ctrl.Result, error) {
-	if errors.Is(err, drbd.ErrWedged) {
+	// backend.ErrNodeWedged rides the same path as drbd.ErrWedged: both mean
+	// this node cannot finish the teardown until it reboots. It must not fall
+	// through to clearWedged below — the node breaker refuses the status read
+	// that Down needs to see the per-resource signature, so every wedged
+	// volume would otherwise report as recovered and delete the series the
+	// shipped critical alert pages on, exactly when the node is worst off.
+	if errors.Is(err, drbd.ErrWedged) || errors.Is(err, backend.ErrNodeWedged) {
 		r.clearBusyFails(vol.Name)
 		return r.reportWedged(ctx, vol, err)
 	}

@@ -82,9 +82,7 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, 
 	// that misread cannot latch, since Stranded re-checks every pid and
 	// tripping needs Limit outstanding at once.
 	if err != nil && ctx.Err() != nil && cmd.Process != nil {
-		if pid := cmd.Process.Pid; stranded(pid) {
-			r.Wedge.record(pid, strings.TrimSpace(line))
-		}
+		r.Wedge.note(cmd.Process.Pid, strings.TrimSpace(line))
 	}
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w: %s",

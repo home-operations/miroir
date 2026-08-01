@@ -22,6 +22,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // stuckSet builds a Wedge whose liveness check reports exactly pids as stuck,
@@ -152,25 +153,87 @@ func TestRunnerRunsNormallyWhenClosed(t *testing.T) {
 	}
 }
 
-// A command killed at its deadline that dies normally must NOT count: only
-// uninterruptible sleep means the kernel swallowed the child. Without this
-// distinction any slow command would trip the breaker.
-func TestRunnerKilledButReapedChildIsNotStranded(t *testing.T) {
-	w := NewWedge(1)
-	r := &Runner{Wedge: w}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already dead: the command is killed immediately
-	if _, err := r.Run(ctx, "sleep", "30"); err == nil {
-		t.Fatalf("Run() error = nil, want the cancellation to fail the command")
-	}
-	if got := w.Stranded(); got != 0 {
-		t.Fatalf("Stranded() = %d, want 0: a killable child is not a wedge", got)
+// A command killed at its deadline whose child dies normally must NOT count:
+// only uninterruptible sleep means the kernel swallowed it. Without this
+// distinction any command that outran its deadline would trip the breaker.
+// The child really is spawned and killed here — the liveness check is stubbed,
+// not the process.
+func TestRunnerRecordsOnlyChildrenLeftInDState(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		inDState bool
+		want     int
+	}{
+		{"child left in D-state is recorded", true, 1},
+		{"child that died is not recorded", false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var probed []int
+			w := NewWedge(1)
+			w.isStranded = func(pid int) bool {
+				probed = append(probed, pid)
+				return tc.inDState
+			}
+			r := &Runner{Wedge: w}
+			// A real child, killed by a deadline it cannot meet.
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			if _, err := r.Run(ctx, "sleep", "30"); err == nil {
+				t.Fatalf("Run() error = nil, want the deadline to fail the command")
+			}
+			if len(probed) == 0 {
+				t.Fatalf("a killed command must have its child's state probed")
+			}
+			if got := w.Stranded(); got != tc.want {
+				t.Fatalf("Stranded() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
-func TestProcStateHandlesCommWithSpacesAndParens(t *testing.T) {
-	// Our own process is running or sleeping, never 'D', and parsing must
-	// survive a comm containing ') ('.
+// A command that succeeds must never probe or record, whatever the kernel
+// state of the pid it happened to use.
+func TestRunnerDoesNotProbeSuccessfulCommands(t *testing.T) {
+	w := NewWedge(1)
+	probed := false
+	w.isStranded = func(int) bool { probed = true; return true }
+	if _, err := (&Runner{Wedge: w}).Run(context.Background(), "true"); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if probed {
+		t.Fatalf("a successful command must not be probed for stranding")
+	}
+	if got := w.Stranded(); got != 0 {
+		t.Fatalf("Stranded() = %d, want 0", got)
+	}
+}
+
+// comm is unquoted and may contain spaces and parentheses; the state is the
+// first field after the FINAL ')'.
+func TestParseProcState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+		want byte
+	}{
+		{"plain comm", "1234 (sleep) D 1 1234 1234 0 -1 4194560", 'D'},
+		{"comm with parens", "1234 (weird) name) D 1 1234", 'D'},
+		{"comm with spaces and parens", "1234 (a ) b (c) R 1 1234", 'R'},
+		{"empty comm", "1234 () S 1 1234", 'S'},
+		{"zombie", "1234 (gone) Z 1 1234", 'Z'},
+		{"no closing paren", "1234 sleep D 1", 0},
+		{"nothing after comm", "1234 (sleep)", 0},
+		{"empty", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseProcState([]byte(tc.line)); got != tc.want {
+				t.Fatalf("parseProcState(%q) = %q, want %q", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProcStateOnRealTasks(t *testing.T) {
 	if st := procState(os.Getpid()); st == 0 {
 		t.Fatalf("procState(self) = 0, want a real state byte")
 	}

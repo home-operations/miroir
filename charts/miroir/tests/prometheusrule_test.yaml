@@ -64,6 +64,15 @@ tests:
       - equal:
           path: spec.groups[3].rules[0].expr
           value: up{container="agent", namespace="miroir-system"} == 0
+      - equal:
+          path: spec.groups[3].rules[1].alert
+          value: MiroirNodeStorageWedged
+      - equal:
+          path: spec.groups[3].rules[1].labels.severity
+          value: critical
+      - equal:
+          path: spec.groups[3].rules[1].expr
+          value: miroir_node_wedged == 1
 
   - it: should omit the export rule group by default (RWX is opt-in)
     set:
@@ -206,11 +215,28 @@ tests:
           path: spec.groups[0].rules[0].labels.severity
           value: critical
 
-  - it: disabling a group's only rule drops the whole group
+  - it: the agents group survives on the node-wedge rule alone
     set:
       monitoring.prometheusRule.enabled: true
       monitoring.prometheusRule.overrides:
         MiroirAgentDown: { disabled: true }
+    asserts:
+      - equal:
+          path: spec.groups[2].name
+          value: miroir.agents
+      - lengthEqual:
+          path: spec.groups[2].rules
+          count: 1
+      - equal:
+          path: spec.groups[2].rules[0].alert
+          value: MiroirNodeStorageWedged
+
+  - it: disabling every rule in a group drops the whole group
+    set:
+      monitoring.prometheusRule.enabled: true
+      monitoring.prometheusRule.overrides:
+        MiroirAgentDown: { disabled: true }
+        MiroirNodeStorageWedged: { disabled: true }
     asserts:
       - lengthEqual:
           path: spec.groups

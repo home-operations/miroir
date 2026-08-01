@@ -647,19 +647,21 @@ func TestNodeUnstageRefusesWhenNodeWedged(t *testing.T) {
 	}
 }
 
-func TestNodeUnpublishRefusesWhenNodeWedged(t *testing.T) {
+// Unpublish is deliberately NOT gated: its target is a bind mount, not the
+// jammed local device, and it is what gates pod deletion — refusing it would
+// hold pods in Terminating and block the drain the breaker exists to preserve.
+func TestNodeUnpublishProceedsWhenNodeWedged(t *testing.T) {
 	target := t.TempDir()
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
 	n.Mounter = mount.NewSafeFormatAndMount(
 		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
 	n.Wedge = wedgedBreaker()
 
-	_, err := n.NodeUnpublishVolume(t.Context(), &csi.NodeUnpublishVolumeRequest{
+	if _, err := n.NodeUnpublishVolume(t.Context(), &csi.NodeUnpublishVolumeRequest{
 		VolumeId:   volPvc1,
 		TargetPath: target,
-	})
-	if err == nil {
-		t.Fatalf("unpublish must fail on a wedged node instead of spawning another umount")
+	}); err != nil {
+		t.Fatalf("unpublish must not be blocked by the node wedge, or pods cannot terminate: %v", err)
 	}
 }
 

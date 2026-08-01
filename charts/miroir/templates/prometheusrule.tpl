@@ -371,10 +371,13 @@ spec:
             {{- end }}
     {{- end }}
 
-    {{- $rule = dict "root" $ "alert" "MiroirAgentDown" "severity" "critical" "for" "10m" }}
-    {{- if include "miroir.alertEnabled" $rule }}
+    {{- /* Keep in sync with the rules below. */}}
+    {{- $agentAlerts := list "MiroirAgentDown" "MiroirNodeStorageWedged" }}
+    {{- if include "miroir.anyAlertEnabled" (dict "root" $ "alerts" $agentAlerts) }}
     - name: miroir.agents
       rules:
+        {{- $rule = dict "root" $ "alert" "MiroirAgentDown" "severity" "critical" "for" "10m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
         - alert: MiroirAgentDown
           expr: up{container="agent", namespace="{{ .Release.Namespace }}"} == 0
           {{- with include "miroir.alertRuleFor" $rule }}
@@ -396,5 +399,31 @@ spec:
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+        {{- end }}
+
+        {{- $rule = dict "root" $ "alert" "MiroirNodeStorageWedged" "severity" "critical" "for" "1m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
+        - alert: MiroirNodeStorageWedged
+          expr: miroir_node_wedged == 1
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
+          labels:
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
+          annotations:
+            summary: >-
+              Storage stack on {{ "{{" }} $labels.node {{ "}}" }} is wedged;
+              miroir stopped spawning storage commands
+            description: >-
+              Enough host commands have stranded in uninterruptible sleep that
+              the agent refuses to spawn more — each additional one strands
+              too and pushes the node further from a graceful reboot. Volumes
+              already staged keep serving I/O; teardowns, snapshots and
+              unmounts on this node fail until it reboots. Drain and reboot
+              the node.
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- end }}
     {{- end }}
 {{- end }}

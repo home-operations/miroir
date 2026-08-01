@@ -68,10 +68,11 @@ type Node struct {
 	// staging mount before unstage tears it down (issue #311); nil skips
 	// (tests).
 	Freezer Thawer
-	// Wedge is the node-scoped breaker the unmount paths consult. Checked
+	// Wedge is the node-scoped breaker the unstage unmount consults. Checked
 	// explicitly because mount-utils shells out to umount itself, bypassing
-	// backend.Runner: each umount strands on a jammed kernel and kubelet
-	// retries NodeUnstageVolume forever. nil disables the gate.
+	// backend.Runner: the staging unmount is of the jammed local device, it
+	// strands there, and kubelet retries NodeUnstageVolume forever. nil
+	// disables the gate.
 	Wedge WedgeGate
 }
 
@@ -529,7 +530,11 @@ func (n *Node) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolu
 	if req.GetVolumeId() == "" || req.GetTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and target path are required")
 	}
-	if err := cleanupMount(req.GetTargetPath(), n.Mounter, n.Wedge); err != nil {
+	// Not gated on the node wedge, unlike unstage: this target is a bind
+	// mount (or an NFS one for RWX), not the jammed local block device, and
+	// unpublish is what gates pod deletion — refusing it would hold pods in
+	// Terminating and block the drain the breaker exists to preserve.
+	if err := cleanupMount(req.GetTargetPath(), n.Mounter, nil); err != nil {
 		return nil, status.Errorf(codes.Internal, "unpublish: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil

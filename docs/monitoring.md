@@ -76,9 +76,12 @@ Refusing is not a recovery — nothing in userspace can reap a task
 the kernel holds. It bounds the pile so the node stays drainable:
 unbounded, every retry (including kubelet's `NodeUnstageVolume`
 retries) adds a stuck task until kubelet's own shutdown cannot
-complete and the node needs an out-of-band power cycle. Alert on
-`miroir_node_wedged == 1` and reboot; the gauge clears by itself if
-the stuck commands drain.
+complete and the node needs an out-of-band power cycle. The shipped
+`MiroirNodeStorageWedged` rule alerts on it; drain and reboot that
+node. The gauge clears by itself if the stuck commands drain. Note
+that the count lives in the agent process, so restarting the agent
+resets it — the stuck tasks remain and the breaker re-trips once
+enough new children strand.
 
 For RWX volumes the **controller** exports `miroir_export_ready`: 1
 while the volume's NFS gateway is serving (gateway pod available,
