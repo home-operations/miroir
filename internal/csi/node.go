@@ -68,12 +68,24 @@ type Node struct {
 	// staging mount before unstage tears it down (issue #311); nil skips
 	// (tests).
 	Freezer Thawer
+	// Wedge is the node-scoped breaker the unmount paths consult. Checked
+	// explicitly because mount-utils shells out to umount itself, bypassing
+	// backend.Runner: each umount strands on a jammed kernel and kubelet
+	// retries NodeUnstageVolume forever. nil disables the gate.
+	Wedge WedgeGate
 }
 
 // Thawer lifts a filesystem freeze from a staging mountpoint before its
 // unmount; *agent.Freezer implements it.
 type Thawer interface {
 	ThawMountpoint(target string) error
+}
+
+// WedgeGate reports whether this node's storage stack has jammed badly
+// enough that spawning another host command only makes it worse;
+// *backend.Wedge implements it.
+type WedgeGate interface {
+	Err() error
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
@@ -443,7 +455,7 @@ func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolume
 			log.Error(err, "cannot thaw the staging mount before unstage", "volume", req.GetVolumeId())
 		}
 	}
-	if err := cleanupMount(req.GetStagingTargetPath(), n.Mounter); err != nil {
+	if err := cleanupMount(req.GetStagingTargetPath(), n.Mounter, n.Wedge); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage: %v", err)
 	}
 	// A client leg follows its consumer: with the device released, drop the
@@ -517,7 +529,7 @@ func (n *Node) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolu
 	if req.GetVolumeId() == "" || req.GetTargetPath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and target path are required")
 	}
-	if err := cleanupMount(req.GetTargetPath(), n.Mounter); err != nil {
+	if err := cleanupMount(req.GetTargetPath(), n.Mounter, n.Wedge); err != nil {
 		return nil, status.Errorf(codes.Internal, "unpublish: %v", err)
 	}
 	return &csi.NodeUnpublishVolumeResponse{}, nil
@@ -527,7 +539,17 @@ func (n *Node) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolu
 // forced unmount when the mounter supports it — a hung hard-NFS mount
 // (dead gateway) blocks the plain path's umount indefinitely, piling
 // kubelet retries onto more hung RPCs.
-func cleanupMount(target string, mounter *mount.SafeFormatAndMount) error {
+//
+// The deadline frees this call, not the umount: a child blocked in the
+// kernel ignores the kill and stays, and kubelet retries the RPC forever, so
+// each retry strands one more task. Refusing once the breaker is open keeps
+// the pile bounded; the RPC fails either way.
+func cleanupMount(target string, mounter *mount.SafeFormatAndMount, gate WedgeGate) error {
+	if gate != nil {
+		if err := gate.Err(); err != nil {
+			return fmt.Errorf("unmount %s: %w", target, err)
+		}
+	}
 	if forcer, ok := mounter.Interface.(mount.MounterForceUnmounter); ok {
 		return mount.CleanupMountWithForce(target, forcer, true, nfsUnmountTimeout)
 	}

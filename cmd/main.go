@@ -290,8 +290,10 @@ func agentTopology(mgr manager.Manager, nodeName string, stop context.CancelFunc
 }
 
 // poolBackendsFor builds one backend per pool from this node's flattened
-// MiroirNode spec.
-func poolBackendsFor(nodeName string, entry nodemap.Node) (agent.Pools, error) {
+// MiroirNode spec. run is the shared wedge-tracking executor, so a kernel
+// that strands an lvm or zfs child trips the same node-scoped breaker the
+// DRBD driver reports to.
+func poolBackendsFor(nodeName string, entry nodemap.Node, run backend.Exec) (agent.Pools, error) {
 	pools := agent.Pools{}
 	for name, p := range entry.Pools {
 		be, err := backend.New(p.Backend, backend.Config{
@@ -303,7 +305,7 @@ func poolBackendsFor(nodeName string, entry nodemap.Node) (agent.Pools, error) {
 			ZFSCompression:  p.ZFSCompression,
 			PoolSize:        p.ThinPoolSize,
 			BaseDir:         p.BaseDir,
-		}, backend.RealExec)
+		}, run)
 		if err != nil {
 			return nil, fmt.Errorf("backend for node %s pool %s: %w", nodeName, name, err)
 		}
@@ -599,6 +601,11 @@ func main() {
 			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in agent mode")
 			os.Exit(1)
 		}
+		// One breaker for the whole agent: the DRBD driver, the pool
+		// backends and the node service all spawn into the same kernel
+		// storage path, so the jam is counted once across all of them.
+		storageWedge := backend.NewWedge(backend.DefaultWedgeLimit)
+		runHost := (&backend.Runner{Wedge: storageWedge}).Run
 		// The DaemonSet's chart-side scope is every schedulable node, but
 		// only storage nodes run agent-backed backends. A node with no
 		// MiroirNode holds no volumes and runs a client-only node service so
@@ -622,19 +629,20 @@ func main() {
 			// client legs refused nothing touches DRBD on this node, and
 			// the probe's fatal below-floor exit would crash-loop a
 			// consumer-only node over a check that protects nothing here.
-			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
+			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost}
 			node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, clientDRBD)
 			node.ClientOnly = true
+			node.Wedge = storageWedge
 			serveCSI(mgr, csiSocket, identity, nil, node)
 			break
 		}
-		pools, err := poolBackendsFor(nodeName, flat)
+		pools, err := poolBackendsFor(nodeName, flat, runHost)
 		if err != nil {
 			setupLog.Error(err, "unable to build the node's backends")
 			os.Exit(1)
 		}
 		setupAgentPools(pools)
-		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
+		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost}
 		// The binary is always in the image; what a local-only node lacks
 		// is the kernel module. Probe once (the modprobe inside also loads
 		// it proactively on nodes that ship it) and run without the DRBD
@@ -757,7 +765,9 @@ func main() {
 		// Scheduled online verify — the only cross-leg integrity check. Needs
 		// the DRBD kernel side, so it is gated on drbdReady like the sweeps.
 		addVerifyScheduler(mgr, nodeName, drbdReady, verifySchedule, drbdDriver)
+		addWedgeSampler(mgr, storageWedge)
 		node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, drbdDriver)
+		node.Wedge = storageWedge
 		serveCSI(mgr, csiSocket, identity, nil, node)
 
 	default:
@@ -991,6 +1001,45 @@ func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, f
 		}
 	})); err != nil {
 		setupLog.Error(err, "unable to add periodic barrier sweep")
+		os.Exit(1)
+	}
+}
+
+// wedgeSampleInterval paces the node-scoped breaker's gauge: short enough to
+// show the jam building rather than only its aftermath, and cheap at one
+// /proc/<pid>/stat read per outstanding child.
+const wedgeSampleInterval = 30 * time.Second
+
+// addWedgeSampler publishes the node-scoped breaker's state on a timer and
+// logs its transitions. Sampled rather than event-driven because the count
+// self-heals: a gauge written only when a child strands would page forever
+// after the node recovered.
+func addWedgeSampler(mgr manager.Manager, w *backend.Wedge) {
+	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		ticker := time.NewTicker(wedgeSampleInterval)
+		defer ticker.Stop()
+		open := false
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+				agent.RecordNodeWedge(w)
+				// Edges only: a jammed node stays jammed until it reboots,
+				// and repeating the line every 30s buries it.
+				if tripped := w.Tripped(); tripped != open {
+					open = tripped
+					if tripped {
+						setupLog.Error(w.Err(), "node storage stack wedged; refusing further storage commands until this node reboots",
+							"stranded", w.Stranded())
+					} else {
+						setupLog.Info("node storage stack recovered; resuming storage commands")
+					}
+				}
+			}
+		}
+	})); err != nil {
+		setupLog.Error(err, "unable to add the wedge sampler")
 		os.Exit(1)
 	}
 }

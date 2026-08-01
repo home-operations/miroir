@@ -1,0 +1,170 @@
+/*
+Copyright 2026.
+
+Licensed under the GNU Affero General Public License, Version 3 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.gnu.org/licenses/agpl-3.0.html
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package backend
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+)
+
+// ErrNodeWedged marks a command refused because this node's storage stack
+// already swallowed enough children to stop making progress. Unlike
+// drbd.ErrWedged, which names one resource the kernel cannot tear down, this
+// is node-scoped: once the DRBD/LVM/filesystem path jams, commands against
+// healthy resources wedge too, so the only safe move is to stop spawning.
+// Nothing but a node reboot clears it.
+var ErrNodeWedged = errors.New("node storage stack wedged: node reboot required")
+
+// DefaultWedgeLimit is how many concurrently-stranded children trip the
+// breaker. Above one because the per-resource guards already park a single
+// wedged volume, and tripping the node on it would turn one bad volume into
+// a node-wide outage; by the third the jam is no longer resource-local.
+const DefaultWedgeLimit = 3
+
+// procState reads a task's scheduler state from /proc. The comm field can
+// contain spaces and parentheses, so the state always follows the final ')'.
+// Returns 0 when the task is gone.
+func procState(pid int) byte {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0
+	}
+	i := strings.LastIndex(string(data), ")")
+	if i < 0 {
+		return 0
+	}
+	fields := strings.Fields(string(data)[i+1:])
+	if len(fields) == 0 {
+		return 0
+	}
+	return fields[0][0]
+}
+
+// stranded reports whether pid is in uninterruptible sleep, which is what
+// separates a swallowed child from a merely slow one: a slow child dies on
+// the SIGKILL its deadline sends, a blocked one ignores it and keeps its
+// locks. Only 'D' qualifies — a killed child reads 'Z' until Wait collects
+// it.
+func stranded(pid int) bool { return procState(pid) == 'D' }
+
+// Wedge is a node-scoped circuit breaker over host commands. It counts
+// children killed at their deadline whose task never died, and once enough
+// are outstanding it refuses to spawn more.
+//
+// The per-resource guards cannot see this: drbd.Down already refuses a
+// second down against a resource wearing the wedge signature (issue #195),
+// but that signature belongs to one resource, and a jammed kernel storage
+// path strands commands against healthy resources too. Each retry then adds
+// a task, so the node degrades instead of failing, until even kubelet's own
+// unmounts cannot complete and a graceful reboot is no longer possible.
+//
+// The count is re-verified from /proc on every read, so a child that drains
+// retires itself and the breaker resets without an agent restart.
+type Wedge struct {
+	// Limit is how many outstanding stranded children trip the breaker;
+	// zero disables tripping (the count is still tracked and reported).
+	Limit int
+
+	// isStranded is injectable for tests; nil means the real /proc check.
+	isStranded func(pid int) bool
+
+	mu       sync.Mutex
+	children map[int]string // pid -> command line that stranded it
+}
+
+// NewWedge returns a breaker tripping at limit outstanding stranded children.
+func NewWedge(limit int) *Wedge {
+	return &Wedge{Limit: limit, children: map[int]string{}}
+}
+
+func (w *Wedge) alive(pid int) bool {
+	if w.isStranded != nil {
+		return w.isStranded(pid)
+	}
+	return stranded(pid)
+}
+
+// record notes that cmd's child stranded. Safe to call for a pid already
+// recorded: the map keys on pid, so a retry cannot inflate the count.
+func (w *Wedge) record(pid int, cmd string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.children == nil {
+		w.children = map[int]string{}
+	}
+	w.children[pid] = cmd
+}
+
+// Stranded reports how many children are still stuck, pruning any that have
+// since drained. Pruning on read is what makes the breaker reset itself.
+func (w *Wedge) Stranded() int {
+	if w == nil {
+		return 0
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for pid := range w.children {
+		if !w.alive(pid) {
+			delete(w.children, pid)
+		}
+	}
+	return len(w.children)
+}
+
+// Tripped reports whether the breaker is open, i.e. new host commands must
+// be refused with ErrNodeWedged.
+func (w *Wedge) Tripped() bool {
+	if w == nil || w.Limit <= 0 {
+		return false
+	}
+	return w.Stranded() >= w.Limit
+}
+
+// Commands lists the stuck commands, for the Event and status message that
+// tell an operator which node to reboot and why. Sorted for a stable
+// message: an Event that reorders every cycle reads as new information.
+func (w *Wedge) Commands() []string {
+	if w == nil {
+		return nil
+	}
+	w.Stranded() // prune first, so the list matches the count
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]string, 0, len(w.children))
+	for _, cmd := range w.children {
+		out = append(out, cmd)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Err returns an ErrNodeWedged naming the stuck commands, or nil when the
+// breaker is closed.
+func (w *Wedge) Err() error {
+	if !w.Tripped() {
+		return nil
+	}
+	return fmt.Errorf("%w (stuck: %s)", ErrNodeWedged, strings.Join(w.Commands(), "; "))
+}

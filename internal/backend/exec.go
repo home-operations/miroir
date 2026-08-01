@@ -38,9 +38,31 @@ type Exec func(ctx context.Context, name string, args ...string) (string, error)
 // every other volume on the node.
 const execTimeout = 2 * time.Minute
 
-// RealExec executes commands on the host. The agent container runs with the
-// host namespaces, so lvm/zfs act on the node's devices directly.
+// RealExec executes commands on the host without wedge tracking. The agent
+// container runs with the host namespaces, so lvm/zfs act on the node's
+// devices directly. Callers with a breaker to share use Runner instead.
 func RealExec(ctx context.Context, name string, args ...string) (string, error) {
+	return (&Runner{}).Run(ctx, name, args...)
+}
+
+// Runner executes host commands, reporting every child the kernel refuses to
+// let die to a node-scoped Wedge. Its Run method has the Exec signature, so
+// it drops in wherever RealExec is injected.
+type Runner struct {
+	// Wedge both gates and records: commands are refused once it has
+	// tripped, and stranded children are reported to it. Nil disables both.
+	Wedge *Wedge
+}
+
+// Run executes name with args and returns its combined output. Once the
+// breaker is open it refuses to spawn: the new child would strand too, and
+// each one holds more locks and pushes the node further from a graceful
+// reboot.
+func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, error) {
+	line := name + " " + strings.Join(args, " ")
+	if err := r.Wedge.Err(); err != nil {
+		return "", fmt.Errorf("%s: %w", strings.TrimSpace(line), err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -54,6 +76,16 @@ func RealExec(ctx context.Context, name string, args ...string) (string, error) 
 	// text ("in use", "Failed to find", …), which the tools localise.
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.CombinedOutput()
+	// Only a command we killed can have stranded a child, and a killable one
+	// is already gone by here. A child that did die frees its pid, so this
+	// read can in principle land on an unrelated task now holding it in D;
+	// that misread cannot latch, since Stranded re-checks every pid and
+	// tripping needs Limit outstanding at once.
+	if err != nil && ctx.Err() != nil && cmd.Process != nil {
+		if pid := cmd.Process.Pid; stranded(pid) {
+			r.Wedge.record(pid, strings.TrimSpace(line))
+		}
+	}
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w: %s",
 			name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/backend"
 	"github.com/home-operations/miroir/internal/constants"
 )
 
@@ -180,6 +181,17 @@ var (
 		Name: "miroir_node_drbd_kernel_info",
 		Help: "Always 1, labelled with the DRBD kernel module version probed at agent startup (version) and the agent image's drbd-utils version (utils_version); absent on nodes without the module. Query it for fleet version skew before a kernel floor raise.",
 	}, []string{"version", "utils_version"})
+	// Node-scoped, unlike miroir_volume_wedged: counts swallowed children
+	// across every volume and subsystem, which is what separates one bad
+	// volume from a node that has stopped making progress.
+	metricStrandedChildren = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "miroir_node_stranded_children",
+		Help: "Host commands miroir killed at their deadline whose task is still in uninterruptible sleep, so the kernel will neither run nor reap them. Sustained non-zero means the node's storage stack is jamming; once it reaches the breaker limit miroir stops spawning storage commands and only a node reboot clears it.",
+	})
+	metricNodeWedged = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "miroir_node_wedged",
+		Help: "1 while the node-scoped breaker is open: enough host commands have stranded in the kernel that miroir refuses to spawn more, because each further attempt strands another task and pushes the node further from a graceful reboot. Reboot the node to clear it.",
+	})
 )
 
 func init() {
@@ -188,8 +200,20 @@ func init() {
 		metricResyncRatio, metricQuorum, metricDiskFailed, metricOutOfSyncBytes,
 		metricVerifyTimestamp, metricVerifyOutOfSyncBytes, metricPrimary, metricDisklessPrimary,
 		metricWedged, metricPoolCapacity, metricPoolAllocated, metricPoolMetaUsedRatio,
-		metricDRBDKernelInfo,
+		metricDRBDKernelInfo, metricStrandedChildren, metricNodeWedged,
 	)
+}
+
+// RecordNodeWedge publishes the node-scoped breaker's state. Called on a
+// timer, not at strand time: the count self-heals as children drain, so a
+// gauge only set on the way up would page forever after recovery.
+func RecordNodeWedge(w *backend.Wedge) {
+	stranded := w.Stranded()
+	metricStrandedChildren.Set(float64(stranded))
+	metricNodeWedged.Set(0)
+	if w.Tripped() {
+		metricNodeWedged.Set(1)
+	}
 }
 
 func recordVolumeMetrics(vol *miroirv1alpha1.MiroirVolume, pool string, st miroirReplicaView) {

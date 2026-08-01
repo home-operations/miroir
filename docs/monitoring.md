@@ -56,6 +56,30 @@ agent image's drbd-utils version (`utils_version` label), from
 client-only nodes too (which have no `MiroirNode` status). Query it
 for fleet version skew before a release raises the kernel floor.
 
+Two further node-scoped gauges cover the failure mode that
+`miroir_volume_wedged` only ever sees one volume of at a time:
+
+| Metric                          | Meaning                                                                                                                           |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `miroir_node_stranded_children` | host commands killed at their deadline whose task is still in uninterruptible sleep, so the kernel will neither run nor reap them |
+| `miroir_node_wedged`            | 1 while the node-scoped breaker is open: miroir has stopped spawning storage commands because each new one only strands too       |
+
+A sustained non-zero `miroir_node_stranded_children` is the earliest
+signal that a node's storage stack is jamming: it climbs while the
+per-volume gauges still look healthy, because the stuck tasks hold
+kernel locks that commands against healthy volumes then block on.
+At the breaker's limit `miroir_node_wedged` goes to 1 and the agent
+fails further `lvm`/`zfs`/`drbdsetup` calls and unmounts on that
+node with `node storage stack wedged: node reboot required`.
+
+Refusing is not a recovery — nothing in userspace can reap a task
+the kernel holds. It bounds the pile so the node stays drainable:
+unbounded, every retry (including kubelet's `NodeUnstageVolume`
+retries) adds a stuck task until kubelet's own shutdown cannot
+complete and the node needs an out-of-band power cycle. Alert on
+`miroir_node_wedged == 1` and reboot; the gauge clears by itself if
+the stuck commands drain.
+
 For RWX volumes the **controller** exports `miroir_export_ready`: 1
 while the volume's NFS gateway is serving (gateway pod available,
 export address published). This is the signal the per-volume gauges

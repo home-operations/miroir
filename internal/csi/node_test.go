@@ -18,8 +18,10 @@ package csi
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/backend"
 	"github.com/home-operations/miroir/internal/drbd"
 	"github.com/home-operations/miroir/internal/stage"
 )
@@ -610,5 +613,68 @@ func TestNodeUnstageProceedsWhenThawFails(t *testing.T) {
 		StagingTargetPath: target,
 	}); err != nil {
 		t.Fatalf("a failed thaw must not fail unstage: %v", err)
+	}
+}
+
+// fakeGate is an already-open breaker, so a test needs no real D-state child.
+type fakeGate struct{ err error }
+
+func (g fakeGate) Err() error { return g.err }
+
+func wedgedBreaker() WedgeGate {
+	return fakeGate{err: fmt.Errorf("umount /var/lib/kubelet/globalmount: %w", backend.ErrNodeWedged)}
+}
+
+// On a jammed storage stack every umount strands unreapably and kubelet
+// retries the RPC forever, so each retry would add another stuck task.
+// Unstage must refuse instead of spawning — the RPC errors either way.
+func TestNodeUnstageRefusesWhenNodeWedged(t *testing.T) {
+	target := t.TempDir()
+	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
+	n.Mounter = mount.NewSafeFormatAndMount(
+		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
+	n.Wedge = wedgedBreaker()
+
+	_, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: target,
+	})
+	if err == nil {
+		t.Fatalf("unstage must fail on a wedged node instead of spawning another umount")
+	}
+	if !strings.Contains(err.Error(), backend.ErrNodeWedged.Error()) {
+		t.Fatalf("unstage error = %v, want it to name the node wedge so the operator knows to reboot", err)
+	}
+}
+
+func TestNodeUnpublishRefusesWhenNodeWedged(t *testing.T) {
+	target := t.TempDir()
+	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
+	n.Mounter = mount.NewSafeFormatAndMount(
+		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
+	n.Wedge = wedgedBreaker()
+
+	_, err := n.NodeUnpublishVolume(t.Context(), &csi.NodeUnpublishVolumeRequest{
+		VolumeId:   volPvc1,
+		TargetPath: target,
+	})
+	if err == nil {
+		t.Fatalf("unpublish must fail on a wedged node instead of spawning another umount")
+	}
+}
+
+// A closed breaker must not change unmount behaviour at all.
+func TestNodeUnstageUnaffectedByClosedBreaker(t *testing.T) {
+	target := t.TempDir()
+	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
+	n.Mounter = mount.NewSafeFormatAndMount(
+		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
+	n.Wedge = fakeGate{}
+
+	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: target,
+	}); err != nil {
+		t.Fatalf("a closed breaker must not affect unstage: %v", err)
 	}
 }
