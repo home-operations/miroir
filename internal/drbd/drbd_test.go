@@ -1651,6 +1651,38 @@ func TestStatusStuckResyncPeers(t *testing.T) {
 	}
 }
 
+// StaleBitmapPeers flags a one-sided bitmap toward a healthy Primary peer
+// (issue #389): Connected + Established + peer-disk UpToDate + out-of-sync,
+// peer role Primary. A Secondary peer (ambiguous resync direction), a
+// Consistent peer-disk (that is the stuck-resync signature), and a clean
+// peer must all stay unflagged.
+func TestStatusStaleBitmapPeers(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"UpToDate","quorum":true}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connected","peer-role":"Primary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":5242880}]},
+				{"peer-node-id":2,"connection-state":"Connected","peer-role":"Secondary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":4096}]},
+				{"peer-node-id":3,"connection-state":"Connected","peer-role":"Primary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"Consistent","out-of-sync":4096}]},
+				{"peer-node-id":4,"connection-state":"Connected","peer-role":"Primary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.StaleBitmapPeers) != 1 || !s.StaleBitmapPeers[1] {
+		t.Fatalf("want only peer 1 flagged stale, got %v", s.StaleBitmapPeers)
+	}
+	if len(s.StuckResyncPeers) != 1 || !s.StuckResyncPeers[3] {
+		t.Fatalf("want only peer 3 flagged stuck, got %v", s.StuckResyncPeers)
+	}
+}
+
 // A healthy volume reports no stuck peers — nil, so fingerprint comparison
 // via maps.Equal treats it the same as an empty map.
 func TestStatusStuckResyncPeersNilWhenHealthy(t *testing.T) {
@@ -1667,6 +1699,9 @@ func TestStatusStuckResyncPeersNilWhenHealthy(t *testing.T) {
 	}
 	if s.StuckResyncPeers != nil {
 		t.Fatalf("want nil StuckResyncPeers on a healthy volume, got %v", s.StuckResyncPeers)
+	}
+	if s.StaleBitmapPeers != nil {
+		t.Fatalf("want nil StaleBitmapPeers on a healthy volume, got %v", s.StaleBitmapPeers)
 	}
 }
 

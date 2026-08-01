@@ -443,6 +443,7 @@ func statusEqual(a, b drbd.Status) bool {
 		a.Quorum == b.Quorum &&
 		a.OutOfSyncKiB == b.OutOfSyncKiB &&
 		maps.Equal(a.StuckResyncPeers, b.StuckResyncPeers) &&
+		maps.Equal(a.StaleBitmapPeers, b.StaleBitmapPeers) &&
 		maps.Equal(a.PeerConnected, b.PeerConnected) &&
 		// A peer disk-state flip (DUnknown → Inconsistent at birth) can be
 		// the only change in a pass — without it the winner's fingerprint
@@ -839,23 +840,32 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 	return false
 }
 
-// recoverStuckResync heals a resync DRBD armed but will never start (issue
-// #390): a rapid promote/demote/promote of a diskless primary mints two
-// current UUIDs back to back, a diskful leg handshakes against a
-// one-generation-stale view of its peer and sets a full bitmap slot
-// (WFBitMapS, peer-disk clamped Consistent), and a second after-unstable
-// pass — equal UUIDs by then — collapses the pending exchange back to
-// Established without undoing it. The kernel never re-examines the bits
-// while the connection stays up (its missed-end-of-resync rescue only runs
-// at connect), so the volume sits with degraded redundancy accounting until
-// the connection cycles.
+// recoverStuckResync heals the two out-of-sync bitmaps DRBD leaves behind
+// with nothing to drain them:
 //
-// Recovery cycles exactly the stuck peer connections, re-running their
-// handshakes. Safe on any volume, held data or not: identical data (the
-// race above) reconnects with zero movement — equal current UUIDs classify
-// the stale bitmap as a missed resync end and discard it — and genuinely
-// divergent data starts the resync the bits called for. No Activated gate,
-// unlike split-brain recovery, because nothing is ever discarded.
+//   - A resync armed but never started (issue #390): a rapid
+//     promote/demote/promote of a diskless primary mints two current UUIDs
+//     back to back, a diskful leg handshakes against a one-generation-stale
+//     view of its peer and sets a full bitmap slot (WFBitMapS, peer-disk
+//     clamped Consistent), and a second after-unstable pass — equal UUIDs
+//     by then — collapses the pending exchange back to Established without
+//     undoing it (StuckResyncPeers).
+//   - Bits stranded by a bitmap clear the kernel refused mid peer-teardown
+//     ("bitmap locked", issue #389), everything otherwise healthy
+//     (StaleBitmapPeers, behind staleBitmapActionable's gates — the same
+//     kernel shape is a verify finding, which stays manual).
+//
+// Neither drains in place: the kernel only reconciles a dirty bitmap on a
+// connection transition (its missed-end-of-resync rescue runs at connect),
+// so the volume sits with degraded redundancy accounting until the
+// connection cycles.
+//
+// Recovery cycles exactly the affected peer connections, re-running their
+// handshakes. Safe on any volume, held data or not: identical data
+// reconnects with zero movement — the re-handshake classifies the stale
+// bitmap as a missed resync end and discards it — and genuinely divergent
+// data starts the resync the bits called for. No Activated gate, unlike
+// split-brain recovery, because nothing is ever discarded.
 //
 // The signature must persist through a full poll interval before recovery
 // runs: a status snapshot can catch a live handshake between setting the
@@ -865,9 +875,18 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 // the stuck state is otherwise steady, and a stored fingerprint would park
 // the confirmation clock unread.
 func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
+	peers := st.StuckResyncPeers
+	if r.staleBitmapActionable(vol, st) {
+		if peers == nil {
+			peers = st.StaleBitmapPeers
+		} else {
+			peers = maps.Clone(peers)
+			maps.Copy(peers, st.StaleBitmapPeers)
+		}
+	}
 	// A diskless leg holds no bitmap, so it can never be the stranded
 	// side; whatever it sees is a diskful pair's business to resolve.
-	if localDiskless || len(st.StuckResyncPeers) == 0 {
+	if localDiskless || len(peers) == 0 {
 		r.recoveryMu.Lock()
 		delete(r.stuckSince, vol.Name)
 		r.recoveryMu.Unlock()
@@ -891,7 +910,7 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 	r.recoveryMu.Unlock()
 
 	log := ctrl.LoggerFrom(ctx)
-	for peerID := range st.StuckResyncPeers {
+	for peerID := range peers {
 		log.Info("cycling peer connection to re-run the sync handshake (out-of-sync bitmap, no resync starting)",
 			"volume", vol.Name, "peerNodeID", peerID, "outOfSyncKiB", st.OutOfSyncKiB)
 		if err := r.DRBD.CyclePeerConnection(ctx, vol.Name, peerID); err != nil {
@@ -900,7 +919,32 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 		}
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "StuckResyncRecovered", "CycleConnection",
-				"DRBD set an out-of-sync bitmap toward peer node %d without starting a resync; cycled the connection so the handshake resolves it", peerID)
+				"DRBD carried an out-of-sync bitmap toward peer node %d with no resync running; cycled the connection so the handshake resolves it", peerID)
+		}
+	}
+	return true
+}
+
+// staleBitmapActionable reports whether the stale-bitmap candidates in
+// StaleBitmapPeers are safe to cycle (issue #389). Their kernel shape is
+// indistinguishable from a verify finding, so everything else must read
+// healthy — a Secondary leg with an UpToDate disk and quorum, every
+// diskful peer connected and UpToDate, no resync, verify, or split-brain
+// in flight — and the coordinator's last recorded verify must not have
+// findings outstanding: auto-resyncing a real finding would destroy the
+// evidence of which leg was wrong, so that case stays manual (the record
+// clears once a later verify reports 0 after the operator's own cycle).
+func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
+	if len(st.StaleBitmapPeers) == 0 || st.Primary || st.DiskState != drbd.DiskUpToDate ||
+		!st.Quorum || st.Resyncing || st.SplitBrain {
+		return false
+	}
+	if !diskfulPeersConnected(st, vol, r.NodeName) || !diskfulPeersUpToDate(st, vol, r.NodeName) {
+		return false
+	}
+	if coord := vol.Spec.FirstDiskfulReplica(); coord != nil {
+		if v := vol.Status.PerNode[coord.Node].LastVerifyOutOfSyncBytes; v != nil && *v > 0 {
+			return false
 		}
 	}
 	return true

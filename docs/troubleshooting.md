@@ -28,6 +28,25 @@
   `7100`) to move miroir's range; existing volumes keep their ports.
   Full forensics in
   [#148](https://github.com/home-operations/miroir/issues/148).
+- **`MiroirVolumeOutOfSync` firing while everything reads healthy**:
+  `out-of-sync` bits toward a peer with no resync draining them. With the
+  connection `Connected` and both disks `UpToDate`, this is one of two
+  things. A _stale bitmap_ — bits stranded by a refused clear during peer
+  teardown, or a resync DRBD armed and abandoned after a rapid
+  promote/demote — is detected and self-healed: the agent cycles the
+  affected peer connection within a couple of poll cycles and emits a
+  `StuckResyncRecovered` event; the re-run handshake discards the bitmap
+  (identical data moves nothing) or starts the resync it called for. A
+  _`drbdadm verify` finding_ (`lastVerifyOutOfSyncBytes` non-zero in the
+  coordinator's status slot, `VerifyOutOfSync` event) is a
+  genuine data difference and is deliberately left manual — auto-resyncing
+  would destroy the evidence of which leg was wrong. Inspect first, then
+  find the affected peer with
+  `drbdsetup status <res> --verbose --statistics` on the alerting node
+  (the connection whose `out-of-sync` is non-zero) and cycle it:
+  `drbdsetup disconnect <res> <peer-node-id>` followed by
+  `drbdsetup connect <res> <peer-node-id>` resyncs the flagged blocks
+  from the UpToDate side.
 - **Resync activity on every kopiur backup**: kopiur's staged PVC
   inherits the source PVC's StorageClass, so a replicated volume gets
   a replicated (and therefore syncing) staging volume once per backup
