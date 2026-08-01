@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -1620,6 +1621,81 @@ func TestStatusQuorumLost(t *testing.T) {
 	if s.Resyncing {
 		t.Fatalf("Off replication must not read as resync: %+v", s)
 	}
+}
+
+// StuckResyncPeers flags only the stranded-bitmap signature (issue #390):
+// Connected + Established + peer-disk Consistent + out-of-sync. A running
+// resync (replication not Established), verify findings (peer-disk stays
+// UpToDate), and a clean Consistent peer must all stay unflagged.
+func TestStatusStuckResyncPeers(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"UpToDate","quorum":true}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"Consistent","out-of-sync":5171836}]},
+				{"peer-node-id":2,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Consistent","percent-in-sync":50,"out-of-sync":1024}]},
+				{"peer-node-id":3,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":12}]},
+				{"peer-node-id":4,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"Consistent","out-of-sync":0}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.StuckResyncPeers) != 1 || !s.StuckResyncPeers[1] {
+		t.Fatalf("want only peer 1 flagged stuck, got %v", s.StuckResyncPeers)
+	}
+}
+
+// A healthy volume reports no stuck peers — nil, so fingerprint comparison
+// via maps.Equal treats it the same as an empty map.
+func TestStatusStuckResyncPeersNilWhenHealthy(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
+			"devices":[{"disk-state":"UpToDate","quorum":true}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate"}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.StuckResyncPeers != nil {
+		t.Fatalf("want nil StuckResyncPeers on a healthy volume, got %v", s.StuckResyncPeers)
+	}
+}
+
+// CyclePeerConnection disconnects then reconnects exactly the given peer,
+// by node id, via drbdsetup (no config parse).
+func TestCyclePeerConnection(t *testing.T) {
+	fe := &fakeExec{}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := d.CyclePeerConnection(t.Context(), volPvc1, 1); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"drbdsetup disconnect " + volPvc1 + " 1",
+		"drbdsetup connect " + volPvc1 + " 1",
+	}
+	if !slices.Equal(fe.calls, want) {
+		t.Fatalf("want %v, got %v", want, fe.calls)
+	}
+}
+
+// A failed disconnect must not be followed by a connect — the cycle is
+// retried whole on a later pass.
+func TestCyclePeerConnectionDisconnectFails(t *testing.T) {
+	fe := &fakeExec{errOn: map[string]error{"disconnect": errors.New("exit status 11")}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	if err := d.CyclePeerConnection(t.Context(), volPvc1, 1); err == nil {
+		t.Fatal("want disconnect error")
+	}
+	fe.notCalledWith(t, "drbdsetup connect")
 }
 
 // A fully in-sync volume reports ResyncPercent 100, and connection-level

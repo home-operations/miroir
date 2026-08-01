@@ -3450,6 +3450,127 @@ func TestFastPathMissesOnPeerReportedSplitBrain(t *testing.T) {
 	fe.calledWith(t, "drbdadm connect --discard-my-data pvc-1")
 }
 
+// --- stuck resync (issue #390) --------------------------------------------
+
+const (
+	// stuckStatusJSON is the stranded-bitmap signature: out-of-sync bits
+	// toward a connected peer whose replication sits Established and whose
+	// disk is parked Consistent — a resync DRBD armed and abandoned.
+	stuckStatusJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"replication-state":"Established","peer-disk-state":"Consistent","out-of-sync":5171836}]}]}]`
+	healthyStatusJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected",
+			"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate"}]}]}]`
+)
+
+// stuckResyncSetup builds a settled, Activated 2-replica DRBD volume on
+// node-a (node id 0) whose kernel wears the stranded-bitmap signature
+// toward node-b (node id 1). Activated on purpose: unlike split-brain
+// recovery, the connection cycle discards nothing, so held data is no gate.
+func stuckResyncSetup(t *testing.T) (*VolumeReconciler, *fakeDRBDExec) {
+	t.Helper()
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.QuorumPolicy = miroirv1alpha1.QuorumLastManStanding
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas[0].NodeID = 0
+	v.Spec.Replicas[0].Address = addrA
+	v.Spec.Replicas[1].NodeID = 1
+	v.Spec.Replicas[1].Address = addrB
+	v.Status.Activated = true
+	// Both legs settled at spec size so the pass is steady-state and the
+	// fingerprint gate hinges on the stuck signature alone.
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, SizeBytes: 1 << 30},
+		nodeB: {DeviceCreated: true, SizeBytes: 1 << 30},
+	}
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte(
+		"resource \"pvc-1\" {\n    on \"node-a\" {\n        device minor 1000;\n    }\n}\n",
+	), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	fe := &fakeDRBDExec{statusJSON: stuckStatusJSON}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+	}
+	return r, fe
+}
+
+// backdateStuck rewinds the confirmation clock so the next pass treats the
+// signature as having persisted through a full poll interval.
+func backdateStuck(t *testing.T, r *VolumeReconciler) {
+	t.Helper()
+	r.recoveryMu.Lock()
+	defer r.recoveryMu.Unlock()
+	if _, ok := r.stuckSince[volPvc1]; !ok {
+		t.Fatal("confirmation clock not armed")
+	}
+	r.stuckSince[volPvc1] = time.Now().Add(-drbdPollInterval - time.Second)
+}
+
+// The first sighting only arms the confirmation clock — a status snapshot
+// can catch a live handshake mid-transition. Once the signature has
+// persisted through a poll interval, recovery cycles exactly the stuck
+// peer connection, held data notwithstanding (the volume is Activated).
+func TestReconcileStuckResyncCyclesAfterConfirmation(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup connect pvc-1 1")
+}
+
+// Within the confirmation window nothing is cycled, however many passes run
+// (DRBD events can requeue the volume several times per interval).
+func TestReconcileStuckResyncDebounced(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	reconcile(t, r, volPvc1)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+}
+
+// The stuck signature keeps the volume out of the fast path (its kernel
+// state is otherwise steady), and a healthy pass parks it again and resets
+// the confirmation clock — a signature that clears and returns must
+// re-confirm from scratch.
+func TestReconcileStuckResyncFingerprintLifecycle(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	reconcile(t, r, volPvc1)
+	r.realizedMu.Lock()
+	_, parked := r.realized[volPvc1]
+	r.realizedMu.Unlock()
+	if parked {
+		t.Fatal("stuck volume must not park in the fast path")
+	}
+
+	fe.statusJSON = healthyStatusJSON
+	reconcile(t, r, volPvc1)
+	r.realizedMu.Lock()
+	_, parked = r.realized[volPvc1]
+	r.realizedMu.Unlock()
+	if !parked {
+		t.Fatal("healthy volume must park in the fast path")
+	}
+	r.recoveryMu.Lock()
+	_, armed := r.stuckSince[volPvc1]
+	r.recoveryMu.Unlock()
+	if armed {
+		t.Fatal("healthy pass must reset the confirmation clock")
+	}
+}
+
 // --- birth generation ---------------------------------------------------
 
 const (

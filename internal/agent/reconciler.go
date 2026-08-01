@@ -89,6 +89,11 @@ type VolumeReconciler struct {
 	// several times per second. See recoverSplitBrain.
 	recoveryMu   sync.Mutex
 	lastRecovery map[string]time.Time
+	// stuckSince (same lock) stamps when a stranded-bitmap signature was
+	// first seen per volume; recovery waits out one poll interval so a
+	// status snapshot mid real handshake is never acted on. See
+	// recoverStuckResync.
+	stuckSince map[string]time.Time
 
 	// busyFails counts consecutive ErrBusy teardown outcomes per volume.
 	// Past busyFailLimit the loop escalates — Warning Event, status
@@ -318,6 +323,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 	connected := diskfulPeersConnected(st, vol, r.NodeName)
 	splitActive := r.handleSplitBrain(ctx, vol, resource, st, connected)
+	stuckActive := r.recoverStuckResync(ctx, vol, st, localDiskless)
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
 		recordVolumeMetrics(vol, poolName, replicaView(st, vol, r.NodeName, localDiskless))
@@ -347,15 +353,21 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	// Cache only the settled state: a mid-grow pass (short requeue, size
-	// withheld) must keep taking the full pipeline until the grow lands, and
-	// a split-brain volume — locally seen or peer-reported — must re-enter it
-	// every poll so recoverSplitBrain keeps retrying until the connections
-	// re-form.
-	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !splitActive {
+	r.storeIfSettled(vol, st, requeue, reportSize, splitActive || stuckActive)
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// storeIfSettled caches the pass fingerprint only for a settled state: a
+// mid-grow pass (short requeue, size withheld) must keep taking the full
+// pipeline until the grow lands, and a volume under active recovery must
+// re-enter it every poll — a split-brain (locally seen or peer-reported) so
+// recoverSplitBrain keeps retrying until the connections re-form, and a
+// stranded bitmap (whose kernel state is otherwise steady) so
+// recoverStuckResync's confirmation clock is re-read.
+func (r *VolumeReconciler) storeIfSettled(vol *miroirv1alpha1.MiroirVolume, st drbd.Status, requeue time.Duration, reportSize int64, recovering bool) {
+	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !recovering {
 		r.storeRealized(vol.Generation, vol.Name, st, true)
 	}
-	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 
 // fastPath reports whether this reconcile can settle without the realize
@@ -430,6 +442,7 @@ func statusEqual(a, b drbd.Status) bool {
 		a.ResyncPercent == b.ResyncPercent &&
 		a.Quorum == b.Quorum &&
 		a.OutOfSyncKiB == b.OutOfSyncKiB &&
+		maps.Equal(a.StuckResyncPeers, b.StuckResyncPeers) &&
 		maps.Equal(a.PeerConnected, b.PeerConnected) &&
 		// A peer disk-state flip (DUnknown → Inconsistent at birth) can be
 		// the only change in a pass — without it the winner's fingerprint
@@ -470,12 +483,14 @@ func (r *VolumeReconciler) volumeGone(name string, err error) error {
 	return nil
 }
 
-// dropRecovery forgets a torn-down volume's split-brain debounce stamp so a
-// later volume under the same name starts with a clean slate.
+// dropRecovery forgets a torn-down volume's split-brain debounce and
+// stuck-resync confirmation stamps so a later volume under the same name
+// starts with a clean slate.
 func (r *VolumeReconciler) dropRecovery(name string) {
 	r.recoveryMu.Lock()
 	defer r.recoveryMu.Unlock()
 	delete(r.lastRecovery, name)
+	delete(r.stuckSince, name)
 }
 
 // reconcileDeletion tears down the local leg of a deleted volume. Only
@@ -822,6 +837,73 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 		}
 	}
 	return false
+}
+
+// recoverStuckResync heals a resync DRBD armed but will never start (issue
+// #390): a rapid promote/demote/promote of a diskless primary mints two
+// current UUIDs back to back, a diskful leg handshakes against a
+// one-generation-stale view of its peer and sets a full bitmap slot
+// (WFBitMapS, peer-disk clamped Consistent), and a second after-unstable
+// pass — equal UUIDs by then — collapses the pending exchange back to
+// Established without undoing it. The kernel never re-examines the bits
+// while the connection stays up (its missed-end-of-resync rescue only runs
+// at connect), so the volume sits with degraded redundancy accounting until
+// the connection cycles.
+//
+// Recovery cycles exactly the stuck peer connections, re-running their
+// handshakes. Safe on any volume, held data or not: identical data (the
+// race above) reconnects with zero movement — equal current UUIDs classify
+// the stale bitmap as a missed resync end and discard it — and genuinely
+// divergent data starts the resync the bits called for. No Activated gate,
+// unlike split-brain recovery, because nothing is ever discarded.
+//
+// The signature must persist through a full poll interval before recovery
+// runs: a status snapshot can catch a live handshake between setting the
+// bitmap and starting its resync, and cycling that would abort real work.
+// Each attempt re-arms the window, flooring retries. Returns true while the
+// signature is live so the caller keeps the volume out of the fast path —
+// the stuck state is otherwise steady, and a stored fingerprint would park
+// the confirmation clock unread.
+func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
+	// A diskless leg holds no bitmap, so it can never be the stranded
+	// side; whatever it sees is a diskful pair's business to resolve.
+	if localDiskless || len(st.StuckResyncPeers) == 0 {
+		r.recoveryMu.Lock()
+		delete(r.stuckSince, vol.Name)
+		r.recoveryMu.Unlock()
+		return false
+	}
+	r.recoveryMu.Lock()
+	since, seen := r.stuckSince[vol.Name]
+	if !seen {
+		if r.stuckSince == nil {
+			r.stuckSince = map[string]time.Time{}
+		}
+		r.stuckSince[vol.Name] = time.Now()
+		r.recoveryMu.Unlock()
+		return true
+	}
+	if time.Since(since) < drbdPollInterval {
+		r.recoveryMu.Unlock()
+		return true
+	}
+	r.stuckSince[vol.Name] = time.Now()
+	r.recoveryMu.Unlock()
+
+	log := ctrl.LoggerFrom(ctx)
+	for peerID := range st.StuckResyncPeers {
+		log.Info("cycling peer connection to re-run the sync handshake (out-of-sync bitmap, no resync starting)",
+			"volume", vol.Name, "peerNodeID", peerID, "outOfSyncKiB", st.OutOfSyncKiB)
+		if err := r.DRBD.CyclePeerConnection(ctx, vol.Name, peerID); err != nil {
+			log.Error(err, "stuck-resync connection cycle failed", "volume", vol.Name, "peerNodeID", peerID)
+			continue
+		}
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "StuckResyncRecovered", "CycleConnection",
+				"DRBD set an out-of-sync bitmap toward peer node %d without starting a resync; cycled the connection so the handshake resolves it", peerID)
+		}
+	}
+	return true
 }
 
 // mintBirthUUID creates a fresh volume's birth generation and returns the

@@ -941,6 +941,27 @@ func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
 	return nil
 }
 
+// CyclePeerConnection disconnects and reconnects one peer so DRBD re-runs
+// that connection's sync handshake — the only trigger for the
+// missed-end-of-resync rescue, which is gated on a fresh connect and is
+// what resolves a stranded bitmap (issue #390): equal current UUIDs
+// discard it outright, divergent ones start the resync the bits called
+// for. drbdsetup on both legs: it takes the peer by node id with no
+// config parse, and unlike drbdadm's disconnect it keeps the peer and
+// path objects, so the connect below re-activates them in place. Should
+// the connect still fail, the next pass's adjust reconnects the parked
+// leg.
+func (d *Driver) CyclePeerConnection(ctx context.Context, name string, peerID int32) error {
+	id := strconv.Itoa(int(peerID))
+	if _, err := d.Exec(ctx, "drbdsetup", "disconnect", name, id); err != nil {
+		return fmt.Errorf("disconnect %s peer %s: %w", name, id, err)
+	}
+	if _, err := d.Exec(ctx, "drbdsetup", "connect", name, id); err != nil {
+		return fmt.Errorf("connect %s peer %s: %w", name, id, err)
+	}
+	return nil
+}
+
 // WipeMetadata destroys the DRBD metadata on a backing device so it cannot
 // carry a stale generation identifier into a reuse. The resource must be
 // down first — drbdmeta refuses an attached device. Callers treat it as
@@ -1185,6 +1206,13 @@ const DiskDiskless = "Diskless"
 // means a previous down was killed mid-flight — see ErrWedged.
 const diskDetaching = "Detaching"
 
+// diskConsistent is the peer-disk state of data that is consistent but not
+// yet trusted as current. On a connected peer it is transient — the sync
+// handshake resolves it to UpToDate or Outdated — so a peer parked
+// Consistent over an Established connection is the stranded-bitmap
+// signature (see Status.StuckResyncPeers).
+const diskConsistent = "Consistent"
+
 // connStandAlone is the connection state of a peer DRBD gave up
 // reconnecting to. drbdsetup disconnect refuses it (-9), so a StandAlone
 // entry can linger in status through every teardown attempt.
@@ -1252,6 +1280,16 @@ type Status struct {
 	// drbdsetup reports it) — the data-loss exposure if the healthiest
 	// peer is lost. Grows while a peer is down with no resync running.
 	OutOfSyncKiB int64
+	// StuckResyncPeers holds the DRBD node ids of peers wearing the
+	// stranded-bitmap signature: connection Connected, replication
+	// Established, peer-disk Consistent, out-of-sync above zero. DRBD set
+	// a bitmap slot toward the peer and then abandoned the exchange
+	// without starting the resync (a stale after-unstable handshake,
+	// issue #390); nothing in-kernel re-examines it while the connection
+	// stays up. Only the leg holding the bitmap sees it — the peer still
+	// reads this node as UpToDate — so at most one node acts on it. Nil
+	// when no peer is stuck.
+	StuckResyncPeers map[int32]bool
 }
 
 // drbdsetup status --json shapes (the fields miroir reads).
@@ -1348,6 +1386,18 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 				}
 			}
 			s.OutOfSyncKiB = max(s.OutOfSyncKiB, pd.OutOfSyncKiB)
+			// Out-of-sync bits toward a connected peer with no resync
+			// running and the peer-disk parked Consistent: a bitmap DRBD
+			// armed and abandoned (issue #390). Every condition earns its
+			// keep — verify findings leave the peer-disk UpToDate, and a
+			// live bitmap exchange sits in WFBitMap*, not Established.
+			if c.ConnectionState == connConnected && pd.ReplicationState == replEstablished &&
+				pd.PeerDiskState == diskConsistent && pd.OutOfSyncKiB > 0 {
+				if s.StuckResyncPeers == nil {
+					s.StuckResyncPeers = map[int32]bool{}
+				}
+				s.StuckResyncPeers[c.PeerNodeID] = true
+			}
 		}
 		// Single-volume resources: the first peer-device carries the peer's
 		// disk state.
