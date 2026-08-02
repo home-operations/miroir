@@ -1209,8 +1209,8 @@ const diskDetaching = "Detaching"
 // diskConsistent is the peer-disk state of data that is consistent but not
 // yet trusted as current. On a connected peer it is transient — the sync
 // handshake resolves it to UpToDate or Outdated — so a peer parked
-// Consistent over an Established connection is the stranded-bitmap
-// signature (see Status.StuckResyncPeers).
+// Consistent over an up connection with out-of-sync bits is the
+// stranded-bitmap signature (see Status.StuckResyncPeers).
 const diskConsistent = "Consistent"
 
 // connStandAlone is the connection state of a peer DRBD gave up
@@ -1226,12 +1226,15 @@ const rolePrimary = "Primary"
 
 // Peer-device replication states the status parser distinguishes. Anything
 // other than Established/Off means an active resync or verify; VerifyS/VerifyT
-// narrow that to an online verify.
+// narrow that to an online verify, and WFBitMapS is the source side of a
+// bitmap exchange — normally milliseconds, but parked forever when the peer
+// discarded the exchange (see Status.StuckResyncPeers).
 const (
 	replEstablished = "Established"
 	replOff         = "Off"
 	replVerifyS     = "VerifyS"
 	replVerifyT     = "VerifyT"
+	replWFBitMapS   = "WFBitMapS"
 )
 
 // Status reports this node's view of one resource.
@@ -1282,13 +1285,16 @@ type Status struct {
 	OutOfSyncKiB int64
 	// StuckResyncPeers holds the DRBD node ids of peers wearing the
 	// stranded-bitmap signature: connection Connected, replication
-	// Established, peer-disk Consistent, out-of-sync above zero. DRBD set
-	// a bitmap slot toward the peer and then abandoned the exchange
-	// without starting the resync (a stale after-unstable handshake,
-	// issue #390); nothing in-kernel re-examines it while the connection
-	// stays up. Only the leg holding the bitmap sees it — the peer still
-	// reads this node as UpToDate — so at most one node acts on it. Nil
-	// when no peer is stuck.
+	// Established or WFBitMapS, peer-disk Consistent, out-of-sync above
+	// zero. DRBD set a bitmap slot toward the peer and then the exchange
+	// died without starting the resync (a stale after-unstable handshake,
+	// issue #390): either a second after-unstable pass collapsed it back
+	// to Established (#390's original shape), or that pass never ran and
+	// the leg parked in WFBitMapS waiting for a bitmap reply the peer
+	// already discarded (issue #397). Nothing in-kernel re-examines
+	// either while the connection stays up. Only the leg holding the
+	// bitmap sees it — the peer still reads this node as UpToDate — so at
+	// most one node acts on it. Nil when no peer is stuck.
 	StuckResyncPeers map[int32]bool
 	// StaleBitmapPeers holds the DRBD node ids of Primary peers this leg
 	// carries a one-sided out-of-sync bitmap toward while everything
@@ -1400,10 +1406,18 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 			s.OutOfSyncKiB = max(s.OutOfSyncKiB, pd.OutOfSyncKiB)
 			// Out-of-sync bits toward a connected peer with no resync
 			// running and the peer-disk parked Consistent: a bitmap DRBD
-			// armed and abandoned (issue #390). Every condition earns its
-			// keep — verify findings leave the peer-disk UpToDate, and a
-			// live bitmap exchange sits in WFBitMap*, not Established.
-			if c.ConnectionState == connConnected && pd.ReplicationState == replEstablished &&
+			// armed and abandoned (issue #390). The race's terminal shape
+			// is a timing lottery — Established when a second
+			// after-unstable pass collapsed the exchange, WFBitMapS when
+			// it never ran and the peer discarded the bitmap reply (issue
+			// #397) — so both count. Every other condition earns its
+			// keep: verify findings leave the peer-disk UpToDate, a live
+			// WFBitMapS completes in milliseconds (the reconciler's
+			// confirmation window filters it), and WFBitMapT stays
+			// excluded because the target side never wears the
+			// Consistent peer-disk clamp.
+			if c.ConnectionState == connConnected &&
+				(pd.ReplicationState == replEstablished || pd.ReplicationState == replWFBitMapS) &&
 				pd.PeerDiskState == diskConsistent && pd.OutOfSyncKiB > 0 {
 				if s.StuckResyncPeers == nil {
 					s.StuckResyncPeers = map[int32]bool{}

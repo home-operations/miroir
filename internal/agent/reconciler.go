@@ -847,9 +847,12 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 //     promote/demote/promote of a diskless primary mints two current UUIDs
 //     back to back, a diskful leg handshakes against a one-generation-stale
 //     view of its peer and sets a full bitmap slot (WFBitMapS, peer-disk
-//     clamped Consistent), and a second after-unstable pass — equal UUIDs
-//     by then — collapses the pending exchange back to Established without
-//     undoing it (StuckResyncPeers).
+//     clamped Consistent). From there a timing lottery picks the terminal
+//     shape: a second after-unstable pass — equal UUIDs by then — collapses
+//     the pending exchange back to Established without undoing it, or that
+//     pass never runs and the leg parks in WFBitMapS waiting for a bitmap
+//     reply the peer already discarded (issue #397). Both wear
+//     StuckResyncPeers.
 //   - Bits stranded by a bitmap clear the kernel refused mid peer-teardown
 //     ("bitmap locked", issue #389), everything otherwise healthy
 //     (StaleBitmapPeers, behind staleBitmapActionable's gates — the same

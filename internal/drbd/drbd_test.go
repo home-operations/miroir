@@ -1623,10 +1623,11 @@ func TestStatusQuorumLost(t *testing.T) {
 	}
 }
 
-// StuckResyncPeers flags only the stranded-bitmap signature (issue #390):
-// Connected + Established + peer-disk Consistent + out-of-sync. A running
-// resync (replication not Established), verify findings (peer-disk stays
-// UpToDate), and a clean Consistent peer must all stay unflagged.
+// StuckResyncPeers flags only the stranded-bitmap signature: Connected +
+// peer-disk Consistent + out-of-sync, replication Established (issue #390)
+// or parked WFBitMapS (issue #397). A running resync, verify findings
+// (peer-disk stays UpToDate), a clean Consistent peer, and the WFBitMapT
+// target side must all stay unflagged.
 func TestStatusStuckResyncPeers(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `",
@@ -1639,15 +1640,21 @@ func TestStatusStuckResyncPeers(t *testing.T) {
 				{"peer-node-id":3,"connection-state":"Connected",
 					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":12}]},
 				{"peer-node-id":4,"connection-state":"Connected",
-					"peer_devices":[{"replication-state":"Established","peer-disk-state":"Consistent","out-of-sync":0}]}]}]`,
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"Consistent","out-of-sync":0}]},
+				{"peer-node-id":5,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"WFBitMapS","peer-disk-state":"Consistent","out-of-sync":5171836}]},
+				{"peer-node-id":6,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"WFBitMapT","peer-disk-state":"UpToDate","out-of-sync":5171836}]},
+				{"peer-node-id":7,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"WFBitMapS","peer-disk-state":"Consistent","out-of-sync":0}]}]}]`,
 	}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 	s, err := d.Status(t.Context(), volPvc1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.StuckResyncPeers) != 1 || !s.StuckResyncPeers[1] {
-		t.Fatalf("want only peer 1 flagged stuck, got %v", s.StuckResyncPeers)
+	if len(s.StuckResyncPeers) != 2 || !s.StuckResyncPeers[1] || !s.StuckResyncPeers[5] {
+		t.Fatalf("want peers 1 and 5 flagged stuck, got %v", s.StuckResyncPeers)
 	}
 }
 
