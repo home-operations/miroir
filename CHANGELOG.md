@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.18](https://github.com/home-operations/miroir/compare/0.11.17...0.11.18) (2026-08-02)
+
+
+### Bug Fixes
+
+* **agent:** flag the WFBitMapS-parked shape of a stranded bitmap as stuck resync ([#399](https://github.com/home-operations/miroir/issues/399)) ([759230b](https://github.com/home-operations/miroir/commit/759230bf27427e0aa2631159e53d3fe670187a4a))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool zizmor (1.28.0 → 1.29.0) ([#396](https://github.com/home-operations/miroir/issues/396)) ([5bda6b4](https://github.com/home-operations/miroir/commit/5bda6b45da5e90fd6f30064313b318395e1cd5a2))
+
 ## [0.11.17](https://github.com/home-operations/miroir/compare/0.11.16...0.11.17) (2026-08-01)
 
 
