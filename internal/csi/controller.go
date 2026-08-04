@@ -724,9 +724,9 @@ func diskfulOf(reps []miroirv1alpha1.Replica) []miroirv1alpha1.Replica {
 // a different diskful count than the source volume had (issue #305).
 // Growing appends freshly placed FullSync joiners — their content
 // arrives over the wire, so unlike the CoW legs they may land anywhere
-// the pool reaches. Shrinking keeps a subset of the source legs, including
-// the scheduler-selected completed leg when topology is constrained, then
-// seed first and Done legs preferred. The source tie-breaker (if any) is
+// the pool reaches. Shrinking keeps a subset of the source legs — the
+// scheduler-selected leg when complete, else a relocation decided by
+// shrinkPin — then seed first and Done legs preferred. The source tie-breaker (if any) is
 // discarded and re-derived for the final shape, and node ids are
 // re-numbered around the preserved legs — a leg cloning DRBD metadata
 // keeps the id that metadata is keyed by, everything else takes the
@@ -739,16 +739,14 @@ func (c *Controller) reshapeRestore(ctx context.Context, nodes nodemap.Map, reqs
 	case len(diskful) > target:
 		pin := ""
 		if !remoteAccess {
-			pin = selectedTopologyNode(reqs)
-			if reqs != nil && len(reqs.GetRequisite()) > 0 && pin == "" {
-				return nil, status.Error(codes.ResourceExhausted,
-					"no complete source snapshot leg satisfies the requested topology")
+			selected := selectedTopologyNode(reqs)
+			var err error
+			if pin, err = shrinkPin(reqs, diskful, selected); err != nil {
+				return nil, err
 			}
-			if pin != "" && !slices.ContainsFunc(diskful, func(rep miroirv1alpha1.Replica) bool {
-				return rep.Node == pin && !rep.FullSync
-			}) {
-				return nil, status.Errorf(codes.ResourceExhausted,
-					"no complete source snapshot leg exists on topology node %q", pin)
+			if selected != "" && pin != selected {
+				log.Info("shrink restore relocating off a selected node with no complete snapshot leg",
+					"volume", name, "selected", selected, "kept", cmp.Or(pin, diskful[0].Node))
 			}
 		}
 		diskful = keepRestoreLegs(diskful, target, pin)
@@ -827,6 +825,46 @@ func keepRestoreLegs(diskful []miroirv1alpha1.Replica, target int, pin string) [
 		}
 	}
 	return kept
+}
+
+// shrinkPin resolves the topology selection against a shrink-restore's
+// complete legs. A selected node holding a complete leg is honored. A
+// legless selection is a scheduling artifact, not a constraint: preferred
+// topology is best-effort, and the scheduler cannot see leg placement
+// (capacity tracking has no per-volume dimension), so refusing would only
+// replay the same selection forever and strand the PVC in
+// ProvisioningFailed (#406). The shrink instead relocates to a complete
+// leg within requisite — the hard bound (allowedTopologies,
+// strict-topology) — and the response's AccessibleTopology re-places the
+// consumer. Only when requisite admits no complete leg does the refusal
+// stand: that volume cannot exist where the request demands it.
+func shrinkPin(reqs *csi.TopologyRequirement, diskful []miroirv1alpha1.Replica, selected string) (string, error) {
+	complete := func(node string) bool {
+		return slices.ContainsFunc(diskful, func(rep miroirv1alpha1.Replica) bool {
+			return rep.Node == node && !rep.FullSync
+		})
+	}
+	if selected == "" || complete(selected) {
+		return selected, nil
+	}
+	requisite := map[string]bool{}
+	for _, top := range reqs.GetRequisite() {
+		if node := top.GetSegments()[constants.TopologyKey]; node != "" {
+			requisite[node] = true
+		}
+	}
+	// The seed is always complete (resolveSource refuses otherwise) and
+	// keepRestoreLegs keeps it first, so it needs no pin.
+	if len(requisite) == 0 || requisite[diskful[0].Node] {
+		return "", nil
+	}
+	for _, rep := range diskful {
+		if !rep.FullSync && requisite[rep.Node] {
+			return rep.Node, nil
+		}
+	}
+	return "", status.Errorf(codes.ResourceExhausted,
+		"no complete source snapshot leg exists on topology node %q or within the requested topology", selected)
 }
 
 // selectedTopologyNode returns the scheduler-selected node from a

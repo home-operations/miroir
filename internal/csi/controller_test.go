@@ -1282,6 +1282,104 @@ func TestCreateVolumeRestoreShrinkRefusesSelectedIncompleteLeg(t *testing.T) {
 	}
 }
 
+// A WaitForFirstConsumer selection with no complete snapshot leg (a
+// tie-breaker's node, or one outside the replica set) is a scheduling
+// artifact: the scheduler cannot see leg placement, so a refusal makes it
+// re-select the same node forever and the PVC strands in
+// ProvisioningFailed (#406). The shrink must relocate to the seed leg and
+// let the response topology re-place the consumer.
+func TestCreateVolumeRestoreShrinkRelocatesOffLeglessSelection(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+				{Node: nodeC, NodeID: 2, Address: addrC, Diskless: true},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+	req := restoreReq("1")
+	// The non-strict WFFC shape: requisite is the whole cluster, preferred
+	// is rotated so the selected (legless) node leads.
+	req.AccessibilityRequirements = &csi.TopologyRequirement{
+		Requisite: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: nodeA}},
+			{Segments: map[string]string{constants.TopologyKey: nodeB}},
+			{Segments: map[string]string{constants.TopologyKey: nodeC}},
+		},
+		Preferred: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: nodeC}},
+			{Segments: map[string]string{constants.TopologyKey: nodeA}},
+			{Segments: map[string]string{constants.TopologyKey: nodeB}},
+		},
+	}
+
+	resp, err := c.CreateVolume(t.Context(), req)
+	if err != nil {
+		t.Fatalf("a legless selection must relocate, not refuse: %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.Replicas) != 1 || got.Spec.Replicas[0].Node != nodeA {
+		t.Fatalf("the relocated shrink must keep the seed leg: %+v", got.Spec.Replicas)
+	}
+	if top := resp.Volume.AccessibleTopology; len(top) != 1 || top[0].GetSegments()[constants.TopologyKey] != nodeA {
+		t.Fatalf("the restored PV must re-place the consumer on the kept leg: %+v", top)
+	}
+}
+
+// Requisite stays a hard bound during relocation: when allowedTopologies
+// excludes the seed's node, the shrink must keep a complete leg inside
+// requisite instead of the seed.
+func TestCreateVolumeRestoreShrinkRelocationHonorsRequisite(t *testing.T) {
+	srcVol := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes:    5 << 30,
+			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
+			DRBD:         &miroirv1alpha1.DRBDSpec{Port: 7000},
+			Replicas: []miroirv1alpha1.Replica{
+				{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 0, Address: staleAddrA},
+				{Node: nodeB, Backend: miroirv1alpha1.BackendLVMThin, NodeID: 1, Address: staleAddrB},
+			},
+		},
+	}
+	c := reshapeController(t, srcVol)
+	req := restoreReq("1")
+	req.AccessibilityRequirements = &csi.TopologyRequirement{
+		Requisite: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: nodeB}},
+			{Segments: map[string]string{constants.TopologyKey: nodeC}},
+		},
+		Preferred: []*csi.Topology{
+			{Segments: map[string]string{constants.TopologyKey: nodeC}},
+			{Segments: map[string]string{constants.TopologyKey: nodeB}},
+		},
+	}
+
+	resp, err := c.CreateVolume(t.Context(), req)
+	if err != nil {
+		t.Fatalf("a complete leg inside requisite must satisfy the relocation: %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volNew}, got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.Replicas) != 1 || got.Spec.Replicas[0].Node != nodeB {
+		t.Fatalf("the kept leg must lie within requisite, not on the excluded seed: %+v", got.Spec.Replicas)
+	}
+	if top := resp.Volume.AccessibleTopology; len(top) != 1 || top[0].GetSegments()[constants.TopologyKey] != nodeB {
+		t.Fatalf("the restored PV must pin to the requisite leg: %+v", top)
+	}
+}
+
 // Shrinking keeps Done legs over post-snapshot FullSync ones — dropping
 // a free CoW clone while keeping a leg that must full-resync would be
 // pure waste — and the re-derived tie-breaker takes the smallest unused
