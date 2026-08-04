@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.19](https://github.com/home-operations/miroir/compare/0.11.18...0.11.19) (2026-08-04)
+
+
+### Bug Fixes
+
+* **csi:** relocate a shrink-restore off a legless scheduler selection ([#407](https://github.com/home-operations/miroir/issues/407)) ([4ef5534](https://github.com/home-operations/miroir/commit/4ef5534ade7c26b2e7dca26efde66220dc6aba66))
+* **go:** update module go (1.26.3 → 1.26.5) ([#405](https://github.com/home-operations/miroir/issues/405)) ([614390f](https://github.com/home-operations/miroir/commit/614390f3eb1a71570bf97bc18b86302739630061))
+
+
+### Continuous Integration
+
+* **github-action:** Update action home-operations/.github/actions/workflow-lint (v1.0.2 → v1.0.3) ([#404](https://github.com/home-operations/miroir/issues/404)) ([c3157f0](https://github.com/home-operations/miroir/commit/c3157f0b1b85e53e2d4eceffdbcbe20bbfc44aef))
+* update shared actions and use self-repository syntax ([#400](https://github.com/home-operations/miroir/issues/400)) ([3df1143](https://github.com/home-operations/miroir/commit/3df1143509abd1851503d8f9f35587785ad06628))
+* wire govulncheck into mise and CI ([#403](https://github.com/home-operations/miroir/issues/403)) ([fad249f](https://github.com/home-operations/miroir/commit/fad249fc3b1285853c0ac66bd8590a807915676f))
+
+
+### Miscellaneous Chores
+
+* **mise:** prune lockfile to used platforms ([#402](https://github.com/home-operations/miroir/issues/402)) ([3349825](https://github.com/home-operations/miroir/commit/334982510774a64033ecd487af71f8b2ad02d721))
+
 ## [0.11.18](https://github.com/home-operations/miroir/compare/0.11.17...0.11.18) (2026-08-02)
 
 
