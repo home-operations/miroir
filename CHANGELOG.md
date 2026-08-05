@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.20](https://github.com/home-operations/miroir/compare/0.11.19...0.11.20) (2026-08-05)
+
+
+### Bug Fixes
+
+* **agent:** snapshot volumes whose DRBD Primary is a diskless leg ([#411](https://github.com/home-operations/miroir/issues/411)) ([1144646](https://github.com/home-operations/miroir/commit/1144646af878ae6239d3b1bb3db95c610e3017c6))
+
+
+### Continuous Integration
+
+* **github-action:** Update action jdx/mise-action (v4.2.3 → v4.2.4) ([#408](https://github.com/home-operations/miroir/issues/408)) ([be560aa](https://github.com/home-operations/miroir/commit/be560aafc7504a959a0cf411dbde6face0c01ceb))
+
 ## [0.11.19](https://github.com/home-operations/miroir/compare/0.11.18...0.11.19) (2026-08-04)
 
 
