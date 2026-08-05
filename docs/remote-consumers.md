@@ -51,6 +51,12 @@ Trade-offs to understand:
   blocks volume deletion until the node returns or the entry is
   removed by hand (it holds no quorum vote, so the volume itself
   stays healthy).
+- **Snapshots work, coordinated through the consumer.** Writes
+  originate at the diskless Primary, so the snapshot round raises its
+  write barrier (and the filesystem freeze — the mount lives there
+  too) on the consumer's node first, then cuts the legs on the diskful
+  replicas as usual. The same applies when the consumer stages through
+  a tie-breaker leg.
 
 ## Auto-diskful
 

@@ -189,6 +189,80 @@ func TestGroupSnapshotBarrierSpansVolumes(t *testing.T) {
 	feP.calledWith(t, "drbdadm resume-io "+volPvc2)
 }
 
+// Issue #409, group variant: a member volume consumed remotely (diskless
+// client Primary on a node that is not the driver) must have its
+// client's barrier up before ANY leg cuts — the client is where that
+// volume's writes originate — and the round must still complete. The
+// driver records the expectation as a Pending slot from the client's
+// published Primary status; the cut gate blocks on it.
+func TestGroupSnapshotWaitsForRemoteClientPrimary(t *testing.T) {
+	now := metav1.Now()
+	v2 := groupVol(volPvc2)
+	v2.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC, NodeID: 2, Address: addrC}}
+	v2.Status.PerNode[nodeC] = miroirv1alpha1.ReplicaStatus{
+		DiskState: diskStateDiskless, PrimarySince: &now,
+	}
+	c := groupClient(t, groupVol(volPvc1), v2,
+		memberObj(memberOf1, volPvc1), memberObj(memberOf2, volPvc2), groupObj())
+
+	feK := &fakeDRBDExec{statusJSON: groupStatusPrimary}
+	fbK := newFakeBackend()
+	rK := &GroupSnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fbK),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feK.run}}
+	feP := &fakeDRBDExec{statusJSON: groupStatusPeer}
+	fbP := newFakeBackend()
+	rP := &GroupSnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fbP),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feP.run}}
+	feC := &fakeDRBDExec{statusJSON: `[{"name":"any","role":"Primary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+	fbC := newFakeBackend()
+	rC := &GroupSnapshotReconciler{Client: c, NodeName: nodeC, Pools: poolsOf(fbC),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feC.run}}
+
+	// Driver opens: its own legs Suspended, the remote client expected.
+	reconcileGroup(t, rK)
+	grp := &miroirv1alpha1.MiroirSnapshotGroup{}
+	_ = c.Get(t.Context(), types.NamespacedName{Name: groupG1}, grp)
+	if grp.Status.PerLeg[slotKey(volPvc2, nodeC)] != miroirv1alpha1.SnapshotPending {
+		t.Fatalf("driver must expect the remote client Primary: %+v", grp.Status)
+	}
+
+	// Both diskful nodes suspended — but the client has not raised yet,
+	// so nobody may cut.
+	reconcileGroup(t, rP)
+	reconcileGroup(t, rK)
+	reconcileGroup(t, rP)
+	if len(fbK.snapCalls) != 0 || len(fbP.snapCalls) != 0 {
+		t.Fatalf("no leg may cut before the client's barrier is up: %v / %v",
+			fbK.snapCalls, fbP.snapCalls)
+	}
+
+	// The client raises its barrier (it has no leg to cut) …
+	reconcileGroup(t, rC)
+	feC.calledWith(t, "drbdadm suspend-io "+volPvc2)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: groupG1}, grp)
+	if grp.Status.PerLeg[slotKey(volPvc2, nodeC)] != miroirv1alpha1.SnapshotSuspended {
+		t.Fatalf("client must record its barrier: %+v", grp.Status)
+	}
+
+	// … and the round proceeds: cut, collect, seal.
+	reconcileGroup(t, rK)
+	reconcileGroup(t, rP)
+	reconcileGroup(t, rK)
+	_ = c.Get(t.Context(), types.NamespacedName{Name: groupG1}, grp)
+	if !grp.Status.ReadyToUse || grp.Status.IOSuspended {
+		t.Fatalf("group must seal ready behind the client's barrier: %+v", grp.Status)
+	}
+	if len(fbC.snapCalls) != 0 {
+		t.Fatalf("the client holds no leg and must not touch a backend: %v", fbC.snapCalls)
+	}
+
+	// The sealed group lifts the client's barrier.
+	reconcileGroup(t, rC)
+	feC.calledWith(t, "drbdadm resume-io "+volPvc2)
+}
+
 // A failed suspend-io mid-raise can still have set the kernel flag (the
 // wedge kills drbdadm after the ioctl landed). The failed leg must join
 // the half-raised sweep's resume — leaving it freezes the volume behind

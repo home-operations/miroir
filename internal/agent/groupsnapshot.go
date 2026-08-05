@@ -19,6 +19,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,18 @@ import (
 // replica). Every participating node freezes and cuts its own legs, so
 // the driver's identity matters for liveness only, never for the
 // freeze's correctness.
+//
+// Diskless Primaries (a remote consumer's client leg, or a tie-breaker
+// whose own node stages the volume) join the round as legless
+// barrier-raisers: writes originate there, so their barrier (and the
+// filesystem freeze, which lives with the mount) must be up before any
+// leg of their volume is cut — but they hold nothing to cut (issue
+// #409). The driver records the expectation at round open as a Pending
+// slot for every diskless leg whose published status shows Primary;
+// the cut gate then blocks on those slots exactly like diskful ones.
+// Slots are matched against the live spec, so a leg unstaged mid-round
+// stops blocking the moment it leaves the spec, and idle (Secondary)
+// diskless legs never enter the round at all.
 //
 // Only replicated (DRBD) volumes can join a group: suspend-io is the
 // only write barrier miroir has, and a 1-replica volume without DRBD
@@ -143,14 +156,16 @@ func (r *GroupSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	mine := myLegs(members, r.NodeName)
-	if len(mine) == 0 {
+	disklessMine := myActiveDisklessLegs(grp, members, r.NodeName)
+	if len(mine) == 0 && len(disklessMine) == 0 {
 		return ctrl.Result{}, nil
 	}
+	participating := append(slices.Clone(mine), disklessMine...)
 
 	if grp.Status.ReadyToUse {
 		// A barrier can outlive the round by a moment; lift stray local
 		// ones — unless a sibling round owns the kernel flag by now.
-		for _, m := range mine {
+		for _, m := range participating {
 			if st, err := r.drbdStatus(ctx, m.vol.Name); err == nil && st.Suspended {
 				if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name, m.vol); err != nil {
 					return ctrl.Result{}, err
@@ -164,7 +179,7 @@ func (r *GroupSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	for _, m := range mine {
+	for _, m := range participating {
 		if m.vol.Spec.DRBD == nil {
 			// Defense in depth: the CSI layer refuses unreplicated members
 			// (no write barrier — see the type comment). Waiting on one
@@ -181,14 +196,15 @@ func (r *GroupSnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	return r.reconcileRound(ctx, grp, members, mine)
+	return r.reconcileRound(ctx, grp, members, mine, disklessMine)
 }
 
 // reconcileRound is the group barrier state machine proper, entered once
-// this node verifiably holds diskful legs of a live, fully-resolved
-// group.
-func (r *GroupSnapshotReconciler) reconcileRound(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine []groupMember) (ctrl.Result, error) {
-	sts, healthy, kernelSuspended, res, err := r.localView(ctx, grp, mine)
+// this node verifiably holds legs (diskful, or active diskless) of a
+// live, fully-resolved group.
+func (r *GroupSnapshotReconciler) reconcileRound(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine, disklessMine []groupMember) (ctrl.Result, error) {
+	participating := append(slices.Clone(mine), disklessMine...)
+	sts, healthy, kernelSuspended, res, err := r.localView(ctx, grp, mine, disklessMine)
 	if err != nil || res.RequeueAfter > 0 {
 		return res, err
 	}
@@ -196,33 +212,36 @@ func (r *GroupSnapshotReconciler) reconcileRound(ctx context.Context, grp *miroi
 	driver := r.isDriver(members, sts)
 	expired := grp.Status.SuspendedAt != nil &&
 		time.Since(grp.Status.SuspendedAt.Time) > SuspendDeadline
+	pendingDiskless := r.pendingDisklessLegs(grp, disklessMine)
 
 	switch {
 	case driver && !grp.Status.IOSuspended && healthy && !kernelSuspended:
 		// The !kernelSuspended guard is the kernel-truth half of the
 		// one-round-per-volume rule (see reconcileReplicated's twin).
-		return r.openRound(ctx, grp, members, mine)
+		return r.openRound(ctx, grp, members, mine, disklessMine, sts)
 
 	case !driver && grp.Status.IOSuspended && !expired && healthy &&
-		!myLegsAll(grp, mine, r.NodeName, miroirv1alpha1.SnapshotSuspended):
-		return r.raiseBarriers(ctx, grp, members, mine, false)
+		(!myLegsAll(grp, mine, r.NodeName, miroirv1alpha1.SnapshotSuspended) || len(pendingDiskless) > 0):
+		return r.raiseBarriers(ctx, grp, members, mine, pendingDiskless, false)
 
 	case grp.Status.IOSuspended && !expired && healthy &&
 		allSlotsSuspended(grp, members) && !myLegsAll(grp, mine, r.NodeName, miroirv1alpha1.SnapshotDone):
+		// Unreachable for a node with no diskful legs: myLegsAll over
+		// nothing is vacuously Done.
 		return r.cutLegs(ctx, grp, mine)
 
 	case driver && grp.Status.IOSuspended:
-		return r.collectSlots(ctx, grp, members, mine, expired)
+		return r.collectSlots(ctx, grp, members, mine, disklessMine, expired)
 
 	case grp.Status.IOSuspended && expired && kernelSuspended:
 		// Dead round, driver gone before voiding it: self-expire the
 		// local barriers; the void patch stays the driver's.
-		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeMine(ctx, grp, mine)
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, r.resumeMine(ctx, grp, participating)
 
 	case !grp.Status.IOSuspended && kernelSuspended:
 		// The round ended (voided) while local barriers were still up —
 		// unless a sibling round owns one of them by now.
-		for _, m := range mine {
+		for _, m := range participating {
 			if sts[m.vol.Name].Suspended {
 				if err := r.resumeUnlessOtherRound(ctx, grp, m.vol.Name, m.vol); err != nil {
 					return ctrl.Result{RequeueAfter: 2 * time.Second}, err
@@ -239,12 +258,13 @@ func (r *GroupSnapshotReconciler) reconcileRound(ctx context.Context, grp *miroi
 // health gate as the per-snapshot round (a barrier over diverged or
 // resyncing legs cuts diverged legs, and a peer that can never raise
 // its own barrier only freezes the group until the deadline voids it),
-// and whether any local barrier is up in the kernel. A failing status
-// read rides the bounded barrier-failure retry.
-func (r *GroupSnapshotReconciler) localView(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mine []groupMember) (sts map[string]drbd.Status, healthy, kernelSuspended bool, res ctrl.Result, err error) {
+// and whether any local barrier is up in the kernel. A diskless leg is
+// never UpToDate itself, so it gates on its peers only. A failing
+// status read rides the bounded barrier-failure retry.
+func (r *GroupSnapshotReconciler) localView(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mine, disklessMine []groupMember) (sts map[string]drbd.Status, healthy, kernelSuspended bool, res ctrl.Result, err error) {
 	sts = map[string]drbd.Status{}
 	healthy = true
-	for _, m := range mine {
+	for i, m := range append(slices.Clone(mine), disklessMine...) {
 		st, err := r.drbdStatus(ctx, m.vol.Name)
 		if err != nil {
 			res, err := r.barrierFailed(ctx, grp, m.vol, err)
@@ -253,7 +273,7 @@ func (r *GroupSnapshotReconciler) localView(ctx context.Context, grp *miroirv1al
 		sts[m.vol.Name] = st
 		if !diskfulPeersConnected(st, m.vol, r.NodeName) ||
 			!diskfulPeersUpToDate(st, m.vol, r.NodeName) ||
-			st.DiskState != drbd.DiskUpToDate {
+			(i < len(mine) && st.DiskState != drbd.DiskUpToDate) {
 			healthy = false
 		}
 		if st.Suspended {
@@ -267,8 +287,12 @@ func (r *GroupSnapshotReconciler) localView(ctx context.Context, grp *miroirv1al
 // the previous round's failure is still inside its retry backoff or any
 // member volume has a live sibling round (a standalone snapshot's or
 // another group's).
-func (r *GroupSnapshotReconciler) openRound(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine []groupMember) (ctrl.Result, error) {
-	if myState := grp.Status.PerLeg[slotKey(mine[0].vol.Name, r.NodeName)]; myState == miroirv1alpha1.SnapshotError &&
+func (r *GroupSnapshotReconciler) openRound(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine, disklessMine []groupMember, sts map[string]drbd.Status) (ctrl.Result, error) {
+	first := mine
+	if len(first) == 0 {
+		first = disklessMine
+	}
+	if myState := grp.Status.PerLeg[slotKey(first[0].vol.Name, r.NodeName)]; myState == miroirv1alpha1.SnapshotError &&
 		grp.Status.SuspendedAt != nil &&
 		time.Since(grp.Status.SuspendedAt.Time) < suspendRetryBackoff {
 		return ctrl.Result{RequeueAfter: suspendRetryBackoff}, nil
@@ -278,24 +302,35 @@ func (r *GroupSnapshotReconciler) openRound(ctx context.Context, grp *miroirv1al
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, err
 		}
 	}
-	return r.raiseBarriers(ctx, grp, members, mine, true)
+	// The driver's own diskless Primaries raise with the open, keyed on
+	// live DRBD state; a Secondary diskless leg has no writes to fence.
+	var disklessRaise []groupMember
+	for _, m := range disklessMine {
+		if sts[m.vol.Name].Primary {
+			disklessRaise = append(disklessRaise, m)
+		}
+	}
+	return r.raiseBarriers(ctx, grp, members, mine, disklessRaise, true)
 }
 
 // raiseBarriers freezes every local member leg and records it. The
 // driver's raise opens the round (ioSuspended + deadline clock + a slot
 // reset across EVERY member, so a slow node's Done from a voided round
 // cannot pair with this round's cuts); a peer records only its own
-// slots.
-func (r *GroupSnapshotReconciler) raiseBarriers(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine []groupMember, opensRound bool) (ctrl.Result, error) {
+// slots. disklessRaise names this node's diskless legs the raise also
+// fences: the driver's live Primaries at open, a peer's Pending slots.
+func (r *GroupSnapshotReconciler) raiseBarriers(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine, disklessRaise []groupMember, opensRound bool) (ctrl.Result, error) {
 	// A leg whose pool cannot be resolved could never cut behind the
-	// barrier: fail before the group-wide freeze, not after.
+	// barrier: fail before the group-wide freeze, not after. Diskless
+	// legs hold no pool and never cut.
 	for _, m := range mine {
 		if _, err := r.backendFor(m.vol); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	suspended := make([]groupMember, 0, len(mine))
-	for _, m := range mine {
+	raise := append(slices.Clone(mine), disklessRaise...)
+	suspended := make([]groupMember, 0, len(raise))
+	for _, m := range raise {
 		// Freeze strictly before this leg's suspend (see the per-snapshot
 		// round's twin): the writeback must replicate while the leg still
 		// accepts IO.
@@ -331,18 +366,29 @@ func (r *GroupSnapshotReconciler) raiseBarriers(ctx context.Context, grp *miroir
 				for _, rep := range m.vol.Spec.DiskfulReplicas() {
 					g.Status.PerLeg[slotKey(m.vol.Name, rep.Node)] = miroirv1alpha1.SnapshotPending
 				}
+				// Expect every remote diskless Primary (per published
+				// status — the driver cannot observe a remote role live):
+				// its barrier must be up before its volume's legs cut, so
+				// it gets a Pending slot the cut gate blocks on. Slots of
+				// legs that are not Primary stay untouched; stale values
+				// from a prior round are never Pending and never block.
+				for _, node := range disklessNodes(m.vol) {
+					if node != r.NodeName && m.vol.Status.PerNode[node].PrimarySince != nil {
+						g.Status.PerLeg[slotKey(m.vol.Name, node)] = miroirv1alpha1.SnapshotPending
+					}
+				}
 			}
-			for _, m := range mine {
+			for _, m := range raise {
 				g.Status.PerLeg[slotKey(m.vol.Name, r.NodeName)] = miroirv1alpha1.SnapshotSuspended
 			}
 		})
 	} else {
-		err = r.patchMySlots(ctx, grp, mine, miroirv1alpha1.SnapshotSuspended)
+		err = r.patchMySlots(ctx, grp, raise, miroirv1alpha1.SnapshotSuspended)
 	}
 	if err != nil {
 		// The barrier is only real once recorded; a failed patch must not
 		// leave IO frozen until the retry.
-		_ = r.resumeMine(ctx, grp, mine)
+		_ = r.resumeMine(ctx, grp, raise)
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: time.Second}, nil
@@ -384,7 +430,7 @@ func (r *GroupSnapshotReconciler) cutLegs(ctx context.Context, grp *miroirv1alph
 // publish the members, and seal; deadline passed → resume and void the
 // round (Done slots included: they were cut under a barrier that
 // failed, and the retry recuts them).
-func (r *GroupSnapshotReconciler) collectSlots(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine []groupMember, expired bool) (ctrl.Result, error) {
+func (r *GroupSnapshotReconciler) collectSlots(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, members, mine, disklessMine []groupMember, expired bool) (ctrl.Result, error) {
 	done, total := 0, 0
 	for _, m := range members {
 		for _, rep := range m.vol.Spec.DiskfulReplicas() {
@@ -400,7 +446,7 @@ func (r *GroupSnapshotReconciler) collectSlots(ctx context.Context, grp *miroirv
 	// Resume before reporting anything else: a frozen volume is an
 	// outage, a late group snapshot is just not ready. A barrier a
 	// sibling round co-holds stays for the sibling (see resumeMine).
-	if err := r.resumeMine(ctx, grp, mine); err != nil {
+	if err := r.resumeMine(ctx, grp, append(slices.Clone(mine), disklessMine...)); err != nil {
 		return ctrl.Result{}, err
 	}
 	if done == total {
@@ -422,9 +468,19 @@ func (r *GroupSnapshotReconciler) collectSlots(ctx context.Context, grp *miroirv
 			for _, rep := range m.vol.Spec.DiskfulReplicas() {
 				g.Status.PerLeg[slotKey(m.vol.Name, rep.Node)] = miroirv1alpha1.SnapshotPending
 			}
+			// A dead diskless expectation must not leak into the next
+			// round's cut gate (only Pending blocks it); the reopen
+			// recomputes the expected set from fresh status.
+			for _, node := range disklessNodes(m.vol) {
+				if g.Status.PerLeg[slotKey(m.vol.Name, node)] == miroirv1alpha1.SnapshotPending {
+					g.Status.PerLeg[slotKey(m.vol.Name, node)] = miroirv1alpha1.SnapshotError
+				}
+			}
 		}
-		for _, m := range mine {
-			g.Status.PerLeg[slotKey(m.vol.Name, r.NodeName)] = miroirv1alpha1.SnapshotError
+		for _, m := range append(slices.Clone(mine), disklessMine...) {
+			if key := slotKey(m.vol.Name, r.NodeName); g.Status.PerLeg[key] != "" {
+				g.Status.PerLeg[key] = miroirv1alpha1.SnapshotError
+			}
 		}
 		// Restamp so the retry backoff counts from this failure.
 		now := metav1.Now()
@@ -532,10 +588,47 @@ func diskfulOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {
 	return false
 }
 
+// disklessNodes lists the nodes holding a diskless leg of vol:
+// tie-breaker replicas and client legs.
+func disklessNodes(vol *miroirv1alpha1.MiroirVolume) []string {
+	var nodes []string
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Diskless {
+			nodes = append(nodes, rep.Node)
+		}
+	}
+	for _, cl := range vol.Spec.Clients {
+		nodes = append(nodes, cl.Node)
+	}
+	return nodes
+}
+
+// myActiveDisklessLegs filters the members whose volume has a diskless
+// leg on this node that the round involves: its published status shows
+// Primary (a write origin that must raise a barrier — and, over the
+// first member volume, drives the round), or a round slot already names
+// it. Idle (Secondary, unslotted) diskless legs stay out, so a
+// tie-breaker node is not churned by every group it could never affect.
+func myActiveDisklessLegs(grp *miroirv1alpha1.MiroirSnapshotGroup, members []groupMember, node string) []groupMember {
+	var mine []groupMember
+	for _, m := range members {
+		if !slices.Contains(disklessNodes(m.vol), node) {
+			continue
+		}
+		if m.vol.Status.PerNode[node].PrimarySince != nil ||
+			grp.Status.PerLeg[slotKey(m.vol.Name, node)] != "" {
+			mine = append(mine, m)
+		}
+	}
+	return mine
+}
+
 // isDriver elects this node by the first member volume's coordinator
-// rule. A node without a diskful leg of that volume never drives — it
-// cannot even observe that volume's DRBD state — but still raises and
-// cuts its own legs as a peer.
+// rule. A node without a leg of that volume never drives — it cannot
+// even observe that volume's DRBD state — but still raises and cuts its
+// own legs as a peer. A diskless Primary of the first member CAN drive:
+// it observes the volume through its own leg, and the coordinator rule
+// elects it (everyone else defers on PeerPrimary), legless or not.
 func (r *GroupSnapshotReconciler) isDriver(members []groupMember, sts map[string]drbd.Status) bool {
 	vol0 := members[0].vol
 	st, ok := sts[vol0.Name]
@@ -543,6 +636,19 @@ func (r *GroupSnapshotReconciler) isDriver(members []groupMember, sts map[string
 		return false
 	}
 	return coordinatorFor(r.NodeName, vol0, st)
+}
+
+// pendingDisklessLegs filters this node's diskless legs whose round slot
+// is Pending — expected write origins that have not raised yet; a peer's
+// raise covers them alongside its diskful legs.
+func (r *GroupSnapshotReconciler) pendingDisklessLegs(grp *miroirv1alpha1.MiroirSnapshotGroup, disklessMine []groupMember) []groupMember {
+	var pending []groupMember
+	for _, m := range disklessMine {
+		if grp.Status.PerLeg[slotKey(m.vol.Name, r.NodeName)] == miroirv1alpha1.SnapshotPending {
+			pending = append(pending, m)
+		}
+	}
+	return pending
 }
 
 // myLegsAll reports whether every one of this node's slots has reached
@@ -559,12 +665,21 @@ func myLegsAll(grp *miroirv1alpha1.MiroirSnapshotGroup, mine []groupMember, node
 }
 
 // allSlotsSuspended reports whether every diskful leg of every member
-// volume has raised its barrier (Done implies it did).
+// volume has raised its barrier (Done implies it did), and no expected
+// diskless Primary (Pending slot) is still unraised — cutting past one
+// would cut legs its writes keep landing in. Diskless slots are matched
+// against the live spec, so a leg unstaged mid-round (its slot lingers)
+// stops blocking the moment it leaves the spec.
 func allSlotsSuspended(grp *miroirv1alpha1.MiroirSnapshotGroup, members []groupMember) bool {
 	for _, m := range members {
 		for _, rep := range m.vol.Spec.DiskfulReplicas() {
 			st := grp.Status.PerLeg[slotKey(m.vol.Name, rep.Node)]
 			if st != miroirv1alpha1.SnapshotSuspended && st != miroirv1alpha1.SnapshotDone {
+				return false
+			}
+		}
+		for _, node := range disklessNodes(m.vol) {
+			if grp.Status.PerLeg[slotKey(m.vol.Name, node)] == miroirv1alpha1.SnapshotPending {
 				return false
 			}
 		}

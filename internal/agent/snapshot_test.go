@@ -574,6 +574,136 @@ func TestSnapshotProceedsWithTieBreakerDown(t *testing.T) {
 	}
 }
 
+// Regression (issue #409): a volume whose DRBD Primary is a diskless
+// client leg (remote consumer) must still snapshot. The client node is
+// where writes originate, so IT coordinates: barrier first up, no leg to
+// cut, collect and resume. Before the fix nobody coordinated — every
+// diskful replica deferred on PeerPrimary and the client node never
+// entered the round — and the snapshot hung with no status at all.
+func TestSnapshotClientPrimaryCoordinatesLeglessly(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC, NodeID: 2, Address: addrC}}
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeC: {DiskState: diskStateDiskless},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	// node-c holds the device open through its client leg: Primary,
+	// Diskless — the legless coordinator.
+	fbC := newFakeBackend()
+	feC := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+	rC := &SnapshotReconciler{Client: c, NodeName: nodeC, Pools: poolsOf(fbC),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feC.run}}
+	// The diskful replicas see a peer Primary and defer.
+	feA := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected","peer-role":"Primary"}]}]`}
+	fbA := newFakeBackend()
+	rA := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fbA),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feA.run}}
+	feB := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected","peer-role":"Primary"}]}]`}
+	fbB := newFakeBackend()
+	rB := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(fbB),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feB.run}}
+
+	// Client coordinator opens the round: its barrier rises first.
+	reconcileSnap(t, rC, snapSnap1)
+	feC.calledWith(t, "drbdadm suspend-io pvc-1")
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	_ = c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got)
+	if !got.Status.IOSuspended || got.Status.PerNode[nodeC] != miroirv1alpha1.SnapshotSuspended {
+		t.Fatalf("client Primary must open the round: %+v", got.Status)
+	}
+
+	// Peers raise, cut, and the coordinator collects.
+	reconcileSnap(t, rA, snapSnap1)
+	reconcileSnap(t, rB, snapSnap1)
+	reconcileSnap(t, rA, snapSnap1)
+	reconcileSnap(t, rB, snapSnap1)
+	reconcileSnap(t, rC, snapSnap1)
+
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.ReadyToUse || got.Status.IOSuspended {
+		t.Fatalf("round must complete behind the client's barrier: %+v", got.Status)
+	}
+	feC.calledWith(t, "drbdadm resume-io pvc-1")
+	if len(fbC.snapCalls) != 0 {
+		t.Fatalf("the client holds no leg and must not touch a backend: %v", fbC.snapCalls)
+	}
+	if len(fbA.snapCalls) != 2 || fbA.snapCalls[1] != snapCallSnapshot ||
+		len(fbB.snapCalls) != 2 || fbB.snapCalls[1] != snapCallSnapshot {
+		t.Fatalf("both diskful legs must cut: %v / %v", fbA.snapCalls, fbB.snapCalls)
+	}
+}
+
+// A tie-breaker whose own node stages the volume (diskless replica,
+// DRBD Primary) coordinates the same legless way a client leg does.
+func TestSnapshotTieBreakerPrimaryCoordinates(t *testing.T) {
+	s := newScheme(t)
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	v.Spec.Replicas = append(v.Spec.Replicas, miroirv1alpha1.Replica{
+		Node: nodeC, NodeID: 2, Address: addrC, Diskless: true,
+	})
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeB: {DeviceCreated: true, DiskState: diskStateUpToDate},
+		nodeC: {DiskState: diskStateDiskless},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA, nodeB, nodeC)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+
+	fbC := newFakeBackend()
+	feC := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Primary",
+		"devices":[{"disk-state":"` + diskStateDiskless + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected"}]}]`}
+	rC := &SnapshotReconciler{Client: c, NodeName: nodeC, Pools: poolsOf(fbC),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feC.run}}
+	feA := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected","peer-role":"Primary"}]}]`}
+	rA := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feA.run}}
+	feB := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary","suspended-user":true,
+		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
+		"connections":[{"connection-state":"Connected"},{"connection-state":"Connected","peer-role":"Primary"}]}]`}
+	rB := &SnapshotReconciler{Client: c, NodeName: nodeB, Pools: poolsOf(newFakeBackend()),
+		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feB.run}}
+
+	reconcileSnap(t, rC, snapSnap1)
+	reconcileSnap(t, rA, snapSnap1)
+	reconcileSnap(t, rB, snapSnap1)
+	reconcileSnap(t, rA, snapSnap1)
+	reconcileSnap(t, rB, snapSnap1)
+	reconcileSnap(t, rC, snapSnap1)
+
+	got := &miroirv1alpha1.MiroirSnapshot{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: snapSnap1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.ReadyToUse || got.Status.IOSuspended {
+		t.Fatalf("round must complete behind the tie-breaker's barrier: %+v", got.Status)
+	}
+	if len(fbC.snapCalls) != 0 {
+		t.Fatalf("the tie-breaker holds no leg and must not touch a backend: %v", fbC.snapCalls)
+	}
+}
+
 // A peer raising its barrier must record only its own slot, never the
 // coordinator's round fields: a full-status apply could revert a resume or
 // void the coordinator raced, re-freezing IO or resurrecting a stale leg.

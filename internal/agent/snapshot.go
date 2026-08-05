@@ -71,7 +71,11 @@ const suspendRetryBackoff = 30 * time.Second
 //
 // The coordinator is the Primary when one exists (it is where writes
 // originate, so its barrier must be first up and last down), else
-// replicas[0].
+// replicas[0]. A diskless Primary — a remote consumer's client leg, or a
+// tie-breaker whose own node stages the volume — coordinates leglessly:
+// it raises the barrier and the filesystem freeze (both live where the
+// writes and the mount are) but holds no leg to cut; the diskful
+// replicas cut behind its barrier (issue #409).
 type SnapshotReconciler struct {
 	client.Client
 	NodeName string
@@ -253,7 +257,10 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, r.removeFinalizer(ctx, snap)
 	}
 
-	if !replicaOn(vol, r.NodeName) {
+	// Client legs participate too: a diskless Primary must coordinate
+	// the round (see the type comment), and nothing else on its node
+	// watches the snapshot.
+	if !replicaOn(vol, r.NodeName) && vol.Spec.ClientForNode(r.NodeName) == nil {
 		return ctrl.Result{}, nil
 	}
 
@@ -340,6 +347,7 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 		return r.barrierFailed(ctx, snap, vol, err)
 	}
 	coordinator := r.isCoordinator(vol, st)
+	localDiskful := diskfulOn(vol, r.NodeName)
 	myState := snap.Status.PerNode[r.NodeName]
 	expired := snap.Status.SuspendedAt != nil &&
 		time.Since(snap.Status.SuspendedAt.Time) > SuspendDeadline
@@ -352,10 +360,11 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 	// only — a degraded volume must still resume. Only diskful peers
 	// count: a downed tie-breaker holds no leg, and gating on its link
 	// would block every snapshot in exactly the degraded mode the
-	// tie-breaker exists to survive.
+	// tie-breaker exists to survive. A diskless leg is likewise never
+	// UpToDate itself, so a diskless coordinator gates on its peers only.
 	healthy := diskfulPeersConnected(st, vol, r.NodeName) &&
 		diskfulPeersUpToDate(st, vol, r.NodeName) &&
-		st.DiskState == drbd.DiskUpToDate
+		(!localDiskful || st.DiskState == drbd.DiskUpToDate)
 
 	switch {
 	case coordinator && !snap.Status.IOSuspended && healthy && !st.Suspended:
@@ -367,11 +376,11 @@ func (r *SnapshotReconciler) reconcileReplicated(ctx context.Context, snap *miro
 		// bottom lifts it, and the next pass opens cleanly.
 		return r.openRound(ctx, snap, vol, myState)
 
-	case !coordinator && snap.Status.IOSuspended && !expired && healthy &&
+	case !coordinator && localDiskful && snap.Status.IOSuspended && !expired && healthy &&
 		myState != miroirv1alpha1.SnapshotSuspended && myState != miroirv1alpha1.SnapshotDone:
 		return r.raiseBarrier(ctx, snap, vol, false)
 
-	case snap.Status.IOSuspended && !expired && healthy &&
+	case localDiskful && snap.Status.IOSuspended && !expired && healthy &&
 		myState == miroirv1alpha1.SnapshotSuspended && allSuspended(vol, snap):
 		return r.cutLeg(ctx, snap, vol)
 
@@ -399,9 +408,12 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 	// A leg whose pool cannot be resolved could never cut behind the
 	// barrier: fail before the cluster-wide freeze, not after. (A pool
 	// dropped mid-round — an agent restart with new values — is still
-	// bounded by SuspendDeadline via the expiry paths.)
-	if _, err := r.backendFor(vol); err != nil {
-		return ctrl.Result{}, err
+	// bounded by SuspendDeadline via the expiry paths.) A diskless
+	// coordinator holds no leg and possibly no pools; it never cuts.
+	if diskfulOn(vol, r.NodeName) {
+		if _, err := r.backendFor(vol); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	// Freeze strictly before the local suspend: FIFREEZE writes back the
 	// page cache, and those writes must reach the device (and replicate)
@@ -446,8 +458,9 @@ func (r *SnapshotReconciler) raiseBarrier(ctx context.Context, snap *miroirv1alp
 			// Reset peers: a slow peer's Done from the voided round can
 			// land after the void and would pair its stale leg with
 			// this round's cuts. Only diskful replicas hold legs — a
-			// tie-breaker never joins the round (it can never reach
-			// Suspended: raising requires an UpToDate disk).
+			// diskless leg never joins as a peer (a diskless Primary is
+			// always the coordinator: it sees st.Primary and everyone
+			// else defers on st.PeerPrimary).
 			for _, rep := range vol.Spec.DiskfulReplicas() {
 				if rep.Node != r.NodeName {
 					s.Status.PerNode[rep.Node] = miroirv1alpha1.SnapshotPending
@@ -686,10 +699,13 @@ func (r *SnapshotReconciler) resumeUnlessSiblingRound(ctx context.Context, snap 
 // does. A Secondary that sees its peer Primary must defer — both sides
 // claiming the role is a livelock: the replicas[0] Secondary re-raises a
 // barrier the Primary keeps expiring, and the Primary never takes its
-// own leg because coordinators don't. A promotion racing this choice can
-// still briefly yield two coordinators — recoverable by construction:
-// suspend-io is idempotent, the backends treat an existing snapshot as
-// success, and both sides resume.
+// own leg because coordinators don't. This holds for a DISKLESS Primary
+// too (a client leg or a staged tie-breaker): it coordinates leglessly,
+// and electing a diskful stand-in instead would cut legs the Primary
+// keeps writing into. A promotion racing this choice can still briefly
+// yield two coordinators — recoverable by construction: suspend-io is
+// idempotent, the backends treat an existing snapshot as success, and
+// both sides resume.
 func (r *SnapshotReconciler) isCoordinator(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
 	return coordinatorFor(r.NodeName, vol, st)
 }
@@ -738,12 +754,14 @@ func replicaOn(vol *miroirv1alpha1.MiroirVolume, node string) bool {
 	})
 }
 
-// disklessOn checks whether the local replica (if any) is diskless — a
-// quorum-only tie-breaker that holds no backend data.
+// disklessOn checks whether the local leg (if any) is diskless — a
+// quorum-only tie-breaker or an ephemeral client leg, neither of which
+// holds backend data.
 func (r *SnapshotReconciler) disklessOn(vol *miroirv1alpha1.MiroirVolume) bool {
-	return slices.ContainsFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
-		return rep.Node == r.NodeName && rep.Diskless
-	})
+	return vol.Spec.ClientForNode(r.NodeName) != nil ||
+		slices.ContainsFunc(vol.Spec.Replicas, func(rep miroirv1alpha1.Replica) bool {
+			return rep.Node == r.NodeName && rep.Diskless
+		})
 }
 
 // patchOwnState records only this node's slot in the active snapshot barrier.

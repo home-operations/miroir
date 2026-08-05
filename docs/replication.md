@@ -34,7 +34,9 @@ When a 2-replica `freeze` volume is created and a third storage node
 in the topology holds neither leg, the controller adds that node
 as a diskless tie-breaker: a DRBD peer configured with `disk none` that
 joins quorum voting but stores nothing; no backing device, no
-capacity used, no part in snapshots or CSI topology. With 3 votes,
+capacity used, no snapshot leg, no part in CSI topology (when a pod
+stages the volume through it, it does coordinate the snapshot write
+barrier — see [remote consumers](remote-consumers.md)). With 3 votes,
 losing any single node (a data leg _or_ the tie-breaker) leaves a
 majority of 2 and the volume keeps serving.
 
