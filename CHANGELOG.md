@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.21](https://github.com/home-operations/miroir/compare/0.11.20...0.11.21) (2026-08-06)
+
+
+### Bug Fixes
+
+* **csi:** round volume sizes up to the 512-byte sector LVM requires ([#415](https://github.com/home-operations/miroir/issues/415)) ([b5c9d5a](https://github.com/home-operations/miroir/commit/b5c9d5a8cdb857218ed2a514e635acf27cfa60de))
+
 ## [0.11.20](https://github.com/home-operations/miroir/compare/0.11.19...0.11.20) (2026-08-05)
 
 
