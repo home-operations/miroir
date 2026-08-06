@@ -98,11 +98,25 @@ type Wedge struct {
 
 	mu       sync.Mutex
 	children map[int]string // pid -> command line that stranded it
+
+	// latched is a pinned-open reason that is not a stranded child.
+	latched string
 }
 
 // NewWedge returns a breaker tripping at limit outstanding stranded children.
 func NewWedge(limit int) *Wedge {
 	return &Wedge{Limit: limit, children: map[int]string{}}
+}
+
+func (w *Wedge) Latch(reason string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.latched == "" {
+		w.latched = reason
+	}
 }
 
 func (w *Wedge) alive(pid int) bool {
@@ -169,13 +183,29 @@ func (w *Wedge) Stranded() int {
 	return len(w.children)
 }
 
-// Tripped reports whether the breaker is open, i.e. new host commands must
-// be refused with ErrNodeWedged.
-func (w *Wedge) Tripped() bool {
+// StrandedTripped reports whether the breaker tripped on stranded children,
+// not on a latch. cleanupMount consults this so a latched node can still
+// drain.
+func (w *Wedge) StrandedTripped() bool {
 	if w == nil || w.Limit <= 0 {
 		return false
 	}
 	return w.Stranded() >= w.Limit
+}
+
+// Tripped reports whether the breaker is open, i.e. new host commands must
+// be refused with ErrNodeWedged.
+func (w *Wedge) Tripped() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	latched := w.latched
+	w.mu.Unlock()
+	if latched != "" {
+		return true
+	}
+	return w.StrandedTripped()
 }
 
 // Commands lists the stuck commands, for the Event and status message that
@@ -188,9 +218,12 @@ func (w *Wedge) Commands() []string {
 	w.Stranded() // prune first, so the list matches the count
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	out := make([]string, 0, len(w.children))
+	out := make([]string, 0, len(w.children)+1)
 	for _, cmd := range w.children {
 		out = append(out, cmd)
+	}
+	if w.latched != "" {
+		out = append(out, w.latched)
 	}
 	slices.Sort(out)
 	return out

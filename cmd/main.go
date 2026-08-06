@@ -703,10 +703,14 @@ func main() {
 				case <-ctx.Done():
 				}
 			}}
-			if err := mgr.Add(watcher); err != nil {
-				setupLog.Error(err, "unable to add DRBD event watcher")
-				os.Exit(1)
+			addRunnable := func(r manager.Runnable, msg string) {
+				if err := mgr.Add(r); err != nil {
+					setupLog.Error(err, msg)
+					os.Exit(1)
+				}
 			}
+			addRunnable(watcher, "unable to add DRBD event watcher")
+			addRunnable(&agent.AssertionWatcher{Wedge: storageWedge}, "unable to add DRBD assertion watcher")
 		}
 		reconciler := &agent.VolumeReconciler{
 			Client:     mgr.GetClient(),

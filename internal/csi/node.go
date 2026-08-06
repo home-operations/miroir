@@ -87,6 +87,10 @@ type Thawer interface {
 // *backend.Wedge implements it.
 type WedgeGate interface {
 	Err() error
+	// StrandedTripped reports whether the jam is one a staging unmount
+	// would join — stranded children stuck in D-state — as opposed to a
+	// latched kernel fault, which leaves the filesystem free to drain.
+	StrandedTripped() bool
 }
 
 // NewNode wires a Node service with the host mount/format tooling.
@@ -547,10 +551,11 @@ func (n *Node) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolu
 //
 // The deadline frees this call, not the umount: a child blocked in the
 // kernel ignores the kill and stays, and kubelet retries the RPC forever, so
-// each retry strands one more task. Refusing once the breaker is open keeps
-// the pile bounded; the RPC fails either way.
+// each retry strands one more task. Refusing once children have stranded
+// keeps the pile bounded; the RPC fails either way. A latch does not block
+// unmounts — only the stranded condition gates here.
 func cleanupMount(target string, mounter *mount.SafeFormatAndMount, gate WedgeGate) error {
-	if gate != nil {
+	if gate != nil && gate.StrandedTripped() {
 		if err := gate.Err(); err != nil {
 			return fmt.Errorf("unmount %s: %w", target, err)
 		}

@@ -617,12 +617,19 @@ func TestNodeUnstageProceedsWhenThawFails(t *testing.T) {
 }
 
 // fakeGate is an already-open breaker, so a test needs no real D-state child.
-type fakeGate struct{ err error }
+type fakeGate struct {
+	err      error
+	stranded bool
+}
 
-func (g fakeGate) Err() error { return g.err }
+func (g fakeGate) Err() error            { return g.err }
+func (g fakeGate) StrandedTripped() bool { return g.stranded }
 
 func wedgedBreaker() WedgeGate {
-	return fakeGate{err: fmt.Errorf("umount /var/lib/kubelet/globalmount: %w", backend.ErrNodeWedged)}
+	return fakeGate{
+		err:      fmt.Errorf("umount /var/lib/kubelet/globalmount: %w", backend.ErrNodeWedged),
+		stranded: true,
+	}
 }
 
 // On a jammed storage stack every umount strands unreapably and kubelet
@@ -678,5 +685,24 @@ func TestNodeUnstageUnaffectedByClosedBreaker(t *testing.T) {
 		StagingTargetPath: target,
 	}); err != nil {
 		t.Fatalf("a closed breaker must not affect unstage: %v", err)
+	}
+}
+
+// A latch must not block unstage: the filesystem still drains.
+func TestNodeUnstageDrainsOnLatchedBreaker(t *testing.T) {
+	target := t.TempDir()
+	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
+	n.Mounter = mount.NewSafeFormatAndMount(
+		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
+	n.Wedge = fakeGate{
+		err:      fmt.Errorf("kernel log assertion: %w", backend.ErrNodeWedged),
+		stranded: false,
+	}
+
+	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          volPvc1,
+		StagingTargetPath: target,
+	}); err != nil {
+		t.Fatalf("a latched-only breaker must still let unstage drain workloads: %v", err)
 	}
 }
