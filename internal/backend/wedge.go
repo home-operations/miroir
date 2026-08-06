@@ -90,7 +90,8 @@ func stranded(pid int) bool { return procState(pid) == 'D' }
 // retires itself and the breaker resets without an agent restart.
 type Wedge struct {
 	// Limit is how many outstanding stranded children trip the breaker;
-	// zero disables tripping (the count is still tracked and reported).
+	// zero disables tripping on stranded children (the count is still
+	// tracked and reported). A Latch trips regardless of Limit.
 	Limit int
 
 	// isStranded is injectable for tests; nil means the real /proc check.
@@ -108,6 +109,10 @@ func NewWedge(limit int) *Wedge {
 	return &Wedge{Limit: limit, children: map[int]string{}}
 }
 
+// Latch pins the breaker open for a fault no draining child can clear —
+// a DRBD kernel assertion means a damaged refcount that only a node
+// reboot resets. First reason wins: an assertion storm repeats the same
+// line endlessly, and the cause does not change after the first.
 func (w *Wedge) Latch(reason string) {
 	if w == nil {
 		return

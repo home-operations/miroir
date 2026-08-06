@@ -56,13 +56,14 @@ agent image's drbd-utils version (`utils_version` label), from
 client-only nodes too (which have no `MiroirNode` status). Query it
 for fleet version skew before a release raises the kernel floor.
 
-Two further node-scoped gauges cover the failure mode that
+Three further node-scoped series cover the failure mode that
 `miroir_volume_wedged` only ever sees one volume of at a time:
 
-| Metric                          | Meaning                                                                                                                           |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `miroir_node_stranded_children` | host commands killed at their deadline whose task is still in uninterruptible sleep, so the kernel will neither run nor reap them |
-| `miroir_node_wedged`            | 1 while the node-scoped breaker is open: miroir has stopped spawning storage commands because each new one only strands too       |
+| Metric                              | Meaning                                                                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `miroir_node_stranded_children`     | host commands killed at their deadline whose task is still in uninterruptible sleep, so the kernel will neither run nor reap them |
+| `miroir_node_wedged`                | 1 while the node-scoped breaker is open: miroir has stopped spawning storage commands because each new one only strands too       |
+| `miroir_node_drbd_assertions_total` | fatal DRBD kernel assertions (`put_ldev` refcount underflows, LINBIT/drbd#137) sighted in the kernel log since the agent started  |
 
 A sustained non-zero `miroir_node_stranded_children` is the earliest
 signal that a node's storage stack is jamming: it climbs while the
@@ -82,6 +83,16 @@ node. The gauge clears by itself if the stuck commands drain. Note
 that the count lives in the agent process, so restarting the agent
 resets it — the stuck tasks remain and the breaker re-trips once
 enough new children strand.
+
+The breaker also opens on a fatal DRBD kernel assertion in the node's
+kernel log (a `put_ldev` refcount underflow, LINBIT/drbd#137): the
+damaged refcount makes the next detach a hang or a use-after-free, so
+the agent stops initiating DRBD state changes on the node. Unlike the
+stranded-children trip, this latch never clears on its own and
+survives agent restarts — the agent replays the kernel ring on start —
+so `miroir_node_wedged` holds 1 until the node reboots. Unmounts are
+not refused on a latch: the filesystem layer still works, and draining
+the node is exactly the remedy.
 
 For RWX volumes the **controller** exports `miroir_export_ready`: 1
 while the volume's NFS gateway is serving (gateway pod available,
