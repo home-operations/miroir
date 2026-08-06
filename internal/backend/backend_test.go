@@ -113,6 +113,31 @@ func TestLVMThinCreateIdempotent(t *testing.T) {
 	fe.calledWith(t, "lvchange --activate y vg-miroir/pvc-1")
 }
 
+// A misaligned size still reaching the backend (a CR spec from before the
+// controller aligned requests) must not be handed to lvm verbatim: it
+// refuses sizes that are not 512-byte multiples (#413).
+func TestLVMThinCreateAlignsToSector(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lvs vg-miroir/pvc-1", "", errors.New("Failed to find logical volume"))
+	b := newLVMThin(cfg, fe.run)
+
+	if _, err := b.Create(t.Context(), "pvc-1", 10<<30+1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "--virtualsize 10737418752b")
+}
+
+func TestLVMThinResizeAlignsToSector(t *testing.T) {
+	fe := &fakeExec{}
+	fe.respond("lv_size", "  10737418240\n", nil)
+	b := newLVMThin(cfg, fe.run)
+
+	if err := b.Resize(t.Context(), "pvc-1", 10<<30+1); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "lvextend --size 10737418752b")
+}
+
 func TestLVMThinResizeSkipsWhenBigEnough(t *testing.T) {
 	fe := &fakeExec{}
 	fe.respond("lv_size", "  10737418240\n", nil)

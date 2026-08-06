@@ -25,6 +25,12 @@ import (
 	"time"
 )
 
+// lvmSectorSize is the granularity lvcreate/lvextend require byte sizes to
+// be multiples of. The controller aligns requests already; aligning here
+// too covers CR specs that predate it (#413), and rounding up keeps the
+// "realize at least the requested size" contract.
+const lvmSectorSize = 512
+
 // lvmThin provisions thin LVs in a dm-thin pool.
 type lvmThin struct {
 	vg       string
@@ -188,7 +194,7 @@ func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (stri
 	if !ok {
 		_, err = l.lvm(ctx, "lvcreate",
 			"--type", "thin",
-			"--virtualsize", fmt.Sprintf("%db", sizeBytes),
+			"--virtualsize", fmt.Sprintf("%db", alignSize(sizeBytes, lvmSectorSize)),
 			"--thinpool", l.pool,
 			"--name", vol,
 			"--setactivationskip", "n",
@@ -217,7 +223,7 @@ func (l *lvmThin) Resize(ctx context.Context, vol string, sizeBytes int64) error
 		return nil // already big enough (idempotent retry)
 	}
 	if _, err := l.lvm(ctx, "lvextend",
-		"--size", fmt.Sprintf("%db", sizeBytes),
+		"--size", fmt.Sprintf("%db", alignSize(sizeBytes, lvmSectorSize)),
 		l.ref(vol)); err != nil {
 		return fmt.Errorf("lvextend %s to %d: %w", vol, sizeBytes, err)
 	}

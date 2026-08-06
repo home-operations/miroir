@@ -207,6 +207,86 @@ func TestCreateVolumeIdempotent(t *testing.T) {
 	}
 }
 
+// Requested sizes align up to the 512-byte sector before they are stored or
+// compared anywhere: LVM refuses misaligned sizes outright (#413).
+func TestCreateVolumeAlignsSizeToSector(t *testing.T) {
+	cases := []struct {
+		name     string
+		rng      *csi.CapacityRange
+		wantCode codes.Code
+		wantSize int64
+	}{
+		{"misaligned required rounds up", &csi.CapacityRange{RequiredBytes: 1<<30 + 1}, codes.OK, 1<<30 + 512},
+		{"aligned required unchanged", &csi.CapacityRange{RequiredBytes: 1 << 30, LimitBytes: 1 << 30}, codes.OK, 1 << 30},
+		{"rounded size exceeds limit", &csi.CapacityRange{RequiredBytes: 1<<30 + 1, LimitBytes: 1<<30 + 1}, codes.OutOfRange, 0},
+		{"limit-only rounds down", &csi.CapacityRange{LimitBytes: 1<<30 - 1}, codes.OK, 1<<30 - 512},
+		{"limit-only below sector size", &csi.CapacityRange{LimitBytes: 100}, codes.OutOfRange, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newScheme(t)
+			c := &Controller{Client: readyOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+			resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+				Name:               volPvc1,
+				VolumeCapabilities: volCaps(),
+				CapacityRange:      tc.rng,
+			})
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("code = %v, want %v (err %v)", status.Code(err), tc.wantCode, err)
+			}
+			if tc.wantCode != codes.OK {
+				return
+			}
+			if resp.Volume.CapacityBytes != tc.wantSize {
+				t.Fatalf("capacity = %d, want %d", resp.Volume.CapacityBytes, tc.wantSize)
+			}
+			vol := &miroirv1alpha1.MiroirVolume{}
+			if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, vol); err != nil {
+				t.Fatal(err)
+			}
+			if vol.Spec.SizeBytes != tc.wantSize {
+				t.Fatalf("spec size = %d, want %d", vol.Spec.SizeBytes, tc.wantSize)
+			}
+		})
+	}
+}
+
+// A CR created before the controller aligned sizes still holds the raw
+// misaligned request (wedged on lvmthin, healthy on zfs/loopfile). The
+// idempotent retry must adopt it as the same request and grow its spec to
+// the aligned size so a wedged agent's lvcreate finally succeeds.
+func TestCreateVolumeAdoptsPreAlignmentCR(t *testing.T) {
+	s := newScheme(t)
+	existing := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 1<<30 + 1,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
+		},
+	}
+	c := &Controller{Client: readyOnGet(s, existing), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
+
+	resp, err := c.CreateVolume(t.Context(), &csi.CreateVolumeRequest{
+		Name:               volPvc1,
+		VolumeCapabilities: volCaps(),
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 1<<30 + 1},
+	})
+	if err != nil {
+		t.Fatalf("retry of the same misaligned request must adopt the CR: %v", err)
+	}
+	if resp.Volume.CapacityBytes != 1<<30+512 {
+		t.Fatalf("capacity = %d, want %d", resp.Volume.CapacityBytes, 1<<30+512)
+	}
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if vol.Spec.SizeBytes != 1<<30+512 {
+		t.Fatalf("existing spec must grow to the aligned size, got %d", vol.Spec.SizeBytes)
+	}
+}
+
 func TestCreateVolumeSucceedsWhenDegraded(t *testing.T) {
 	s := newScheme(t)
 	c := &Controller{Client: degradedOnGet(s), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
@@ -740,6 +820,46 @@ func TestControllerExpandSucceedsOnceRealized(t *testing.T) {
 	}
 	if resp.CapacityBytes != 10<<30 {
 		t.Fatalf("stale request must report the larger spec size, got %d", resp.CapacityBytes)
+	}
+}
+
+// Expansion aligns like creation: lvextend refuses misaligned sizes (#413).
+func TestControllerExpandAlignsSizeToSector(t *testing.T) {
+	s := newScheme(t)
+	v := &miroirv1alpha1.MiroirVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Spec: miroirv1alpha1.MiroirVolumeSpec{
+			SizeBytes: 5 << 30,
+			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
+		},
+		Status: miroirv1alpha1.MiroirVolumeStatus{
+			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {SizeBytes: 6 << 30}, // already realized past the target
+			},
+		},
+	}
+	c := &Controller{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+			WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build(),
+		ProvisionTimeout: time.Second,
+	}
+
+	resp, err := c.ControllerExpandVolume(t.Context(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      volPvc1,
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 5<<30 + 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.CapacityBytes != 5<<30+512 {
+		t.Fatalf("capacity = %d, want %d", resp.CapacityBytes, 5<<30+512)
+	}
+	vol := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Client.Get(t.Context(), types.NamespacedName{Name: volPvc1}, vol); err != nil {
+		t.Fatal(err)
+	}
+	if vol.Spec.SizeBytes != 5<<30+512 {
+		t.Fatalf("spec size = %d, want %d", vol.Spec.SizeBytes, 5<<30+512)
 	}
 }
 

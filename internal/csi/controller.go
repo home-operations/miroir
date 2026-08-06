@@ -154,6 +154,15 @@ func (c *Controller) ControllerGetCapabilities(_ context.Context, _ *csi.Control
 	return resp, nil
 }
 
+// sectorSize is the granularity LVM sizes must be multiples of; PVC sizes
+// carry no such guarantee (1G = 10^9).
+const sectorSize = 512
+
+// alignSector rounds sizeBytes up to the next sector multiple.
+func alignSector(sizeBytes int64) int64 {
+	return (sizeBytes + sectorSize - 1) &^ (sectorSize - 1)
+}
+
 // CreateVolume provisions a MiroirVolume and waits until its agents report
 // Ready. Idempotent by volume name.
 func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest) (*csi.CreateVolumeResponse, error) {
@@ -169,12 +178,22 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	if sizeBytes == 0 {
 		sizeBytes = 1 << 30 // spec allows omitting capacity_range; pick a sane floor
 		if limitBytes > 0 && limitBytes < sizeBytes {
-			sizeBytes = limitBytes
+			// No required floor to honor here, so a misaligned limit
+			// rounds down — up would overshoot the only bound given.
+			sizeBytes = limitBytes &^ (sectorSize - 1)
+			if sizeBytes == 0 {
+				return nil, status.Errorf(codes.OutOfRange,
+					"limit %d is below the %d-byte sector size", limitBytes, sectorSize)
+			}
 		}
 	}
+	// LVM refuses sizes that are not sector multiples (#413). Round up once,
+	// before the size is stored or compared anywhere, so the CR spec, the
+	// overcommit accounting, and the reported PV capacity all agree.
+	sizeBytes = alignSector(sizeBytes)
 	if limitBytes > 0 && sizeBytes > limitBytes {
 		return nil, status.Errorf(codes.OutOfRange,
-			"required %d exceeds limit %d", sizeBytes, limitBytes)
+			"required %d (sector-aligned) exceeds limit %d", sizeBytes, limitBytes)
 	}
 
 	params, err := parseClassParams(req.GetParameters())
@@ -1081,7 +1100,9 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 	if first := existing.Spec.FirstDiskfulReplica(); first != nil {
 		existingPool = nodemap.PoolOrDefault(first.Pool)
 	}
-	if existing.Spec.SizeBytes != sizeBytes || existingDiskful != replicas ||
+	// Sizes compare sector-aligned: a CR predating the alignment in
+	// CreateVolume can hold the raw misaligned size of this same request.
+	if alignSector(existing.Spec.SizeBytes) != sizeBytes || existingDiskful != replicas ||
 		(replicas > 1 && existing.Spec.QuorumPolicy != quorum) ||
 		existingSource != sourceSnapshot || existingPool != pool ||
 		(existing.Spec.Export != nil) != (vol.Spec.Export != nil) {
@@ -1089,6 +1110,16 @@ func (c *Controller) handleCreateErr(ctx context.Context, err error, vol *miroir
 			"volume %s exists with size=%d diskful=%d quorum=%s source=%q pool=%s rwx=%t (requested size=%d replicas=%d quorum=%s source=%q pool=%s rwx=%t)",
 			vol.Name, existing.Spec.SizeBytes, existingDiskful, existing.Spec.QuorumPolicy, existingSource, existingPool, existing.Spec.Export != nil,
 			sizeBytes, replicas, quorum, sourceSnapshot, pool, vol.Spec.Export != nil)
+	}
+	if existing.Spec.SizeBytes < sizeBytes {
+		// Pre-alignment CR: its agents keep refusing the stored misaligned
+		// size, so growing the spec to the aligned size is what lets the
+		// wedged volume finally provision on this retry.
+		base := existing.DeepCopy()
+		existing.Spec.SizeBytes = sizeBytes
+		if err := c.Client.Patch(ctx, existing, client.MergeFrom(base)); err != nil {
+			return status.Errorf(codes.Unavailable, "align size of existing volume %s: %v", vol.Name, err)
+		}
 	}
 	*vol = *existing
 	return nil
@@ -1473,6 +1504,7 @@ func (c *Controller) ControllerExpandVolume(ctx context.Context, req *csi.Contro
 	if newSize == 0 {
 		return nil, status.Error(codes.InvalidArgument, "capacity range is required")
 	}
+	newSize = alignSector(newSize) // lvextend refuses misaligned sizes, as lvcreate does
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := c.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
 		if apierrors.IsNotFound(err) {
