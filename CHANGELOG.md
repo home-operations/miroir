@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.22](https://github.com/home-operations/miroir/compare/0.11.21...0.11.22) (2026-08-07)
+
+
+### Features
+
+* **agent:** latch node breaker on DRBD kernel assertions ([#417](https://github.com/home-operations/miroir/issues/417)) ([19bc188](https://github.com/home-operations/miroir/commit/19bc188d34f9d46236b117821608274a33f65bf6))
+
+
+### Miscellaneous Chores
+
+* **mise:** Update tool oxfmt (0.61.0 → 0.62.0) ([#418](https://github.com/home-operations/miroir/issues/418)) ([0597786](https://github.com/home-operations/miroir/commit/0597786e6470dec84fd8cb960988f55b44e0a102))
+
 ## [0.11.21](https://github.com/home-operations/miroir/compare/0.11.20...0.11.21) (2026-08-06)
 
 
