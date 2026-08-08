@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.11.23](https://github.com/home-operations/miroir/compare/0.11.22...0.11.23) (2026-08-08)
+
+
+### Bug Fixes
+
+* **go:** update module google.golang.org/protobuf (f2248ac → 644d026) ([#412](https://github.com/home-operations/miroir/issues/412)) ([20d94d4](https://github.com/home-operations/miroir/commit/20d94d4ffd72666179c21035bbffa77502648956))
+
+
+### Continuous Integration
+
+* **github-action:** Update action docker/github-builder (v1.15.0 → v1.16.0) ([#420](https://github.com/home-operations/miroir/issues/420)) ([ca7d164](https://github.com/home-operations/miroir/commit/ca7d1646b8a79768a0e52725b0d822afaf282c9b))
+
 ## [0.11.22](https://github.com/home-operations/miroir/compare/0.11.21...0.11.22) (2026-08-07)
 
 
