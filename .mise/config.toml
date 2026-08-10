@@ -4,7 +4,7 @@ go = "1.26.5"
 "go:golang.org/x/vuln/cmd/govulncheck" = "1.6.0"
 golangci-lint = "2.12.2"
 helm = "4.2.3"
-cosign = "3.1.2"
+cosign = "3.1.3"
 helm-docs = "1.14.2"
 jq = "1.8.2"
 kube-controller-tools = "0.21.0"
@@ -23,7 +23,7 @@ yq = "4.53.3"
 # creates the locked venv on first `uv run`). Material bundles mermaid.js and the
 # admonition styling, so there are no separate preprocessor binaries or committed
 # assets to manage. `uv lock` after bumping a docs dependency in pyproject.toml.
-"aqua:astral-sh/uv" = "0.12.1"
+"aqua:astral-sh/uv" = "0.12.3"
 
 [tasks.manifests]
 description = "Generate CRD and RBAC manifests"
