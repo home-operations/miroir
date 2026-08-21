@@ -42,7 +42,7 @@ const gib = 1 << 30
 func miroirNodeObj(name string, capacity, allocated int64) *miroirv1alpha1.MiroirNode {
 	now := metav1.Now()
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Status: miroirv1alpha1.MiroirNodeStatus{
 			Pools: []miroirv1alpha1.MiroirNodePoolStatus{{
 				Name: poolDefault, CapacityBytes: capacity, AllocatedBytes: allocated,
@@ -55,7 +55,7 @@ func miroirNodeObj(name string, capacity, allocated int64) *miroirv1alpha1.Miroi
 // volOn builds a MiroirVolume placing one replica of the given size on node.
 func volOn(name, node string, sizeBytes int64) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: sizeBytes,
 			Replicas:  []miroirv1alpha1.Replica{{Node: node, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -364,8 +364,8 @@ func multiPoolNodes() nodemap.Map {
 func miroirNodePools(name string, pools ...miroirv1alpha1.MiroirNodePoolStatus) *miroirv1alpha1.MiroirNode {
 	now := metav1.Now()
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Status:     miroirv1alpha1.MiroirNodeStatus{Pools: pools, ObservedAt: &now},
+		Name:   name,
+		Status: miroirv1alpha1.MiroirNodeStatus{Pools: pools, ObservedAt: &now},
 	}
 }
 
@@ -884,7 +884,7 @@ func TestPlaceBurstSpreadsSecondReplicas(t *testing.T) {
 		}
 		seconds = append(seconds, got[1].Node)
 		vol := &miroirv1alpha1.MiroirVolume{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Name: name,
 			Spec: miroirv1alpha1.MiroirVolumeSpec{
 				SizeBytes: 5 * gib,
 				Replicas:  []miroirv1alpha1.Replica{{Node: got[0].Node}, {Node: got[1].Node}},

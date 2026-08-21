@@ -22,9 +22,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -35,8 +33,8 @@ func TestCordonWatcherTracksUnschedulable(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
-		Spec:       corev1.NodeSpec{Unschedulable: true},
+		Name: nodeA,
+		Spec: corev1.NodeSpec{Unschedulable: true},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(node).Build()
 	w := &CordonWatcher{Client: c, NodeName: nodeA}
@@ -44,7 +42,7 @@ func TestCordonWatcherTracksUnschedulable(t *testing.T) {
 	if w.Cordoned() {
 		t.Fatal("must default to not cordoned before any observation")
 	}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: nodeA}}
+	req := ctrl.Request{Name: nodeA}
 	if _, err := w.Reconcile(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -74,14 +72,14 @@ func TestCordonWatcherSyncsSentinel(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
-		Spec:       corev1.NodeSpec{Unschedulable: true},
+		Name: nodeA,
+		Spec: corev1.NodeSpec{Unschedulable: true},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(node).Build()
 	sentinel := filepath.Join(t.TempDir(), "sub", "cordoned")
 	w := &CordonWatcher{Client: c, NodeName: nodeA, SentinelPath: sentinel}
 
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: nodeA}}
+	req := ctrl.Request{Name: nodeA}
 	if _, err := w.Reconcile(t.Context(), req); err != nil {
 		t.Fatal(err)
 	}

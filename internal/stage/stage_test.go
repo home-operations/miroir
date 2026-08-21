@@ -24,7 +24,6 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -53,7 +52,7 @@ func (r *restartingDRBD) Restart(_ context.Context, name string) error {
 
 func replicatedVolume() *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-1"},
+		Name: "pvc-1",
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			DRBD: &miroirv1alpha1.DRBDSpec{Port: 7000},
 		},

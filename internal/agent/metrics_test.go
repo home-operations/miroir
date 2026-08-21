@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -56,7 +55,7 @@ func hasSeries(t *testing.T, family, volume string) bool {
 // metricsVol is an unlabeled volume: its series fall back to the CR name
 // as the pvc label.
 func metricsVol(name string) *miroirv1alpha1.MiroirVolume {
-	return &miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	return &miroirv1alpha1.MiroirVolume{Name: name}
 }
 
 const familyUpToDate = "miroir_volume_up_to_date"

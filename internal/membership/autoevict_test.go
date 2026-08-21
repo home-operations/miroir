@@ -25,7 +25,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -47,7 +46,7 @@ const (
 func minAt(name string, age time.Duration, free int64) *miroirv1alpha1.MiroirNode {
 	at := metav1.NewTime(time.Now().Add(-age))
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirNodeSpec{
 			Pools: []miroirv1alpha1.MiroirNodePool{{
 				Name: poolDefault, ZFS: &miroirv1alpha1.ZFSPool{},
@@ -77,7 +76,7 @@ func evictVol() *miroirv1alpha1.MiroirVolume {
 func reconcileAE(t *testing.T, r *AutoEvictReconciler, name string) ctrl.Result {
 	t.Helper()
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
+		ctrl.Request{Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +226,8 @@ func TestAutoEvictStandsDownWhenPeerConnected(t *testing.T) {
 // their CoW state, so eviction waits until they are gone.
 func TestAutoEvictBlocksOnSnapshot(t *testing.T) {
 	snap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volPvc1},
+		Name: "snap-1",
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volPvc1},
 	}
 	r := newAE(t, evictVol(), snap,
 		minAt(nodeB, 2*time.Hour, 50<<30),
@@ -391,7 +390,7 @@ func TestAutoEvictValveIgnoresOptedOutNodes(t *testing.T) {
 // client — severed while the node is alive and doing IO.
 func TestAutoEvictStandsDownWhenNodeReady(t *testing.T) {
 	kubeletAlive := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
+		Name: nodeB,
 		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
 			{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
 		}},
@@ -418,7 +417,7 @@ func TestAutoEvictStandsDownWhenNodeReady(t *testing.T) {
 // node the reconciler exists for.
 func TestAutoEvictProceedsWhenNodeNotReady(t *testing.T) {
 	kubeletDead := &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
+		Name: nodeB,
 		Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{
 			{Type: corev1.NodeReady, Status: corev1.ConditionUnknown},
 		}},

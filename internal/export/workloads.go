@@ -80,7 +80,7 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 	labels := shareLabels(vol.Name)
 	privileged := true
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: shareName(vol.Name), Namespace: namespace, Labels: labels},
+		Name: shareName(vol.Name), Namespace: namespace, Labels: labels,
 		Spec: appsv1.DeploymentSpec{
 			Replicas:             ptr.To[int32](1),
 			Strategy:             appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
@@ -127,9 +127,7 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 							},
 						},
 						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(nfsPort)},
-							},
+							TCPSocket:           &corev1.TCPSocketAction{Port: intstr.FromInt32(nfsPort)},
 							InitialDelaySeconds: 5,
 							PeriodSeconds:       10,
 						},
@@ -139,19 +137,15 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 						// while the gateway is still staging — a failover wait must
 						// not be liveness-killed — so no InitialDelay is needed.
 						LivenessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(httpPort)},
-							},
+							HTTPGet:          &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(httpPort)},
 							PeriodSeconds:    20,
 							TimeoutSeconds:   10,
 							FailureThreshold: 3,
 						},
 					}},
 					Volumes: []corev1.Volume{{
-						Name: "dev",
-						VolumeSource: corev1.VolumeSource{
-							HostPath: &corev1.HostPathVolumeSource{Path: "/dev", Type: ptr.To(corev1.HostPathDirectory)},
-						},
+						Name:     "dev",
+						HostPath: &corev1.HostPathVolumeSource{Path: "/dev", Type: ptr.To(corev1.HostPathDirectory)},
 					}},
 				},
 			},
@@ -166,7 +160,7 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 func buildService(vol *miroirv1alpha1.MiroirVolume, namespace string) *corev1.Service {
 	labels := shareLabels(vol.Name)
 	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: shareName(vol.Name), Namespace: namespace, Labels: labels},
+		Name: shareName(vol.Name), Namespace: namespace, Labels: labels,
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: labels,

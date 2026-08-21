@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,7 +43,7 @@ const (
 )
 
 func miroirNode(name string, spec miroirv1alpha1.MiroirNodeSpec) miroirv1alpha1.MiroirNode {
-	return miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: spec}
+	return miroirv1alpha1.MiroirNode{Name: name, Spec: spec}
 }
 
 func TestFromSpecFlattensBackendBlocks(t *testing.T) {
@@ -285,7 +284,7 @@ func TestReplicationAddress(t *testing.T) {
 	}
 	internalIP := func(name, ip string) *corev1.Node {
 		return &corev1.Node{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Name: name,
 			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
 				{Type: corev1.NodeInternalIP, Address: ip},
 			}},
@@ -309,7 +308,7 @@ func TestReplicationAddress(t *testing.T) {
 		},
 		"node without InternalIP errors": {
 			m:       Map{nodeA: {}},
-			client:  withNode(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeA}}),
+			client:  withNode(&corev1.Node{Name: nodeA}),
 			wantErr: true,
 		},
 		"absent node errors": {

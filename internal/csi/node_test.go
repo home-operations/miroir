@@ -28,7 +28,6 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
@@ -56,7 +55,7 @@ func (f fakeDRBDStatus) Status(context.Context, string) (drbd.Status, error) {
 // has already created the local DRBD device.
 func stagedVolume() *miroirv1alpha1.MiroirVolume {
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
@@ -234,8 +233,8 @@ func TestDevicePathActivatedIgnoresSplitSlot(t *testing.T) {
 // Service has a ClusterIP.
 func exportVolume(address string) *miroirv1alpha1.MiroirVolume {
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
-		Spec:       miroirv1alpha1.MiroirVolumeSpec{Export: &miroirv1alpha1.ExportSpec{FSType: "ext4"}},
+		Name: volPvc1,
+		Spec: miroirv1alpha1.MiroirVolumeSpec{Export: &miroirv1alpha1.ExportSpec{FSType: "ext4"}},
 	}
 	if address != "" {
 		v.Status.Export = &miroirv1alpha1.ExportStatus{Address: address}
@@ -295,7 +294,7 @@ func TestDevicePathRefusesForeignNode(t *testing.T) {
 // allowed; this node (node-a) holds no replica.
 func remoteVolume() *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:         1 << 30,
 			DRBD:              &miroirv1alpha1.DRBDSpec{Port: 7000},

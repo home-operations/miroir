@@ -21,7 +21,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	mount "k8s.io/mount-utils"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -155,7 +154,7 @@ func (w *TopologyWatcher) SetupWithManager(mgr ctrl.Manager) error {
 	// no-ops when nothing drifted.
 	boot := make(chan event.GenericEvent, 1)
 	boot <- event.GenericEvent{Object: &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: w.NodeName},
+		Name: w.NodeName,
 	}}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirNode{}, builder.WithPredicates(own)).

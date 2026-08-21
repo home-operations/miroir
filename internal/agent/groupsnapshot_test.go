@@ -59,16 +59,12 @@ func memberObj(name, volume string) *miroirv1alpha1.MiroirSnapshot {
 
 func groupObj() *miroirv1alpha1.MiroirSnapshotGroup {
 	return &miroirv1alpha1.MiroirSnapshotGroup{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: miroirv1alpha1.GroupVersion.String(),
-			Kind:       "MiroirSnapshotGroup",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: groupG1,
-			Finalizers: []string{
-				constants.FinalizerPrefix + nodeA,
-				constants.FinalizerPrefix + nodeB,
-			},
+		APIVersion: miroirv1alpha1.GroupVersion.String(),
+		Kind:       "MiroirSnapshotGroup",
+		Name:       groupG1,
+		Finalizers: []string{
+			constants.FinalizerPrefix + nodeA,
+			constants.FinalizerPrefix + nodeB,
 		},
 		Spec: miroirv1alpha1.MiroirSnapshotGroupSpec{
 			SnapshotNames: []string{memberOf1, memberOf2},
@@ -90,7 +86,7 @@ func groupClient(t *testing.T, objs ...client.Object) client.WithWatch {
 func reconcileGroup(t *testing.T, r *GroupSnapshotReconciler) ctrl.Result {
 	t.Helper()
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: groupG1}})
+		ctrl.Request{Name: groupG1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +274,7 @@ func TestGroupFailedSuspendLiftsKernelFlag(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: groupG1}}); err == nil {
+		ctrl.Request{Name: groupG1}); err == nil {
 		t.Fatal("the failed raise must surface as an error for the fast backoff")
 	}
 	// The half-raised leg resumes as before; the failed leg itself must
@@ -409,7 +405,7 @@ func TestGroupAndSingleRoundsExclude(t *testing.T) {
 	rS := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: feS.run}}
 	resS, err := rS.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}})
+		ctrl.Request{Name: snapSnap1})
 	if err != nil {
 		t.Fatal(err)
 	}

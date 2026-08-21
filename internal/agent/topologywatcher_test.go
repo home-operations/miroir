@@ -19,8 +19,6 @@ package agent
 import (
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -30,8 +28,8 @@ import (
 
 func watcherNode(pools ...miroirv1alpha1.MiroirNodePool) *miroirv1alpha1.MiroirNode {
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
-		Spec:       miroirv1alpha1.MiroirNodeSpec{Pools: pools},
+		Name: nodeA,
+		Spec: miroirv1alpha1.MiroirNodeSpec{Pools: pools},
 	}
 }
 
@@ -68,7 +66,7 @@ func runWatcherMounts(t *testing.T, booted []miroirv1alpha1.MiroirNodePool,
 		IsMounted:   isMounted,
 	}
 	if _, err := w.Reconcile(t.Context(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: nodeA},
+		Name: nodeA,
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -42,14 +42,13 @@ const (
 )
 
 func k8sNode(name string, labels map[string]string, annotations map[string]string) *corev1.Node {
-	return &corev1.Node{ObjectMeta: metav1.ObjectMeta{
-		Name: name, Labels: labels, Annotations: annotations,
-	}}
+	return &corev1.Node{
+		Name: name, Labels: labels, Annotations: annotations}
 }
 
 func nvmeGroup() *miroirv1alpha1.MiroirNodeGroup {
 	return &miroirv1alpha1.MiroirNodeGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: classNVMe},
+		Name: classNVMe,
 		Spec: miroirv1alpha1.MiroirNodeGroupSpec{
 			NodeSelector: metav1.LabelSelector{MatchLabels: map[string]string{classLabel: classNVMe}},
 			Template: miroirv1alpha1.MiroirNodeSpec{
@@ -66,7 +65,7 @@ func reconcileGroup(t *testing.T, c client.Client, name string) *miroirv1alpha1.
 	t.Helper()
 	r := &NodeGroupReconciler{Client: c}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: name},
+		Name: name,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +143,7 @@ func TestNodeGroupRevertsManagedDrift(t *testing.T) {
 // reports the conflict.
 func TestNodeGroupSkipsDirectMiroirNode(t *testing.T) {
 	direct := &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeA}, // no provenance label
+		Name: nodeA, // no provenance label
 		Spec: miroirv1alpha1.MiroirNodeSpec{
 			Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, ZFS: &miroirv1alpha1.ZFSPool{Dataset: "tank/miroir"}}},
 		},
@@ -247,7 +246,7 @@ func TestNodeGroupOneBadNodeDoesNotBlockTheFleet(t *testing.T) {
 	})
 
 	r := &NodeGroupReconciler{Client: c}
-	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: classNVMe}})
+	_, err := r.Reconcile(t.Context(), ctrl.Request{Name: classNVMe})
 	if err == nil || !strings.Contains(err.Error(), nodeB) {
 		t.Fatalf("the per-node failure must surface with the node named, got %v", err)
 	}
@@ -274,7 +273,7 @@ func TestNodeGroupOneBadNodeDoesNotBlockTheFleet(t *testing.T) {
 // conflicted node to a group: the next pass must take it over.
 func TestNodeGroupTakesOverAfterDirectDelete(t *testing.T) {
 	direct := &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeA},
+		Name: nodeA,
 		Spec: miroirv1alpha1.MiroirNodeSpec{
 			Pools: []miroirv1alpha1.MiroirNodePool{{Name: poolDefault, ZFS: &miroirv1alpha1.ZFSPool{Dataset: "tank/miroir"}}},
 		},

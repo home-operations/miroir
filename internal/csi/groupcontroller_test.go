@@ -25,7 +25,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,7 +39,7 @@ const groupGsnap1 = "gsnap-1"
 
 func replicatedVol(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
@@ -154,8 +153,8 @@ func TestCreateVolumeGroupSnapshotIdempotent(t *testing.T) {
 func TestCreateVolumeGroupSnapshotMismatchCreatesNothing(t *testing.T) {
 	s := newScheme(t)
 	existing := &miroirv1alpha1.MiroirSnapshotGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{groupGsnap1 + "-" + volNew}},
+		Name: groupGsnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{groupGsnap1 + "-" + volNew}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(replicatedVol(volSrc, nodeA), existing).
@@ -185,8 +184,8 @@ func TestCreateVolumeGroupSnapshotMismatchCreatesNothing(t *testing.T) {
 func TestCreateVolumeGroupSnapshotConflictCleansStrayMembers(t *testing.T) {
 	s := newScheme(t)
 	winner := &miroirv1alpha1.MiroirSnapshotGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{groupGsnap1 + "-" + volSrc}},
+		Name: groupGsnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{groupGsnap1 + "-" + volSrc}},
 	}
 	groupGets := 0
 	cl := fake.NewClientBuilder().WithScheme(s).
@@ -283,7 +282,7 @@ func TestCreateVolumeGroupSnapshotPartialFailureCleansMembers(t *testing.T) {
 func TestCreateVolumeGroupSnapshotRejectsUnreplicated(t *testing.T) {
 	s := newScheme(t)
 	plain := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendZFS}},
@@ -323,14 +322,14 @@ func TestCreateVolumeGroupSnapshotMissingVolume(t *testing.T) {
 func TestGetVolumeGroupSnapshotReportsReadiness(t *testing.T) {
 	s := newScheme(t)
 	member := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1 + "-" + volSrc},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
-		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Name:   groupGsnap1 + "-" + volSrc,
+		Spec:   miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	grp := &miroirv1alpha1.MiroirSnapshotGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{member.Name}},
-		Status:     miroirv1alpha1.MiroirSnapshotGroupStatus{ReadyToUse: true},
+		Name:   groupGsnap1,
+		Spec:   miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{member.Name}},
+		Status: miroirv1alpha1.MiroirSnapshotGroupStatus{ReadyToUse: true},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(member, grp).
 		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirSnapshotGroup{}).
@@ -365,12 +364,12 @@ func TestGetVolumeGroupSnapshotReportsReadiness(t *testing.T) {
 func TestDeleteVolumeGroupSnapshotDeletesMembersAndGroup(t *testing.T) {
 	s := newScheme(t)
 	m1 := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1 + "-" + volSrc},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
+		Name: groupGsnap1 + "-" + volSrc,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
 	}
 	grp := &miroirv1alpha1.MiroirSnapshotGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{m1.Name}},
+		Name: groupGsnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{m1.Name}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(m1, grp).Build()
 	c := &Controller{Client: cl}
@@ -403,12 +402,12 @@ func TestDeleteVolumeGroupSnapshotDeletesMembersAndGroup(t *testing.T) {
 func TestDeleteVolumeGroupSnapshotDeletesGroupFirst(t *testing.T) {
 	s := newScheme(t)
 	m1 := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1 + "-" + volSrc},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
+		Name: groupGsnap1 + "-" + volSrc,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
 	}
 	grp := &miroirv1alpha1.MiroirSnapshotGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: groupGsnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{m1.Name}},
+		Name: groupGsnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{m1.Name}},
 	}
 	var deletes []string
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(m1, grp).
@@ -439,8 +438,8 @@ func TestDeleteVolumeGroupSnapshotDeletesGroupFirst(t *testing.T) {
 func TestDeleteVolumeGroupSnapshotRejectsForeignMember(t *testing.T) {
 	s := newScheme(t)
 	foreign := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: "other-group"},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: "other-group"},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(foreign).Build()
 	c := &Controller{Client: cl}
@@ -459,8 +458,8 @@ func TestDeleteVolumeGroupSnapshotRejectsForeignMember(t *testing.T) {
 func TestDeleteSnapshotRefusesGroupMember(t *testing.T) {
 	s := newScheme(t)
 	member := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc, Group: groupGsnap1},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(member).Build()
 	c := &Controller{Client: cl}

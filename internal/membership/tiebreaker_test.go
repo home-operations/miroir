@@ -20,8 +20,6 @@ import (
 	"slices"
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -43,12 +41,10 @@ const (
 // shape the tie-breaker reconciler retrofits.
 func freezeVol() *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: volTB,
-			Finalizers: []string{
-				constants.FinalizerPrefix + nodeA,
-				constants.FinalizerPrefix + nodeB,
-			},
+		Name: volTB,
+		Finalizers: []string{
+			constants.FinalizerPrefix + nodeA,
+			constants.FinalizerPrefix + nodeB,
 		},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    1 << 30,
@@ -65,7 +61,7 @@ func freezeVol() *miroirv1alpha1.MiroirVolume {
 func tbReconcile(t *testing.T, r *TieBreakerReconciler) {
 	t.Helper()
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volTB}}); err != nil {
+		ctrl.Request{Name: volTB}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -132,7 +128,7 @@ func TestTieBreakerWaitsForInFlightRemoval(t *testing.T) {
 	}}
 
 	res, err := tb.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volTB}})
+		ctrl.Request{Name: volTB})
 	if err != nil {
 		t.Fatal(err)
 	}

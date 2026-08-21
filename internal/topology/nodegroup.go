@@ -142,11 +142,9 @@ func (r *NodeGroupReconciler) materialize(ctx context.Context, group *miroirv1al
 	desired := r.desiredSpec(group, node)
 	if current == nil {
 		mn := &miroirv1alpha1.MiroirNode{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   node.Name,
-				Labels: map[string]string{miroirv1alpha1.NodeGroupLabel: group.Name},
-			},
-			Spec: desired,
+			Name:   node.Name,
+			Labels: map[string]string{miroirv1alpha1.NodeGroupLabel: group.Name},
+			Spec:   desired,
 		}
 		// AlreadyExists is cache lag (often our own creation from the
 		// previous pass): surfacing it requeues, and the next pass

@@ -38,7 +38,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -696,7 +695,7 @@ func main() {
 			drbdEvents = make(chan event.GenericEvent, 64)
 			watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
 				ev := event.GenericEvent{Object: &miroirv1alpha1.MiroirVolume{
-					ObjectMeta: metav1.ObjectMeta{Name: resource},
+					Name: resource,
 				}}
 				select {
 				case drbdEvents <- ev:

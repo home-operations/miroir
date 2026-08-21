@@ -41,7 +41,7 @@ func newPublisher(t *testing.T, pools Pools, rec events.EventRecorder) (*PoolSta
 	// status only and never creates or mutates the spec.
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&miroirv1alpha1.MiroirNode{}).
-		WithObjects(&miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: nodeA}}).
+		WithObjects(&miroirv1alpha1.MiroirNode{Name: nodeA}).
 		Build()
 	p := &PoolStatsPublisher{
 		Client:   c,

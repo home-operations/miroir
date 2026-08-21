@@ -58,7 +58,7 @@ func newClient(t *testing.T, objs ...client.Object) client.WithWatch {
 
 func addrNode(name, addr string) *miroirv1alpha1.MiroirNode {
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirNodeSpec{
 			Address: addr,
 			Pools: []miroirv1alpha1.MiroirNodePool{{
@@ -73,7 +73,7 @@ func reconcile(t *testing.T, c client.Client, name string) *miroirv1alpha1.Miroi
 	t.Helper()
 	r := &ConflictReconciler{Client: c}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: name},
+		Name: name,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestConflictSinglePassCoversAllNodes(t *testing.T) {
 		addrNode(nodeC, "10.0.100.3"))
 	r := &ConflictReconciler{Client: c}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: topologyRequestKey},
+		Name: topologyRequestKey,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestConflictOneBadNodeDoesNotBlockTheFleet(t *testing.T) {
 	})
 
 	r := &ConflictReconciler{Client: c}
-	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: topologyRequestKey}})
+	_, err := r.Reconcile(t.Context(), ctrl.Request{Name: topologyRequestKey})
 	if err == nil || !strings.Contains(err.Error(), nodeA) {
 		t.Fatalf("the per-node failure must surface with the node named, got %v", err)
 	}
@@ -220,7 +220,7 @@ func TestConflictEventFiresOncePerFreshConflict(t *testing.T) {
 	c := newClient(t, addrNode(nodeA, "10.0.100.1"), addrNode(nodeB, "10.0.100.1"))
 	rec := events.NewFakeRecorder(8)
 	r := &ConflictReconciler{Client: c, Recorder: rec}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: topologyRequestKey}}
+	req := ctrl.Request{Name: topologyRequestKey}
 
 	if _, err := r.Reconcile(t.Context(), req); err != nil {
 		t.Fatal(err)

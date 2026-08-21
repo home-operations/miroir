@@ -259,7 +259,7 @@ func TestCreateVolumeAlignsSizeToSector(t *testing.T) {
 func TestCreateVolumeAdoptsPreAlignmentCR(t *testing.T) {
 	s := newScheme(t)
 	existing := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1<<30 + 1,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -428,7 +428,7 @@ func TestCreateVolumeRejectsRWXWhenDisabled(t *testing.T) {
 func TestValidateVolumeCapabilitiesRWXMismatch(t *testing.T) {
 	s := newScheme(t)
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA}},
@@ -463,7 +463,7 @@ func TestDeleteVolumeIdempotent(t *testing.T) {
 
 func nodeObj(name, ip string) *corev1.Node {
 	return &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Status: corev1.NodeStatus{
 			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: ip}},
 		},
@@ -746,7 +746,7 @@ func TestCreateVolumeAutoTieBreakerNoSpareNode(t *testing.T) {
 func TestControllerExpandRetryWaitsForRealization(t *testing.T) {
 	s := newScheme(t)
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 10 << 30, // a prior attempt already grew the spec
 			Replicas: []miroirv1alpha1.Replica{
@@ -779,7 +779,7 @@ func TestControllerExpandRetryWaitsForRealization(t *testing.T) {
 func TestControllerExpandSucceedsOnceRealized(t *testing.T) {
 	s := newScheme(t)
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 10 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -827,7 +827,7 @@ func TestControllerExpandSucceedsOnceRealized(t *testing.T) {
 func TestControllerExpandAlignsSizeToSector(t *testing.T) {
 	s := newScheme(t)
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -869,7 +869,7 @@ func TestControllerExpandAlignsSizeToSector(t *testing.T) {
 func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -882,8 +882,8 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{
 				nodeA: miroirv1alpha1.SnapshotDone,
@@ -935,7 +935,7 @@ func TestCreateVolumeFromSnapshotCleansReplicas(t *testing.T) {
 func TestCreateVolumeFromSnapshotRefusesCrossPool(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -944,8 +944,8 @@ func TestCreateVolumeFromSnapshotRefusesCrossPool(t *testing.T) {
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
@@ -985,7 +985,7 @@ func TestCreateVolumeFromSnapshotRefusesCrossPool(t *testing.T) {
 func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -997,8 +997,8 @@ func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{
 				nodeA: miroirv1alpha1.SnapshotDone,
@@ -1051,7 +1051,7 @@ func TestCreateVolumeFromSnapshotAddressOverride(t *testing.T) {
 func TestCreateVolumeFromSnapshotFullSyncsPostSnapshotReplica(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1064,8 +1064,8 @@ func TestCreateVolumeFromSnapshotFullSyncsPostSnapshotReplica(t *testing.T) {
 	}
 	// The snapshot captured only node-a Done; node-b was added afterward.
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
@@ -1120,8 +1120,8 @@ func reshapeController(t *testing.T, srcVol *miroirv1alpha1.MiroirVolume) *Contr
 		done[rep.Node] = miroirv1alpha1.SnapshotDone
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: srcVol.Name},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: srcVol.Name},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{
 			ReadyToUse: true, SizeBytes: srcVol.Spec.SizeBytes, PerNode: done,
 		},
@@ -1171,7 +1171,7 @@ func restoreReq(replicas string) *csi.CreateVolumeRequest {
 // metadata only because every backing grows past the spec size.
 func TestCreateVolumeRestoreExpandsUnreplicatedSource(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -1217,7 +1217,7 @@ func TestCreateVolumeRestoreExpandsUnreplicatedSource(t *testing.T) {
 // refusing (or pinning a rotation artifact, #258).
 func TestCreateVolumeRestoreExpandTopologyOnSeedNode(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -1254,7 +1254,7 @@ func TestCreateVolumeRestoreExpandTopologyOnSeedNode(t *testing.T) {
 // already carry internal metadata).
 func TestCreateVolumeRestoreExpandsReplicatedSource(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1295,7 +1295,7 @@ func TestCreateVolumeRestoreExpandsReplicatedSource(t *testing.T) {
 // clone's embedded DRBD metadata becomes inert tail bytes.
 func TestCreateVolumeRestoreShrinksToUnreplicated(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1337,7 +1337,7 @@ func TestCreateVolumeRestoreShrinksToUnreplicated(t *testing.T) {
 
 func TestCreateVolumeRestoreShrinkHonorsSelectedTopology(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1370,7 +1370,7 @@ func TestCreateVolumeRestoreShrinkHonorsSelectedTopology(t *testing.T) {
 
 func TestCreateVolumeRestoreShrinkRefusesSelectedIncompleteLeg(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1410,7 +1410,7 @@ func TestCreateVolumeRestoreShrinkRefusesSelectedIncompleteLeg(t *testing.T) {
 // let the response topology re-place the consumer.
 func TestCreateVolumeRestoreShrinkRelocatesOffLeglessSelection(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1460,7 +1460,7 @@ func TestCreateVolumeRestoreShrinkRelocatesOffLeglessSelection(t *testing.T) {
 // requisite instead of the seed.
 func TestCreateVolumeRestoreShrinkRelocationHonorsRequisite(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1506,7 +1506,7 @@ func TestCreateVolumeRestoreShrinkRelocationHonorsRequisite(t *testing.T) {
 // id, not a positional one that would collide with the sparse kept set.
 func TestCreateVolumeRestoreShrinkPrefersDoneLegs(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1559,7 +1559,7 @@ func TestCreateVolumeRestoreShrinkPrefersDoneLegs(t *testing.T) {
 // bare spec, so its joiners must pad too.
 func TestCreateVolumeRestoreInheritsPadding(t *testing.T) {
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -1593,7 +1593,7 @@ func TestCreateVolumeAlreadyExistsCacheLagIsUnavailable(t *testing.T) {
 	// APIReader has the volume; the cached Client (interceptor) 404s it,
 	// simulating an informer that has not caught up.
 	existing := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -1612,7 +1612,7 @@ func TestCreateVolumeAlreadyExistsCacheLagIsUnavailable(t *testing.T) {
 	// Same shape as the existing volume, so handleCreateErr reaches the Get.
 	err := c.handleCreateErr(t.Context(),
 		apierrors.NewAlreadyExists(miroirv1alpha1.GroupVersion.WithResource("miroirvolumes").GroupResource(), volPvc1),
-		&miroirv1alpha1.MiroirVolume{ObjectMeta: metav1.ObjectMeta{Name: volPvc1}},
+		&miroirv1alpha1.MiroirVolume{Name: volPvc1},
 		5<<30, 1, miroirv1alpha1.QuorumLastManStanding, "", poolDefault)
 	if err != nil {
 		t.Fatalf("APIReader has the volume; compatible retry must succeed: %v", err)
@@ -1625,7 +1625,7 @@ func TestCreateVolumeAlreadyExistsCacheLagIsUnavailable(t *testing.T) {
 func TestMarkVolumeFormattedReadsThroughAPIReader(t *testing.T) {
 	s := newScheme(t)
 	existing := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -1704,15 +1704,15 @@ func TestCreateVolumeRefusalNamesAddressConflict(t *testing.T) {
 func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
@@ -1765,15 +1765,15 @@ func TestCreateVolumeFromSnapshotEchoesContentSource(t *testing.T) {
 func TestCreateVolumeFromSnapshotInheritsFormatted(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
 		},
 	}
 	srcSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{
 			ReadyToUse: true, SizeBytes: 5 << 30, SourceFormatted: true,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone},
@@ -1833,7 +1833,7 @@ func TestCreateVolumeRejectsFourReplicas(t *testing.T) {
 func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -1844,14 +1844,14 @@ func TestCreateVolumeIdempotentRejectsSourceChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap1 := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
 	snap2 := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: "snap-2"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: "snap-2",
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30,
 			PerNode: map[string]miroirv1alpha1.SnapshotNodeState{nodeA: miroirv1alpha1.SnapshotDone}},
 	}
@@ -2002,7 +2002,7 @@ func TestParseAllowRemoteAccess(t *testing.T) {
 func TestControllerExpandRefusesBeyondHeadroom(t *testing.T) {
 	s := newScheme(t)
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 10 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -2037,7 +2037,7 @@ func TestControllerExpandRefusesBeyondHeadroom(t *testing.T) {
 func TestControllerExpandAdmitsWithoutStats(t *testing.T) {
 	s := newScheme(t)
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 10 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -2072,15 +2072,15 @@ func TestControllerExpandAdmitsWithoutStats(t *testing.T) {
 func TestCreateSnapshotIdempotent(t *testing.T) {
 	s := newScheme(t)
 	v := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 10 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendZFS}},
 		},
 	}
 	other := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-2"},
-		Spec:       miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30},
+		Name: "pvc-2",
+		Spec: miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30},
 	}
 	c := &Controller{
 		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(v, other).
@@ -2118,8 +2118,8 @@ func TestListVolumesPagination(t *testing.T) {
 	objs := make([]client.Object, 0, 3)
 	for _, name := range []string{"pvc-b", "pvc-a", "pvc-c"} {
 		objs = append(objs, &miroirv1alpha1.MiroirVolume{
-			ObjectMeta: metav1.ObjectMeta{Name: name},
-			Spec:       miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30},
+			Name: name,
+			Spec: miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30},
 		})
 	}
 	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()}
@@ -2243,7 +2243,7 @@ func cloneReadyClient(s *runtime.Scheme, objs ...client.Object) client.WithWatch
 func TestCreateVolumeCloneCutsInternalSnapshot(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes:    5 << 30,
 			QuorumPolicy: miroirv1alpha1.QuorumFreeze,
@@ -2310,7 +2310,7 @@ func TestCreateVolumeCloneCutsInternalSnapshot(t *testing.T) {
 func TestCreateVolumeCloneIdempotent(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
@@ -2341,7 +2341,7 @@ func TestCreateVolumeCloneIdempotent(t *testing.T) {
 func TestCreateVolumeCloneShapeChecksRunBeforeCut(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
@@ -2412,22 +2412,20 @@ func TestCreateVolumeRejectsEmptyVolumeSourceID(t *testing.T) {
 func TestDeleteVolumeCleansCloneSourceSnapshot(t *testing.T) {
 	s := newScheme(t)
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volNew},
+		Name: volNew,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Source:    &miroirv1alpha1.VolumeSource{SnapshotName: constants.CloneSnapshotPrefix + volNew},
 		},
 	}
 	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            constants.CloneSnapshotPrefix + volNew,
-			OwnerReferences: []metav1.OwnerReference{volumeOwnerRef(volSrc)},
-		},
-		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name:            constants.CloneSnapshotPrefix + volNew,
+		OwnerReferences: []metav1.OwnerReference{volumeOwnerRef(volSrc)},
+		Spec:            miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
 	userSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volNew},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volNew},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vol, cloneSnap, userSnap).Build()
 	c := &Controller{Client: cl}
@@ -2458,21 +2456,19 @@ func TestCreateSnapshotRejectsReservedPrefix(t *testing.T) {
 func TestListSnapshotsHidesCloneSourceSnapshots(t *testing.T) {
 	s := newScheme(t)
 	userSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
 	cloneSnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:            constants.CloneSnapshotPrefix + volNew,
-			OwnerReferences: []metav1.OwnerReference{volumeOwnerRef(volSrc)},
-		},
-		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name:            constants.CloneSnapshotPrefix + volNew,
+		OwnerReferences: []metav1.OwnerReference{volumeOwnerRef(volSrc)},
+		Spec:            miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
 	// Named like an internal snapshot but created before the prefix
 	// reservation: no owner reference, so it is the user's.
 	legacySnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + "legacy"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: constants.CloneSnapshotPrefix + "legacy",
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
 	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(userSnap, cloneSnap, legacySnap).Build()}
 
@@ -2496,14 +2492,14 @@ func TestListSnapshotsHidesCloneSourceSnapshots(t *testing.T) {
 func TestCreateVolumeCloneNameCollisionCutsNothing(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
 		},
 	}
 	taken := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volNew},
+		Name: volNew,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
@@ -2551,12 +2547,12 @@ func volumeOwnerRef(volume string) metav1.OwnerReference {
 func TestDeleteVolumeSparesLegacyPrefixedSnapshot(t *testing.T) {
 	s := newScheme(t)
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volNew},
-		Spec:       miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 5 << 30},
+		Name: volNew,
+		Spec: miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 5 << 30},
 	}
 	legacySnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Name: constants.CloneSnapshotPrefix + volNew,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
 	}
 	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(vol, legacySnap).Build()
 	c := &Controller{Client: cl}
@@ -2575,16 +2571,16 @@ func TestDeleteVolumeSparesLegacyPrefixedSnapshot(t *testing.T) {
 func TestCreateVolumeCloneRefusesLegacyPrefixedSnapshot(t *testing.T) {
 	s := newScheme(t)
 	srcVol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volSrc},
+		Name: volSrc,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeB, Backend: miroirv1alpha1.BackendZFS}},
 		},
 	}
 	legacySnap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: constants.CloneSnapshotPrefix + volNew},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
-		Status:     miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
+		Name:   constants.CloneSnapshotPrefix + volNew,
+		Spec:   miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volSrc},
+		Status: miroirv1alpha1.MiroirSnapshotStatus{ReadyToUse: true, SizeBytes: 5 << 30},
 	}
 	c := &Controller{Client: cloneReadyClient(s, srcVol, legacySnap), Nodes: testNodes, ProvisionTimeout: 2 * time.Second}
 
@@ -2657,7 +2653,7 @@ func probeTime(offset time.Duration) *metav1.Time {
 // tests (2 diskful replicas, node-a lvmthin, node-b zfs).
 func volumeWithStatus(name string, perNode map[string]miroirv1alpha1.ReplicaStatus) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -2810,7 +2806,7 @@ func TestWaitReadyClearsNodeUnreachableCondition(t *testing.T) {
 	s := newScheme(t)
 	now := metav1.NewTime(time.Now().Truncate(time.Second))
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-clear"},
+		Name: "pvc-clear",
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -2856,7 +2852,7 @@ func TestWaitReadyNoConditionOnDegraded(t *testing.T) {
 	s := newScheme(t)
 	rec := &testRecorder{}
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: "pvc-degraded"},
+		Name: "pvc-degraded",
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 5 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -2988,8 +2984,8 @@ func TestWaitReadyAbsentPerNodeFreshHeartbeat(t *testing.T) {
 		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
 	})
 	mn := &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
-		Status:     miroirv1alpha1.MiroirNodeStatus{ObservedAt: probeTime(0)},
+		Name:   nodeB,
+		Status: miroirv1alpha1.MiroirNodeStatus{ObservedAt: probeTime(0)},
 	}
 	c := &Controller{
 		Client:           frozenClient(s, vol, mn),
@@ -3024,8 +3020,8 @@ func TestWaitReadyAbsentPerNodeStaleHeartbeat(t *testing.T) {
 		nodeA: {SizeBytes: 5 << 30, LastProbedAt: probeTime(0)},
 	})
 	mn := &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeB},
-		Status:     miroirv1alpha1.MiroirNodeStatus{ObservedAt: probeTime(-10 * time.Minute)},
+		Name:   nodeB,
+		Status: miroirv1alpha1.MiroirNodeStatus{ObservedAt: probeTime(-10 * time.Minute)},
 	}
 	c := &Controller{
 		Client:           frozenClient(s, vol, mn),

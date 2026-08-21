@@ -236,12 +236,10 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 		return nil, err
 	}
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: req.GetName(),
-			Labels: constants.PVCRefLabels(
-				req.GetParameters()[paramPVCName],
-				req.GetParameters()[paramPVCNamespace]),
-		},
+		Name: req.GetName(),
+		Labels: constants.PVCRefLabels(
+			req.GetParameters()[paramPVCName],
+			req.GetParameters()[paramPVCNamespace]),
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: sizeBytes,
 			Replicas:  placed,
@@ -331,7 +329,7 @@ func (c *Controller) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequ
 		return nil, status.Error(codes.InvalidArgument, "volume id is required")
 	}
 	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: req.GetVolumeId()},
+		Name: req.GetVolumeId(),
 	}
 	if err := c.Client.Delete(ctx, vol); err != nil && !apierrors.IsNotFound(err) {
 		return nil, status.Errorf(codes.Internal, "delete MiroirVolume: %v", err)
@@ -1603,8 +1601,8 @@ func (c *Controller) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshot
 // reap it with the source.
 func (c *Controller) ensureSnapshot(ctx context.Context, name string, vol *miroirv1alpha1.MiroirVolume, group string, owned bool) (*miroirv1alpha1.MiroirSnapshot, error) {
 	snap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: vol.Name, Group: group},
+		Name: name,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: vol.Name, Group: group},
 	}
 	if owned {
 		snap.OwnerReferences = []metav1.OwnerReference{
@@ -1663,7 +1661,7 @@ func (c *Controller) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshot
 	} else if !apierrors.IsNotFound(err) {
 		return nil, status.Errorf(codes.Internal, "get MiroirSnapshot: %v", err)
 	}
-	snap := &miroirv1alpha1.MiroirSnapshot{ObjectMeta: metav1.ObjectMeta{Name: req.GetSnapshotId()}}
+	snap := &miroirv1alpha1.MiroirSnapshot{Name: req.GetSnapshotId()}
 	if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
 		return nil, status.Errorf(codes.Internal, "delete MiroirSnapshot: %v", err)
 	}

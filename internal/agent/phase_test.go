@@ -34,7 +34,7 @@ const oneOfOne = "1/1"
 
 func phaseVolume(probedAt time.Time) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA}},
@@ -68,7 +68,7 @@ func TestPhaseReconcilerDegradesVolumeWhenAllAgentsAreStale(t *testing.T) {
 		Build()
 	r := &PhaseReconciler{Client: cl}
 
-	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}})
+	res, err := r.Reconcile(t.Context(), ctrl.Request{Name: vol.Name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestPhaseReconcilerSchedulesFreshProbeExpiry(t *testing.T) {
 		Build()
 	r := &PhaseReconciler{Client: cl}
 
-	res, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}})
+	res, err := r.Reconcile(t.Context(), ctrl.Request{Name: vol.Name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestPhaseReconcilerClearsLingeringNodeUnreachable(t *testing.T) {
 		Build()
 	r := &PhaseReconciler{Client: cl}
 
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}}); err != nil {
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{Name: vol.Name}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,7 +148,7 @@ func TestPhaseReconcilerClearsLingeringNodeUnreachable(t *testing.T) {
 // must clear the condition here too, not only on Ready.
 func degradedReachableVolume(name string) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			DRBD:      &miroirv1alpha1.DRBDSpec{},
@@ -192,7 +192,7 @@ func TestPhaseReconcilerClearsNodeUnreachableOnDegradedButReachable(t *testing.T
 		Build()
 	r := &PhaseReconciler{Client: cl}
 
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}}); err != nil {
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{Name: vol.Name}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -225,7 +225,7 @@ func TestPhaseReconcilerKeepsNodeUnreachableWhileProbesStale(t *testing.T) {
 		Build()
 	r := &PhaseReconciler{Client: cl}
 
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: vol.Name}}); err != nil {
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{Name: vol.Name}); err != nil {
 		t.Fatal(err)
 	}
 

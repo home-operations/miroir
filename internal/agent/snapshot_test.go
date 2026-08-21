@@ -54,12 +54,10 @@ func snapObj(name, volume string, nodes ...string) *miroirv1alpha1.MiroirSnapsho
 		finalizers = append(finalizers, constants.FinalizerPrefix+n)
 	}
 	return &miroirv1alpha1.MiroirSnapshot{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: miroirv1alpha1.GroupVersion.String(),
-			Kind:       "MiroirSnapshot",
-		},
-		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name), Finalizers: finalizers},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volume},
+		APIVersion: miroirv1alpha1.GroupVersion.String(),
+		Kind:       "MiroirSnapshot",
+		Name:       name, UID: types.UID(name), Finalizers: finalizers,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volume},
 	}
 }
 
@@ -67,7 +65,7 @@ func snapObj(name, volume string, nodes ...string) *miroirv1alpha1.MiroirSnapsho
 func reconcileSnap(t *testing.T, r *SnapshotReconciler, name string) ctrl.Result {
 	t.Helper()
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
+		ctrl.Request{Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +198,7 @@ func TestSnapshotBarrierStuckParksAfterLimit(t *testing.T) {
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}, Recorder: rec}
 
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	req := ctrl.Request{Name: snapSnap1}
 	for i := 1; i < barrierFailLimit; i++ {
 		if _, err := r.Reconcile(t.Context(), req); err == nil {
 			t.Fatalf("failure %d must surface for the fast backoff", i)
@@ -250,7 +248,7 @@ func TestSnapshotFailedSuspendLiftsKernelFlag(t *testing.T) {
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	req := ctrl.Request{Name: snapSnap1}
 	if _, err := r.Reconcile(t.Context(), req); err == nil {
 		t.Fatal("the failed raise must surface as an error for the fast backoff")
 	}
@@ -294,7 +292,7 @@ func TestSnapshotFailedSuspendDefersToSiblingRound(t *testing.T) {
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}}
 
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	req := ctrl.Request{Name: snapSnap1}
 	if _, err := r.Reconcile(t.Context(), req); err == nil {
 		t.Fatal("the failed raise must surface as an error for the fast backoff")
 	}
@@ -323,7 +321,7 @@ func TestSnapshotStatusFailureParksAfterLimit(t *testing.T) {
 	r := &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(newFakeBackend()),
 		DRBD: &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run}, Recorder: rec}
 
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}
+	req := ctrl.Request{Name: snapSnap1}
 	for i := 1; i < barrierFailLimit; i++ {
 		if _, err := r.Reconcile(t.Context(), req); err == nil {
 			t.Fatalf("failure %d must surface for the fast backoff", i)
@@ -1394,9 +1392,9 @@ func TestSnapshotCollectDefersResumeToSiblingGroupRound(t *testing.T) {
 	member := snapObj("g1-"+volPvc1, volPvc1, nodeA, nodeB)
 	member.Spec.Group = "g1"
 	sibling := &miroirv1alpha1.MiroirSnapshotGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: "g1"},
-		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{member.Name}},
-		Status:     miroirv1alpha1.MiroirSnapshotGroupStatus{IOSuspended: true},
+		Name:   "g1",
+		Spec:   miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: []string{member.Name}},
+		Status: miroirv1alpha1.MiroirSnapshotGroupStatus{IOSuspended: true},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snap, member, sibling).
@@ -1728,7 +1726,7 @@ func TestSnapshotSuspendFailureThawsFreeze(t *testing.T) {
 		Freezer: mountedFreezer(rec, map[string]string{devDrbd1000: mntStage1})}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}}); err == nil {
+		ctrl.Request{Name: snapSnap1}); err == nil {
 		t.Fatal("a failed suspend must surface")
 	}
 	if calls := rec.recorded(); len(calls) != 2 ||

@@ -24,7 +24,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -50,7 +49,7 @@ func clientVol(age time.Duration) *miroirv1alpha1.MiroirVolume {
 func freshStats(free int64) *miroirv1alpha1.MiroirNode {
 	now := metav1.Now()
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeC},
+		Name: nodeC,
 		Status: miroirv1alpha1.MiroirNodeStatus{
 			Pools: []miroirv1alpha1.MiroirNodePoolStatus{{
 				Name: poolDefault, CapacityBytes: 100 << 30, AllocatedBytes: 100<<30 - free,
@@ -64,7 +63,7 @@ func freshStats(free int64) *miroirv1alpha1.MiroirNode {
 func reconcileAD(t *testing.T, r *AutoDiskfulReconciler, name string) ctrl.Result {
 	t.Helper()
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
+		ctrl.Request{Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}

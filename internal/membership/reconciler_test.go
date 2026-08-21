@@ -71,7 +71,7 @@ func newScheme(t *testing.T) *runtime.Scheme {
 //nolint:unparam // future tests will vary the name
 func node(name, ip string) *corev1.Node {
 	return &corev1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
 			{Type: corev1.NodeInternalIP, Address: ip},
 		}},
@@ -82,12 +82,10 @@ func node(name, ip string) *corev1.Node {
 // operator-added node-c entry awaiting completion.
 func replicatedVol() *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pvc-1",
-			Finalizers: []string{
-				constants.FinalizerPrefix + "node-a",
-				constants.FinalizerPrefix + "node-b",
-			},
+		Name: "pvc-1",
+		Finalizers: []string{
+			constants.FinalizerPrefix + "node-a",
+			constants.FinalizerPrefix + "node-b",
 		},
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
@@ -105,7 +103,7 @@ func replicatedVol() *miroirv1alpha1.MiroirVolume {
 func reconcile(t *testing.T, r *Reconciler, name string) {
 	t.Helper()
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
+		ctrl.Request{Name: name}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -306,7 +304,7 @@ func TestConflictedNodeStopsWithoutRequeue(t *testing.T) {
 	}}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatalf("an address conflict must not requeue with backoff, got %v", err)
 	}
 	if got := get(t, r, volPvc1).Spec.Replicas[2]; got.Address != "" {
@@ -337,7 +335,7 @@ func TestRequeuesWhenNodeNotReady(t *testing.T) {
 			}}
 
 			if _, err := r.Reconcile(t.Context(),
-				ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-1"}}); err == nil {
+				ctrl.Request{Name: "pvc-1"}); err == nil {
 				t.Fatal("transient completion failure must return an error to requeue")
 			}
 			if got := get(t, r, "pvc-1").Spec.Replicas[2]; got.Address != "" {
@@ -435,7 +433,7 @@ func TestCompletesReplicaAndClientWithDistinctIDs(t *testing.T) {
 // name, bound to a claim.
 func boundPV(volName, ns, claim string) *corev1.PersistentVolume {
 	return &corev1.PersistentVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volName},
+		Name: volName,
 		Spec: corev1.PersistentVolumeSpec{
 			ClaimRef: &corev1.ObjectReference{Namespace: ns, Name: claim},
 			PersistentVolumeSource: corev1.PersistentVolumeSource{

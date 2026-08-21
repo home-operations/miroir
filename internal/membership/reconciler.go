@@ -332,7 +332,7 @@ func enqueueAllVolumes(c client.Client) handler.EventHandler {
 		reqs := make([]ctrl.Request, 0, len(list.Items))
 		for i := range list.Items {
 			reqs = append(reqs, ctrl.Request{
-				NamespacedName: types.NamespacedName{Name: list.Items[i].Name},
+				Name: list.Items[i].Name,
 			})
 		}
 		return reqs

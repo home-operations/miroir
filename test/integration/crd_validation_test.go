@@ -45,7 +45,7 @@ const (
 // unreplicatedVolume is the minimal valid single-replica volume.
 func unreplicatedVolume(name string) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			Replicas:  []miroirv1alpha1.Replica{{Node: nodeA, Backend: miroirv1alpha1.BackendLVMThin}},
@@ -58,7 +58,7 @@ func unreplicatedVolume(name string) *miroirv1alpha1.MiroirVolume {
 // rules must be tested in isolation.
 func replicatedVolume(name string) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Name: name,
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			Replicas: []miroirv1alpha1.Replica{
@@ -258,8 +258,8 @@ var _ = Describe("MiroirVolume CEL validation", func() {
 var _ = Describe("MiroirSnapshot CEL validation", func() {
 	It("rejects retargeting volumeName", func() {
 		snap := &miroirv1alpha1.MiroirSnapshot{
-			ObjectMeta: metav1.ObjectMeta{Name: "snap-retarget"},
-			Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-a"},
+			Name: "snap-retarget",
+			Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-a"},
 		}
 		Expect(k8sClient.Create(ctx, snap)).To(Succeed())
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, snap)).To(Succeed()) })
@@ -274,8 +274,8 @@ var _ = Describe("MiroirSnapshot CEL validation", func() {
 // minimalNode is a valid single-pool MiroirNode for the CEL cases below.
 func minimalNode(name string, pool miroirv1alpha1.MiroirNodePool) *miroirv1alpha1.MiroirNode {
 	return &miroirv1alpha1.MiroirNode{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{pool}},
+		Name: name,
+		Spec: miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{pool}},
 	}
 }
 
@@ -289,7 +289,7 @@ func lvmthinPool(name string) miroirv1alpha1.MiroirNodePool {
 var _ = Describe("MiroirNode CEL validation", func() {
 	It("accepts each backend with its own block and applies the zfs defaults", func() {
 		node := &miroirv1alpha1.MiroirNode{
-			ObjectMeta: metav1.ObjectMeta{Name: "min-valid"},
+			Name: "min-valid",
 			Spec: miroirv1alpha1.MiroirNodeSpec{
 				Zone:    "rack-1",
 				Address: "10.0.100.11",
@@ -388,7 +388,7 @@ var _ = Describe("MiroirNode CEL validation", func() {
 
 	It("rejects two pools sharing a backing", func() {
 		node := &miroirv1alpha1.MiroirNode{
-			ObjectMeta: metav1.ObjectMeta{Name: "min-shared-backing"},
+			Name: "min-shared-backing",
 			Spec: miroirv1alpha1.MiroirNodeSpec{Pools: []miroirv1alpha1.MiroirNodePool{
 				lvmthinPool("a"),
 				lvmthinPool("b"),
@@ -432,7 +432,7 @@ var _ = Describe("MiroirNode CEL validation", func() {
 	})
 
 	It("requires at least one pool", func() {
-		node := &miroirv1alpha1.MiroirNode{ObjectMeta: metav1.ObjectMeta{Name: "min-no-pools"}}
+		node := &miroirv1alpha1.MiroirNode{Name: "min-no-pools"}
 		Expect(apierrors.IsInvalid(k8sClient.Create(ctx, node))).To(BeTrue())
 	})
 })
@@ -440,7 +440,7 @@ var _ = Describe("MiroirNode CEL validation", func() {
 var _ = Describe("MiroirNodeGroup CEL rules", func() {
 	It("rejects an address in the template — it is a per-node fact", func() {
 		group := &miroirv1alpha1.MiroirNodeGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: "grp-addr"},
+			Name: "grp-addr",
 			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
 				NodeSelector: metav1.LabelSelector{},
 				Template: miroirv1alpha1.MiroirNodeSpec{
@@ -456,7 +456,7 @@ var _ = Describe("MiroirNodeGroup CEL rules", func() {
 
 	It("accepts a template with pools and an empty selector, and validates the pool oneOf", func() {
 		group := &miroirv1alpha1.MiroirNodeGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: "grp-valid"},
+			Name: "grp-valid",
 			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
 				NodeSelector: metav1.LabelSelector{},
 				Template: miroirv1alpha1.MiroirNodeSpec{
@@ -468,7 +468,7 @@ var _ = Describe("MiroirNodeGroup CEL rules", func() {
 		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, group)).To(Succeed()) })
 
 		blockless := &miroirv1alpha1.MiroirNodeGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: "grp-blockless"},
+			Name: "grp-blockless",
 			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
 				NodeSelector: metav1.LabelSelector{},
 				Template: miroirv1alpha1.MiroirNodeSpec{
@@ -482,7 +482,7 @@ var _ = Describe("MiroirNodeGroup CEL rules", func() {
 
 	It("rejects a selector expression the reconciler could not compile", func() {
 		group := &miroirv1alpha1.MiroirNodeGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: "grp-badexpr"},
+			Name: "grp-badexpr",
 			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
 				NodeSelector: metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
 					Key:      "storage.miroir.home-operations.com/class",
@@ -501,7 +501,7 @@ var _ = Describe("MiroirNodeGroup CEL rules", func() {
 
 	It("rejects a name longer than a label value — it becomes the provenance label", func() {
 		group := &miroirv1alpha1.MiroirNodeGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("g", 64)},
+			Name: strings.Repeat("g", 64),
 			Spec: miroirv1alpha1.MiroirNodeGroupSpec{
 				NodeSelector: metav1.LabelSelector{},
 				Template: miroirv1alpha1.MiroirNodeSpec{

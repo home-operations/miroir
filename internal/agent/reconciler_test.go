@@ -201,15 +201,11 @@ func vol(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
 		finalizers = append(finalizers, constants.FinalizerPrefix+n)
 	}
 	return &miroirv1alpha1.MiroirVolume{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: miroirv1alpha1.GroupVersion.String(),
-			Kind:       "MiroirVolume",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       name,
-			Finalizers: finalizers,
-		},
-		Spec: miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30, Replicas: replicas},
+		APIVersion: miroirv1alpha1.GroupVersion.String(),
+		Kind:       "MiroirVolume",
+		Name:       name,
+		Finalizers: finalizers,
+		Spec:       miroirv1alpha1.MiroirVolumeSpec{SizeBytes: 1 << 30, Replicas: replicas},
 	}
 }
 
@@ -217,7 +213,7 @@ func vol(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
 func reconcile(t *testing.T, r *VolumeReconciler, name string) {
 	t.Helper()
 	_, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: name}})
+		ctrl.Request{Name: name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +297,7 @@ func TestReconcileUnknownPoolFails(t *testing.T) {
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err == nil {
+		ctrl.Request{Name: volPvc1}); err == nil {
 		t.Fatal("unknown pool must error the reconcile")
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
@@ -343,7 +339,7 @@ func TestReconcileReportsBackendError(t *testing.T) {
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	_, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err == nil {
 		t.Fatal("expected error to requeue")
 	}
@@ -417,7 +413,7 @@ func TestReconcileSourceSnapshotGoneAndDeviceMissingParks(t *testing.T) {
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatalf("an impossible restore must park, not error: %v", err)
 	}
@@ -484,7 +480,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +521,7 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm resize --assume-clean pvc-1")
@@ -580,7 +576,7 @@ func TestReconcile_RestoreToLargerResizesBackingAfterAttach(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -648,7 +644,7 @@ func TestReconcilePaddedRestoreGrowsCloneBeforeCreateMD(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -698,7 +694,7 @@ func TestReconcilePaddedRestoreFullSyncJoinerPadsBacking(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -783,7 +779,7 @@ func TestReconcilePaddedRestoreSeedMintsGeneration(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -819,7 +815,7 @@ func TestReconcilePaddedRestoreSeedMintRefusesWhenPeerHasData(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -849,7 +845,7 @@ func TestReconcilePaddedRestoreSeedDemotesInterruptedMint(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -909,7 +905,7 @@ func TestReconcile_StatusApplyScopedToOwnSlot(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -974,7 +970,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 	}
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatalf("a resync in progress must not surface as a reconcile error: %v", err)
 	}
 	fe.notCalledWith(t, "drbdadm resize")
@@ -990,7 +986,7 @@ func TestReconcile_SkipResizeDuringResync(t *testing.T) {
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer_devices":[{"replication-state":"Established"}]}]}]`
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 	fe.calledWith(t, "drbdadm resize --assume-clean pvc-1")
@@ -1052,7 +1048,7 @@ func TestReconcile_ResizeRaceWithResyncIsTransient(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatalf("a resize that raced a resync must not fail the reconcile: %v", err)
 	}
@@ -1386,7 +1382,7 @@ func TestReconcileTeardownDownHeldOpenRetries(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatalf("held-open must be a requeue, not an error: %v", err)
 	}
@@ -1425,7 +1421,7 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 		Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec,
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+	req := ctrl.Request{Name: volPvc1}
 
 	for i := 1; i < busyFailLimit; i++ {
 		res, err := r.Reconcile(t.Context(), req)
@@ -1514,7 +1510,7 @@ func TestReconcileBusyStreakResetsOutsideTeardown(t *testing.T) {
 	r = &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
 		busyFails: map[string]int{volPvc1: busyFailLimit - 1}}
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil || res.RequeueAfter != 30*time.Second {
 		t.Fatalf("want the 30s removal-blocked requeue, got %v / %v", res.RequeueAfter, err)
 	}
@@ -1585,7 +1581,7 @@ func drainEvents(rec *events.FakeRecorder, substr string) bool {
 func TestReconcileTeardownOrphanHoldReclaims(t *testing.T) {
 	procDir := procFixture(t, map[int]string{1: unrelatedMountinfo})
 	r, fb, fe, rec := orphanHoldFixture(t, procDir)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+	req := ctrl.Request{Name: volPvc1}
 
 	// Ride the whole busy escalation first: the orphan proof must not
 	// pre-empt a hold NodeUnstage could still release.
@@ -1634,7 +1630,7 @@ func TestReconcileTeardownOrphanHoldReclaims(t *testing.T) {
 func TestReconcileTeardownOrphanHoldLiveOpenerStaysParked(t *testing.T) {
 	procDir := procFixture(t, map[int]string{4242424: unrelatedMountinfo})
 	r, fb, fe, _ := orphanHoldFixture(t, procDir)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+	req := ctrl.Request{Name: volPvc1}
 
 	for range busyFailLimit + 1 {
 		if _, err := r.Reconcile(t.Context(), req); err != nil {
@@ -1660,7 +1656,7 @@ func TestReconcileTeardownOrphanHoldMountedStaysParked(t *testing.T) {
 		4321: drbd1422Mountinfo,
 	})
 	r, fb, fe, _ := orphanHoldFixture(t, procDir)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+	req := ctrl.Request{Name: volPvc1}
 
 	for range busyFailLimit + 1 {
 		if _, err := r.Reconcile(t.Context(), req); err != nil {
@@ -1686,7 +1682,7 @@ func TestReconcileTeardownOrphanHoldMountedStaysParked(t *testing.T) {
 func TestReconcileTeardownLiveConsumerEmitsEvent(t *testing.T) {
 	procDir := procFixture(t, map[int]string{4242424: unrelatedMountinfo})
 	r, fb, fe, rec := orphanHoldFixture(t, procDir)
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+	req := ctrl.Request{Name: volPvc1}
 
 	// Ride up to busyFailLimit — orphanHold returns false (pid 4242424 alive).
 	for i := 1; i < busyFailLimit; i++ {
@@ -1750,7 +1746,7 @@ func TestReconcileTeardownWedgedParksRetry(t *testing.T) {
 		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
 	}
 	t.Cleanup(func() { dropVolumeMetrics(volPvc1) })
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+	req := ctrl.Request{Name: volPvc1}
 
 	// First sighting: the detach may still be draining — busy retry.
 	res, err := r.Reconcile(t.Context(), req)
@@ -1829,7 +1825,7 @@ func TestReconcileVolumeGoneDropsMetrics(t *testing.T) {
 	t.Cleanup(func() { dropVolumeMetrics(volPvc1) })
 
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		ctrl.Request{Name: volPvc1}); err != nil {
 		t.Fatal(err)
 	}
 	if n := testutil.CollectAndCount(metricWedged); n != 0 {
@@ -2220,8 +2216,8 @@ func TestRealizeBackingRecloneInvalidatesForeignMetadataWipe(t *testing.T) {
 	v := vol(volPvc1, nodeA)
 	v.Spec.Source = &miroirv1alpha1.VolumeSource{SnapshotName: snapSnap1}
 	snap := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "source"},
+		Name: snapSnap1,
+		Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "source"},
 	}
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v, snap).Build()
 	fb := newFakeBackend()
@@ -2319,7 +2315,7 @@ func TestReconcileDisklessTieBreaker(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2827,7 +2823,7 @@ func TestReportErrorPreservesObservedState(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 	if err := c.Status().Patch(t.Context(), &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {"`+nodeA+`": {
 			"deviceCreated": true, "sizeBytes": 1073741824, "connected": true
@@ -2870,7 +2866,7 @@ func removedReplicaVol() *miroirv1alpha1.MiroirVolume {
 func patchPeersUpToDate(t *testing.T, c client.Client, diskState string) {
 	t.Helper()
 	err := c.Status().Patch(t.Context(), &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
+		Name: volPvc1,
 	}, client.RawPatch(types.MergePatchType, []byte(`{
 		"status": {"perNode": {
 			"node-b": {"deviceCreated": true, "diskState": "`+diskState+`", "connected": true},
@@ -2926,8 +2922,8 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 	fb.created[volPvc1] = 1 << 30
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(removedReplicaVol(), &miroirv1alpha1.MiroirSnapshot{
-			ObjectMeta: metav1.ObjectMeta{Name: snapSnap1},
-			Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volPvc1},
+			Name: snapSnap1,
+			Spec: miroirv1alpha1.MiroirSnapshotSpec{VolumeName: volPvc1},
 		}).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
@@ -2935,7 +2931,7 @@ func TestReconcileRemovalBlockedBySnapshot(t *testing.T) {
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2966,7 +2962,7 @@ func TestReconcileRemovalBlockedByDegradedPeer(t *testing.T) {
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2993,7 +2989,7 @@ func TestReconcileWaitsForIncompleteEntry(t *testing.T) {
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb)}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3812,7 +3808,7 @@ func TestReconcileBirthMintErrorRetries(t *testing.T) {
 	r, fe, _ := birthSetup(t, nodeA, 1, birthReadyJSON)
 	fe.errOn = map[string]error{"new-current-uuid": errors.New("exit status 1")}
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err == nil {
+		ctrl.Request{Name: volPvc1}); err == nil {
 		t.Fatal("a failed mint must surface as a reconcile error")
 	}
 	got := &miroirv1alpha1.MiroirVolume{}
@@ -3994,7 +3990,7 @@ func TestReconcileClientLegWaitsForMembership(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
+		ctrl.Request{Name: volPvc1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4179,7 +4175,7 @@ func TestReconcileDRBDStatusProbeFailurePreservesLastProbedAt(t *testing.T) {
 
 	// The reconcile should fail (status probe error), returning an error.
 	if _, err := r.Reconcile(t.Context(),
-		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err == nil {
+		ctrl.Request{Name: volPvc1}); err == nil {
 		t.Fatal("DRBD status probe failure must surface as an error")
 	}
 

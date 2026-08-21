@@ -22,7 +22,6 @@ import (
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -30,8 +29,8 @@ import (
 
 func volWithStatus(name string, phase miroirv1alpha1.VolumePhase, perNode map[string]miroirv1alpha1.ReplicaStatus) *miroirv1alpha1.MiroirVolume {
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Status:     miroirv1alpha1.MiroirVolumeStatus{Phase: phase, PerNode: perNode},
+		Name:   name,
+		Status: miroirv1alpha1.MiroirVolumeStatus{Phase: phase, PerNode: perNode},
 	}
 }
 

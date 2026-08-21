@@ -23,7 +23,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -51,7 +50,7 @@ func exportVolume(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
 		reps[i] = miroirv1alpha1.Replica{Node: n, NodeID: int32(i)}
 	}
 	return &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID("uid-" + name)},
+		Name: name, UID: types.UID("uid-" + name),
 		Spec: miroirv1alpha1.MiroirVolumeSpec{
 			SizeBytes: 1 << 30,
 			Replicas:  reps,
@@ -77,7 +76,7 @@ func newReconciler(objs ...client.Object) (*Reconciler, client.Client) {
 
 func reconcile(t *testing.T, r *Reconciler, name string) {
 	t.Helper()
-	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{Name: name}); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 }

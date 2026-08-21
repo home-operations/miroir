@@ -25,7 +25,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -103,8 +102,8 @@ func (c *Controller) CreateVolumeGroupSnapshot(ctx context.Context, req *csi.Cre
 	}
 
 	grp := &miroirv1alpha1.MiroirSnapshotGroup{
-		ObjectMeta: metav1.ObjectMeta{Name: req.GetName()},
-		Spec:       miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: names},
+		Name: req.GetName(),
+		Spec: miroirv1alpha1.MiroirSnapshotGroupSpec{SnapshotNames: names},
 	}
 	// One finalizer per node holding any member leg: each agent lifts its
 	// local barriers before the round object disappears.
@@ -198,7 +197,7 @@ func (c *Controller) cleanupStrayMembers(ctx context.Context, names, owned []str
 		if slices.Contains(owned, name) {
 			continue
 		}
-		snap := &miroirv1alpha1.MiroirSnapshot{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		snap := &miroirv1alpha1.MiroirSnapshot{Name: name}
 		if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
 			log.Error(err, "cannot delete stray group member snapshot", "snapshot", name)
 		}
@@ -222,12 +221,12 @@ func (c *Controller) DeleteVolumeGroupSnapshot(ctx context.Context, req *csi.Del
 	if err != nil {
 		return nil, err
 	}
-	grp := &miroirv1alpha1.MiroirSnapshotGroup{ObjectMeta: metav1.ObjectMeta{Name: req.GetGroupSnapshotId()}}
+	grp := &miroirv1alpha1.MiroirSnapshotGroup{Name: req.GetGroupSnapshotId()}
 	if err := c.Client.Delete(ctx, grp); err != nil && !apierrors.IsNotFound(err) {
 		return nil, status.Errorf(codes.Internal, "delete MiroirSnapshotGroup: %v", err)
 	}
 	for _, name := range members {
-		snap := &miroirv1alpha1.MiroirSnapshot{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		snap := &miroirv1alpha1.MiroirSnapshot{Name: name}
 		if err := c.Client.Delete(ctx, snap); err != nil && !apierrors.IsNotFound(err) {
 			return nil, status.Errorf(codes.Internal, "delete member MiroirSnapshot: %v", err)
 		}
