@@ -24,6 +24,7 @@ package stage
 
 import (
 	"context"
+	"errors"
 	"os"
 	"slices"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	mount "k8s.io/mount-utils"
+	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -213,27 +215,42 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 				return status.Errorf(codes.DataLoss,
 					"volume %s was formatted before but %s reads blank — refusing to reformat", vol.Name, dev)
 			}
+			// Genuinely never formatted: FormatAndMount's mkfs-if-blank is
+			// safe here, its worst case is formatting a device that holds no
+			// data.
+			if err := d.Mounter.FormatAndMount(dev, target, fsType, xfsCloneMountFlags(vol, format, flags)); err != nil {
+				if rerr := recoverFrozenBdev(ctx, d, vol, dev, err); rerr != nil {
+					return rerr
+				}
+				return status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
+			}
+			// First mkfs. A failed patch fails the stage; the retry lands in
+			// the mount branch below and records it then.
+			if err := MarkFormatted(ctx, d.Client, vol); err != nil {
+				return status.Errorf(codes.Internal, "record formatted flag: %v", err)
+			}
 		} else {
+			// This probe is the format decision. FormatAndMount re-probes
+			// internally and answers a blank read with mkfs, and blkid cannot
+			// tell a blank device from one that is momentarily unreadable
+			// (exit status 2 either way) — under a DRBD peer-teardown storm
+			// that combination reformatted healthy replicas (issue #444). A
+			// device known to carry a filesystem is mounted without ever
+			// re-entering a path that can format.
+			//
 			// Record before mounting so a clone that arrived with a
 			// filesystem is protected from then on.
 			if err := MarkFormatted(ctx, d.Client, vol); err != nil {
 				return status.Errorf(codes.Internal, "record formatted flag: %v", err)
 			}
-		}
-
-		// FormatAndMount formats only when the device has no filesystem —
-		// the mkfs-if-blank step.
-		if err := d.Mounter.FormatAndMount(dev, target, fsType, xfsCloneMountFlags(vol, format, flags)); err != nil {
-			if rerr := recoverFrozenBdev(ctx, d, vol, dev, err); rerr != nil {
-				return rerr
+			if err := checkAndRepair(d, dev); err != nil {
+				return err
 			}
-			return status.Errorf(codes.Internal, "format/mount %s: %v", dev, err)
-		}
-		if format == "" {
-			// First mkfs. A failed patch fails the stage; the retry lands in
-			// the format != "" path above and records it then.
-			if err := MarkFormatted(ctx, d.Client, vol); err != nil {
-				return status.Errorf(codes.Internal, "record formatted flag: %v", err)
+			if err := d.Mounter.Mount(dev, target, fsType, xfsCloneMountFlags(vol, format, flags)); err != nil {
+				if rerr := recoverFrozenBdev(ctx, d, vol, dev, err); rerr != nil {
+					return rerr
+				}
+				return status.Errorf(codes.Internal, "mount %s: %v", dev, err)
 			}
 		}
 	} else {
@@ -266,6 +283,27 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 	// auto-recovery.
 	if err := MarkActivated(ctx, d.Client, vol); err != nil {
 		return status.Errorf(codes.Internal, "record activated flag: %v", err)
+	}
+	return nil
+}
+
+// fsckErrorsUncorrected is fsck's exit status for errors it found but
+// could not fix (mount-utils keeps the same constant unexported).
+const fsckErrorsUncorrected = 4
+
+// checkAndRepair is the pre-mount fsck FormatAndMount would have run on a
+// device that already carries a filesystem; it exists because the mount
+// branch above must bypass FormatAndMount (issue #444). Repairable issues
+// are fixed in place; only damage fsck reports as uncorrectable fails the
+// stage, and every other outcome (fsck missing, unsupported filesystem)
+// falls through to the mount, matching mount-utils' tolerances.
+func checkAndRepair(d Deps, dev string) error {
+	out, err := d.Mounter.Exec.Command("fsck", "-a", dev).CombinedOutput()
+	if err != nil {
+		if ee, ok := errors.AsType[utilexec.ExitError](err); ok && ee.ExitStatus() == fsckErrorsUncorrected {
+			return status.Errorf(codes.Internal,
+				"fsck found errors on %s it could not correct: %s", dev, out)
+		}
 	}
 	return nil
 }

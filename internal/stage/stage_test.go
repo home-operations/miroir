@@ -19,13 +19,21 @@ package stage
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	mount "k8s.io/mount-utils"
+	utilexec "k8s.io/utils/exec"
+	fakeexec "k8s.io/utils/exec/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/drbd"
@@ -196,6 +204,164 @@ func TestFormattedBeforeRefusesToGuessOnAReadFailure(t *testing.T) {
 	_, err := formattedBefore(t.Context(), Deps{Reader: r}, restoredVolume())
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("an unreadable flag must hand kubelet a retry, got %v", err)
+	}
+}
+
+// scriptedExec answers each command, in order, from script.
+func scriptedExec(script []fakeexec.FakeAction) *fakeexec.FakeExec {
+	fcmd := &fakeexec.FakeCmd{CombinedOutputScript: script}
+	fe := &fakeexec.FakeExec{}
+	for range script {
+		fe.CommandScript = append(fe.CommandScript,
+			func(cmd string, args ...string) utilexec.Cmd {
+				return fakeexec.InitFakeCmd(fcmd, cmd, args...)
+			})
+	}
+	return fe
+}
+
+func execOut(s string) fakeexec.FakeAction {
+	return func() ([]byte, []byte, error) { return []byte(s), nil, nil }
+}
+
+func execExit(code int) fakeexec.FakeAction {
+	return func() ([]byte, []byte, error) { return nil, nil, fakeexec.FakeExitError{Status: code} }
+}
+
+// ensureDeps builds Deps around a fake mounter, a scripted exec, and a
+// fake client holding vol.
+func ensureDeps(t *testing.T, vol *miroirv1alpha1.MiroirVolume, fm *mount.FakeMounter, fe *fakeexec.FakeExec) Deps {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := miroirv1alpha1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	c := fakeclient.NewClientBuilder().WithScheme(s).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		WithObjects(vol).Build()
+	return Deps{Client: c, NodeName: "node-a", DRBD: statusOnlyDRBD{},
+		Mounter: mount.NewSafeFormatAndMount(fm, fe)}
+}
+
+// tempDev stands in for the block device: EnsureFilesystem's write probe
+// only needs something openable O_RDWR.
+func tempDev(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return f.Name()
+}
+
+// EnsureFilesystem's own probe is the format decision: a device that reads
+// a filesystem is mounted without re-entering FormatAndMount, whose internal
+// re-probe answers a momentarily unreadable device with mkfs (issue #444).
+// The bait entries would satisfy exactly that re-probe and mkfs; the stage
+// must never reach them.
+func TestEnsureFilesystemNeverReformatsAFormattedDevice(t *testing.T) {
+	vol := replicatedVolume()
+	fm := mount.NewFakeMounter(nil)
+	fe := scriptedExec([]fakeexec.FakeAction{
+		execOut("TYPE=ext4\n"), // blkid: the device carries a filesystem
+		execOut(""),            // fsck -a: clean
+		execOut("1\n"),         // blockdev --getro: read-only skips the resize path
+		execExit(2),            // bait: a re-probe reading the device blank
+		execOut(""),            // bait: the mkfs that must never run
+	})
+	d := ensureDeps(t, vol, fm, fe)
+	if err := EnsureFilesystem(t.Context(), d, vol, tempDev(t),
+		filepath.Join(t.TempDir(), "staging"), "ext4", nil); err != nil {
+		t.Fatal(err)
+	}
+	if fe.CommandCalls != 3 {
+		t.Fatalf("exec ran %d commands, want 3 (blkid, fsck, blockdev) and no mkfs", fe.CommandCalls)
+	}
+	log := fm.GetLog()
+	if len(log) != 1 || log[0].Action != mount.FakeActionMount {
+		t.Fatalf("expected exactly one mount, got %+v", log)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := d.Client.Get(t.Context(), types.NamespacedName{Name: vol.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.Formatted || !got.Status.Activated {
+		t.Fatalf("flags must latch: formatted=%v activated=%v",
+			got.Status.Formatted, got.Status.Activated)
+	}
+}
+
+// A blank probe on a volume that ever carried a filesystem is refused, not
+// formatted — blkid cannot tell blank from unreadable.
+func TestEnsureFilesystemRefusesBlankFormattedVolume(t *testing.T) {
+	vol := replicatedVolume()
+	vol.Status.Formatted = true
+	fm := mount.NewFakeMounter(nil)
+	fe := scriptedExec([]fakeexec.FakeAction{
+		execExit(2), // blkid: blank (or unreadable — indistinguishable)
+		execOut(""), // bait: the mkfs that must never run
+	})
+	err := EnsureFilesystem(t.Context(), ensureDeps(t, vol, fm, fe), vol, tempDev(t),
+		filepath.Join(t.TempDir(), "staging"), "ext4", nil)
+	if status.Code(err) != codes.DataLoss {
+		t.Fatalf("a formatted volume reading blank must refuse with DataLoss, got %v", err)
+	}
+	if fe.CommandCalls != 1 {
+		t.Fatalf("exec ran %d commands, want 1 (blkid only)", fe.CommandCalls)
+	}
+	if log := fm.GetLog(); len(log) != 0 {
+		t.Fatalf("nothing may be mounted: %+v", log)
+	}
+}
+
+// A volume that never carried a filesystem still gets its one mkfs.
+func TestEnsureFilesystemFormatsNeverFormattedVolume(t *testing.T) {
+	vol := replicatedVolume()
+	fm := mount.NewFakeMounter(nil)
+	fe := scriptedExec([]fakeexec.FakeAction{
+		execExit(2),    // blkid: blank
+		execExit(2),    // FormatAndMount's internal blkid: still blank
+		execOut(""),    // mkfs.ext4
+		execOut("1\n"), // blockdev --getro: read-only skips the resize path
+	})
+	d := ensureDeps(t, vol, fm, fe)
+	if err := EnsureFilesystem(t.Context(), d, vol, tempDev(t),
+		filepath.Join(t.TempDir(), "staging"), "ext4", nil); err != nil {
+		t.Fatal(err)
+	}
+	log := fm.GetLog()
+	if len(log) != 1 || log[0].Action != mount.FakeActionMount {
+		t.Fatalf("expected exactly one mount, got %+v", log)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := d.Client.Get(t.Context(), types.NamespacedName{Name: vol.Name}, got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Status.Formatted || !got.Status.Activated {
+		t.Fatalf("flags must latch after first mkfs: formatted=%v activated=%v",
+			got.Status.Formatted, got.Status.Activated)
+	}
+}
+
+// Damage fsck cannot correct fails the stage before anything is mounted,
+// matching FormatAndMount's refusal.
+func TestEnsureFilesystemFailsStageOnUncorrectableFsck(t *testing.T) {
+	vol := replicatedVolume()
+	fm := mount.NewFakeMounter(nil)
+	fe := scriptedExec([]fakeexec.FakeAction{
+		execOut("TYPE=ext4\n"),
+		execExit(4), // fsck: errors left uncorrected
+	})
+	err := EnsureFilesystem(t.Context(), ensureDeps(t, vol, fm, fe), vol, tempDev(t),
+		filepath.Join(t.TempDir(), "staging"), "ext4", nil)
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("uncorrectable fsck errors must fail the stage, got %v", err)
+	}
+	if log := fm.GetLog(); len(log) != 0 {
+		t.Fatalf("nothing may be mounted: %+v", log)
 	}
 }
 
