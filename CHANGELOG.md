@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.11.23](https://github.com/home-operations/miroir/compare/0.11.22...0.11.23) (2026-08-25)
+
+
+### Bug Fixes
+
+* **container:** update image registry.k8s.io/kubectl (v1.36.3 → v1.36.4) ([#435](https://github.com/home-operations/miroir/issues/435)) ([767dac5](https://github.com/home-operations/miroir/commit/767dac5433465a22022cda78f07e8c6d1cc19409))
+* **csi:** never let staging reformat a device that carries a filesystem ([#445](https://github.com/home-operations/miroir/issues/445)) ([9294e58](https://github.com/home-operations/miroir/commit/9294e586c6bb7a601c27fc49b97796e3ad7ff91e))
+* **go:** update kubernetes monorepo (v0.36.3 → v0.36.4) ([#436](https://github.com/home-operations/miroir/issues/436)) ([45d8c0b](https://github.com/home-operations/miroir/commit/45d8c0b2685717a7d0d1f1345aeb04d806d2d30d))
+* **go:** update module github.com/onsi/ginkgo/v2 (v2.32.0 → v2.32.1) ([#425](https://github.com/home-operations/miroir/issues/425)) ([6154a07](https://github.com/home-operations/miroir/commit/6154a07b53cfa838be978d578adf9497a10206b0))
+* **go:** update module google.golang.org/grpc (v1.83.0 → v1.83.1) ([#434](https://github.com/home-operations/miroir/issues/434)) ([cb1a0ba](https://github.com/home-operations/miroir/commit/cb1a0baf7df0ca233253fc232221920214e13bfe))
+* **go:** update module google.golang.org/protobuf (f2248ac → 644d026) ([#412](https://github.com/home-operations/miroir/issues/412)) ([20d94d4](https://github.com/home-operations/miroir/commit/20d94d4ffd72666179c21035bbffa77502648956))
+* **go:** update module google.golang.org/protobuf (v1.36.12-0.20260806062936-644d0267c26e → v1.36.12) ([#424](https://github.com/home-operations/miroir/issues/424)) ([ec4f729](https://github.com/home-operations/miroir/commit/ec4f72981b7d4e8786c6cdf76a1e085ab9eb8cb5))
+
+
+### Continuous Integration
+
+* **github-action:** Update action docker/github-builder (v1.15.0 → v1.16.0) ([#420](https://github.com/home-operations/miroir/issues/420)) ([ca7d164](https://github.com/home-operations/miroir/commit/ca7d1646b8a79768a0e52725b0d822afaf282c9b))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action docker/github-builder (v1.16.0 → v1.17.0) ([#443](https://github.com/home-operations/miroir/issues/443)) ([06c9ecd](https://github.com/home-operations/miroir/commit/06c9ecd3d7701074e3cabb957b1b89e02c571676))
+* **github-action:** update action docker/setup-buildx-action (v4.2.0 → v4.3.0) ([#440](https://github.com/home-operations/miroir/issues/440)) ([893d10f](https://github.com/home-operations/miroir/commit/893d10fb1f51b0a0649ab78f6a8607d77923f26a))
+* **github-action:** update action jdx/mise-action (v4.2.4 → v4.2.5) ([#429](https://github.com/home-operations/miroir/issues/429)) ([2b57803](https://github.com/home-operations/miroir/commit/2b57803d8c1e4282e217b52bbb22dade348650c0))
+* **go:** pin go directive to 1.26.0 ([#430](https://github.com/home-operations/miroir/issues/430)) ([7ca5489](https://github.com/home-operations/miroir/commit/7ca5489e9b745e9f213b870edfc29d95daa078cd))
+* **mise:** Update mise tools ([#422](https://github.com/home-operations/miroir/issues/422)) ([cb70183](https://github.com/home-operations/miroir/commit/cb70183b4f464e0a38ca6f56fd96f8ec7eccd75a))
+* **mise:** update mise tools ([#432](https://github.com/home-operations/miroir/issues/432)) ([3846b62](https://github.com/home-operations/miroir/commit/3846b625a31b749eff4ce5fc6bab67aafa357bac))
+* **mise:** update mise tools ([#442](https://github.com/home-operations/miroir/issues/442)) ([7434cb7](https://github.com/home-operations/miroir/commit/7434cb7663be9d7184f2e5d1f2a6d7a77470df1d))
+* **mise:** update tool go (1.26.5 → 1.26.6) ([#433](https://github.com/home-operations/miroir/issues/433)) ([37e9413](https://github.com/home-operations/miroir/commit/37e9413c3157ad4c502bc249f83ddb3ab15a6261))
+* **mise:** update tool go:golang.org/x/vuln/cmd/govulncheck (1.6.0 → v1.7.0) ([#428](https://github.com/home-operations/miroir/issues/428)) ([f1105d7](https://github.com/home-operations/miroir/commit/f1105d7d140ae95e6a4f0984845ab64a423fb29a))
+* **mise:** Update tool oxfmt (0.62.0 → 0.63.0) ([#426](https://github.com/home-operations/miroir/issues/426)) ([dbf65c1](https://github.com/home-operations/miroir/commit/dbf65c1b8fade793dd8d0f185c9acc33ebd1654b))
+* **mise:** update tool oxfmt (0.63.0 → 0.64.0) ([#438](https://github.com/home-operations/miroir/issues/438)) ([b302a26](https://github.com/home-operations/miroir/commit/b302a26c11df9e810397163f3603ac2be753781b))
+* **mise:** update tool yq (4.53.3 → 4.53.4) ([#439](https://github.com/home-operations/miroir/issues/439)) ([e8d5b73](https://github.com/home-operations/miroir/commit/e8d5b73101eb36ddd467f58c6e2a648335cae13a))
+
 ## [0.11.22](https://github.com/home-operations/miroir/compare/0.11.21...0.11.22) (2026-08-07)
 
 
