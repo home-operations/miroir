@@ -265,11 +265,13 @@ while kubectl get miroirvolume "$pv" "$pv2" "$rwx_pv" 2>/dev/null | grep -q pvc-
     [ "$SECONDS" -lt "$deadline" ] || die "miroirvolumes not cleaned up"
     sleep 5
 done
-for n in $node $other; do
-    pod=$(agent_pod "$n")
+# Replica placement is the controller's choice, so a leg can sit on any
+# storage node, not only the two the consumer pods ran on.
+for pod in $(kubectl get pods -n miroir-system -l app.kubernetes.io/component=agent \
+    -o jsonpath='{.items[*].metadata.name}'); do
     leftovers=$(kubectl exec -n miroir-system "$pod" -c agent -- sh -c \
         "drbdsetup status 2>/dev/null | grep -cE '^($pv|$pv2|$rwx_pv)'" || true)
-    [ "${leftovers:-0}" = 0 ] || die "DRBD resource leftover on $n"
+    [ "${leftovers:-0}" = 0 ] || die "DRBD resource leftover in $pod"
 done
 ok "volumes, DRBD resources and backing devices cleaned up"
 
