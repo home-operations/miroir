@@ -17,6 +17,7 @@ limitations under the License.
 package export
 
 import (
+	"context"
 	"slices"
 	"testing"
 
@@ -30,9 +31,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/constants"
 )
 
 const (
@@ -42,7 +45,7 @@ const (
 	nodeC  = "node-c"
 
 	testClusterIP = "10.96.1.5"
-	testFinalizer = "miroir.home-operations.com/teardown-node-a"
+	testFinalizer = constants.FinalizerPrefix + nodeA
 )
 
 // exportVolume is an RWX volume with a data replica on each named node.
@@ -62,12 +65,16 @@ func exportVolume(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
 }
 
 func newReconciler(objs ...client.Object) (*Reconciler, client.Client) {
+	return newReconcilerWithInterceptor(interceptor.Funcs{}, objs...)
+}
+
+func newReconcilerWithInterceptor(fns interceptor.Funcs, objs ...client.Object) (*Reconciler, client.Client) {
 	scheme := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(scheme)
 	_ = miroirv1alpha1.AddToScheme(scheme)
 	cl := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
-		WithObjects(objs...).Build()
+		WithObjects(objs...).WithInterceptorFuncs(fns).Build()
 	return &Reconciler{
 		Client:         cl,
 		Namespace:      testNS,
@@ -353,6 +360,60 @@ func TestReconcileAlreadyDeletingVolumeScalesExistingGateway(t *testing.T) {
 	dep := getDeployment(t, cl, "pvc-stuck")
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
 		t.Fatalf("already-deleting volume must scale the gateway to 0, got replicas=%v", dep.Spec.Replicas)
+	}
+}
+
+// A gateway Deployment controlled by a different owner (a volume
+// recreated under the same name) is not this volume's to scale.
+func TestReconcileDeletingVolumeLeavesUnownedGateway(t *testing.T) {
+	vol := exportVolume("pvc-foreign", nodeA, nodeB)
+	vol.Finalizers = []string{testFinalizer}
+	now := metav1.Now()
+	vol.DeletionTimestamp = &now
+	previous := exportVolume("pvc-foreign", nodeA, nodeB)
+	previous.UID = "uid-previous-incarnation"
+	existing := buildDeployment(vol, testNS, "ghcr.io/home-operations/miroir-gateway:test", "miroir-gateway")
+	existing.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(previous, miroirv1alpha1.GroupVersion.WithKind("MiroirVolume")),
+	}
+	r, cl := newReconciler(vol, existing)
+
+	reconcile(t, r, "pvc-foreign")
+
+	dep := getDeployment(t, cl, "pvc-foreign")
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
+		t.Fatalf("gateway owned by another volume must be left alone, got replicas=%v", dep.Spec.Replicas)
+	}
+}
+
+// A failed scale-down surfaces as a reconcile error for retry, but the
+// ready gauge is dropped regardless: a stale 1 would mask the teardown.
+func TestReconcileDeletingVolumeDropsMetricWhenScaleDownFails(t *testing.T) {
+	vol := exportVolume("pvc-patchfail", nodeA, nodeB)
+	vol.Finalizers = []string{testFinalizer}
+	patchErr := apierrors.NewConflict(appsv1.Resource("deployments"), shareName("pvc-patchfail"), nil)
+	r, cl := newReconcilerWithInterceptor(interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			if _, ok := obj.(*appsv1.Deployment); ok {
+				return patchErr
+			}
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	}, vol)
+	reconcile(t, r, "pvc-patchfail")
+	if _, ok := exportReadyGauge(t, "pvc-patchfail"); !ok {
+		t.Fatal("live reconcile must record the gauge")
+	}
+
+	if err := cl.Delete(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "pvc-patchfail"}})
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("reconcile must return the scale-down error, got %v", err)
+	}
+	if _, ok := exportReadyGauge(t, "pvc-patchfail"); ok {
+		t.Fatal("gauge series must be dropped even when the scale-down fails")
 	}
 }
 

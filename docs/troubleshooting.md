@@ -54,8 +54,13 @@
   class naming the same pool, per
   [Stage kopiur backups unreplicated](quickstart.md#stage-kopiur-backups-unreplicated).
 - **RWX `MiroirVolume` stuck deleting, `Device is held open`**: a
-  still-running gateway is the live opener. Check
-  `kubectl get deploy -n miroir-system miroir-share-<volume>`; if it
-  is at 1 replica, scale it to zero (or delete it) so the agent's
-  teardown finalizer can finish. See
+  still-running gateway is the live opener. The controller scales the
+  share Deployment to zero itself when the volume is deleted, so check
+  `kubectl get deploy -n miroir-system miroir-share-<volume>` first. If
+  it is still at 1 replica (controller not running, or a release from
+  before it did this), scale it to zero or delete it so the agent's
+  teardown finalizer can finish. If it is already at 0 but the gateway
+  pod stays `Terminating`, the pod is wedged on the device itself and
+  the Deployment is no longer the lever: inspect the DRBD resource on
+  that node as for a stuck RWO volume. See
   [ReadWriteMany (RWX)](rwx.md).

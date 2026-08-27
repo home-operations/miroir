@@ -39,7 +39,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -85,11 +84,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// finalizer waits for the gateway, owner-ref GC waits for the
 	// finalizer, and the gateway waits for GC.
 	if !vol.DeletionTimestamp.IsZero() {
-		if err := r.scaleDown(ctx, vol); err != nil {
-			return ctrl.Result{}, err
-		}
+		// Drop the gauge before the write: a stale 1 would mask the
+		// teardown for as long as the scale-down keeps failing.
 		dropExportMetrics(vol.Name)
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, r.scaleDown(ctx, vol)
 	}
 
 	available, err := r.ensureDeployment(ctx, vol)
@@ -180,8 +178,12 @@ func (r *Reconciler) publishAddress(ctx context.Context, vol *miroirv1alpha1.Mir
 // scaleDown zeroes the gateway Deployment's replicas so the pod exits and
 // releases the DRBD device, unblocking the agent's teardown finalizer. The
 // Deployment itself stays (owned by the volume, collected by GC once the
-// finalizer drops). A missing or unowned Deployment is a no-op.
+// finalizer drops). A missing Deployment is a no-op; one controlled by
+// another owner (a volume recreated under the same name) is left alone
+// and logged, since it is the only export-side clue why the teardown
+// stays parked.
 func (r *Reconciler) scaleDown(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+	log := ctrl.LoggerFrom(ctx)
 	dep := &appsv1.Deployment{}
 	dep.Name = shareName(vol.Name)
 	dep.Namespace = r.Namespace
@@ -189,42 +191,40 @@ func (r *Reconciler) scaleDown(ctx context.Context, vol *miroirv1alpha1.MiroirVo
 		return client.IgnoreNotFound(err)
 	}
 	if !metav1.IsControlledBy(dep, vol) {
+		log.Info("RWX gateway is not controlled by this volume, leaving it running",
+			"volume", vol.Name, "volumeUID", vol.UID, "controller", metav1.GetControllerOf(dep))
 		return nil
 	}
 	if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
 		return nil
 	}
-	ctrl.LoggerFrom(ctx).Info("scaling RWX gateway to zero", "volume", vol.Name)
+	// A merge patch of just replicas carries no resourceVersion, so a
+	// cache lagging the deployment controller's status writes (likely
+	// while the pod churns) cannot turn this into a conflict.
+	base := dep.DeepCopy()
 	dep.Spec.Replicas = ptr.To[int32](0)
-	return r.Update(ctx, dep)
+	if err := r.Patch(ctx, dep, client.MergeFrom(base)); err != nil {
+		return err
+	}
+	log.Info("scaled RWX gateway to zero", "volume", vol.Name)
+	return nil
 }
 
 // SetupWithManager registers the reconciler. The volume watch passes
 // generation changes (status churn from agents carries nothing this
-// reconciler reads), label changes (the PVC-ref backfill is a label-only
-// patch, and without it an existing RWX volume's miroir_export_ready
-// series would keep its fallback pvc label until an unrelated workload
-// event), and deletionTimestamp (a metadata-only update that generation
-// and label predicates miss; without it a deleting volume's gateway is
-// never scaled down). It owns its Deployment/Service so drift on those
-// heals.
+// reconciler reads; deletion arrives this way too, because the apiserver
+// bumps generation when it first sets deletionTimestamp on an object
+// with finalizers) and label changes (the PVC-ref backfill is a
+// label-only patch, and without it an existing RWX volume's
+// miroir_export_ready series would keep its fallback pvc label until an
+// unrelated workload event). It owns its Deployment/Service so drift on
+// those heals.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	deleting := predicate.Funcs{
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return e.ObjectNew != nil && !e.ObjectNew.GetDeletionTimestamp().IsZero()
-		},
-		CreateFunc: func(e event.CreateEvent) bool {
-			return e.Object != nil && !e.Object.GetDeletionTimestamp().IsZero()
-		},
-		DeleteFunc:  func(event.DeleteEvent) bool { return false },
-		GenericFunc: func(event.GenericEvent) bool { return false },
-	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{},
 			builder.WithPredicates(predicate.Or[client.Object](
 				predicate.GenerationChangedPredicate{},
-				predicate.LabelChangedPredicate{},
-				deleting))).
+				predicate.LabelChangedPredicate{}))).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Named("export").

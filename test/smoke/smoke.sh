@@ -250,8 +250,9 @@ kubectl exec -n "$NS" rwx-a -- grep -q after-failover /data/shared \
     || die "post-failover write not visible on $node"
 ok "RWX survived gateway reschedule and stayed writable"
 
-# Clean up the RWX resources so the teardown check below stays about the
-# RWO PVs it already tracks.
+# Release the RWX consumers here; the PVC delete below only waits for the
+# claim object, so the RWX volume's own teardown is verified alongside the
+# RWO ones in the final step.
 kubectl delete pod -n "$NS" rwx-a rwx-b --wait
 kubectl delete pvc -n "$NS" rwx-data --wait
 
@@ -260,14 +261,14 @@ pv2=$(kubectl get pvc -n "$NS" smoke-restore -o jsonpath='{.spec.volumeName}')
 kubectl delete namespace "$NS" --wait=true --timeout=120s
 trap - EXIT
 deadline=$((SECONDS + 120))
-while kubectl get miroirvolume "$pv" "$pv2" 2>/dev/null | grep -q pvc-; do
+while kubectl get miroirvolume "$pv" "$pv2" "$rwx_pv" 2>/dev/null | grep -q pvc-; do
     [ "$SECONDS" -lt "$deadline" ] || die "miroirvolumes not cleaned up"
     sleep 5
 done
 for n in $node $other; do
     pod=$(agent_pod "$n")
     leftovers=$(kubectl exec -n miroir-system "$pod" -c agent -- sh -c \
-        "drbdsetup status 2>/dev/null | grep -cE '^($pv|$pv2)'" || true)
+        "drbdsetup status 2>/dev/null | grep -cE '^($pv|$pv2|$rwx_pv)'" || true)
     [ "${leftovers:-0}" = 0 ] || die "DRBD resource leftover on $n"
 done
 ok "volumes, DRBD resources and backing devices cleaned up"
