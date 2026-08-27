@@ -38,10 +38,14 @@ run = [
 
 [tasks.fmt]
 description = "Run go fmt against code"
+# generate rewrites the tracked Go sources under api/; when both are scheduled
+# (test, build, ...) a concurrent reader can catch a half-written file.
+wait_for = ["generate"]
 run = "go fmt ./..."
 
 [tasks.vet]
 description = "Run go vet against code"
+wait_for = ["generate", "fmt"]
 run = "go vet ./..."
 
 [tasks.vulncheck]
