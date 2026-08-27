@@ -116,12 +116,15 @@ as `DATA_LOSS`, a failed disk or lagging replica as `DEGRADED`, and a
 volume with no backing device left as `INACCESSIBLE`. The controller
 RPCs answer cluster-wide; `NodeGetVolumeHealth` answers for the node
 that asks, which is the only place a node-local quorum loss shows up.
-These replace the `VolumeCondition` API that CSI v1.13 removed, but
-nothing consumes them yet: kubelet's volume-health manager is alpha and
-unreleased, and external-health-monitor has not adopted them, so the
-health-monitor sidecar is gone from the chart (it refuses to start
-against a driver that no longer advertises `VOLUME_CONDITION`). Until a
-consumer ships, the `miroir_volume_*` gauges are what to alert on.
+These replace the `VolumeCondition` API that CSI v1.13 removed, but on
+most clusters nothing consumes them yet: kubelet calls
+`NodeGetVolumeHealth` only on Kubernetes 1.37+ with the alpha
+`CSIVolumeHealth` feature gate enabled (default off), and
+external-health-monitor has no release that speaks them, so the
+health-monitor sidecar is gone from the chart (its released versions
+refuse to start against a driver that no longer advertises
+`VOLUME_CONDITION`). Until a consumer runs in your cluster, the
+`miroir_volume_*` gauges are what to alert on.
 
 ## Starter alerts and dashboard
 

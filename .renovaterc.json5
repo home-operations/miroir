@@ -4,9 +4,9 @@
   postUpdateOptions: ["gomodTidy", "gomodUpdateImportPaths"],
   packageRules: [
     {
-      // Pinned to an unreleased master commit for the CSI v1.13 VolumeHealth
-      // sanity specs; see the note in go.mod. A bump has to be reviewed for
-      // their presence, because losing them is silent.
+      // A bump has to be reviewed for the CSI v1.13 VolumeHealth sanity
+      // specs (present since v5.6.0): they Skip() when the driver lacks the
+      // capability, so losing them is silent.
       matchDepNames: ["github.com/kubernetes-csi/csi-test/v5"],
       automerge: false,
     },

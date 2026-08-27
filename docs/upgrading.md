@@ -68,9 +68,10 @@ here.
 
 ///
 
-The PVC events the sidecar raised have no replacement yet: kubelet's
-volume-health manager is alpha and unreleased, and external-health-monitor has
-not adopted the new RPCs. The `miroir_volume_*` metrics carry the same signals
+The PVC events the sidecar raised have no replacement on most clusters:
+kubelet's volume-health manager ships in Kubernetes 1.37+ behind the alpha
+`CSIVolumeHealth` feature gate (default off), and external-health-monitor has
+no release that speaks the new RPCs. The `miroir_volume_*` metrics carry the same signals
 (split-brain, disk failed, degraded replication) and the chart's starter alerts
 already fire on them, so alert there instead. See
 [Monitoring](monitoring.md).
