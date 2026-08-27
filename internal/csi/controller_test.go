@@ -57,6 +57,7 @@ const (
 	addrB      = "192.168.1.42"
 	addrC      = "192.168.1.43"
 	volPvc1    = "pvc-1"
+	volMissing = "missing"
 	paramTrue  = "true"
 	paramFalse = "false"
 	volSrc     = "pvc-src"

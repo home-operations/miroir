@@ -133,7 +133,7 @@ func (n *Node) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapabilities
 		csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 		csi.NodeServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER,
 		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
-		csi.NodeServiceCapability_RPC_VOLUME_CONDITION,
+		csi.NodeServiceCapability_RPC_GET_VOLUME_HEALTH,
 	}
 	resp := &csi.NodeGetCapabilitiesResponse{}
 	for _, t := range caps {
@@ -153,12 +153,9 @@ func (n *Node) devicePath(ctx context.Context, volumeID string) (string, *miroir
 	// The client-leg decision is deliberately node-service-only: the RWX
 	// gateway stages through stage.Device on a replica node and must never
 	// attach a client leg when misplaced.
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
-		}
-		return "", nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
+	vol, err := n.getVolume(ctx, volumeID)
+	if err != nil {
+		return "", nil, err
 	}
 	i := slices.IndexFunc(vol.Spec.Replicas, func(r miroirv1alpha1.Replica) bool {
 		return r.Node == n.NodeName
@@ -336,12 +333,9 @@ func (n *Node) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequ
 
 	// RWX volumes are served over NFS by a gateway pod; the device lives on
 	// the gateway's node, not here, so this path never touches it.
-	vol := &miroirv1alpha1.MiroirVolume{}
-	if err := n.Client.Get(ctx, types.NamespacedName{Name: req.GetVolumeId()}, vol); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, status.Errorf(codes.NotFound, "volume %s not found", req.GetVolumeId())
-		}
-		return nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", req.GetVolumeId(), err)
+	vol, err := n.getVolume(ctx, req.GetVolumeId())
+	if err != nil {
+		return nil, err
 	}
 	if vol.Spec.Export != nil {
 		return n.stageNFS(req, vol)
@@ -567,11 +561,11 @@ func cleanupMount(target string, mounter *mount.SafeFormatAndMount, gate WedgeGa
 }
 
 // NodeGetVolumeStats reports capacity on a published volume via statfs.
-func (n *Node) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
+func (n *Node) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
 	if req.GetVolumeId() == "" || req.GetVolumePath() == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume id and path are required")
 	}
-	resp := &csi.NodeGetVolumeStatsResponse{VolumeCondition: n.lookupVolumeCondition(ctx, req.GetVolumeId())}
+	resp := &csi.NodeGetVolumeStatsResponse{}
 	// A raw-block publish path is a bind-mounted device file: statfs
 	// there reports the host filesystem backing the target dir, not the
 	// volume. No filesystem, no usage to report.
@@ -589,16 +583,47 @@ func (n *Node) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeSta
 	return resp, nil
 }
 
-// lookupVolumeCondition reports the volume's replication health for the stats
-// RPC. Best-effort: a lookup failure (volume mid-delete, transient API error)
-// must not fail NodeGetVolumeStats, whose primary job is capacity — the
-// controller's ControllerGetVolume reports the same condition regardless.
-func (n *Node) lookupVolumeCondition(ctx context.Context, volumeID string) *csi.VolumeCondition {
+// NodeGetVolumeHealth reports the volume's health as this node sees it, the
+// perspective the RPC asks for and a different answer from the controller's:
+// a peer's split-brain is that node's to report, while this node's own quorum
+// exists nowhere in the CRD. The request's staging and publish paths are not
+// needed to derive it; the volume id resolves the leg on its own.
+func (n *Node) NodeGetVolumeHealth(ctx context.Context, req *csi.NodeGetVolumeHealthRequest) (*csi.NodeGetVolumeHealthResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume id is required")
+	}
+	vol, err := n.getVolume(ctx, req.GetVolumeId())
+	if err != nil {
+		return nil, err
+	}
+	// Skipped where drbdsetup has nothing to answer about: an unreplicated
+	// volume, or one the CO only attempted to stage here (the spec allows
+	// the call for those). An unreadable status is not a condition to
+	// invent; the agent reports its own trouble.
+	var live drbd.Status
+	liveOK := false
+	if _, ok := vol.Status.PerNode[n.NodeName]; ok && vol.Spec.DRBD != nil {
+		if st, err := n.DRBD.Status(ctx, vol.Name); err == nil {
+			live, liveOK = st, true
+		}
+	}
+	return &csi.NodeGetVolumeHealthResponse{
+		VolumeHealth: nodeVolumeHealth(vol, n.NodeName, live, liveOK),
+	}, nil
+}
+
+// getVolume fetches a volume the way every node RPC must answer for it: a
+// missing object is NotFound, a transient API failure is Unavailable so the CO
+// retries rather than giving up on the volume.
+func (n *Node) getVolume(ctx context.Context, volumeID string) (*miroirv1alpha1.MiroirVolume, error) {
 	vol := &miroirv1alpha1.MiroirVolume{}
 	if err := n.Client.Get(ctx, types.NamespacedName{Name: volumeID}, vol); err != nil {
-		return nil
+		if apierrors.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+		}
+		return nil, status.Errorf(codes.Unavailable, "volume %s lookup: %v", volumeID, err)
 	}
-	return volumeCondition(vol)
+	return vol, nil
 }
 
 type fsStatResult struct {

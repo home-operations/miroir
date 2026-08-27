@@ -108,10 +108,23 @@ probe backs the pod's `/healthz`, so a ganesha that still accepts
 TCP connections but has stopped answering NFS fails liveness and is
 restarted. Previously that failure mode was invisible.
 
-Prometheus is not the only surface. Volume health also flows through
-the CSI `VolumeCondition`: enable `sidecars.healthMonitor.enabled`
-and split-brain, failed-disk, and degraded volumes surface as events
-on their PVCs (`kubectl describe pvc`).
+Prometheus is where you alert on all of this, and for volume health it
+is currently the only place. The driver also answers the CSI health
+RPCs (`ControllerGetVolumeHealth`, `ControllerListVolumeHealth`,
+`NodeGetVolumeHealth`), reporting a split-brain that needs an operator
+as `DATA_LOSS`, a failed disk or lagging replica as `DEGRADED`, and a
+volume with no backing device left as `INACCESSIBLE`. The controller
+RPCs answer cluster-wide; `NodeGetVolumeHealth` answers for the node
+that asks, which is the only place a node-local quorum loss shows up.
+These replace the `VolumeCondition` API that CSI v1.13 removed, but on
+most clusters nothing consumes them yet: kubelet calls
+`NodeGetVolumeHealth` only on Kubernetes 1.37+ with the alpha
+`CSIVolumeHealth` feature gate enabled (default off), and
+external-health-monitor has no release that speaks them, so the
+health-monitor sidecar is gone from the chart (its released versions
+refuse to start against a driver that no longer advertises
+`VOLUME_CONDITION`). Until a consumer runs in your cluster, the
+`miroir_volume_*` gauges are what to alert on.
 
 ## Starter alerts and dashboard
 

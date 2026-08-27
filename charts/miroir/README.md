@@ -154,10 +154,6 @@ Kubernetes: `>=1.31.0-0`
 | provisionTimeout | string | `"120s"` | Wait for agents to realise a new volume. Keep sidecars.*.timeout at or above this, or the sidecar RPC deadline fires before this one and the knob has no effect. |
 | replicaCount | int | `1` | Controller replicas. Anything above 1 automatically enables leader election: the extras are warm standbys (failover is lease expiry, ~15s, instead of a full pod reschedule), the rollout strategy switches to RollingUpdate, and a PodDisruptionBudget keeps one replica through voluntary disruptions. Pointless on a single-node cluster (the node is the failure domain); pair with global.affinity (pod anti-affinity) so replicas land on different nodes. |
 | resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Controller resources. |
-| sidecars.healthMonitor.enabled | bool | `false` |  |
-| sidecars.healthMonitor.image | string | `"registry.k8s.io/sig-storage/csi-external-health-monitor-controller:v0.18.0"` |  |
-| sidecars.healthMonitor.interval | string | `"1m"` |  |
-| sidecars.healthMonitor.resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Health-monitor sidecar resources. |
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Provisioner sidecar resources. |
 | sidecars.provisioner.timeout | string | `"120s"` |  |

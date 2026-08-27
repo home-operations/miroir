@@ -122,41 +122,92 @@ func TestDevicePathHealthyReturnsDevice(t *testing.T) {
 	}
 }
 
-// NodeGetVolumeStats attaches the volume's replication health so kubelet's
-// volume-health metric reflects a degraded leg alongside the capacity stats.
-func TestNodeGetVolumeStatsReportsCondition(t *testing.T) {
+// NodeGetVolumeHealth reports the volume's replication health so kubelet
+// folds a degraded leg into the pod's volume health conditions.
+func TestNodeGetVolumeHealth(t *testing.T) {
 	v := stagedVolume()
 	v.Status.Phase = miroirv1alpha1.VolumeDegraded
-	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
+	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate, Quorum: true}})
 
-	resp, err := n.NodeGetVolumeStats(t.Context(), &csi.NodeGetVolumeStatsRequest{
-		VolumeId:   volPvc1,
-		VolumePath: t.TempDir(),
-	})
+	resp, err := n.NodeGetVolumeHealth(t.Context(), &csi.NodeGetVolumeHealthRequest{VolumeId: volPvc1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.GetVolumeCondition().GetAbnormal() {
-		t.Fatalf("degraded volume must report abnormal condition, got %+v", resp.GetVolumeCondition())
+	if got := entriesOf(resp.GetVolumeHealth()); !slices.Equal(got,
+		[]healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaOutOfSync}}) {
+		t.Fatalf("statuses = %v, want a single degraded entry", got)
 	}
-	if len(resp.GetUsage()) == 0 {
-		t.Fatal("expected capacity usage alongside the condition")
+
+	if _, err := n.NodeGetVolumeHealth(t.Context(), &csi.NodeGetVolumeHealthRequest{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("empty volume id must be InvalidArgument, got %v", err)
+	}
+	if _, err := n.NodeGetVolumeHealth(t.Context(),
+		&csi.NodeGetVolumeHealthRequest{VolumeId: volMissing}); status.Code(err) != codes.NotFound {
+		t.Fatalf("missing volume must be NotFound, got %v", err)
 	}
 }
 
-// A stats call for a volume that has been deleted must still succeed — the
-// condition is best-effort, capacity is the contract.
+// Quorum is node-local and never reaches the CRD, so the cluster-wide
+// aggregate reads Ready while this node cannot serve a read. This is the case
+// the node RPC exists for; answering it with the controller's view reports the
+// volume as healthy.
+func TestNodeGetVolumeHealthReportsLocalQuorumLoss(t *testing.T) {
+	v := stagedVolume()
+	v.Status.Phase = miroirv1alpha1.VolumeReady
+	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate}})
+
+	resp, err := n.NodeGetVolumeHealth(t.Context(), &csi.NodeGetVolumeHealthRequest{VolumeId: volPvc1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entriesOf(resp.GetVolumeHealth()); !slices.Equal(got,
+		[]healthEntry{{csi.VolumeHealthErrorType_INACCESSIBLE, reasonNoQuorum}}) {
+		t.Fatalf("statuses = %v, want the node-local quorum loss", got)
+	}
+}
+
+// A peer's latched fault belongs to that peer's node RPC. Reporting it here
+// would tell kubelet a leg this node does not host has diverged.
+func TestNodeGetVolumeHealthOmitsPeerFaults(t *testing.T) {
+	v := stagedVolume()
+	v.Status.Phase = miroirv1alpha1.VolumeReady
+	v.Status.Activated = true
+	v.Status.PerNode[nodeC] = miroirv1alpha1.ReplicaStatus{SplitBrain: true, DiskFailed: true}
+	n := newNode(t, v, fakeDRBDStatus{st: drbd.Status{DiskState: drbd.DiskUpToDate, Quorum: true}})
+
+	resp, err := n.NodeGetVolumeHealth(t.Context(), &csi.NodeGetVolumeHealthRequest{VolumeId: volPvc1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entriesOf(resp.GetVolumeHealth()); len(got) != 0 {
+		t.Fatalf("statuses = %v, want none: node %s hosts no faulted leg", got, nodeA)
+	}
+	// The controller's cluster-wide answer is where the peer's fault shows.
+	if got := entriesOf(volumeHealth(v)); !slices.Equal(got, []healthEntry{
+		{csi.VolumeHealthErrorType_DATA_LOSS, reasonSplitBrain},
+		{csi.VolumeHealthErrorType_DEGRADED, reasonBackingDiskFailed},
+	}) {
+		t.Fatalf("cluster-wide statuses = %v, want the peer's split-brain and disk failure", got)
+	}
+}
+
+// Capacity comes from the published path alone (no CR read), so a volume
+// mid-delete still gets its stats.
 func TestNodeGetVolumeStatsMissingVolume(t *testing.T) {
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
 	resp, err := n.NodeGetVolumeStats(t.Context(), &csi.NodeGetVolumeStatsRequest{
-		VolumeId:   "missing",
+		VolumeId:   volMissing,
 		VolumePath: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.GetVolumeCondition() != nil {
-		t.Fatalf("missing volume should carry no condition, got %+v", resp.GetVolumeCondition())
+	if len(resp.GetUsage()) == 0 {
+		t.Fatal("expected capacity usage")
+	}
+	if _, err := n.NodeGetVolumeStats(t.Context(),
+		&csi.NodeGetVolumeStatsRequest{VolumeId: volPvc1}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("a missing volume path must be InvalidArgument, got %v", err)
 	}
 }
 
