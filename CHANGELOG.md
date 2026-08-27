@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.24](https://github.com/home-operations/miroir/compare/0.11.23...0.11.24) (2026-08-27)
+
+
+### Features
+
+* **container:** update image registry.k8s.io/kubectl (v1.36.4 → v1.37.0) ([#448](https://github.com/home-operations/miroir/issues/448)) ([74e7f29](https://github.com/home-operations/miroir/commit/74e7f29de816973f2c17605da1caf2afab2e6e6c))
+
+
+### Bug Fixes
+
+* **export:** patch replicas on scale-down and drop the redundant deletion predicate ([#454](https://github.com/home-operations/miroir/issues/454)) ([3290346](https://github.com/home-operations/miroir/commit/3290346db619ded6a7b6bee72c4c34f0dd0ec860))
+* **export:** scale down gateway on volume deletion to break teardown deadlock ([#451](https://github.com/home-operations/miroir/issues/451)) ([2566490](https://github.com/home-operations/miroir/commit/256649072f566440b79c8cbcd8a1f67854b1145e))
+* **go:** update module google.golang.org/grpc (v1.83.1 → v1.83.2) ([#447](https://github.com/home-operations/miroir/issues/447)) ([405c57b](https://github.com/home-operations/miroir/commit/405c57b2d6dd1cc2e352327fd49b9308b060387d))
+
+
+### Miscellaneous Chores
+
+* **mise:** update tool aqua:dadav/helm-schema (0.23.4 → 0.23.5) ([#452](https://github.com/home-operations/miroir/issues/452)) ([4437d51](https://github.com/home-operations/miroir/commit/4437d51e1e9c6171749e61fc390b52ebb54fb51e))
+* **mise:** wait for code generation before fmt and vet ([#453](https://github.com/home-operations/miroir/issues/453)) ([adbafdd](https://github.com/home-operations/miroir/commit/adbafddeff02ec29091630fce3ab86ac6cda40d2))
+
 ## [0.11.23](https://github.com/home-operations/miroir/compare/0.11.22...0.11.23) (2026-08-25)
 
 
