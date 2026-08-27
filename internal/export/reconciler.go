@@ -19,9 +19,11 @@ limitations under the License.
 // reconciler maintains a per-volume Deployment (the NFS-Ganesha share
 // manager, pinned to the volume's diskful replica nodes) and a ClusterIP
 // Service fronting it, and publishes the Service's address on
-// status.export.address for the CSI node service to mount. Both workloads
-// are owned by the MiroirVolume, so deleting the volume garbage-collects
-// them.
+// status.export.address for the CSI node service to mount. Workloads are
+// owner-ref'd to the volume, but on deletion this reconciler scales the
+// gateway to zero itself: the gateway stages the device, so owner-ref GC
+// (which waits for the object to vanish) deadlocks against the agent's
+// teardown finalizer (which waits for the gateway to release the device).
 package export
 
 import (
@@ -31,10 +33,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
@@ -57,8 +62,9 @@ type Reconciler struct {
 }
 
 // Reconcile ensures the gateway Deployment and Service exist for an RWX
-// volume and records the Service address. Owned workloads are garbage
-// collected when the volume is deleted, so a missing volume is a no-op.
+// volume and records the Service address. A deleting volume's gateway is
+// scaled to zero here so the pod releases the device; a missing volume is
+// a no-op.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
@@ -70,9 +76,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, err
 	}
-	// Only RWX volumes have a gateway; a volume being deleted keeps its
-	// workloads until GC removes them with the owner.
-	if vol.Spec.Export == nil || !vol.DeletionTimestamp.IsZero() {
+	if vol.Spec.Export == nil {
+		dropExportMetrics(vol.Name)
+		return ctrl.Result{}, nil
+	}
+	// The gateway is the live opener of the device. Scale it to zero
+	// before the agent tries drbdsetup down; otherwise the teardown
+	// finalizer waits for the gateway, owner-ref GC waits for the
+	// finalizer, and the gateway waits for GC.
+	if !vol.DeletionTimestamp.IsZero() {
+		if err := r.scaleDown(ctx, vol); err != nil {
+			return ctrl.Result{}, err
+		}
 		dropExportMetrics(vol.Name)
 		return ctrl.Result{}, nil
 	}
@@ -162,19 +177,54 @@ func (r *Reconciler) publishAddress(ctx context.Context, vol *miroirv1alpha1.Mir
 	return r.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
+// scaleDown zeroes the gateway Deployment's replicas so the pod exits and
+// releases the DRBD device, unblocking the agent's teardown finalizer. The
+// Deployment itself stays (owned by the volume, collected by GC once the
+// finalizer drops). A missing or unowned Deployment is a no-op.
+func (r *Reconciler) scaleDown(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) error {
+	dep := &appsv1.Deployment{}
+	dep.Name = shareName(vol.Name)
+	dep.Namespace = r.Namespace
+	if err := r.Get(ctx, client.ObjectKeyFromObject(dep), dep); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(dep, vol) {
+		return nil
+	}
+	if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
+		return nil
+	}
+	ctrl.LoggerFrom(ctx).Info("scaling RWX gateway to zero", "volume", vol.Name)
+	dep.Spec.Replicas = ptr.To[int32](0)
+	return r.Update(ctx, dep)
+}
+
 // SetupWithManager registers the reconciler. The volume watch passes
 // generation changes (status churn from agents carries nothing this
-// reconciler reads) and label changes — the PVC-ref backfill is a
-// label-only patch, and without it an existing RWX volume's
-// miroir_export_ready series would keep its fallback pvc label until an
-// unrelated workload event. It owns its Deployment/Service so drift on
-// those heals.
+// reconciler reads), label changes (the PVC-ref backfill is a label-only
+// patch, and without it an existing RWX volume's miroir_export_ready
+// series would keep its fallback pvc label until an unrelated workload
+// event), and deletionTimestamp (a metadata-only update that generation
+// and label predicates miss; without it a deleting volume's gateway is
+// never scaled down). It owns its Deployment/Service so drift on those
+// heals.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	deleting := predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return e.ObjectNew != nil && !e.ObjectNew.GetDeletionTimestamp().IsZero()
+		},
+		CreateFunc: func(e event.CreateEvent) bool {
+			return e.Object != nil && !e.Object.GetDeletionTimestamp().IsZero()
+		},
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&miroirv1alpha1.MiroirVolume{},
 			builder.WithPredicates(predicate.Or[client.Object](
 				predicate.GenerationChangedPredicate{},
-				predicate.LabelChangedPredicate{}))).
+				predicate.LabelChangedPredicate{},
+				deleting))).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Named("export").

@@ -53,3 +53,9 @@
   cycle. Point `spec.staging.storageClassName` at a `replicas: "1"`
   class naming the same pool, per
   [Stage kopiur backups unreplicated](quickstart.md#stage-kopiur-backups-unreplicated).
+- **RWX `MiroirVolume` stuck deleting, `Device is held open`**: a
+  still-running gateway is the live opener. Check
+  `kubectl get deploy -n miroir-system miroir-share-<volume>`; if it
+  is at 1 replica, scale it to zero (or delete it) so the agent's
+  teardown finalizer can finish. See
+  [ReadWriteMany (RWX)](rwx.md).

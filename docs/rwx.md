@@ -73,3 +73,7 @@ Things worth knowing:
   `.ganesha-recovery` directory at the root of the exported
   filesystem so locks survive failover; it is visible to consumers.
   Leave it alone.
+- **Deletion scales the gateway to zero first.** The gateway is the
+  device's only writer, so the share Deployment is scaled to zero when
+  the volume is deleted. Otherwise teardown waits forever for an
+  opener that will not leave.

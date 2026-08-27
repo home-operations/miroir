@@ -42,6 +42,7 @@ const (
 	nodeC  = "node-c"
 
 	testClusterIP = "10.96.1.5"
+	testFinalizer = "miroir.home-operations.com/teardown-node-a"
 )
 
 // exportVolume is an RWX volume with a data replica on each named node.
@@ -281,12 +282,12 @@ func affinityNodes(t *testing.T, dep *appsv1.Deployment) []string {
 	return terms[0].MatchExpressions[0].Values
 }
 
-// A volume being deleted keeps its gateway workloads (GC removes them
-// with the owner) but its ready gauge is dropped — a stale 1 would mask
-// the teardown.
-func TestReconcileDeletingVolumeKeepsWorkloadsDropsMetric(t *testing.T) {
+// A volume being deleted has its gateway scaled to zero (so the pod
+// releases the DRBD device for the agent's teardown) but the Deployment
+// itself stays for GC. The ready gauge is dropped.
+func TestReconcileDeletingVolumeScalesDownDropsMetric(t *testing.T) {
 	vol := exportVolume("pvc-deleting", nodeA, nodeB)
-	vol.Finalizers = []string{"miroir.home-operations.com/teardown-node-a"}
+	vol.Finalizers = []string{testFinalizer}
 	r, cl := newReconciler(vol)
 	reconcile(t, r, "pvc-deleting")
 	getDeployment(t, cl, "pvc-deleting") // created
@@ -297,8 +298,77 @@ func TestReconcileDeletingVolumeKeepsWorkloadsDropsMetric(t *testing.T) {
 	}
 	reconcile(t, r, "pvc-deleting")
 
-	getDeployment(t, cl, "pvc-deleting") // deliberately retained for GC
+	dep := getDeployment(t, cl, "pvc-deleting") // retained for GC
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+		t.Fatalf("deleting volume must scale the gateway to 0, got replicas=%v", dep.Spec.Replicas)
+	}
 	if _, ok := exportReadyGauge(t, "pvc-deleting"); ok {
 		t.Fatal("gauge series must be dropped while the volume is deleting")
+	}
+}
+
+// Reconciling a deleting volume whose Deployment is already scaled to
+// zero is a no-op (idempotent).
+func TestReconcileDeletingVolumeScaleDownIdempotent(t *testing.T) {
+	vol := exportVolume("pvc-idem", nodeA, nodeB)
+	vol.Finalizers = []string{testFinalizer}
+	r, cl := newReconciler(vol)
+	reconcile(t, r, "pvc-idem")
+
+	if err := cl.Delete(t.Context(), vol); err != nil {
+		t.Fatal(err)
+	}
+	// First reconcile scales down.
+	reconcile(t, r, "pvc-idem")
+	dep := getDeployment(t, cl, "pvc-idem")
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+		t.Fatalf("first reconcile must scale to 0, got %v", dep.Spec.Replicas)
+	}
+	rv := dep.ResourceVersion
+
+	// Second reconcile is a no-op (no update, same RV).
+	reconcile(t, r, "pvc-idem")
+	dep = getDeployment(t, cl, "pvc-idem")
+	if dep.ResourceVersion != rv {
+		t.Fatal("idempotent reconcile must not update the Deployment again")
+	}
+}
+
+// An already-deleting volume (the production stuck case: gateway still
+// at replicas=1, teardown finalizer held) must scale the existing
+// gateway down on first sight, without a prior live reconcile.
+func TestReconcileAlreadyDeletingVolumeScalesExistingGateway(t *testing.T) {
+	vol := exportVolume("pvc-stuck", nodeA, nodeB)
+	vol.Finalizers = []string{testFinalizer}
+	now := metav1.Now()
+	vol.DeletionTimestamp = &now
+	existing := buildDeployment(vol, testNS, "ghcr.io/home-operations/miroir-gateway:test", "miroir-gateway")
+	existing.OwnerReferences = []metav1.OwnerReference{
+		*metav1.NewControllerRef(vol, miroirv1alpha1.GroupVersion.WithKind("MiroirVolume")),
+	}
+	r, cl := newReconciler(vol, existing)
+
+	reconcile(t, r, "pvc-stuck")
+
+	dep := getDeployment(t, cl, "pvc-stuck")
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 0 {
+		t.Fatalf("already-deleting volume must scale the gateway to 0, got replicas=%v", dep.Spec.Replicas)
+	}
+}
+
+// A deleting volume with no gateway Deployment is a no-op.
+func TestReconcileDeletingVolumeWithoutDeployment(t *testing.T) {
+	vol := exportVolume("pvc-none", nodeA, nodeB)
+	vol.Finalizers = []string{testFinalizer}
+	now := metav1.Now()
+	vol.DeletionTimestamp = &now
+	r, cl := newReconciler(vol)
+
+	reconcile(t, r, "pvc-none")
+
+	dep := &appsv1.Deployment{}
+	err := cl.Get(t.Context(), types.NamespacedName{Name: shareName("pvc-none"), Namespace: testNS}, dep)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("must not create a gateway for a deleting volume, got err=%v", err)
 	}
 }
