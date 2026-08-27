@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.0](https://github.com/home-operations/miroir/compare/0.11.24...0.12.0) (2026-08-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **csi:** adopt CSI spec v1.13.0, migrate to VolumeHealth, k8s v0.37.0 ([#455](https://github.com/home-operations/miroir/issues/455))
+
+### Features
+
+* **csi:** adopt CSI spec v1.13.0, migrate to VolumeHealth, k8s v0.37.0 ([#455](https://github.com/home-operations/miroir/issues/455)) ([27a1a82](https://github.com/home-operations/miroir/commit/27a1a8255a85a01d1a6803ae5c962febf676b2cd))
+
+
+### Documentation
+
+* **agents:** derive Go version from go.mod ([7fd54ab](https://github.com/home-operations/miroir/commit/7fd54ab63ec1c055d75b53cf8744a2585bab1f6f))
+
 ## [0.11.24](https://github.com/home-operations/miroir/compare/0.11.23...0.11.24) (2026-08-27)
 
 
