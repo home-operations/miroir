@@ -44,7 +44,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -498,7 +500,7 @@ func main() {
 		return
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr := newManager(ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: metricsAddr},
 		Cache:   cacheOptions(mode, podNamespace, nodeName),
@@ -532,10 +534,6 @@ func main() {
 			UsePriorityQueue: new(false),
 		},
 	})
-	if err != nil {
-		setupLog.Error(err, "unable to create manager")
-		os.Exit(1)
-	}
 	// healthz.CheckHandler returns 200 when the checker passes and 500
 	// otherwise — the contract a kubelet HTTP probe expects.
 	if err := mgr.AddMetricsServerExtraHandler("/healthz", healthz.CheckHandler{Checker: healthz.Ping}); err != nil {
@@ -784,7 +782,7 @@ func main() {
 	if shutdownSweep != nil {
 		earlyCleanup = armSignalShutdown(signalCtx, shutdownEarly)
 	}
-	err = mgr.Start(managerCtx)
+	err := mgr.Start(managerCtx)
 	err = finishManagerShutdown(err, signalCtx, managerCtx, shutdownSweep,
 		shutdownBarrierSweep, earlyCleanup)
 	if err != nil {
@@ -825,6 +823,12 @@ func finishManagerShutdown(err error, signalCtx, managerCtx context.Context,
 // dial error and churn through CrashLoopBackOff. Kept under the liveness
 // kill window: the probe endpoints are not up until the manager starts.
 const apiStartupWait = 45 * time.Second
+
+// apiProbeTimeout bounds one waitForAPIServer attempt. client-go's default
+// dial timeout is 30s, so a dial that hangs (the service VIP not yet
+// routable) would otherwise leave a single effective retry inside
+// apiStartupWait.
+const apiProbeTimeout = 10 * time.Second
 
 // drbdShutdownTimeout bounds the Secondary-teardown sweep at shutdown.
 const drbdShutdownTimeout = 15 * time.Second
@@ -914,6 +918,44 @@ func apiWithRetry(budget time.Duration, op func(ctx context.Context) error) erro
 		return lastErr
 	}
 	return waitErr
+}
+
+// newManager builds the controller-runtime manager, first waiting for the
+// API server under the startup retry policy, and exits the process on
+// failure.
+func newManager(opts ctrl.Options) manager.Manager {
+	cfg := ctrl.GetConfigOrDie()
+	if err := waitForAPIServer(cfg, apiStartupWait); err != nil {
+		setupLog.Error(err, "unable to reach the API server")
+		os.Exit(1)
+	}
+	mgr, err := ctrl.NewManager(cfg, opts)
+	if err != nil {
+		setupLog.Error(err, "unable to create manager")
+		os.Exit(1)
+	}
+	return mgr
+}
+
+// waitForAPIServer blocks until the API server answers discovery, under the
+// shared startup retry policy. ctrl.NewManager resolves the cache's ByObject
+// entries through the RESTMapper at construction time, an API access that
+// precedes every apiWithRetry call site and would otherwise fail the
+// process on the first dial error: a hostNetwork agent can only reach the
+// service VIP once the CNI has programmed it, which lags the pod start on a
+// node reboot. Discovery needs no RBAC beyond system:authenticated, so the
+// probe is the same in every mode.
+func waitForAPIServer(cfg *rest.Config, budget time.Duration) error {
+	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("discovery client: %w", err)
+	}
+	return apiWithRetry(budget, func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, apiProbeTimeout)
+		defer cancel()
+		_, err := dc.ServerGroupsWithContext(ctx)
+		return err
+	})
 }
 
 // listWithRetry retries an API list with the shared startup retry policy.

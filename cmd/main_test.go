@@ -19,6 +19,9 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -97,6 +101,58 @@ func TestListWithRetryReturnsTerminalErrorImmediately(t *testing.T) {
 		}).Build()
 	if err := listWithRetry(c, &miroirv1alpha1.MiroirVolumeList{}, apiStartupWait); !apierrors.IsUnauthorized(err) {
 		t.Fatalf("want the terminal Unauthorized returned, got %v", err)
+	}
+}
+
+// discoveryServer serves the discovery endpoints (/api, then /apis) the
+// way the API server does, answering each request with the status code
+// respond returns for its path.
+func discoveryServer(t *testing.T, respond func(path string) int) *rest.Config {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api" && r.URL.Path != "/apis" {
+			http.NotFound(w, r)
+			return
+		}
+		code := respond(r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		if code == http.StatusOK {
+			_, _ = w.Write([]byte(`{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &rest.Config{Host: srv.URL}
+}
+
+func TestWaitForAPIServerRetriesTransientFailure(t *testing.T) {
+	// The reboot race: the first discovery call fails while the node's
+	// networking is still coming up, and the process must retry rather
+	// than exit — this is the manager's own first API access.
+	var probes atomic.Int32
+	cfg := discoveryServer(t, func(path string) int {
+		if path == "/api" && probes.Add(1) == 1 {
+			return http.StatusServiceUnavailable
+		}
+		return http.StatusOK
+	})
+	if err := waitForAPIServer(cfg, apiStartupWait); err != nil {
+		t.Fatal(err)
+	}
+	if got := probes.Load(); got != 2 {
+		t.Fatalf("want one retry after the transient failure, got %d probe(s)", got)
+	}
+}
+
+func TestWaitForAPIServerReturnsTerminalErrorImmediately(t *testing.T) {
+	cfg := discoveryServer(t, func(string) int { return http.StatusUnauthorized })
+	start := time.Now()
+	err := waitForAPIServer(cfg, apiStartupWait)
+	if !apierrors.IsUnauthorized(err) {
+		t.Fatalf("want the terminal Unauthorized returned, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("terminal error took %v to surface; must not wait out the budget", elapsed)
 	}
 }
 
