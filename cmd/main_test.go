@@ -28,11 +28,13 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -62,6 +64,7 @@ func TestTransientAPIError(t *testing.T) {
 		{"unauthorized", apierrors.NewUnauthorized("no creds"), false},
 		{"forbidden", apierrors.NewForbidden(schema.GroupResource{}, "x", errors.New("rbac")), false},
 		{"notfound", apierrors.NewNotFound(schema.GroupResource{}, "x"), false},
+		{"no kind match", &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "miroir.io", Kind: "MiroirNode"}}, false},
 		// The failure that crashed the agent on startup: a dial error while
 		// the control plane is still recovering — must be retried.
 		{"dial error", errors.New("dial tcp 10.43.0.1:443: connect: no route to host"), true},
@@ -104,13 +107,20 @@ func TestListWithRetryReturnsTerminalErrorImmediately(t *testing.T) {
 	}
 }
 
-// discoveryServer serves the discovery endpoints (/api, then /apis) the
-// way the API server does, answering each request with the status code
-// respond returns for its path.
+// discoveryServer serves the discovery endpoints the way an API server
+// with only the core group does, answering each request with the status
+// code respond returns for its path.
 func discoveryServer(t *testing.T, respond func(path string) int) *rest.Config {
 	t.Helper()
+	bodies := map[string]string{
+		"/api":  `{"kind":"APIVersions","versions":["v1"]}`,
+		"/apis": `{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`,
+		"/api/v1": `{"kind":"APIResourceList","groupVersion":"v1",` +
+			`"resources":[{"name":"nodes","namespaced":false,"kind":"Node","verbs":["get","list","watch"]}]}`,
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api" && r.URL.Path != "/apis" {
+		body, ok := bodies[r.URL.Path]
+		if !ok {
 			http.NotFound(w, r)
 			return
 		}
@@ -118,14 +128,31 @@ func discoveryServer(t *testing.T, respond func(path string) int) *rest.Config {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		if code == http.StatusOK {
-			_, _ = w.Write([]byte(`{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`))
+			_, _ = w.Write([]byte(body))
 		}
 	}))
 	t.Cleanup(srv.Close)
 	return &rest.Config{Host: srv.URL}
 }
 
-func TestWaitForAPIServerRetriesTransientFailure(t *testing.T) {
+// warmNodeMapping runs warmRESTMapper for the agent's corev1.Node cache
+// entry against a fresh dynamic mapper on cfg.
+func warmNodeMapping(t *testing.T, cfg *rest.Config, objs map[client.Object]cache.ByObject) error {
+	t.Helper()
+	hc, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapper, err := apiutil.NewDynamicRESTMapper(cfg, hc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return warmRESTMapper(mapper, scheme, objs, apiStartupWait)
+}
+
+var nodeByObject = map[client.Object]cache.ByObject{&corev1.Node{}: {}}
+
+func TestWarmRESTMapperRetriesTransientFailure(t *testing.T) {
 	// The reboot race: the first discovery call fails while the node's
 	// networking is still coming up, and the process must retry rather
 	// than exit — this is the manager's own first API access.
@@ -136,7 +163,7 @@ func TestWaitForAPIServerRetriesTransientFailure(t *testing.T) {
 		}
 		return http.StatusOK
 	})
-	if err := waitForAPIServer(cfg, apiStartupWait); err != nil {
+	if err := warmNodeMapping(t, cfg, nodeByObject); err != nil {
 		t.Fatal(err)
 	}
 	if got := probes.Load(); got != 2 {
@@ -144,12 +171,26 @@ func TestWaitForAPIServerRetriesTransientFailure(t *testing.T) {
 	}
 }
 
-func TestWaitForAPIServerReturnsTerminalErrorImmediately(t *testing.T) {
+func TestWarmRESTMapperReturnsTerminalErrorImmediately(t *testing.T) {
 	cfg := discoveryServer(t, func(string) int { return http.StatusUnauthorized })
 	start := time.Now()
-	err := waitForAPIServer(cfg, apiStartupWait)
+	err := warmNodeMapping(t, cfg, nodeByObject)
 	if !apierrors.IsUnauthorized(err) {
 		t.Fatalf("want the terminal Unauthorized returned, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("terminal error took %v to surface; must not wait out the budget", elapsed)
+	}
+}
+
+func TestWarmRESTMapperMissingCRDIsTerminal(t *testing.T) {
+	// A kind the server does not serve means the CRDs are not installed:
+	// fail at once, as NewManager did before the mapper was warmed.
+	cfg := discoveryServer(t, func(string) int { return http.StatusOK })
+	start := time.Now()
+	err := warmNodeMapping(t, cfg, map[client.Object]cache.ByObject{&miroirv1alpha1.MiroirNode{}: {}})
+	if !meta.IsNoMatchError(err) {
+		t.Fatalf("want a NoMatch error returned, got %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("terminal error took %v to surface; must not wait out the budget", elapsed)
