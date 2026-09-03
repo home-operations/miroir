@@ -36,7 +36,7 @@ import (
 // that restore individually; the group coordinates their cut under one
 // shared write barrier.
 type MiroirSnapshotGroupApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *MiroirSnapshotGroupSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *MiroirSnapshotGroupStatusApplyConfiguration `json:"status,omitempty"`

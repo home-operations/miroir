@@ -32,7 +32,7 @@ import (
 //
 // MiroirVolume is one provisioned volume (1:1 with a PV).
 type MiroirVolumeApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *MiroirVolumeSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *MiroirVolumeStatusApplyConfiguration `json:"status,omitempty"`
