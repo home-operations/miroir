@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.12.1](https://github.com/home-operations/miroir/compare/0.12.0...0.12.1) (2026-09-04)
+
+
+### Features
+
+* **go:** update module github.com/onsi/gomega (v1.42.1 → v1.43.0) ([#459](https://github.com/home-operations/miroir/issues/459)) ([516990f](https://github.com/home-operations/miroir/commit/516990f5a8829c5dc1de30af68ec9730a7ce5b99))
+* **go:** update module sigs.k8s.io/controller-runtime (v0.24.1 → v0.25.0) ([#468](https://github.com/home-operations/miroir/issues/468)) ([08e578c](https://github.com/home-operations/miroir/commit/08e578cff7a58e3c57935d29a5d89ce09ec1db02))
+
+
+### Bug Fixes
+
+* **agent:** cover NewManager's RESTMapper discovery with the startup retry policy ([#467](https://github.com/home-operations/miroir/issues/467)) ([1e41d01](https://github.com/home-operations/miroir/commit/1e41d0178124b321502e9241b181ee773f95314a))
+* **agent:** self-heal a Primary-side stale out-of-sync bitmap after failover ([#471](https://github.com/home-operations/miroir/issues/471)) ([9f4dff9](https://github.com/home-operations/miroir/commit/9f4dff9fbc850f10119d96a9f89b6074edce70bb))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action jdx/mise-action (v4.2.5 → v4.3.0) ([#460](https://github.com/home-operations/miroir/issues/460)) ([5ba2147](https://github.com/home-operations/miroir/commit/5ba214716e4f6ba952790b0c0412b48538bc851a))
+* **mise:** update mise tools ([#463](https://github.com/home-operations/miroir/issues/463)) ([3757d2a](https://github.com/home-operations/miroir/commit/3757d2a5acc67d53989f09d6ec7de89c16a31e87))
+* **mise:** update tool aqua:astral-sh/uv (0.12.5 → 0.12.6) ([#461](https://github.com/home-operations/miroir/issues/461)) ([7012bbd](https://github.com/home-operations/miroir/commit/7012bbd3de33bff518162d732b122552d2d2e7cf))
+* **mise:** update tool aqua:astral-sh/uv (0.12.7 → 0.12.8) ([#470](https://github.com/home-operations/miroir/issues/470)) ([3c81dfa](https://github.com/home-operations/miroir/commit/3c81dfac0fce8f4ccfc3e24740c1af4aa1d44dc6))
+* **mise:** update tool kubectl (1.36.4 → 1.37.0) ([#462](https://github.com/home-operations/miroir/issues/462)) ([b6b5f11](https://github.com/home-operations/miroir/commit/b6b5f110aee52214e1f46a49fbb9bc281a2e0864))
+* **mise:** update tool lefthook (2.1.11 → 2.1.12) ([#464](https://github.com/home-operations/miroir/issues/464)) ([815101c](https://github.com/home-operations/miroir/commit/815101cf10b2497690394c6651114d5a24ce152f))
+* **mise:** update tool oxfmt (0.64.0 → 0.65.0) ([#457](https://github.com/home-operations/miroir/issues/457)) ([ee3747e](https://github.com/home-operations/miroir/commit/ee3747e1cac149d0775dc28a2a909c3ad08a6a77))
+* **mise:** update tool zizmor (1.29.0 → 1.30.0) ([#465](https://github.com/home-operations/miroir/issues/465)) ([b25860f](https://github.com/home-operations/miroir/commit/b25860f5cc4d37d23eac859ede86ef2f4d15240a))
+
 ## [0.12.0](https://github.com/home-operations/miroir/compare/0.11.24...0.12.0) (2026-08-27)
 
 
