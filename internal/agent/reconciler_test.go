@@ -3594,6 +3594,45 @@ func TestReconcileStaleBitmapCyclesAfterConfirmation(t *testing.T) {
 	fe.calledWith(t, "drbdsetup connect pvc-1 1")
 }
 
+// The inverse shape (issue #469): after a failover the new Primary holds
+// a one-sided bitmap toward a healthy Secondary, which reads zero on the
+// same connection. The Primary is the only leg that can see it, and it
+// sources the re-handshake, so it cycles the peer after the confirmation
+// window just like the Secondary-side case.
+func TestReconcileStaleBitmapPrimaryLegCyclesAfterConfirmation(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = `[{"name":"pvc-1","role":"Primary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+			"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":392}]}]}]`
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup connect pvc-1 1")
+}
+
+// A Secondary/Secondary pair has no Primary to source the re-handshake, so
+// the same bits toward a Secondary peer stay unflagged: nothing arms and
+// nothing is cycled.
+func TestReconcileStaleBitmapSecondaryPairStaysManual(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+			"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":392}]}]}]`
+	reconcile(t, r, volPvc1)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	r.recoveryMu.Lock()
+	_, armed := r.stuckSince[volPvc1]
+	r.recoveryMu.Unlock()
+	if armed {
+		t.Fatal("a Secondary/Secondary pair must keep the confirmation clock unarmed")
+	}
+}
+
 // The same kernel shape with a verify finding on record is a genuine
 // data-difference report, not a stale bitmap: auto-resyncing it would
 // destroy the evidence of which leg was wrong, so it stays manual — the

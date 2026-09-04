@@ -1690,6 +1690,32 @@ func TestStatusStaleBitmapPeers(t *testing.T) {
 	}
 }
 
+// The inverse pair (issue #469): a Primary leg holding a one-sided bitmap
+// toward a healthy Secondary peer is flagged too — the Primary sources the
+// re-handshake, so the direction is just as settled. A Primary peer of a
+// Primary leg (dual-primary, no unambiguous source) stays unflagged.
+func TestStatusStaleBitmapPeersPrimaryLeg(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"UpToDate","quorum":true}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":392}]},
+				{"peer-node-id":2,"connection-state":"Connected","peer-role":"Secondary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]},
+				{"peer-node-id":3,"connection-state":"Connected","peer-role":"Primary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":4096}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.StaleBitmapPeers) != 1 || !s.StaleBitmapPeers[1] {
+		t.Fatalf("want only peer 1 flagged stale, got %v", s.StaleBitmapPeers)
+	}
+}
+
 // A healthy volume reports no stuck peers — nil, so fingerprint comparison
 // via maps.Equal treats it the same as an empty map.
 func TestStatusStuckResyncPeersNilWhenHealthy(t *testing.T) {
