@@ -854,9 +854,11 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 //     reply the peer already discarded (issue #397). Both wear
 //     StuckResyncPeers.
 //   - Bits stranded by a bitmap clear the kernel refused mid peer-teardown
-//     ("bitmap locked", issue #389), everything otherwise healthy
-//     (StaleBitmapPeers, behind staleBitmapActionable's gates — the same
-//     kernel shape is a verify finding, which stays manual).
+//     ("bitmap locked", issue #389), or left on a freshly promoted Primary
+//     toward a Secondary after a failover (issue #469), everything
+//     otherwise healthy (StaleBitmapPeers, behind staleBitmapActionable's
+//     gates — the same kernel shape is a verify finding, which stays
+//     manual).
 //
 // Neither drains in place: the kernel only reconciles a dirty bitmap on a
 // connection transition (its missed-end-of-resync rescue runs at connect),
@@ -929,16 +931,19 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 }
 
 // staleBitmapActionable reports whether the stale-bitmap candidates in
-// StaleBitmapPeers are safe to cycle (issue #389). Their kernel shape is
-// indistinguishable from a verify finding, so everything else must read
-// healthy — a Secondary leg with an UpToDate disk and quorum, every
-// diskful peer connected and UpToDate, no resync, verify, or split-brain
-// in flight — and the coordinator's last recorded verify must not have
-// findings outstanding: auto-resyncing a real finding would destroy the
-// evidence of which leg was wrong, so that case stays manual (the record
-// clears once a later verify reports 0 after the operator's own cycle).
+// StaleBitmapPeers are safe to cycle (issues #389 and #469). Their kernel
+// shape is indistinguishable from a verify finding, so everything else
+// must read healthy — an UpToDate disk with quorum, every diskful peer
+// connected and UpToDate, no resync, verify, or split-brain in flight —
+// and the coordinator's last recorded verify must not have findings
+// outstanding: auto-resyncing a real finding would destroy the evidence
+// of which leg was wrong, so that case stays manual (the record clears
+// once a later verify reports 0 after the operator's own cycle). The leg's
+// own role is not a gate: the parser only nominates pairs with exactly one
+// Primary, and an UpToDate Primary always sources the re-handshake, so
+// the direction is settled whichever side holds the bits.
 func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
-	if len(st.StaleBitmapPeers) == 0 || st.Primary || st.DiskState != drbd.DiskUpToDate ||
+	if len(st.StaleBitmapPeers) == 0 || st.DiskState != drbd.DiskUpToDate ||
 		!st.Quorum || st.Resyncing || st.SplitBrain {
 		return false
 	}

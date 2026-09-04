@@ -1296,17 +1296,19 @@ type Status struct {
 	// bitmap sees it — the peer still reads this node as UpToDate — so at
 	// most one node acts on it. Nil when no peer is stuck.
 	StuckResyncPeers map[int32]bool
-	// StaleBitmapPeers holds the DRBD node ids of Primary peers this leg
-	// carries a one-sided out-of-sync bitmap toward while everything
-	// reads healthy: connection Connected, replication Established,
-	// peer-disk UpToDate, out-of-sync above zero. Bits stranded by a
-	// bitmap clear the kernel refused mid peer-teardown ("bitmap locked")
-	// never drain on their own — DRBD only reconciles a dirty bitmap on a
-	// connection transition (issue #389). The same kernel shape is also a
-	// verify finding, which must stay manual — the agent gates on the
-	// recorded verify outcome before acting. Restricted to Primary peers
-	// so the resync direction at the re-handshake is unambiguous. Nil
-	// when none.
+	// StaleBitmapPeers holds the DRBD node ids of peers this leg carries
+	// a one-sided out-of-sync bitmap toward while everything reads
+	// healthy: connection Connected, replication Established, peer-disk
+	// UpToDate, out-of-sync above zero. Bits stranded by a bitmap clear
+	// the kernel refused mid peer-teardown ("bitmap locked") never drain
+	// on their own — DRBD only reconciles a dirty bitmap on a connection
+	// transition (issue #389). The same kernel shape is also a verify
+	// finding, which must stay manual — the agent gates on the recorded
+	// verify outcome before acting. Restricted to pairs with exactly one
+	// Primary — a Secondary leg toward a Primary peer (#389) or a Primary
+	// leg toward a Secondary peer (issue #469) — so the resync direction
+	// at the re-handshake is unambiguous: the Primary sources. Nil when
+	// none.
 	StaleBitmapPeers map[int32]bool
 }
 
@@ -1424,12 +1426,14 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 				}
 				s.StuckResyncPeers[c.PeerNodeID] = true
 			}
-			// A one-sided bitmap toward a healthy Primary peer with no
-			// resync running: stale bits from a refused clear (issue
-			// #389) — or a verify finding, which the agent's gates keep
-			// manual. The peer-role restriction keeps the resync
-			// direction at the re-handshake unambiguous.
-			if c.ConnectionState == connConnected && c.PeerRole == rolePrimary &&
+			// A one-sided bitmap toward a healthy peer with no resync
+			// running: stale bits from a refused clear (issue #389, held
+			// by a Secondary toward the Primary; issue #469, held by the
+			// Primary toward a Secondary) — or a verify finding, which
+			// the agent's gates keep manual. Exactly one Primary in the
+			// pair keeps the resync direction at the re-handshake
+			// unambiguous; Secondary/Secondary stays excluded.
+			if c.ConnectionState == connConnected && (c.PeerRole == rolePrimary) != s.Primary &&
 				pd.ReplicationState == replEstablished &&
 				pd.PeerDiskState == DiskUpToDate && pd.OutOfSyncKiB > 0 {
 				if s.StaleBitmapPeers == nil {
