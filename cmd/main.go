@@ -28,6 +28,8 @@ import (
 	"flag"
 	"fmt"
 	"maps"
+	"net"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -38,16 +40,20 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -498,7 +504,7 @@ func main() {
 		return
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr := newManager(ctrl.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: metricsAddr},
 		Cache:   cacheOptions(mode, podNamespace, nodeName),
@@ -532,10 +538,6 @@ func main() {
 			UsePriorityQueue: new(false),
 		},
 	})
-	if err != nil {
-		setupLog.Error(err, "unable to create manager")
-		os.Exit(1)
-	}
 	// healthz.CheckHandler returns 200 when the checker passes and 500
 	// otherwise — the contract a kubelet HTTP probe expects.
 	if err := mgr.AddMetricsServerExtraHandler("/healthz", healthz.CheckHandler{Checker: healthz.Ping}); err != nil {
@@ -784,7 +786,7 @@ func main() {
 	if shutdownSweep != nil {
 		earlyCleanup = armSignalShutdown(signalCtx, shutdownEarly)
 	}
-	err = mgr.Start(managerCtx)
+	err := mgr.Start(managerCtx)
 	err = finishManagerShutdown(err, signalCtx, managerCtx, shutdownSweep,
 		shutdownBarrierSweep, earlyCleanup)
 	if err != nil {
@@ -825,6 +827,13 @@ func finishManagerShutdown(err error, signalCtx, managerCtx context.Context,
 // dial error and churn through CrashLoopBackOff. Kept under the liveness
 // kill window: the probe endpoints are not up until the manager starts.
 const apiStartupWait = 45 * time.Second
+
+// apiDialTimeout replaces client-go's 30s default dial timeout. A dial to
+// a not-yet-routable service VIP hangs for the whole timeout, which would
+// leave a single effective retry inside apiStartupWait; an API server that
+// takes longer than 10s to accept a connection is unreachable for every
+// practical purpose.
+const apiDialTimeout = 10 * time.Second
 
 // drbdShutdownTimeout bounds the Secondary-teardown sweep at shutdown.
 const drbdShutdownTimeout = 15 * time.Second
@@ -916,6 +925,59 @@ func apiWithRetry(budget time.Duration, op func(ctx context.Context) error) erro
 	return waitErr
 }
 
+// newManager builds the controller-runtime manager and exits the process
+// on failure. NewManager resolves every cached (ByObject) type through the
+// RESTMapper at construction time, an API access that precedes every other
+// apiWithRetry call site and would otherwise exit on the first dial error:
+// a hostNetwork agent can only reach the service VIP once the CNI has
+// programmed it, which lags the pod start on a node reboot. The mapper
+// provider warms those lookups under the startup retry policy first, and
+// the lazy mapper caches per API group, so NewManager's own lookups are
+// then served locally and cannot race a second outage.
+func newManager(opts ctrl.Options) manager.Manager {
+	cfg := ctrl.GetConfigOrDie()
+	cfg.Dial = (&net.Dialer{Timeout: apiDialTimeout, KeepAlive: 30 * time.Second}).DialContext
+	opts.MapperProvider = func(c *rest.Config, hc *http.Client) (meta.RESTMapper, error) {
+		mapper, err := apiutil.NewDynamicRESTMapper(c, hc)
+		if err != nil {
+			return nil, err
+		}
+		if err := warmRESTMapper(mapper, opts.Scheme, opts.Cache.ByObject, apiStartupWait); err != nil {
+			return nil, err
+		}
+		return mapper, nil
+	}
+	mgr, err := ctrl.NewManager(cfg, opts)
+	if err != nil {
+		setupLog.Error(err, "unable to create manager")
+		os.Exit(1)
+	}
+	return mgr
+}
+
+// warmRESTMapper resolves the REST mapping of every cached type under the
+// shared startup retry policy. Discovery needs no RBAC beyond
+// system:authenticated, so the probe is the same in every mode.
+func warmRESTMapper(mapper meta.RESTMapper, scheme *runtime.Scheme,
+	objs map[client.Object]cache.ByObject, budget time.Duration) error {
+	gvks := make([]schema.GroupVersionKind, 0, len(objs))
+	for obj := range objs {
+		gvk, err := apiutil.GVKForObject(obj, scheme)
+		if err != nil {
+			return err
+		}
+		gvks = append(gvks, gvk)
+	}
+	return apiWithRetry(budget, func(context.Context) error {
+		for _, gvk := range gvks {
+			if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
+				return fmt.Errorf("warm RESTMapper: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
 // listWithRetry retries an API list with the shared startup retry policy.
 func listWithRetry(c client.Client, list client.ObjectList, budget time.Duration) error {
 	return apiWithRetry(budget, func(ctx context.Context) error { return c.List(ctx, list) })
@@ -924,13 +986,15 @@ func listWithRetry(c client.Client, list client.ObjectList, budget time.Duration
 // transientAPIError reports whether an API error is worth retrying. Dial
 // failures during control-plane recovery (connection refused, no route to
 // host) arrive as non-APIStatus errors; only explicit terminal statuses
-// (auth, not-found, invalid) are treated as permanent.
+// (auth, not-found, invalid) and a kind the server does not serve (the
+// CRDs are not installed) are treated as permanent.
 func transientAPIError(err error) bool {
 	switch {
 	case err == nil:
 		return false
 	case apierrors.IsUnauthorized(err), apierrors.IsForbidden(err),
-		apierrors.IsNotFound(err), apierrors.IsInvalid(err):
+		apierrors.IsNotFound(err), apierrors.IsInvalid(err),
+		meta.IsNoMatchError(err):
 		return false
 	default:
 		return true

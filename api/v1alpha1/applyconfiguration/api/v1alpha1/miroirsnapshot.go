@@ -33,7 +33,7 @@ import (
 // MiroirSnapshot is one crash-consistent point-in-time snapshot of a
 // MiroirVolume (1:1 with a VolumeSnapshotContent).
 type MiroirSnapshotApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *MiroirSnapshotSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *MiroirSnapshotStatusApplyConfiguration `json:"status,omitempty"`

@@ -35,7 +35,7 @@ import (
 // chart's `nodes` values, the status is written by that node's agent, and
 // the controller reads both at placement.
 type MiroirNodeApplyConfiguration struct {
-	v1.TypeMetaApplyConfiguration    `json:",inline"`
+	v1.TypeMetaApplyConfiguration    `json:""`
 	*v1.ObjectMetaApplyConfiguration `json:"metadata,omitempty"`
 	Spec                             *MiroirNodeSpecApplyConfiguration   `json:"spec,omitempty"`
 	Status                           *MiroirNodeStatusApplyConfiguration `json:"status,omitempty"`
