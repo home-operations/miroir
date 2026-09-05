@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.2](https://github.com/home-operations/miroir/compare/0.12.1...0.12.2) (2026-09-05)
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action actions/deploy-pages (v5.0.0 → v5.0.1) ([#475](https://github.com/home-operations/miroir/issues/475)) ([c16bfb8](https://github.com/home-operations/miroir/commit/c16bfb8fbfb5f82fbdf5dd4974a169fbb710aa68))
+* **mise:** update tool aqua:astral-sh/uv (0.12.8 → 0.12.9) ([#477](https://github.com/home-operations/miroir/issues/477)) ([2798da9](https://github.com/home-operations/miroir/commit/2798da9ee25e7fc5d81e49bfe2139cbe68b0295d))
+* **mise:** update tool oxfmt (0.65.0 → 0.66.0) ([#472](https://github.com/home-operations/miroir/issues/472)) ([5c937e0](https://github.com/home-operations/miroir/commit/5c937e0f8b7eff82abfaf90a93f6f24b6776e43a))
+
 ## [0.12.1](https://github.com/home-operations/miroir/compare/0.12.0...0.12.1) (2026-09-04)
 
 
