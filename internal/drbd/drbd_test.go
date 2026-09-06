@@ -277,6 +277,10 @@ func (f *fakeExec) run(_ context.Context, name string, args ...string) (string, 
 		// Fresh backing device by default.
 		return "", errors.New("Exclusive open failed. no valid meta data")
 	}
+	if strings.HasPrefix(line, cmdDrbdsetupStatus) {
+		// Nothing in the kernel by default: --json prints an empty list.
+		return "[]", nil
+	}
 	return "", nil
 }
 
@@ -636,16 +640,74 @@ func TestApplyForgetsRemovedPeers(t *testing.T) {
 		fe.notCalledWith(t, "forget-peer")
 	})
 
-	t.Run("a failed forget fails the apply", func(t *testing.T) {
+	t.Run("a failed forget fails the apply and is retried", func(t *testing.T) {
 		fe := &fakeExec{
 			responses: map[string]string{cmdDrbdsetupStatus: status},
-			errOn:     map[string]error{"forget-peer": errors.New("exit status 1")},
+			errOnce:   map[string]error{"forget-peer": errors.New("exit status 1")},
 		}
 		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
 
 		if err := d.Apply(t.Context(), testResource(nodeA)); err == nil {
 			t.Fatal("a failed forget-peer must surface so the next pass retries it")
 		}
+		if _, err := os.Stat(d.path(volPvc1 + pendingForgetSuffix)); err != nil {
+			t.Fatalf("a failed forget must leave the pending marker: %v", err)
+		}
+		// adjust already dropped the peer: the kernel view no longer lists
+		// it, so only the marker can carry it to this pass.
+		fe.responses[cmdDrbdsetupStatus] = `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"` + DiskUpToDate + `"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
+		fe.calls = nil
+		if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
+			t.Fatal(err)
+		}
+		fe.calledWith(t, "drbdsetup forget-peer pvc-1 3")
+		if _, err := os.Stat(d.path(volPvc1 + pendingForgetSuffix)); !os.IsNotExist(err) {
+			t.Fatal("a completed forget must clear the pending marker")
+		}
+	})
+
+	t.Run("a pending peer back in the config is dropped without a forget", func(t *testing.T) {
+		fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: status}}
+		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+		if err := d.writePendingForgets(volPvc1, []int32{3}); err != nil {
+			t.Fatal(err)
+		}
+		r := testResource(nodeA)
+		r.Peers = append(r.Peers, Peer{Node: nodeWorker1, NodeID: 3, Address: addrC, Diskless: true, Client: true})
+
+		if err := d.Apply(t.Context(), r); err != nil {
+			t.Fatal(err)
+		}
+		fe.notCalledWith(t, "forget-peer")
+		if _, err := os.Stat(d.path(volPvc1 + pendingForgetSuffix)); !os.IsNotExist(err) {
+			t.Fatal("a re-configured peer must leave the pending marker")
+		}
+	})
+
+	t.Run("a resource not in the kernel has nothing to forget", func(t *testing.T) {
+		fe := &fakeExec{errOn: map[string]error{
+			cmdDrbdsetupStatus: errors.New("exit status 10: pvc-1: No such resource"),
+		}}
+		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+		if err := d.Apply(t.Context(), testResource(nodeA)); err != nil {
+			t.Fatal(err)
+		}
+		fe.notCalledWith(t, "forget-peer")
+	})
+
+	t.Run("any other status failure fails the apply", func(t *testing.T) {
+		fe := &fakeExec{errOn: map[string]error{
+			cmdDrbdsetupStatus: errors.New("exit status 20: Failed to modprobe drbd"),
+		}}
+		d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+
+		if err := d.Apply(t.Context(), testResource(nodeA)); err == nil {
+			t.Fatal("an unreadable kernel view must not let adjust drop peers unrecorded")
+		}
+		fe.notCalledWith(t, "drbdadm adjust")
 	})
 }
 

@@ -96,19 +96,18 @@ func (d *Driver) ensureMarkedMetadata(ctx context.Context, r Resource) error {
 // ensureMetadata for how the birth generation lands), bring the resource
 // up / adjust.
 func (d *Driver) Apply(ctx context.Context, r Resource) error {
-	// The kernel's peer set before the config changes, so the peers adjust
-	// drops below can have their metadata slots forgotten afterwards (see
-	// forgetRemovedPeers). Read from the kernel rather than the previous
-	// .res so a failed adjust retries the forget on the next pass; a
-	// resource that is not up yet answers with an error, which just means
-	// there is nothing to forget.
-	var kernelPeers []int32
-	if parsed, err := d.listStatus(ctx, r.Name); err == nil {
-		for _, res := range parsed {
-			if res.Name == r.Name {
-				kernelPeers = res.peerIDs()
-			}
-		}
+	// The peers adjust is about to drop, recorded before the kernel forgets
+	// them so their metadata slots can be cleared afterwards (see
+	// forgetRemovedPeers). The kernel view rather than the previous .res
+	// is the source, so a failed adjust retries on the next pass; the
+	// marker keeps the set across a failed forget, when the kernel no
+	// longer knows the peer either.
+	removed, err := d.removedPeers(ctx, r)
+	if err != nil {
+		return err
+	}
+	if err := d.writePendingForgets(r.Name, removed); err != nil {
+		return err
 	}
 	if err := d.writeConfig(r); err != nil {
 		return err
@@ -152,7 +151,7 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 				return mdErr
 			}
 			if _, err = d.adm(ctx, "adjust", r.Name); err == nil {
-				return d.finishApply(ctx, r, kernelPeers)
+				return d.finishApply(ctx, r, removed)
 			}
 		}
 		if !strings.Contains(err.Error(), "Unknown resource") {
@@ -163,12 +162,12 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 		}
 	}
 
-	return d.finishApply(ctx, r, kernelPeers)
+	return d.finishApply(ctx, r, removed)
 }
 
 // finishApply is the tail of Apply once adjust has succeeded.
-func (d *Driver) finishApply(ctx context.Context, r Resource, kernelPeers []int32) error {
-	if err := d.forgetRemovedPeers(ctx, r, kernelPeers); err != nil {
+func (d *Driver) finishApply(ctx context.Context, r Resource, removed []int32) error {
+	if err := d.forgetRemovedPeers(ctx, r, removed); err != nil {
 		return err
 	}
 	// No udev runs on Talos, so DRBD's rules never create the device
@@ -177,7 +176,82 @@ func (d *Driver) finishApply(ctx context.Context, r Resource, kernelPeers []int3
 	return d.ensureDeviceNode(r.Minor)
 }
 
-// forgetRemovedPeers clears the metadata slot of every peer adjust just
+// pendingForgetSuffix names the marker listing node-ids whose forget-peer
+// is still owed, one per line. It is written before adjust drops them from
+// the kernel and removed once every forget succeeds: after a failed
+// forget the kernel view no longer knows the peer, so the marker is the
+// only record that a slot still needs clearing.
+const pendingForgetSuffix = ".forget-pending"
+
+// removedPeers is the set of node-ids the rendered config no longer lists
+// but that still need a forget-peer: the kernel's current peers plus any
+// left pending by an earlier failed forget. A node-id back in the config
+// (a consumer returning to the same node) drops out of the set; it is
+// live again and gets re-snapshotted when it leaves. A resource that is
+// not up answers "No such resource", which means the kernel holds no
+// peers; any other status failure aborts the apply, since going on would
+// drop peers with no record of them.
+func (d *Driver) removedPeers(ctx context.Context, r Resource) ([]int32, error) {
+	pending, err := d.readPendingForgets(r.Name)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := d.listStatus(ctx, r.Name)
+	if err != nil && !strings.Contains(err.Error(), "No such resource") {
+		return nil, fmt.Errorf("apply %s: %w", r.Name, err)
+	}
+	for _, res := range parsed {
+		if res.Name == r.Name {
+			pending = append(pending, res.peerIDs()...)
+		}
+	}
+	removed := slices.DeleteFunc(pending, func(id int32) bool {
+		return slices.ContainsFunc(r.Peers, func(p Peer) bool { return p.NodeID == id })
+	})
+	slices.Sort(removed)
+	return slices.Compact(removed), nil
+}
+
+func (d *Driver) readPendingForgets(name string) ([]int32, error) {
+	data, err := os.ReadFile(d.path(name + pendingForgetSuffix))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []int32
+	for field := range strings.FieldsSeq(string(data)) {
+		id, err := strconv.ParseInt(field, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("pending forgets %s: %w", name, err)
+		}
+		ids = append(ids, int32(id))
+	}
+	return ids, nil
+}
+
+// writePendingForgets records ids as owed forgets; an empty set removes
+// the marker.
+func (d *Driver) writePendingForgets(name string, ids []int32) error {
+	path := d.path(name + pendingForgetSuffix)
+	if len(ids) == 0 {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	var b strings.Builder
+	for _, id := range ids {
+		fmt.Fprintf(&b, "%d\n", id)
+	}
+	if err := os.MkdirAll(d.StateDir, 0o750); err != nil {
+		return err
+	}
+	return writeFileAtomic(path, []byte(b.String()), 0o640)
+}
+
+// forgetRemovedPeers clears the metadata slot of every peer adjust
 // dropped from the resource. del-peer leaves MDF_NODE_EXISTS behind in
 // each diskful leg's metadata, and DRBD's quorum code counts an
 // unconfigured slot wearing it as a missing diskless tiebreaker: on a
@@ -185,17 +259,15 @@ func (d *Driver) finishApply(ctx context.Context, r Resource, kernelPeers []int3
 // so the next single diskful loss drops quorum with the real tiebreaker
 // still connected (issue #478). Only forget-peer clears the slot. It
 // requires the peer to be unconfigured, hence after adjust, and is a
-// no-op on a diskless leg, which has no metadata to hold the flag.
-func (d *Driver) forgetRemovedPeers(ctx context.Context, r Resource, before []int32) error {
-	for _, id := range before {
-		if slices.ContainsFunc(r.Peers, func(p Peer) bool { return p.NodeID == id }) {
-			continue
-		}
+// no-op on a diskless leg, which has no metadata to hold the flag. The
+// pending marker is cleared only once every forget has succeeded.
+func (d *Driver) forgetRemovedPeers(ctx context.Context, r Resource, removed []int32) error {
+	for _, id := range removed {
 		if _, err := d.Exec(ctx, "drbdsetup", "forget-peer", r.Name, strconv.Itoa(int(id))); err != nil {
 			return fmt.Errorf("forget-peer %s %d: %w", r.Name, id, err)
 		}
 	}
-	return nil
+	return d.writePendingForgets(r.Name, nil)
 }
 
 // ensureMetadata creates the backing metadata, surviving a crash at any
@@ -402,7 +474,7 @@ func virginMetadata(dump, name string) bool {
 // stateSuffixes are the per-resource files in StateDir that teardown
 // removes — keep in sync with everything Apply, ensureMetadata, and
 // WipeForeignMetadata write.
-var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted", ".md-wiped"}
+var stateSuffixes = []string{".res", ".md-created", ".md-seeding", ".md-adopted", ".md-wiped", pendingForgetSuffix}
 
 // removeStateFiles deletes the resource's rendered config and markers.
 func (d *Driver) removeStateFiles(name string) error {

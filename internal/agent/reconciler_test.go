@@ -1097,6 +1097,10 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 		return out, nil
 	}
 	if strings.HasPrefix(line, "drbdsetup status") {
+		if f.statusJSON == "" {
+			// Nothing in the kernel by default: --json prints an empty list.
+			return "[]", nil
+		}
 		return f.statusJSON, nil
 	}
 	for key, out := range f.responses {
