@@ -630,12 +630,13 @@ func TestReconcilePaddedRestoreGrowsCloneBeforeCreateMD(t *testing.T) {
 	fb := newFakeBackend()
 	v := paddedRestoreVol()
 	stateDir := t.TempDir()
-	// The leading not-in-kernel read is probeMetadata's: the fresh clone must
-	// not read as adopted metadata, or create-md never runs.
+	// The leading not-in-kernel reads are Apply's peer snapshot and
+	// probeMetadata's: the fresh clone must not read as adopted metadata,
+	// or create-md never runs.
 	up := `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, up, up, up, up}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, statusNotInKernel, up, up, up, up}}
 	fb.seq = &fe.calls // interleave the backing resize into the DRBD call log
 
 	c := fake.NewClientBuilder().WithScheme(s).
@@ -771,7 +772,7 @@ func TestReconcilePaddedRestoreSeedMintsGeneration(t *testing.T) {
 	inc := `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateInconsistent + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, inc, inc, inc, inc}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, statusNotInKernel, inc, inc, inc, inc}}
 
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj(snapSnap1, "src-vol")).
@@ -807,7 +808,7 @@ func TestReconcilePaddedRestoreSeedMintRefusesWhenPeerHasData(t *testing.T) {
 	inc := `[{"name":"` + volPvc1 + `",
 		"devices":[{"disk-state":"` + diskStateInconsistent + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, inc, inc, inc, inc}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, statusNotInKernel, inc, inc, inc, inc}}
 
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj(snapSnap1, "src-vol")).
@@ -837,7 +838,7 @@ func TestReconcilePaddedRestoreSeedDemotesInterruptedMint(t *testing.T) {
 	up := `[{"name":"` + volPvc1 + `","role":"Primary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `"}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
-	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, up, up, up, up}}
+	fe := &fakeDRBDExec{statusSeq: []string{statusNotInKernel, statusNotInKernel, up, up, up, up}}
 
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(v, snapObj(snapSnap1, "src-vol")).
@@ -1096,6 +1097,10 @@ func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (stri
 		return out, nil
 	}
 	if strings.HasPrefix(line, "drbdsetup status") {
+		if f.statusJSON == "" {
+			// Nothing in the kernel by default: --json prints an empty list.
+			return "[]", nil
+		}
 		return f.statusJSON, nil
 	}
 	for key, out := range f.responses {
@@ -2272,12 +2277,13 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		Build()
 
-	// The kernel probe finds nothing (fresh boot, resource never
+	// The kernel reads before adjust (Apply's peer snapshot, then the
+	// metadata probe) find nothing (fresh boot, resource never
 	// configured); the post-Apply --json status still answers.
 	fe := &fakeDRBDExec{
 		statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"Inconsistent"}],"connections":[]}]`,
-		statusSeq: []string{statusNotInKernel},
+		statusSeq: []string{statusNotInKernel, statusNotInKernel},
 	}
 	fb := newFakeBackend() // Exists() == false: the wipe took the device
 	r := &VolumeReconciler{
@@ -3721,11 +3727,11 @@ func birthSetup(t *testing.T, nodeName string, peerNodeID int, statusSeq ...stri
 	}
 	fe := &fakeDRBDExec{}
 	if len(statusSeq) > 0 {
-		// The leading not-in-kernel read is probeMetadata's: a fresh volume
-		// must take the create-md path, not read the kernel view as adopted
-		// metadata.
-		seq := make([]string, 0, 1+len(statusSeq))
-		seq = append(seq, statusNotInKernel)
+		// The leading not-in-kernel reads are Apply's peer snapshot and
+		// probeMetadata's: a fresh volume must take the create-md path, not
+		// read the kernel view as adopted metadata.
+		seq := make([]string, 0, 2+len(statusSeq))
+		seq = append(seq, statusNotInKernel, statusNotInKernel)
 		for _, tmpl := range statusSeq {
 			seq = append(seq, fmt.Sprintf(tmpl, peerNodeID))
 		}
@@ -3892,6 +3898,7 @@ func TestFastPathMissesOnPeerDiskStateChange(t *testing.T) {
 	// The peer's disk turns Inconsistent; everything else is unchanged.
 	fe.statusSeq = []string{
 		fmt.Sprintf(birthReadyJSON, 1), // fastPath live check → fingerprint miss
+		fmt.Sprintf(birthReadyJSON, 1), // Apply's peer snapshot
 		fmt.Sprintf(birthReadyJSON, 1), // probeMetadata → attached, adopt
 		fmt.Sprintf(birthReadyJSON, 1), // pipeline status → trigger fires
 		fmt.Sprintf(birthDoneJSON, 1),  // post-mint re-read
