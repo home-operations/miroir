@@ -32,8 +32,11 @@ Trade-offs to understand:
 - **An attached client does not vote in quorum.** Client legs are
   configured with DRBD's `tiebreaker no` (one of the reasons for the
   9.3.1 module floor), so attaching and detaching consumers never moves the
-  majority threshold, and a dead consumer node leaves no phantom vote
-  behind.
+  majority threshold. Once a client leg is removed, the agent also runs
+  `drbdsetup forget-peer` for its node-id on every leg: DRBD keeps a
+  removed peer's metadata slot otherwise and counts it as a missing
+  tiebreaker, which on a 2-replica volume would let a single replica loss
+  drop quorum with the real tie-breaker still connected.
 - **Trims from consumers reach the real backings.** A client leg's
   device advertises the diskful legs' probed discard granularity
   (DRBD's diskless default is a 512-byte fiction dm-thin would

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,6 +96,20 @@ func (d *Driver) ensureMarkedMetadata(ctx context.Context, r Resource) error {
 // ensureMetadata for how the birth generation lands), bring the resource
 // up / adjust.
 func (d *Driver) Apply(ctx context.Context, r Resource) error {
+	// The kernel's peer set before the config changes, so the peers adjust
+	// drops below can have their metadata slots forgotten afterwards (see
+	// forgetRemovedPeers). Read from the kernel rather than the previous
+	// .res so a failed adjust retries the forget on the next pass; a
+	// resource that is not up yet answers with an error, which just means
+	// there is nothing to forget.
+	var kernelPeers []int32
+	if parsed, err := d.listStatus(ctx, r.Name); err == nil {
+		for _, res := range parsed {
+			if res.Name == r.Name {
+				kernelPeers = res.peerIDs()
+			}
+		}
+	}
 	if err := d.writeConfig(r); err != nil {
 		return err
 	}
@@ -137,7 +152,7 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 				return mdErr
 			}
 			if _, err = d.adm(ctx, "adjust", r.Name); err == nil {
-				return d.ensureDeviceNode(r.Minor)
+				return d.finishApply(ctx, r, kernelPeers)
 			}
 		}
 		if !strings.Contains(err.Error(), "Unknown resource") {
@@ -148,10 +163,39 @@ func (d *Driver) Apply(ctx context.Context, r Resource) error {
 		}
 	}
 
+	return d.finishApply(ctx, r, kernelPeers)
+}
+
+// finishApply is the tail of Apply once adjust has succeeded.
+func (d *Driver) finishApply(ctx context.Context, r Resource, kernelPeers []int32) error {
+	if err := d.forgetRemovedPeers(ctx, r, kernelPeers); err != nil {
+		return err
+	}
 	// No udev runs on Talos, so DRBD's rules never create the device
 	// node. Without it, the first open(2) would create a regular file
 	// under /dev and mkfs would silently write into tmpfs.
 	return d.ensureDeviceNode(r.Minor)
+}
+
+// forgetRemovedPeers clears the metadata slot of every peer adjust just
+// dropped from the resource. del-peer leaves MDF_NODE_EXISTS behind in
+// each diskful leg's metadata, and DRBD's quorum code counts an
+// unconfigured slot wearing it as a missing diskless tiebreaker: on a
+// 2-replica freeze volume that phantom doubles the tiebreaker electorate,
+// so the next single diskful loss drops quorum with the real tiebreaker
+// still connected (issue #478). Only forget-peer clears the slot. It
+// requires the peer to be unconfigured, hence after adjust, and is a
+// no-op on a diskless leg, which has no metadata to hold the flag.
+func (d *Driver) forgetRemovedPeers(ctx context.Context, r Resource, before []int32) error {
+	for _, id := range before {
+		if slices.ContainsFunc(r.Peers, func(p Peer) bool { return p.NodeID == id }) {
+			continue
+		}
+		if _, err := d.Exec(ctx, "drbdsetup", "forget-peer", r.Name, strconv.Itoa(int(id))); err != nil {
+			return fmt.Errorf("forget-peer %s %d: %w", r.Name, id, err)
+		}
+	}
+	return nil
 }
 
 // ensureMetadata creates the backing metadata, surviving a crash at any
