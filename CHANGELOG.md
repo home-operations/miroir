@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.12.3](https://github.com/home-operations/miroir/compare/0.12.2...0.12.3) (2026-09-11)
+
+
+### Features
+
+* **container:** update image registry.k8s.io/sig-storage/csi-node-driver-registrar (v2.17.0 → v2.18.0) ([#489](https://github.com/home-operations/miroir/issues/489)) ([6610222](https://github.com/home-operations/miroir/commit/661022276e0b709d6b25a9ec795efcf67a4d5445))
+* **go:** update module golang.org/x/sys (v0.47.0 → v0.48.0) ([#484](https://github.com/home-operations/miroir/issues/484)) ([6460326](https://github.com/home-operations/miroir/commit/6460326c2fa6156ceed90d23488eb493c451565d))
+
+
+### Bug Fixes
+
+* **backend:** reactivate restore clones with the activation-skip override ([#491](https://github.com/home-operations/miroir/issues/491)) ([218442f](https://github.com/home-operations/miroir/commit/218442f7204ebc41b3ac51ce5da6a6ffda0f31f4))
+* **go:** update module github.com/onsi/ginkgo/v2 (v2.32.1 → v2.32.2) ([#487](https://github.com/home-operations/miroir/issues/487)) ([75ad058](https://github.com/home-operations/miroir/commit/75ad0585a593106de00277d118bd5269bf110f2c))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action home-operations/talosctl-cluster-action (v0.2.1 → v0.2.2) ([#480](https://github.com/home-operations/miroir/issues/480)) ([b1b2db8](https://github.com/home-operations/miroir/commit/b1b2db83085cc813d50c95a016dd3456bf5a97a1))
+* **mise:** update tool aqua:astral-sh/uv (0.12.9 → 0.12.10) ([#483](https://github.com/home-operations/miroir/issues/483)) ([5e0f2e1](https://github.com/home-operations/miroir/commit/5e0f2e1f61fa974b71952935184f96dca8941a4c))
+* **mise:** update tool go:golang.org/x/vuln/cmd/govulncheck (1.7.0 → v1.8.0) ([#486](https://github.com/home-operations/miroir/issues/486)) ([ac526db](https://github.com/home-operations/miroir/commit/ac526db206e0dd6072bb7bf518060d28a95bd8d6))
+* **mise:** update tool oxfmt (0.66.0 → 0.67.0) ([#488](https://github.com/home-operations/miroir/issues/488)) ([b0735ac](https://github.com/home-operations/miroir/commit/b0735acf75b54c25a900c64a5f414307eab307b6))
+* **mise:** update tool setup-envtest (0.24.1 → 0.25.0) ([#482](https://github.com/home-operations/miroir/issues/482)) ([3dfcd1d](https://github.com/home-operations/miroir/commit/3dfcd1d83a184b5dccc800ef0f9d61bf649f0b07))
+* **mise:** update tool talos (1.14.0-beta.1 → 1.14.0) ([#485](https://github.com/home-operations/miroir/issues/485)) ([0c685af](https://github.com/home-operations/miroir/commit/0c685afd0653526c42d42af7b6e6ab9f5f07753e))
+
 ## [0.12.2](https://github.com/home-operations/miroir/compare/0.12.1...0.12.2) (2026-09-06)
 
 
