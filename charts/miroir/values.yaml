@@ -227,7 +227,7 @@ agent:
   loopfileBaseDirs: []
   # kubelet plugin-registration sidecar riding the agent DaemonSet.
   registrar:
-    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0
+    image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0
     # -- Registrar sidecar resources.
     resources:
       requests:

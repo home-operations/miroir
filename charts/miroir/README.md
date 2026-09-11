@@ -73,7 +73,7 @@ Kubernetes: `>=1.31.0-0`
 | agent.podAnnotations | object | `{}` | Extra annotations on the agent pods. |
 | agent.podLabels | object | `{}` | Extra labels on the agent pods. |
 | agent.poolStatsInterval | string | `"60s"` |  |
-| agent.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.17.0"` |  |
+| agent.registrar.image | string | `"registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0"` |  |
 | agent.registrar.resources | object | `{"limits":{"memory":"64Mi"},"requests":{"cpu":"5m","memory":"16Mi"}}` | Registrar sidecar resources. |
 | agent.resources.limits.memory | string | `"128Mi"` |  |
 | agent.resources.requests.cpu | string | `"10m"` |  |
