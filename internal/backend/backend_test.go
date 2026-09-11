@@ -109,8 +109,10 @@ func TestLVMThinCreateIdempotent(t *testing.T) {
 	}
 	fe.notCalledWith(t, "lvcreate")
 	// Existing LVs are activated: Talos does not run vgchange -ay at boot,
-	// so post-reboot the LV has no device node until activated.
-	fe.calledWith(t, "lvchange --activate y vg-miroir/pvc-1")
+	// so post-reboot the LV has no device node until activated. Restore
+	// clones recover through this path and carry the activation-skip
+	// flag, so the override must be present (#490).
+	fe.calledWith(t, "lvchange --activate y --ignoreactivationskip vg-miroir/pvc-1")
 }
 
 // A misaligned size still reaching the backend (a CR spec from before the
@@ -408,8 +410,10 @@ func TestZFSCreateFromSnapshot(t *testing.T) {
 }
 
 func TestLVMThinCloneReactivates(t *testing.T) {
-	// Existing clone (post-reboot reconcile) must be re-activated: Talos
-	// does not activate foreign LVs at boot.
+	// An existing clone must be re-activated with the activation-skip
+	// override. The reconciler recovers existing clones through Create
+	// (see TestLVMThinCreateIdempotent); this branch remains for
+	// direct callers.
 	fe := &fakeExec{}
 	b := newLVMThin(cfg, fe.run)
 

@@ -206,9 +206,13 @@ func (l *lvmThin) Create(ctx context.Context, vol string, sizeBytes int64) (stri
 	}
 	// Talos does not activate foreign LVs at boot, so an LV surviving a
 	// node reboot exists in metadata but has no device node until
-	// activated. Idempotent on an already-active LV.
+	// activated. Idempotent on an already-active LV. Restore clones
+	// recover through here too (realizeBacking skips CreateFromSnapshot
+	// once the LV exists) and, being thin snapshots, carry the
+	// activation-skip flag that a plain activate silently honours; the
+	// override is a no-op on LVs born without it.
 	if _, err := l.lvm(ctx, "lvchange", "--activate", "y",
-		l.ref(vol)); err != nil {
+		"--ignoreactivationskip", l.ref(vol)); err != nil {
 		return "", fmt.Errorf("activate %s: %w", vol, err)
 	}
 	return l.ensureDevice(ctx, vol)
