@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.4](https://github.com/home-operations/miroir/compare/0.12.3...0.12.4) (2026-09-12)
+
+
+### Miscellaneous Chores
+
+* **mise:** update mise tools ([#492](https://github.com/home-operations/miroir/issues/492)) ([6f7278b](https://github.com/home-operations/miroir/commit/6f7278bb3dd75616fb93a42093d9fff90cd46734))
+
 ## [0.12.3](https://github.com/home-operations/miroir/compare/0.12.2...0.12.3) (2026-09-11)
 
 
