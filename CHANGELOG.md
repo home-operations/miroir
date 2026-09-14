@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.4](https://github.com/home-operations/miroir/compare/0.12.3...0.12.4) (2026-09-14)
+
+
+### Bug Fixes
+
+* **agent:** self-heal a stale out-of-sync bitmap between two Secondaries ([#500](https://github.com/home-operations/miroir/issues/500)) ([2319ed4](https://github.com/home-operations/miroir/commit/2319ed454444b3e7a44bf2b75563d02b7a5f6f8c))
+* **drbd:** classify a stranded drbdsetup down as a teardown wedge ([#498](https://github.com/home-operations/miroir/issues/498)) ([43a0477](https://github.com/home-operations/miroir/commit/43a0477ff0e8caf9769258885f6b3b3577245e2b))
+* **go:** update module sigs.k8s.io/controller-runtime (v0.25.0 → v0.25.1) ([#496](https://github.com/home-operations/miroir/issues/496)) ([7a072c1](https://github.com/home-operations/miroir/commit/7a072c1b299a272efd3fb0d5a3a02f82e5c9c373))
+
+
+### Miscellaneous Chores
+
+* **mise:** update mise tools ([#492](https://github.com/home-operations/miroir/issues/492)) ([6f7278b](https://github.com/home-operations/miroir/commit/6f7278bb3dd75616fb93a42093d9fff90cd46734))
+* **mise:** update mise tools ([#494](https://github.com/home-operations/miroir/issues/494)) ([6c450fa](https://github.com/home-operations/miroir/commit/6c450fa54ae4d9fc66aa99b7c79cfa2840266d62))
+* **mise:** update tool aqua:astral-sh/uv (0.12.12 → 0.12.13) ([#495](https://github.com/home-operations/miroir/issues/495)) ([86ef41d](https://github.com/home-operations/miroir/commit/86ef41d8db2c640301e2076f3b8cf7ae58a60fb0))
+
 ## [0.12.3](https://github.com/home-operations/miroir/compare/0.12.2...0.12.3) (2026-09-11)
 
 
