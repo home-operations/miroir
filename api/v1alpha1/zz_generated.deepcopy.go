@@ -750,6 +750,10 @@ func (in *ReplicaStatus) DeepCopyInto(out *ReplicaStatus) {
 		*out = new(int64)
 		**out = **in
 	}
+	if in.VerifyStartedAt != nil {
+		in, out := &in.VerifyStartedAt, &out.VerifyStartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.LastProbedAt != nil {
 		in, out := &in.LastProbedAt, &out.LastProbedAt
 		*out = (*in).DeepCopy()

@@ -485,6 +485,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: splitBrain
       type:
         scalar: boolean
+    - name: verifyStartedAt
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
 - name: com.github.home-operations.miroir.api.v1alpha1.SnapshotNodeState
   scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.VolumeClient

@@ -348,6 +348,14 @@ type ReplicaStatus struct {
 	// clean verify (0) reads differently from "never verified" (nil).
 	// +optional
 	LastVerifyOutOfSyncBytes *int64 `json:"lastVerifyOutOfSyncBytes,omitempty"`
+	// VerifyStartedAt is set by the coordinator just before it kicks a
+	// verify and removed when the result is recorded. While present, the
+	// kernel may hold verify findings no status field accounts for yet —
+	// an agent restart or a failed status write between the verify
+	// finishing and its record landing leaves exactly that — so the
+	// stale-bitmap self-heal must not cycle this volume's connections.
+	// +optional
+	VerifyStartedAt *metav1.Time `json:"verifyStartedAt,omitempty"`
 	// LastProbedAt is when this agent last successfully probed the
 	// replica's live state (backing device, DRBD status). A stale probe
 	// means the agent can no longer reach the node-local resources —

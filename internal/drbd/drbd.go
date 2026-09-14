@@ -1459,11 +1459,12 @@ type Status struct {
 	// on their own — DRBD only reconciles a dirty bitmap on a connection
 	// transition (issue #389). The same kernel shape is also a verify
 	// finding, which must stay manual — the agent gates on the recorded
-	// verify outcome before acting. Restricted to pairs with exactly one
-	// Primary — a Secondary leg toward a Primary peer (#389) or a Primary
-	// leg toward a Secondary peer (issue #469) — so the resync direction
-	// at the re-handshake is unambiguous: the Primary sources. Nil when
-	// none.
+	// verify outcome before acting. Any pair but Primary/Primary
+	// qualifies — a Secondary leg toward the Primary (#389), the Primary
+	// toward a Secondary (issue #469), or a Secondary toward another
+	// Secondary (issue #497): the re-handshake takes its direction from
+	// generation UUIDs, not roles, and only dual-primary leaves no
+	// settled source. Nil when none.
 	StaleBitmapPeers map[int32]bool
 }
 
@@ -1584,11 +1585,14 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 			// A one-sided bitmap toward a healthy peer with no resync
 			// running: stale bits from a refused clear (issue #389, held
 			// by a Secondary toward the Primary; issue #469, held by the
-			// Primary toward a Secondary) — or a verify finding, which
-			// the agent's gates keep manual. Exactly one Primary in the
-			// pair keeps the resync direction at the re-handshake
-			// unambiguous; Secondary/Secondary stays excluded.
-			if c.ConnectionState == connConnected && (c.PeerRole == rolePrimary) != s.Primary &&
+			// Primary toward a Secondary; issue #497, held by a Secondary
+			// toward another Secondary after a connectivity blip) — or a
+			// verify finding, which the agent's gates keep manual. The
+			// re-handshake settles its direction from generation UUIDs,
+			// not roles: equal generations discard the bits, divergent
+			// ones sync from the newer history. Only a Primary/Primary
+			// pair stays excluded — dual-primary has no settled source.
+			if c.ConnectionState == connConnected && (c.PeerRole != rolePrimary || !s.Primary) &&
 				pd.ReplicationState == replEstablished &&
 				pd.PeerDiskState == DiskUpToDate && pd.OutOfSyncKiB > 0 {
 				if s.StaleBitmapPeers == nil {

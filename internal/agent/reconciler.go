@@ -90,10 +90,12 @@ type VolumeReconciler struct {
 	recoveryMu   sync.Mutex
 	lastRecovery map[string]time.Time
 	// stuckSince (same lock) stamps when a stranded-bitmap signature was
-	// first seen per volume; recovery waits out one poll interval so a
-	// status snapshot mid real handshake is never acted on. See
+	// first seen per volume, keyed to the candidate peer set it was seen
+	// on; recovery waits out one poll interval so a status snapshot mid
+	// real handshake is never acted on, and a changed set restarts the
+	// wait so a newly seen peer never rides an older peer's clock. See
 	// recoverStuckResync.
-	stuckSince map[string]time.Time
+	stuckSince map[string]stuckMark
 
 	// busyFails counts consecutive ErrBusy teardown outcomes per volume.
 	// Past busyFailLimit the loop escalates — Warning Event, status
@@ -854,8 +856,9 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 //     reply the peer already discarded (issue #397). Both wear
 //     StuckResyncPeers.
 //   - Bits stranded by a bitmap clear the kernel refused mid peer-teardown
-//     ("bitmap locked", issue #389), or left on a freshly promoted Primary
-//     toward a Secondary after a failover (issue #469), everything
+//     ("bitmap locked", issue #389), left on a freshly promoted Primary
+//     toward a Secondary after a failover (issue #469), or left between
+//     two Secondaries after a connectivity blip (issue #497), everything
 //     otherwise healthy (StaleBitmapPeers, behind staleBitmapActionable's
 //     gates — the same kernel shape is a verify finding, which stays
 //     manual).
@@ -897,21 +900,22 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 		r.recoveryMu.Unlock()
 		return false
 	}
+	key := stuckPeerKey(peers)
 	r.recoveryMu.Lock()
-	since, seen := r.stuckSince[vol.Name]
-	if !seen {
+	mark, seen := r.stuckSince[vol.Name]
+	if !seen || mark.peers != key {
 		if r.stuckSince == nil {
-			r.stuckSince = map[string]time.Time{}
+			r.stuckSince = map[string]stuckMark{}
 		}
-		r.stuckSince[vol.Name] = time.Now()
+		r.stuckSince[vol.Name] = stuckMark{since: time.Now(), peers: key}
 		r.recoveryMu.Unlock()
 		return true
 	}
-	if time.Since(since) < drbdPollInterval {
+	if time.Since(mark.since) < drbdPollInterval {
 		r.recoveryMu.Unlock()
 		return true
 	}
-	r.stuckSince[vol.Name] = time.Now()
+	r.stuckSince[vol.Name] = stuckMark{since: time.Now(), peers: key}
 	r.recoveryMu.Unlock()
 
 	log := ctrl.LoggerFrom(ctx)
@@ -930,28 +934,49 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 	return true
 }
 
+// stuckMark is one volume's stranded-bitmap confirmation clock: when the
+// signature was first seen, and on which candidate peers.
+type stuckMark struct {
+	since time.Time
+	peers string
+}
+
+// stuckPeerKey renders a candidate set in a stable form for stuckMark.
+func stuckPeerKey(peers map[int32]bool) string {
+	return fmt.Sprint(slices.Sorted(maps.Keys(peers)))
+}
+
 // staleBitmapActionable reports whether the stale-bitmap candidates in
 // StaleBitmapPeers are safe to cycle (issues #389 and #469). Their kernel
 // shape is indistinguishable from a verify finding, so everything else
 // must read healthy — an UpToDate disk with quorum, every diskful peer
 // connected and UpToDate, no resync, verify, or split-brain in flight —
-// and the coordinator's last recorded verify must not have findings
-// outstanding: auto-resyncing a real finding would destroy the evidence
-// of which leg was wrong, so that case stays manual (the record clears
-// once a later verify reports 0 after the operator's own cycle). The leg's
-// own role is not a gate: the parser only nominates pairs with exactly one
-// Primary, and an UpToDate Primary always sources the re-handshake, so
-// the direction is settled whichever side holds the bits.
+// and the coordinator's verify record must be settled and clean: a
+// recorded finding, or a verify started and not yet recorded (findings
+// the kernel may hold that no status field accounts for), keeps the
+// case manual — auto-resyncing a real finding would destroy the evidence
+// of which leg was wrong (the record clears once a later verify reports
+// 0 after the operator's own cycle). Roles do
+// not settle the direction — the re-handshake takes it from generation
+// UUIDs, and equal generations discard the bits outright — so the pair's
+// roles are not a gate. A live Primary somewhere in the volume is: with
+// no Primary at all, two Secondaries holding bits may be survivors of a
+// lost Primary, a state the kernel reconciles with its own resync on the
+// reconnect, so that case is left to the kernel rather than cycled here.
 func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
 	if len(st.StaleBitmapPeers) == 0 || st.DiskState != drbd.DiskUpToDate ||
-		!st.Quorum || st.Resyncing || st.SplitBrain {
+		!st.Quorum || st.Resyncing || st.SplitBrain || (!st.Primary && !st.PeerPrimary) {
 		return false
 	}
 	if !diskfulPeersConnected(st, vol, r.NodeName) || !diskfulPeersUpToDate(st, vol, r.NodeName) {
 		return false
 	}
 	if coord := vol.Spec.FirstDiskfulReplica(); coord != nil {
-		if v := vol.Status.PerNode[coord.Node].LastVerifyOutOfSyncBytes; v != nil && *v > 0 {
+		slot := vol.Status.PerNode[coord.Node]
+		if slot.VerifyStartedAt != nil {
+			return false
+		}
+		if v := slot.LastVerifyOutOfSyncBytes; v != nil && *v > 0 {
 			return false
 		}
 	}

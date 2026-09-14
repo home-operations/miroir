@@ -134,7 +134,24 @@ func (v *VerifyScheduler) verifyVolume(ctx context.Context, vol *miroirv1alpha1.
 		st.DiskState != drbd.DiskUpToDate || !diskfulPeersConnected(st, vol, v.NodeName) {
 		return nil
 	}
+	// The marker lands before the kick so no window exists in which the
+	// kernel can hold findings the status does not yet account for. A
+	// marker already on the slot is an earlier run's, left by a shutdown
+	// mid-pass: its findings are still unrecorded, so it stays as it is,
+	// and only a marker this call added is withdrawn on a failed kick.
+	hadMarker := vol.Status.PerNode[v.NodeName].VerifyStartedAt != nil
+	if !hadMarker {
+		if err := v.applyVerifySlot(ctx, vol, v.carriedVerifySlot(vol).WithVerifyStartedAt(metav1.Now())); err != nil {
+			return fmt.Errorf("record verify start: %w", err)
+		}
+	}
 	if err := v.DRBD.Verify(ctx, vol.Name); err != nil {
+		if !hadMarker {
+			if cerr := v.applyVerifySlot(ctx, vol, v.carriedVerifySlot(vol)); cerr != nil {
+				ctrl.LoggerFrom(ctx).WithName("verify").Error(cerr,
+					"cannot clear the verify-started marker after a failed kick", "volume", vol.Name)
+			}
+		}
 		return fmt.Errorf("kick verify: %w", err)
 	}
 
@@ -152,6 +169,8 @@ func (v *VerifyScheduler) verifyVolume(ctx context.Context, vol *miroirv1alpha1.
 		case <-ctx.Done():
 			// Shutdown: the kernel verify continues harmlessly and the next
 			// sweep re-checks. Do not stop it — that needs a disconnect.
+			// The started marker stays: its findings are unrecorded until
+			// that sweep, and the stale-bitmap self-heal must keep off.
 			return nil
 		case <-t.C:
 		}
@@ -168,7 +187,9 @@ func (v *VerifyScheduler) verifyVolume(ctx context.Context, vol *miroirv1alpha1.
 			if !diskfulPeersConnected(st, vol, v.NodeName) {
 				ctrl.LoggerFrom(ctx).WithName("verify").Info(
 					"verify interrupted by a peer disconnect; result discarded", "volume", vol.Name)
-				return nil
+				// The bits accrued while the peer was away heal on the
+				// reconnect resync, so nothing needs the marker's guard.
+				return v.applyVerifySlot(ctx, vol, v.carriedVerifySlot(vol))
 			}
 			return v.recordResult(ctx, vol, st.OutOfSyncKiB*1024)
 		}
@@ -176,9 +197,10 @@ func (v *VerifyScheduler) verifyVolume(ctx context.Context, vol *miroirv1alpha1.
 }
 
 // recordResult writes the outcome to the coordinator's status slot, the
-// verify metrics, and — on a dirty result — a Warning event. The status
-// apply uses its own field owner so it never collides with the reconciler's
-// per-node slot apply.
+// verify metrics, and — on a dirty result — a Warning event. The applied
+// slot omits VerifyStartedAt, which is what removes the marker: the
+// verify field owner declares the whole set of fields it wants, and a
+// field it stops declaring is dropped.
 func (v *VerifyScheduler) recordResult(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, oosBytes int64) error {
 	now := metav1.Now()
 	recordVerifyMetrics(vol, volumePoolOn(vol, v.NodeName), now.Time, oosBytes)
@@ -186,17 +208,38 @@ func (v *VerifyScheduler) recordResult(ctx context.Context, vol *miroirv1alpha1.
 		v.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "VerifyOutOfSync", "Verify",
 			"online verify found %d out-of-sync bytes; a disconnect/connect cycle is needed to resync", oosBytes)
 	}
-	ac := acv1alpha1.MiroirVolume(vol.Name).
-		WithStatus(acv1alpha1.MiroirVolumeStatus().
-			WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
-				v.NodeName: *acv1alpha1.ReplicaStatus().
-					WithLastVerifyTime(now).
-					WithLastVerifyOutOfSyncBytes(oosBytes),
-			}))
-	if err := v.Client.SubResource("status").Apply(ctx, ac,
-		client.FieldOwner("agent-verify-"+v.NodeName),
-		client.ForceOwnership); err != nil {
+	slot := acv1alpha1.ReplicaStatus().
+		WithLastVerifyTime(now).
+		WithLastVerifyOutOfSyncBytes(oosBytes)
+	if err := v.applyVerifySlot(ctx, vol, slot); err != nil {
 		return fmt.Errorf("record verify result: %w", err)
 	}
 	return nil
+}
+
+// carriedVerifySlot rebuilds the last recorded verify outcome from the
+// coordinator's slot, so an apply that only adds or drops the started
+// marker does not also drop the record it sits next to.
+func (v *VerifyScheduler) carriedVerifySlot(vol *miroirv1alpha1.MiroirVolume) *acv1alpha1.ReplicaStatusApplyConfiguration {
+	slot := acv1alpha1.ReplicaStatus()
+	prev := vol.Status.PerNode[v.NodeName]
+	if prev.LastVerifyTime != nil {
+		slot.WithLastVerifyTime(*prev.LastVerifyTime)
+	}
+	if prev.LastVerifyOutOfSyncBytes != nil {
+		slot.WithLastVerifyOutOfSyncBytes(*prev.LastVerifyOutOfSyncBytes)
+	}
+	return slot
+}
+
+// applyVerifySlot applies the verify-owned fields of the coordinator's
+// status slot under the verify field owner, which is what keeps them
+// from colliding with the reconciler's per-node slot apply.
+func (v *VerifyScheduler) applyVerifySlot(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, slot *acv1alpha1.ReplicaStatusApplyConfiguration) error {
+	ac := acv1alpha1.MiroirVolume(vol.Name).
+		WithStatus(acv1alpha1.MiroirVolumeStatus().
+			WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{v.NodeName: *slot}))
+	return v.Client.SubResource("status").Apply(ctx, ac,
+		client.FieldOwner("agent-verify-"+v.NodeName),
+		client.ForceOwnership)
 }
