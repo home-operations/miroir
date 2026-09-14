@@ -135,14 +135,22 @@ func (v *VerifyScheduler) verifyVolume(ctx context.Context, vol *miroirv1alpha1.
 		return nil
 	}
 	// The marker lands before the kick so no window exists in which the
-	// kernel can hold findings the status does not yet account for.
-	if err := v.applyVerifySlot(ctx, vol, v.carriedVerifySlot(vol).WithVerifyStartedAt(metav1.Now())); err != nil {
-		return fmt.Errorf("record verify start: %w", err)
+	// kernel can hold findings the status does not yet account for. A
+	// marker already on the slot is an earlier run's, left by a shutdown
+	// mid-pass: its findings are still unrecorded, so it stays as it is,
+	// and only a marker this call added is withdrawn on a failed kick.
+	hadMarker := vol.Status.PerNode[v.NodeName].VerifyStartedAt != nil
+	if !hadMarker {
+		if err := v.applyVerifySlot(ctx, vol, v.carriedVerifySlot(vol).WithVerifyStartedAt(metav1.Now())); err != nil {
+			return fmt.Errorf("record verify start: %w", err)
+		}
 	}
 	if err := v.DRBD.Verify(ctx, vol.Name); err != nil {
-		if cerr := v.applyVerifySlot(ctx, vol, v.carriedVerifySlot(vol)); cerr != nil {
-			ctrl.LoggerFrom(ctx).WithName("verify").Error(cerr,
-				"cannot clear the verify-started marker after a failed kick", "volume", vol.Name)
+		if !hadMarker {
+			if cerr := v.applyVerifySlot(ctx, vol, v.carriedVerifySlot(vol)); cerr != nil {
+				ctrl.LoggerFrom(ctx).WithName("verify").Error(cerr,
+					"cannot clear the verify-started marker after a failed kick", "volume", vol.Name)
+			}
 		}
 		return fmt.Errorf("kick verify: %w", err)
 	}

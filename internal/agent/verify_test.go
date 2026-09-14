@@ -18,12 +18,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -279,6 +279,39 @@ func TestVerifyContextCancelStopsCleanly(t *testing.T) {
 	// self-heal keeps off until the next sweep records a result.
 	if st.VerifyStartedAt == nil {
 		t.Fatal("an interrupted verify must leave the started marker in place")
+	}
+}
+
+// A marker left by an earlier run (shutdown mid-pass) guards findings the
+// kernel may still hold unrecorded. A later sweep's kick failing must not
+// withdraw it; only a marker the failed call itself added is withdrawn.
+func TestVerifyFailedKickKeepsEarlierMarker(t *testing.T) {
+	v := replicatedVol()
+	earlier := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, VerifyStartedAt: &earlier},
+	}
+	c := newClient(t, v)
+	fe := &fakeDRBDExec{statusJSON: statusUpToDate, errOn: map[string]error{"drbdadm verify": errors.New("refused")}}
+	vs := newVerifyScheduler(t, nodeA, c, fe, nil)
+
+	if err := vs.verifyVolume(t.Context(), v); err == nil {
+		t.Fatal("a refused kick must surface as an error")
+	}
+	st := getVol(t, c).Status.PerNode[nodeA]
+	if st.VerifyStartedAt == nil || !st.VerifyStartedAt.Equal(&earlier) {
+		t.Fatalf("an earlier run's marker must survive a failed kick unchanged, got %v", st.VerifyStartedAt)
+	}
+
+	// The same failure on an unmarked slot withdraws the marker it added.
+	fresh := replicatedVol()
+	c2 := newClient(t, fresh)
+	vs2 := newVerifyScheduler(t, nodeA, c2, fe, nil)
+	if err := vs2.verifyVolume(t.Context(), fresh); err == nil {
+		t.Fatal("a refused kick must surface as an error")
+	}
+	if got := getVol(t, c2).Status.PerNode[nodeA].VerifyStartedAt; got != nil {
+		t.Fatalf("a failed kick must withdraw the marker it added, got %v", got)
 	}
 }
 
