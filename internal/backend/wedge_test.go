@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -178,55 +179,83 @@ func TestRunnerRunsNormallyWhenClosed(t *testing.T) {
 	}
 }
 
-// A command killed at its deadline whose child dies normally must NOT count:
-// only uninterruptible sleep means the kernel swallowed it. Without this
-// distinction any command that outran its deadline would trip the breaker.
-// The child really is spawned and killed here — the liveness check is stubbed,
-// not the process.
-func TestRunnerRecordsOnlyChildrenLeftInDState(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		inDState bool
-		want     int
-	}{
-		{"child left in D-state is recorded", true, 1},
-		{"child that died is not recorded", false, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var probed []int
-			w := NewWedge(1)
-			w.isStranded = func(pid int) bool {
-				probed = append(probed, pid)
-				return tc.inDState
-			}
-			r := &Runner{Wedge: w}
-			// A real child, killed by a deadline it cannot meet.
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			defer cancel()
-			if _, err := r.Run(ctx, "sleep", "30"); err == nil {
-				t.Fatalf("Run() error = nil, want the deadline to fail the command")
-			}
-			if len(probed) == 0 {
-				t.Fatalf("a killed command must have its child's state probed")
-			}
-			if got := w.Stranded(); got != tc.want {
-				t.Fatalf("Stranded() = %d, want %d", got, tc.want)
-			}
-		})
+// A command killed at its deadline whose child dies on the SIGKILL must NOT
+// count, and Run must return as soon as it does: only a child that outlives
+// the kill is one the kernel swallowed. The child really is spawned and
+// killed here.
+func TestRunnerDoesNotRecordChildrenThatDieOnKill(t *testing.T) {
+	w := NewWedge(1)
+	w.isStranded = func(int) bool { return true }
+	r := &Runner{Wedge: w}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := r.Run(ctx, "sleep", "30")
+	if err == nil {
+		t.Fatalf("Run() error = nil, want the deadline to fail the command")
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("Run() took %v: a killed child must not wait out the grace", elapsed)
+	}
+	if got := w.Stranded(); got != 0 {
+		t.Fatalf("Stranded() = %d, want 0: a child that died is not stranded", got)
 	}
 }
 
-// A command that succeeds must never probe or record, whatever the kernel
-// state of the pid it happened to use.
-func TestRunnerDoesNotProbeSuccessfulCommands(t *testing.T) {
+// A child that ignores the SIGKILL (uninterruptible sleep, simulated by a
+// no-op kill) is recorded once the grace expires and Run returns without
+// waiting for it — os/exec's own Wait would block until the child exits.
+// The record retires when the child finally exits and is reaped, not on a
+// /proc probe: the pid is that child's until then, so it cannot name an
+// unrelated task that reused the number.
+func TestRunnerRecordsChildrenThatOutliveKillUntilReaped(t *testing.T) {
 	w := NewWedge(1)
-	probed := false
-	w.isStranded = func(int) bool { probed = true; return true }
+	w.isStranded = func(int) bool { return true } // only reaping may retire
+	r := &Runner{Wedge: w, kill: func(*os.Process) error { return nil }, grace: 50 * time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	out, err := r.Run(ctx, "sleep", "30")
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "still alive") {
+		t.Fatalf("Run() error = %v, want the deadline error naming the surviving child", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("Run() took %v: a stranded child must not pin the caller", elapsed)
+	}
+	if out != "" {
+		t.Fatalf("Run() out = %q, want empty: the child still owns its output", out)
+	}
+	if got := w.Stranded(); got != 1 {
+		t.Fatalf("Stranded() = %d, want 1", got)
+	}
+	if !w.StrandedCommand("sleep 30") {
+		t.Fatal("the stranded child must be findable by its command line")
+	}
+
+	w.mu.Lock()
+	var pid int
+	for pid = range w.children {
+	}
+	w.mu.Unlock()
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill %d: %v", pid, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for w.Stranded() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("record must retire once the child is reaped")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A command that succeeds must never record, whatever the kernel state of
+// the pid it happened to use.
+func TestRunnerDoesNotRecordSuccessfulCommands(t *testing.T) {
+	w := NewWedge(1)
+	w.isStranded = func(int) bool { return true }
 	if _, err := (&Runner{Wedge: w}).Run(context.Background(), "true"); err != nil {
 		t.Fatalf("Run() error = %v, want nil", err)
-	}
-	if probed {
-		t.Fatalf("a successful command must not be probed for stranding")
 	}
 	if got := w.Stranded(); got != 0 {
 		t.Fatalf("Stranded() = %d, want 0", got)

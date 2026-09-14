@@ -17,6 +17,7 @@ limitations under the License.
 package backend
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -52,6 +53,12 @@ func RealExec(ctx context.Context, name string, args ...string) (string, error) 
 	return (&Runner{}).Run(ctx, name, args...)
 }
 
+// killGrace is how long a child killed at its deadline gets to actually
+// die before Run stops waiting for it. A killable child is gone within
+// milliseconds of SIGKILL; only a task in uninterruptible sleep outlives
+// it, and that is the stranded child the breaker exists to count.
+const killGrace = 10 * time.Second
+
 // Runner executes host commands, reporting every child the kernel refuses to
 // let die to a node-scoped Wedge. Its Run method has the Exec signature, so
 // it drops in wherever RealExec is injected.
@@ -59,12 +66,27 @@ type Runner struct {
 	// Wedge both gates and records: commands are refused once it has
 	// tripped, and stranded children are reported to it. Nil disables both.
 	Wedge *Wedge
+
+	// kill is injectable for tests, where a no-op stands in for a child
+	// that ignores SIGKILL; nil means (*os.Process).Kill.
+	kill func(*os.Process) error
+	// grace overrides killGrace in tests; zero means killGrace.
+	grace time.Duration
 }
 
 // Run executes name with args and returns its combined output. Once the
 // breaker is open it refuses to spawn: the new child would strand too, and
 // each one holds more locks and pushes the node further from a graceful
 // reboot.
+//
+// Wait is not bounded by the context: os/exec waits for the child to exit,
+// and a child in uninterruptible sleep never acts on the SIGKILL, so a
+// stranded child would pin the caller for as long as the kernel holds it.
+// Run therefore waits in a goroutine, and once the deadline's kill has gone
+// unanswered for killGrace it records the child as stranded and returns.
+// The goroutine keeps waiting and retires the record when the child finally
+// exits: the pid belongs to that unreaped child until then, so the record
+// can never describe some unrelated task that reused the number.
 func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, error) {
 	line := CommandLine(name, args...)
 	if err := r.Wedge.Err(); err != nil {
@@ -72,30 +94,62 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	// A child stuck in D-state (wedged pool, frozen dm device) ignores the
-	// SIGKILL ctx cancellation sends and would pin CombinedOutput on its
-	// open pipes forever; WaitDelay makes Wait give up on them. It only
-	// arms once ctx is done, which is why the timeout above is required —
-	// the reconcile context is otherwise never cancelled.
-	cmd.WaitDelay = 10 * time.Second
+	cmd := exec.Command(name, args...)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	// Bounds the pipe drain after the child exits: a grandchild it left
+	// behind holding the pipes would otherwise keep Wait from returning.
+	cmd.WaitDelay = killGrace
 	// Force the C locale: the delete/exists classifiers match lvm/zfs error
 	// text ("in use", "Failed to find", …), which the tools localise.
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
-	out, err := cmd.CombinedOutput()
-	// Only a command we killed can have stranded a child, and a killable one
-	// is already gone by here. A child that did die frees its pid, so this
-	// read can in principle land on an unrelated task now holding it in D;
-	// that misread cannot latch, since Stranded re-checks every pid and
-	// tripping needs Limit outstanding at once.
-	if err != nil && ctx.Err() != nil && cmd.Process != nil {
-		r.Wedge.note(cmd.Process.Pid, line)
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("%s: %w", line, err)
 	}
-	if err != nil {
-		return string(out), fmt.Errorf("%s %s: %w: %s",
-			name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	finish := func(err error) (string, error) {
+		if err != nil {
+			return out.String(), fmt.Errorf("%s: %w: %s", line, err, strings.TrimSpace(out.String()))
+		}
+		return out.String(), nil
 	}
-	return string(out), nil
+	select {
+	case err := <-done:
+		return finish(err)
+	case <-ctx.Done():
+	}
+	// ErrProcessDone here means the child won the race with the deadline;
+	// Wait then returns immediately below.
+	_ = r.doKill(cmd.Process)
+	select {
+	case err := <-done:
+		return finish(err)
+	case <-time.After(r.killGrace()):
+	}
+	pid := cmd.Process.Pid
+	r.Wedge.record(pid, line)
+	go func() {
+		<-done
+		r.Wedge.retire(pid)
+	}()
+	// out is not read here: the copy goroutine still owns it until Wait
+	// returns.
+	return "", fmt.Errorf("%s: %w: child %d still alive after SIGKILL (uninterruptible sleep)", line, ctx.Err(), pid)
+}
+
+func (r *Runner) doKill(p *os.Process) error {
+	if r.kill != nil {
+		return r.kill(p)
+	}
+	return p.Kill()
+}
+
+func (r *Runner) killGrace() time.Duration {
+	if r.grace > 0 {
+		return r.grace
+	}
+	return killGrace
 }
 
 // Busy classifies a delete/destroy/down failure: it wraps err as ErrBusy
