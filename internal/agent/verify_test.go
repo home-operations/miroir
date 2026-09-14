@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -236,8 +238,12 @@ func TestVerifyDiscardsResultWhenPeerDropsMidPass(t *testing.T) {
 	}
 	fe.calledWith(t, "drbdadm verify pvc-1")
 
-	if got := getVol(t, c).Status.PerNode[nodeA].LastVerifyTime; got != nil {
-		t.Fatalf("an aborted verify must not record a result, got %v", got)
+	st := getVol(t, c).Status.PerNode[nodeA]
+	if st.LastVerifyTime != nil {
+		t.Fatalf("an aborted verify must not record a result, got %v", st.LastVerifyTime)
+	}
+	if st.VerifyStartedAt != nil {
+		t.Fatal("a discarded verify must drop the started marker: its bits heal on the reconnect")
 	}
 	select {
 	case e := <-rec.Events:
@@ -264,7 +270,56 @@ func TestVerifyContextCancelStopsCleanly(t *testing.T) {
 	// a disconnect, which would resync.
 	fe.notCalledWith(t, "disconnect")
 	fe.notCalledWith(t, "drbdadm down")
-	if got := getVol(t, c).Status.PerNode[nodeA].LastVerifyTime; got != nil {
-		t.Fatalf("an interrupted verify must not record a result, got %v", got)
+	st := getVol(t, c).Status.PerNode[nodeA]
+	if st.LastVerifyTime != nil {
+		t.Fatalf("an interrupted verify must not record a result, got %v", st.LastVerifyTime)
+	}
+	// The kernel may finish the verify with findings while no agent is
+	// watching: the marker must outlive the shutdown so the stale-bitmap
+	// self-heal keeps off until the next sweep records a result.
+	if st.VerifyStartedAt == nil {
+		t.Fatal("an interrupted verify must leave the started marker in place")
+	}
+}
+
+// The started marker brackets the verify: set before the kick, gone once
+// the result is recorded, with the previous record carried across so
+// marking a start never erases the last outcome.
+func TestVerifyStartedMarkerBracketsTheRun(t *testing.T) {
+	v := replicatedVol()
+	prevFinding := int64(4096)
+	prevTime := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, LastVerifyTime: &prevTime, LastVerifyOutOfSyncBytes: &prevFinding},
+	}
+	c := newClient(t, v)
+	fe := &fakeDRBDExec{statusJSON: statusVerifying, statusSeq: []string{statusUpToDate}}
+	vs := newVerifyScheduler(t, nodeA, c, fe, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := vs.verifyVolume(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	st := getVol(t, c).Status.PerNode[nodeA]
+	if st.VerifyStartedAt == nil {
+		t.Fatal("the started marker must be set before the kick")
+	}
+	if st.LastVerifyOutOfSyncBytes == nil || *st.LastVerifyOutOfSyncBytes != prevFinding || st.LastVerifyTime == nil {
+		t.Fatalf("marking a start must carry the previous record, got %+v", st)
+	}
+
+	// A completed pass records the result and drops the marker.
+	fe2 := &fakeDRBDExec{statusSeq: []string{statusUpToDate, statusDone}}
+	vs2 := newVerifyScheduler(t, nodeA, c, fe2, nil)
+	if err := vs2.verifyVolume(t.Context(), getVol(t, c)); err != nil {
+		t.Fatal(err)
+	}
+	st = getVol(t, c).Status.PerNode[nodeA]
+	if st.VerifyStartedAt != nil {
+		t.Fatal("recording the result must drop the started marker")
+	}
+	if st.LastVerifyOutOfSyncBytes == nil || *st.LastVerifyOutOfSyncBytes != 256*1024 {
+		t.Fatalf("the completed pass must record its own result, got %v", st.LastVerifyOutOfSyncBytes)
 	}
 }

@@ -43,7 +43,10 @@
   _`drbdadm verify` finding_ (`lastVerifyOutOfSyncBytes` non-zero in the
   coordinator's status slot, `VerifyOutOfSync` event) is a
   genuine data difference and is deliberately left manual — auto-resyncing
-  would destroy the evidence of which leg was wrong. Inspect first, then
+  would destroy the evidence of which leg was wrong. The same hold applies
+  while a verify is in flight (`verifyStartedAt` set on the coordinator's
+  slot until its result is recorded), since the kernel may already hold
+  findings no status field accounts for. Inspect first, then
   find the affected peer with
   `drbdsetup status <res> --verbose --statistics` on the alerting node
   (the connection whose `out-of-sync` is non-zero) and cycle it:

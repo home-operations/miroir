@@ -88,6 +88,13 @@ type ReplicaStatusApplyConfiguration struct {
 	// they persist in the out-of-sync metric until then. A pointer so a
 	// clean verify (0) reads differently from "never verified" (nil).
 	LastVerifyOutOfSyncBytes *int64 `json:"lastVerifyOutOfSyncBytes,omitempty"`
+	// VerifyStartedAt is set by the coordinator just before it kicks a
+	// verify and removed when the result is recorded. While present, the
+	// kernel may hold verify findings no status field accounts for yet —
+	// an agent restart or a failed status write between the verify
+	// finishing and its record landing leaves exactly that — so the
+	// stale-bitmap self-heal must not cycle this volume's connections.
+	VerifyStartedAt *v1.Time `json:"verifyStartedAt,omitempty"`
 	// LastProbedAt is when this agent last successfully probed the
 	// replica's live state (backing device, DRBD status). A stale probe
 	// means the agent can no longer reach the node-local resources —
@@ -220,6 +227,14 @@ func (b *ReplicaStatusApplyConfiguration) WithLastVerifyTime(value v1.Time) *Rep
 // If called multiple times, the LastVerifyOutOfSyncBytes field is set to the value of the last call.
 func (b *ReplicaStatusApplyConfiguration) WithLastVerifyOutOfSyncBytes(value int64) *ReplicaStatusApplyConfiguration {
 	b.LastVerifyOutOfSyncBytes = &value
+	return b
+}
+
+// WithVerifyStartedAt sets the VerifyStartedAt field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the VerifyStartedAt field is set to the value of the last call.
+func (b *ReplicaStatusApplyConfiguration) WithVerifyStartedAt(value v1.Time) *ReplicaStatusApplyConfiguration {
+	b.VerifyStartedAt = &value
 	return b
 }
 

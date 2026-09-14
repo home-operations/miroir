@@ -3586,7 +3586,9 @@ func backdateStuck(t *testing.T, r *VolumeReconciler) {
 	if _, ok := r.stuckSince[volPvc1]; !ok {
 		t.Fatal("confirmation clock not armed")
 	}
-	r.stuckSince[volPvc1] = time.Now().Add(-drbdPollInterval - time.Second)
+	mark := r.stuckSince[volPvc1]
+	mark.since = time.Now().Add(-drbdPollInterval - time.Second)
+	r.stuckSince[volPvc1] = mark
 }
 
 // The first sighting only arms the confirmation clock — a status snapshot
@@ -3756,6 +3758,71 @@ func TestReconcileStaleBitmapVerifyFindingStaysManual(t *testing.T) {
 	if armed {
 		t.Fatal("a verify finding must keep the confirmation clock unarmed")
 	}
+}
+
+// A verify the coordinator started but has not recorded yet may have
+// left findings in the kernel that no status field accounts for — an
+// agent restart or a failed status write between the verify finishing
+// and its record landing. The started marker keeps the case manual: the
+// confirmation clock never arms.
+func TestReconcileStaleBitmapVerifyInFlightStaysManual(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = staleBitmapStatusJSON
+	var v miroirv1alpha1.MiroirVolume
+	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
+		t.Fatal(err)
+	}
+	// node-a is the first diskful replica — the verify coordinator whose
+	// slot records findings.
+	started := metav1.Now()
+	slot := v.Status.PerNode[nodeA]
+	slot.VerifyStartedAt = &started
+	v.Status.PerNode[nodeA] = slot
+	if err := r.Status().Update(t.Context(), &v); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, volPvc1)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	r.recoveryMu.Lock()
+	_, armed := r.stuckSince[volPvc1]
+	r.recoveryMu.Unlock()
+	if armed {
+		t.Fatal("a verify finding must keep the confirmation clock unarmed")
+	}
+}
+
+// The confirmation clock belongs to the candidate set it armed on: when
+// the set changes, a newly seen peer must wait out its own poll interval
+// rather than ride the clock an earlier peer armed.
+func TestReconcileStaleBitmapCandidateChangeRearms(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	stalePeer1 := `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[
+			{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":4}]},
+			{"peer-node-id":2,"connection-state":"Connected","peer-role":"Primary",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]}]}]`
+	stalePeer2 := `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[
+			{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]},
+			{"peer-node-id":2,"connection-state":"Connected","peer-role":"Primary",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":4}]}]}]`
+	fe.statusJSON = stalePeer1
+	reconcile(t, r, volPvc1)
+	backdateStuck(t, r)
+	// Peer 1 cleared itself and peer 2 appeared in the same pass: peer 2
+	// must not be cycled on peer 1's expired clock.
+	fe.statusJSON = stalePeer2
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 2")
+	fe.notCalledWith(t, "drbdsetup disconnect pvc-1 1")
 }
 
 // A resync already in flight anywhere on the volume defers the stale-bitmap

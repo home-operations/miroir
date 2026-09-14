@@ -552,6 +552,16 @@ spec:
                         SplitBrain is true when this node's DRBD refused a reconnect after
                         detecting divergent data — operator intervention required.
                       type: boolean
+                    verifyStartedAt:
+                      description: |-
+                        VerifyStartedAt is set by the coordinator just before it kicks a
+                        verify and removed when the result is recorded. While present, the
+                        kernel may hold verify findings no status field accounts for yet —
+                        an agent restart or a failed status write between the verify
+                        finishing and its record landing leaves exactly that — so the
+                        stale-bitmap self-heal must not cycle this volume's connections.
+                      format: date-time
+                      type: string
                   required:
                   - deviceCreated
                   type: object
