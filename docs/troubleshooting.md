@@ -33,8 +33,10 @@
   connection `Connected` and both disks `UpToDate`, this is one of two
   things. A _stale bitmap_ — bits stranded by a refused clear during peer
   teardown, left on a newly promoted Primary toward a Secondary after a
-  failover, or a resync DRBD armed and abandoned after a rapid
-  promote/demote — is detected and self-healed: the agent cycles the
+  failover, left between two Secondaries after a connectivity blip while
+  the Primary stays clean toward both, or a resync DRBD armed and
+  abandoned after a rapid promote/demote — is detected and self-healed
+  as long as the volume has a live Primary: the agent cycles the
   affected peer connection within a couple of poll cycles and emits a
   `StuckResyncRecovered` event; the re-run handshake discards the bitmap
   (identical data moves nothing) or starts the resync it called for. A

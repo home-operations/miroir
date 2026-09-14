@@ -1866,11 +1866,11 @@ func TestStatusStuckResyncPeers(t *testing.T) {
 	}
 }
 
-// StaleBitmapPeers flags a one-sided bitmap toward a healthy Primary peer
-// (issue #389): Connected + Established + peer-disk UpToDate + out-of-sync,
-// peer role Primary. A Secondary peer (ambiguous resync direction), a
-// Consistent peer-disk (that is the stuck-resync signature), and a clean
-// peer must all stay unflagged.
+// StaleBitmapPeers flags a one-sided bitmap toward a healthy peer:
+// Connected + Established + peer-disk UpToDate + out-of-sync, whether the
+// peer is the Primary (issue #389) or another Secondary (issue #497). A
+// Consistent peer-disk (that is the stuck-resync signature) and a clean
+// peer must stay unflagged.
 func TestStatusStaleBitmapPeers(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{
 		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
@@ -1890,8 +1890,8 @@ func TestStatusStaleBitmapPeers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.StaleBitmapPeers) != 1 || !s.StaleBitmapPeers[1] {
-		t.Fatalf("want only peer 1 flagged stale, got %v", s.StaleBitmapPeers)
+	if len(s.StaleBitmapPeers) != 2 || !s.StaleBitmapPeers[1] || !s.StaleBitmapPeers[2] {
+		t.Fatalf("want peers 1 and 2 flagged stale, got %v", s.StaleBitmapPeers)
 	}
 	if len(s.StuckResyncPeers) != 1 || !s.StuckResyncPeers[3] {
 		t.Fatalf("want only peer 3 flagged stuck, got %v", s.StuckResyncPeers)

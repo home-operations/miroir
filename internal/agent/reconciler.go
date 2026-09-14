@@ -854,8 +854,9 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 //     reply the peer already discarded (issue #397). Both wear
 //     StuckResyncPeers.
 //   - Bits stranded by a bitmap clear the kernel refused mid peer-teardown
-//     ("bitmap locked", issue #389), or left on a freshly promoted Primary
-//     toward a Secondary after a failover (issue #469), everything
+//     ("bitmap locked", issue #389), left on a freshly promoted Primary
+//     toward a Secondary after a failover (issue #469), or left between
+//     two Secondaries after a connectivity blip (issue #497), everything
 //     otherwise healthy (StaleBitmapPeers, behind staleBitmapActionable's
 //     gates — the same kernel shape is a verify finding, which stays
 //     manual).
@@ -938,13 +939,16 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 // and the coordinator's last recorded verify must not have findings
 // outstanding: auto-resyncing a real finding would destroy the evidence
 // of which leg was wrong, so that case stays manual (the record clears
-// once a later verify reports 0 after the operator's own cycle). The leg's
-// own role is not a gate: the parser only nominates pairs with exactly one
-// Primary, and an UpToDate Primary always sources the re-handshake, so
-// the direction is settled whichever side holds the bits.
+// once a later verify reports 0 after the operator's own cycle). Roles do
+// not settle the direction — the re-handshake takes it from generation
+// UUIDs, and equal generations discard the bits outright — so the pair's
+// roles are not a gate. A live Primary somewhere in the volume is: with
+// no Primary at all, two Secondaries holding bits may be survivors of a
+// lost Primary, a state the kernel reconciles with its own resync on the
+// reconnect, so that case is left to the kernel rather than cycled here.
 func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
 	if len(st.StaleBitmapPeers) == 0 || st.DiskState != drbd.DiskUpToDate ||
-		!st.Quorum || st.Resyncing || st.SplitBrain {
+		!st.Quorum || st.Resyncing || st.SplitBrain || (!st.Primary && !st.PeerPrimary) {
 		return false
 	}
 	if !diskfulPeersConnected(st, vol, r.NodeName) || !diskfulPeersUpToDate(st, vol, r.NodeName) {

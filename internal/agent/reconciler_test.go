@@ -3684,10 +3684,33 @@ func TestReconcileStaleBitmapPrimaryLegCyclesAfterConfirmation(t *testing.T) {
 	fe.calledWith(t, "drbdsetup connect pvc-1 1")
 }
 
-// A Secondary/Secondary pair has no Primary to source the re-handshake, so
-// the same bits toward a Secondary peer stay unflagged: nothing arms and
-// nothing is cycled.
-func TestReconcileStaleBitmapSecondaryPairStaysManual(t *testing.T) {
+// A Secondary holding bits toward another Secondary while the volume's
+// Primary is up and clean toward both (issue #497): the re-handshake
+// settles the direction from generation UUIDs, so the holder cycles that
+// one connection after the confirmation window, leaving the Primary's
+// connections untouched.
+func TestReconcileStaleBitmapSecondaryPairCyclesAfterConfirmation(t *testing.T) {
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate","quorum":true}],
+		"connections":[
+			{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":4}]},
+			{"peer-node-id":2,"connection-state":"Connected","peer-role":"Primary",
+				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]}]}]`
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.calledWith(t, "drbdsetup connect pvc-1 1")
+	fe.notCalledWith(t, "drbdsetup disconnect pvc-1 2")
+}
+
+// The same Secondary/Secondary bits with no Primary anywhere are not this
+// recovery's case: the kernel reconciles survivors of a lost Primary with
+// its own resync on reconnect. Nothing arms and nothing is cycled.
+func TestReconcileStaleBitmapSecondaryPairWithoutPrimaryStaysManual(t *testing.T) {
 	r, fe := stuckResyncSetup(t)
 	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
 		"devices":[{"disk-state":"UpToDate","quorum":true}],
@@ -3700,7 +3723,7 @@ func TestReconcileStaleBitmapSecondaryPairStaysManual(t *testing.T) {
 	_, armed := r.stuckSince[volPvc1]
 	r.recoveryMu.Unlock()
 	if armed {
-		t.Fatal("a Secondary/Secondary pair must keep the confirmation clock unarmed")
+		t.Fatal("a Secondary/Secondary pair with no Primary must keep the confirmation clock unarmed")
 	}
 }
 
