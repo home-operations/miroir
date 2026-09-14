@@ -38,6 +38,13 @@ type Exec func(ctx context.Context, name string, args ...string) (string, error)
 // every other volume on the node.
 const execTimeout = 2 * time.Minute
 
+// CommandLine is the line a Wedge records a stranded child under; callers
+// asking Wedge.StrandedCommand about a specific command build it here so
+// the two cannot drift.
+func CommandLine(name string, args ...string) string {
+	return strings.TrimSpace(name + " " + strings.Join(args, " "))
+}
+
 // RealExec executes commands on the host without wedge tracking. The agent
 // container runs with the host namespaces, so lvm/zfs act on the node's
 // devices directly. Callers with a breaker to share use Runner instead.
@@ -59,9 +66,9 @@ type Runner struct {
 // each one holds more locks and pushes the node further from a graceful
 // reboot.
 func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, error) {
-	line := name + " " + strings.Join(args, " ")
+	line := CommandLine(name, args...)
 	if err := r.Wedge.Err(); err != nil {
-		return "", fmt.Errorf("%s: %w", strings.TrimSpace(line), err)
+		return "", fmt.Errorf("%s: %w", line, err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
@@ -82,7 +89,7 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, 
 	// that misread cannot latch, since Stranded re-checks every pid and
 	// tripping needs Limit outstanding at once.
 	if err != nil && ctx.Err() != nil && cmd.Process != nil {
-		r.Wedge.note(cmd.Process.Pid, strings.TrimSpace(line))
+		r.Wedge.note(cmd.Process.Pid, line)
 	}
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w: %s",

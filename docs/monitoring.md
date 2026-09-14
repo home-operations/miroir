@@ -28,21 +28,21 @@ onto pre-existing volumes from their PV; a volume whose claim is
 unknown falls back to its volume name in `pvc`, with an empty
 `pvc_namespace`. The agent exports, per volume on that node:
 
-| Metric                                        | Meaning                                                                                                                                   |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `miroir_volume_up_to_date`                    | 1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created)                                                   |
-| `miroir_volume_connected`                     | 1 when all replication links to diskful peers are established (tie-breaker links excluded)                                                |
-| `miroir_volume_split_brain`                   | 1 when DRBD refused to reconnect after divergence; manual resolution required                                                             |
-| `miroir_volume_suspended`                     | 1 while the snapshot write barrier freezes IO; sustained means a stranded barrier                                                         |
-| `miroir_volume_resync_ratio`                  | fraction (0-1) in sync of the least-synced diskful peer; 1 when fully in sync                                                             |
-| `miroir_volume_quorum`                        | 0 while a `freeze` volume has lost quorum and refuses writes, the "workloads are failing I/O" signal (always 1 under `last-man-standing`) |
-| `miroir_volume_disk_failed`                   | 1 when this leg's disk was detached after an I/O error and latched failed; replace the disk, then remove and re-add the replica           |
-| `miroir_volume_out_of_sync_bytes`             | worst per-peer out-of-sync bytes: the exposure if the healthiest peer is lost; also counts online-verify findings                         |
-| `miroir_volume_primary`                       | 1 while this node's diskful leg is Primary: the consumer pod or the RWX gateway runs here and this leg serves the I/O                     |
-| `miroir_volume_diskless_primary`              | 1 while a diskless leg (client or tie-breaker) is Primary here: the consumer pays network I/O; see auto-diskful                           |
-| `miroir_volume_verify_last_timestamp_seconds` | unix time of the last completed scheduled verify; alert on staleness to catch a schedule that stopped firing                              |
-| `miroir_volume_verify_out_of_sync_bytes`      | out-of-sync bytes the last scheduled verify found (0 = clean)                                                                             |
-| `miroir_volume_wedged`                        | 1 when the kernel can no longer tear down this volume's DRBD resource (LINBIT/drbd#137); only a node reboot clears it                     |
+| Metric                                        | Meaning                                                                                                                                                                |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `miroir_volume_up_to_date`                    | 1 when this node's replica is UpToDate (unreplicated volumes are always 1 once created)                                                                                |
+| `miroir_volume_connected`                     | 1 when all replication links to diskful peers are established (tie-breaker links excluded)                                                                             |
+| `miroir_volume_split_brain`                   | 1 when DRBD refused to reconnect after divergence; manual resolution required                                                                                          |
+| `miroir_volume_suspended`                     | 1 while the snapshot write barrier freezes IO; sustained means a stranded barrier                                                                                      |
+| `miroir_volume_resync_ratio`                  | fraction (0-1) in sync of the least-synced diskful peer; 1 when fully in sync                                                                                          |
+| `miroir_volume_quorum`                        | 0 while a `freeze` volume has lost quorum and refuses writes, the "workloads are failing I/O" signal (always 1 under `last-man-standing`)                              |
+| `miroir_volume_disk_failed`                   | 1 when this leg's disk was detached after an I/O error and latched failed; replace the disk, then remove and re-add the replica                                        |
+| `miroir_volume_out_of_sync_bytes`             | worst per-peer out-of-sync bytes: the exposure if the healthiest peer is lost; also counts online-verify findings                                                      |
+| `miroir_volume_primary`                       | 1 while this node's diskful leg is Primary: the consumer pod or the RWX gateway runs here and this leg serves the I/O                                                  |
+| `miroir_volume_diskless_primary`              | 1 while a diskless leg (client or tie-breaker) is Primary here: the consumer pays network I/O; see auto-diskful                                                        |
+| `miroir_volume_verify_last_timestamp_seconds` | unix time of the last completed scheduled verify; alert on staleness to catch a schedule that stopped firing                                                           |
+| `miroir_volume_verify_out_of_sync_bytes`      | out-of-sync bytes the last scheduled verify found (0 = clean)                                                                                                          |
+| `miroir_volume_wedged`                        | 1 when the kernel can no longer tear down this volume's DRBD resource (stuck Detaching, LINBIT/drbd#137, or a stranded `drbdsetup down`); only a node reboot clears it |
 
 Each agent additionally exports its pool capacities
 (`miroir_pool_capacity_bytes` / `miroir_pool_allocated_bytes` /

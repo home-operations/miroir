@@ -101,6 +101,31 @@ func TestWedgeErrNamesStuckCommandsSorted(t *testing.T) {
 	}
 }
 
+// StrandedCommand is the per-resource view: an exact command line, pruned
+// like the count so a drained child stops matching.
+func TestWedgeStrandedCommandMatchesExactLineUntilDrained(t *testing.T) {
+	w, stuck := stuckSet(3, 1, 2)
+	w.record(1, "drbdsetup down pvc-a")
+	w.record(2, "drbdsetup down pvc-ab")
+	if !w.StrandedCommand("drbdsetup down pvc-a") {
+		t.Fatal("a recorded stranded down must match its own line")
+	}
+	if w.StrandedCommand("drbdsetup down pvc-") {
+		t.Fatal("a prefix must not match: pvc-a and pvc-ab are different resources")
+	}
+	delete(stuck, 1)
+	if w.StrandedCommand("drbdsetup down pvc-a") {
+		t.Fatal("a drained child must stop matching")
+	}
+	if !w.StrandedCommand("drbdsetup down pvc-ab") {
+		t.Fatal("the still-stuck sibling must keep matching")
+	}
+	var nilWedge *Wedge
+	if nilWedge.StrandedCommand("drbdsetup down pvc-a") {
+		t.Fatal("a nil breaker reports nothing stranded")
+	}
+}
+
 func TestWedgeZeroLimitNeverTrips(t *testing.T) {
 	w, _ := stuckSet(0, 1, 2, 3, 4)
 	for pid := 1; pid <= 4; pid++ {

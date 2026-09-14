@@ -1729,6 +1729,71 @@ func TestReconcileTeardownLiveConsumerEmitsEvent(t *testing.T) {
 	}
 }
 
+// strandedDowns stands in for the node breaker, reporting the given
+// resources' drbdsetup down as stranded in the kernel.
+type strandedDowns map[string]bool
+
+func (s strandedDowns) StrandedCommand(line string) bool {
+	return s[strings.TrimPrefix(line, "drbdsetup down ")]
+}
+
+// A down of ours stranded in the kernel wedges the resource while its status
+// still reads healthy: teardown must park exactly like the Detaching
+// signature does, and the TeardownWedged warning must name that
+// fingerprint rather than the drbd#137 one.
+func TestReconcileTeardownStrandedDownParksRetry(t *testing.T) {
+	s := newScheme(t)
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	now := metav1.NewTime(time.Now())
+	v.DeletionTimestamp = &now
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, "pvc-1.res"), []byte("resource \"pvc-1\" {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
+	fe := &fakeDRBDExec{statusJSON: `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"UpToDate"}],"connections":[]}]`}
+	rec := events.NewFakeRecorder(4)
+	r := &VolumeReconciler{
+		Client: c, NodeName: nodeA, Pools: poolsOf(fb), Recorder: rec,
+		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Wedge: strandedDowns{volPvc1: true},
+			Mknod: func(string, uint32, int) error { return nil }},
+	}
+	t.Cleanup(func() { dropVolumeMetrics(volPvc1) })
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}
+
+	res, err := r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != 10*time.Second {
+		t.Fatalf("first sighting must defer on the busy cadence, got %v / %v", res.RequeueAfter, err)
+	}
+	res, err = r.Reconcile(t.Context(), req)
+	if err != nil || res.RequeueAfter != wedgedRequeue {
+		t.Fatalf("second sighting must park at %v, got %v / %v", wedgedRequeue, res.RequeueAfter, err)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+	select {
+	case e := <-rec.Events:
+		if !strings.Contains(e, "TeardownWedged") || !strings.Contains(e, "stranded in uninterruptible sleep") {
+			t.Fatalf("want a TeardownWedged warning naming the stranded down, got %q", e)
+		}
+	default:
+		t.Fatal("want a TeardownWedged warning event")
+	}
+	if got := testutil.ToFloat64(metricWedged.WithLabelValues(volPvc1, volPvc1, "")); got != 1 {
+		t.Fatalf("wedged gauge = %v, want 1", got)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal("finalizer must be retained while the resource is wedged")
+	}
+	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, "reboot") {
+		t.Fatalf("Message must say a reboot is required, got %q", msg)
+	}
+}
+
 // A kernel-wedged resource (stuck Detaching with the connections gone,
 // LINBIT/drbd#137) must leave the fast busy-retry without ever spawning
 // another down: the first sighting defers on the busy cadence, the second

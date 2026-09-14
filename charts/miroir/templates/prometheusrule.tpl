@@ -141,7 +141,9 @@ spec:
             description: >-
               The kernel can no longer tear down this volume's DRBD resource
               (device stuck Detaching after a refcount underflow,
-              LINBIT/drbd#137). The agent parked the teardown at a slow
+              LINBIT/drbd#137, or a drbdsetup down stranded in
+              uninterruptible sleep that leaves every open of the minor
+              failing with EAGAIN). The agent parked the teardown at a slow
               retry; reboot the node to clear the kernel state.
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}

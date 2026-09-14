@@ -213,6 +213,27 @@ func (w *Wedge) Tripped() bool {
 	return w.StrandedTripped()
 }
 
+// StrandedCommand reports whether a child spawned by exactly that command
+// line (see CommandLine) is still stuck. This is the per-resource view of
+// the breaker: a drbdsetup down left in uninterruptible sleep keeps its
+// resource's DOWN_IN_PROGRESS flag set in the kernel, which no status
+// output exposes, so the stranded child itself is the only fingerprint. It
+// self-clears with the child, like the count.
+func (w *Wedge) StrandedCommand(line string) bool {
+	if w == nil {
+		return false
+	}
+	w.Stranded() // prune first, so a drained child no longer matches
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, cmd := range w.children {
+		if cmd == line {
+			return true
+		}
+	}
+	return false
+}
+
 // Commands lists the stuck commands, for the Event and status message that
 // tell an operator which node to reboot and why. Sorted for a stable
 // message: an Event that reorders every cycle reads as new information.

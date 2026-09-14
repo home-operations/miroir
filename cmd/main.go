@@ -631,7 +631,7 @@ func main() {
 			// client legs refused nothing touches DRBD on this node, and
 			// the probe's fatal below-floor exit would crash-loop a
 			// consumer-only node over a check that protects nothing here.
-			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost}
+			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost, Wedge: storageWedge}
 			node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, clientDRBD)
 			node.ClientOnly = true
 			node.Wedge = storageWedge
@@ -644,7 +644,7 @@ func main() {
 			os.Exit(1)
 		}
 		setupAgentPools(pools)
-		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost}
+		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost, Wedge: storageWedge}
 		// The binary is always in the image; what a local-only node lacks
 		// is the kernel module. Probe once (the modprobe inside also loads
 		// it proactively on nodes that ship it) and run without the DRBD

@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/backend"
 )
 
 const (
@@ -1271,6 +1272,98 @@ func TestRestartDownsAndUps(t *testing.T) {
 	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
 		t.Fatalf("rendered config must survive a restart: %v", err)
 	}
+}
+
+// fakeWedge stands in for the node breaker: it reports exactly the command
+// lines in stuck as stranded.
+type fakeWedge struct{ stuck map[string]bool }
+
+func (f *fakeWedge) StrandedCommand(line string) bool { return f.stuck[line] }
+
+// A drbdsetup down of ours still stranded in the kernel is a wedge
+// fingerprint the status cannot show: the resource reads healthy while its
+// DOWN_IN_PROGRESS flag is pinned. Down must not spawn another down against
+// it, escalating to ErrDownStranded (an ErrWedged) on the second sighting,
+// and must resume once the stranded child drains.
+func TestDownStrandedDownSkipsDown(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"UpToDate"}],"connections":[]}]`,
+	}}
+	w := &fakeWedge{stuck: map[string]bool{"drbdsetup down " + volPvc1: true}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod, Wedge: w}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	err := d.Down(t.Context(), volPvc1)
+	if !errors.Is(err, backend.ErrBusy) || errors.Is(err, ErrWedged) {
+		t.Fatalf("first sighting must defer without escalating, got %v", err)
+	}
+	err = d.Down(t.Context(), volPvc1)
+	if !errors.Is(err, ErrDownStranded) || !errors.Is(err, ErrWedged) {
+		t.Fatalf("second consecutive sighting must return ErrDownStranded wrapping ErrWedged, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
+		t.Fatalf("wedged resource's config must remain: %v", err)
+	}
+
+	// The child drained: the fingerprint is gone and the down proceeds.
+	delete(w.stuck, "drbdsetup down "+volPvc1)
+	if err := d.Down(t.Context(), volPvc1); err != nil {
+		t.Fatalf("down after the stranded child drained: %v", err)
+	}
+	fe.calledWith(t, "drbdsetup down "+volPvc1)
+}
+
+// The stranded-down fingerprint is keyed on the exact resource: a stuck
+// down for another resource must not park this one.
+func TestDownIgnoresStrandedDownOfOtherResource(t *testing.T) {
+	fe := &fakeExec{}
+	w := &fakeWedge{stuck: map[string]bool{"drbdsetup down " + volPvc1 + "-other": true}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod, Wedge: w}
+	if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Down(t.Context(), volPvc1); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	fe.calledWith(t, "drbdsetup down "+volPvc1)
+}
+
+// A stranded down is a wedge fingerprint for Restart too: the frozen-bdev
+// recovery is the path that spawned the stuck down in the first place, and
+// a second one can only strand another unkillable process.
+func TestRestartRefusesStrandedDown(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"UpToDate"}],"connections":[]}]`,
+	}}
+	w := &fakeWedge{stuck: map[string]bool{"drbdsetup down " + volPvc1: true}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod, Wedge: w}
+
+	if err := d.Restart(t.Context(), volPvc1); !errors.Is(err, ErrDownStranded) {
+		t.Fatalf("want ErrDownStranded, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
+	fe.notCalledWith(t, "drbdadm up")
+}
+
+// The shutdown and orphan sweeps classify from their own status parse; the
+// stranded-down fingerprint must reach them the same way the signature does.
+func TestDownSecondariesSkipsStrandedDown(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"UpToDate"}],"connections":[]}]`,
+	}}
+	w := &fakeWedge{stuck: map[string]bool{"drbdsetup down " + volPvc1: true}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod, Wedge: w}
+
+	if err := d.DownSecondaries(t.Context()); !errors.Is(err, ErrDownStranded) {
+		t.Fatalf("want the stranded resource surfaced as ErrDownStranded, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down")
 }
 
 // A resource wearing the teardown wedge signature must be refused: a down

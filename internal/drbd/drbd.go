@@ -49,8 +49,15 @@ type Driver struct {
 	// Mknod creates device nodes; injectable because the real call needs
 	// CAP_MKNOD. Nil means unix.Mknod.
 	Mknod func(path string, mode uint32, dev int) error
+	// Wedge is the node-scoped breaker Exec reports stranded children to;
+	// the driver asks it whether a drbdsetup down against a resource is
+	// still stuck in the kernel (see ErrDownStranded). Nil disables that
+	// check, leaving the status-derived signature alone.
+	Wedge interface {
+		StrandedCommand(line string) bool
+	}
 
-	// wedgeSeen stamps resources whose teardown wore the wedge signature
+	// wedgeSeen stamps resources whose teardown wore a wedge fingerprint
 	// once (see ErrWedged). Down escalates only on the second consecutive
 	// sighting: a killed down whose detach is still draining wears the
 	// same signature briefly, and a premature ErrWedged pages "reboot
@@ -597,8 +604,8 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 		// A wedged orphan's down can only hang 30s and strand another
 		// unkillable process (issue #195); the signature is already in
 		// hand from this sweep's own parse, so skip without spawning one.
-		if res.wedgeSignature() {
-			errs = append(errs, fmt.Errorf("orphan %s: %w", res.Name, ErrWedged))
+		if cause := d.wedgeCause(res); cause != nil {
+			errs = append(errs, fmt.Errorf("orphan %s: %w", res.Name, cause))
 			stuck[res.Name] = true
 			continue
 		}
@@ -691,10 +698,10 @@ func (d *Driver) DemoteAll(ctx context.Context) error {
 		if res.Role != rolePrimary {
 			continue
 		}
-		// Never spawn a demote against the wedge signature (issue #195):
+		// Never spawn a demote against a wedge fingerprint (issue #195):
 		// it can only hang. DownSecondaries reports these separately.
-		if res.wedgeSignature() {
-			errs = append(errs, fmt.Errorf("%s: %w", res.Name, ErrWedged))
+		if cause := d.wedgeCause(res); cause != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", res.Name, cause))
 			continue
 		}
 		if _, err := d.adm(ctx, "secondary", "--force", res.Name); err != nil {
@@ -720,11 +727,11 @@ func (d *Driver) DownSecondaries(ctx context.Context) error {
 		if res.Role == rolePrimary {
 			continue
 		}
-		// Never spawn a down against the wedge signature (issue #195):
+		// Never spawn a down against a wedge fingerprint (issue #195):
 		// it can only hang until the shutdown deadline and strand an
 		// unkillable process into the reboot.
-		if res.wedgeSignature() {
-			errs = append(errs, fmt.Errorf("%s: %w", res.Name, ErrWedged))
+		if cause := d.wedgeCause(res); cause != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", res.Name, cause))
 			continue
 		}
 		if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
@@ -1096,11 +1103,12 @@ func (d *Driver) WipeMetadata(ctx context.Context, name, disk string, minor int3
 }
 
 // downTimeout tightens RealExec's 2-minute bound for drbdsetup down. A
-// device wedged mid-teardown (stuck Detaching) leaves down in D-state, and
-// teardown retries every ~10s — a 2-minute pin per attempt head-of-line-
-// blocks the reconcile worker. 30s is generous: down on healthy hardware
-// completes in milliseconds. The bound frees the worker, not the device —
-// a D-state child ignores the SIGKILL and keeps its holds.
+// device wedged mid-teardown (stuck Detaching, or a receiver thread that
+// never exits under del_connection) leaves down in D-state, and teardown
+// retries every ~10s — a 2-minute pin per attempt head-of-line-blocks the
+// reconcile worker. 30s is generous: down on healthy hardware completes in
+// milliseconds. The bound frees the worker, not the device — a D-state
+// child ignores the SIGKILL and keeps its holds.
 const downTimeout = 30 * time.Second
 
 // disconnectTimeout bounds each best-effort disconnect in downResource,
@@ -1109,15 +1117,45 @@ const downTimeout = 30 * time.Second
 // completes in milliseconds.
 const disconnectTimeout = 10 * time.Second
 
-// ErrWedged marks a resource the kernel can no longer tear down: the
-// device is stuck Detaching with nothing left to disconnect, so drbdsetup
-// down blocks in uninterruptible sleep and the next attempt hits the same
-// wall (refcount underflow, LINBIT/drbd#137). Callers must leave the fast
-// retry loop — every extra down attempt can strand another unkillable
-// process — and surface that only a node reboot clears it. Down escalates
-// to this only on the second consecutive sighting of the signature, so a
-// detach still draining gets one retry cycle to finish first.
-var ErrWedged = errors.New("resource wedged in kernel (LINBIT/drbd#137): node reboot required")
+// ErrWedged marks a resource the kernel can no longer tear down, so
+// drbdsetup down blocks in uninterruptible sleep and the next attempt hits
+// the same wall. Two fingerprints wear it: the device stuck Detaching with
+// nothing left to disconnect (refcount underflow, LINBIT/drbd#137), and a
+// down of ours still stranded in the kernel (ErrDownStranded, which wraps
+// this). Callers must leave the fast retry loop — every extra down attempt
+// can strand another unkillable process — and surface that only a node
+// reboot clears it. Down escalates to this only on the second consecutive
+// sighting of a fingerprint, so a detach still draining gets one retry
+// cycle to finish first.
+var ErrWedged = errors.New("resource wedged in kernel: node reboot required")
+
+// ErrDownStranded is the ErrWedged fingerprint the kernel's status output
+// cannot show: a drbdsetup down killed at its deadline whose task is still
+// in uninterruptible sleep. drbd_adm_down sets the resource's
+// DOWN_IN_PROGRESS flag before del_connection waits for the receiver
+// thread to exit, and clears it only on return, so while the down is stuck
+// every open of the minor fails with EAGAIN although status still reads
+// healthy (Secondary, UpToDate, quorum). Only the stranded child itself
+// identifies the state, via the node breaker's /proc view.
+var ErrDownStranded = fmt.Errorf("drbdsetup down stranded in uninterruptible sleep (DOWN_IN_PROGRESS pinned): %w", ErrWedged)
+
+// wedgeCause classifies one kernel status entry: nil when the resource is
+// safe to act on, otherwise the ErrWedged fingerprint it wears.
+func (d *Driver) wedgeCause(res jsonStatus) error {
+	if res.wedgeSignature() {
+		return ErrWedged
+	}
+	return d.downStranded(res.Name)
+}
+
+// downStranded reports ErrDownStranded when a drbdsetup down against name
+// is still stuck in the kernel, nil otherwise (or with no breaker wired).
+func (d *Driver) downStranded(name string) error {
+	if d.Wedge == nil || !d.Wedge.StrandedCommand(backend.CommandLine("drbdsetup", "down", name)) {
+		return nil
+	}
+	return ErrDownStranded
+}
 
 // disconnectPeers disconnects each peer connection ahead of a down or a
 // force-detach. Disconnecting first avoids a kernel deadlock: drbdsetup
@@ -1161,28 +1199,29 @@ func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32)
 }
 
 // liveTeardownView reports the resource's DRBD peer node ids per the
-// kernel's live view — the ids downResource must disconnect — and whether
-// the resource wears the wedge signature (see jsonStatus.wedgeSignature).
-// Empty/false when the resource is down or the status is unreadable
-// (nothing to disconnect).
-func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []int32, wedged bool) {
+// kernel's live view — the ids downResource must disconnect — and the
+// wedge fingerprint the resource wears, if any (see wedgeCause). A
+// stranded down counts even when the status is unreadable or lists no
+// entry: the stuck child, not the status, is that fingerprint's evidence.
+func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []int32, wedged error) {
+	wedged = d.downStranded(name)
 	parsed, err := d.listStatus(ctx, name)
 	if err != nil {
-		return nil, false
+		return nil, wedged
 	}
 	for _, res := range parsed {
 		if res.Name != name {
 			continue
 		}
 		peerIDs = append(peerIDs, res.peerIDs()...)
-		if res.wedgeSignature() {
-			wedged = true
+		if wedged == nil && res.wedgeSignature() {
+			wedged = ErrWedged
 		}
 	}
 	return peerIDs, wedged
 }
 
-// markWedgeSighting records one sighting of the wedge signature and
+// markWedgeSighting records one sighting of a wedge fingerprint and
 // reports whether an earlier consecutive sighting was already on record.
 func (d *Driver) markWedgeSighting(name string) (again bool) {
 	d.wedgeMu.Lock()
@@ -1202,17 +1241,17 @@ func (d *Driver) clearWedgeSighting(name string) {
 }
 
 // Down stops the resource and removes its rendered state. Idempotent.
-// A resource wearing the wedge signature never gets another down spawned:
+// A resource wearing a wedge fingerprint never gets another down spawned:
 // the first sighting defers (the detach may still be draining), a second
-// consecutive one returns ErrWedged (wrapped).
+// consecutive one returns the fingerprint's ErrWedged (wrapped).
 func (d *Driver) Down(ctx context.Context, name string) error {
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
 	peerIDs, wedged := d.liveTeardownView(ctx, name)
-	if wedged {
+	if wedged != nil {
 		if d.markWedgeSighting(name) {
-			return fmt.Errorf("down %s: %w", name, ErrWedged)
+			return fmt.Errorf("down %s: %w", name, wedged)
 		}
 		// ErrBusy: one short retry cycle for a drain to finish before the
 		// signature escalates.
@@ -1237,13 +1276,13 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 // bdev's freeze count with no mountpoint left for FITHAW, and dropping the
 // minor's bdev inode is the only remaining way to clear it (issue #311).
 // The disconnect costs a brief bitmap-based resync on reconnect. A
-// resource wearing the teardown wedge signature is refused outright — a
+// resource wearing a teardown wedge fingerprint is refused outright — a
 // down spawned against it can only hang (see ErrWedged); the caller's
 // retry re-evaluates.
 func (d *Driver) Restart(ctx context.Context, name string) error {
 	peerIDs, wedged := d.liveTeardownView(ctx, name)
-	if wedged {
-		return fmt.Errorf("restart %s: teardown wedge signature; refusing to spawn a down", name)
+	if wedged != nil {
+		return fmt.Errorf("restart %s: refusing to spawn a down: %w", name, wedged)
 	}
 	if err := d.downResource(ctx, name, peerIDs); err != nil {
 		return err
@@ -1267,7 +1306,7 @@ func (d *Driver) Restart(ctx context.Context, name string) error {
 // the zombie resource releases its replication port. Already-detached
 // resources still shed those connections, while not-in-kernel resources
 // are no-ops so a retry after a failed backing delete converges. A resource
-// wearing the teardown wedge signature is refused like everywhere else —
+// wearing a teardown wedge fingerprint is refused like everywhere else —
 // mid-detach is exactly the state a second detach would race.
 func (d *Driver) ForceDetach(ctx context.Context, name string, minor int32) error {
 	parsed, err := d.listStatus(ctx, name)
@@ -1278,8 +1317,8 @@ func (d *Driver) ForceDetach(ctx context.Context, name string, minor int32) erro
 		if res.Name != name {
 			continue
 		}
-		if res.wedgeSignature() {
-			return fmt.Errorf("force-detach %s: %w", name, ErrWedged)
+		if cause := d.wedgeCause(res); cause != nil {
+			return fmt.Errorf("force-detach %s: %w", name, cause)
 		}
 		peerIDs := res.peerIDs()
 		if err := d.disconnectPeers(ctx, name, peerIDs); err != nil {
