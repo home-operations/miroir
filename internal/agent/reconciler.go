@@ -1303,7 +1303,10 @@ func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1
 	ctrl.LoggerFrom(ctx).Error(cause, "teardown wedged in kernel", "volume", vol.Name)
 	if r.Recorder != nil {
 		detail := "device stuck Detaching with connections gone (LINBIT/drbd#137)"
-		if errors.Is(cause, backend.ErrNodeWedged) {
+		switch {
+		case errors.Is(cause, drbd.ErrDownStranded):
+			detail = "a drbdsetup down is stranded in uninterruptible sleep, pinning the resource's DOWN_IN_PROGRESS flag so every open fails with EAGAIN"
+		case errors.Is(cause, backend.ErrNodeWedged):
 			detail = "the node's storage stack has stranded enough commands that miroir stopped spawning them"
 		}
 		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownWedged", "Teardown",

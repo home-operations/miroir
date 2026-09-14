@@ -68,11 +68,9 @@ func parseProcState(data []byte) byte {
 	return fields[0][0]
 }
 
-// stranded reports whether pid is in uninterruptible sleep, which is what
-// separates a swallowed child from a merely slow one: a slow child dies on
-// the SIGKILL its deadline sends, a blocked one ignores it and keeps its
-// locks. Only 'D' qualifies — a killed child reads 'Z' until Wait collects
-// it.
+// stranded reports whether pid is still in uninterruptible sleep. Only 'D'
+// qualifies: a recorded child that reads anything else has woken to die on
+// the SIGKILL it was sent, and its Runner retires the record on reaping.
 func stranded(pid int) bool { return procState(pid) == 'D' }
 
 // Wedge is a node-scoped circuit breaker over host commands. It counts
@@ -131,16 +129,6 @@ func (w *Wedge) alive(pid int) bool {
 	return stranded(pid)
 }
 
-// note records pid as stranded if it really is in uninterruptible sleep.
-// Runner goes through here rather than calling stranded directly so the
-// detection shares the seam Stranded uses and can be tested.
-func (w *Wedge) note(pid int, cmd string) {
-	if w == nil || !w.alive(pid) {
-		return
-	}
-	w.record(pid, cmd)
-}
-
 // record notes that cmd's child stranded. Safe to call for a pid already
 // recorded: the map keys on pid, so a retry cannot inflate the count.
 func (w *Wedge) record(pid int, cmd string) {
@@ -153,6 +141,18 @@ func (w *Wedge) record(pid int, cmd string) {
 		w.children = map[int]string{}
 	}
 	w.children[pid] = cmd
+}
+
+// retire drops pid's record once its Runner has reaped the child. This is
+// the authoritative release: while the record exists the pid is still that
+// child's, so no read of /proc can be answered by an unrelated task.
+func (w *Wedge) retire(pid int) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	delete(w.children, pid)
+	w.mu.Unlock()
 }
 
 // Stranded reports how many children are still stuck, pruning any that have
@@ -211,6 +211,27 @@ func (w *Wedge) Tripped() bool {
 		return true
 	}
 	return w.StrandedTripped()
+}
+
+// StrandedCommand reports whether a child spawned by exactly that command
+// line (see CommandLine) is still stuck. This is the per-resource view of
+// the breaker: a drbdsetup down left in uninterruptible sleep keeps its
+// resource's DOWN_IN_PROGRESS flag set in the kernel, which no status
+// output exposes, so the stranded child itself is the only fingerprint. It
+// self-clears with the child, like the count.
+func (w *Wedge) StrandedCommand(line string) bool {
+	if w == nil {
+		return false
+	}
+	w.Stranded() // prune first, so a drained child no longer matches
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, cmd := range w.children {
+		if cmd == line {
+			return true
+		}
+	}
+	return false
 }
 
 // Commands lists the stuck commands, for the Event and status message that

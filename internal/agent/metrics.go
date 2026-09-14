@@ -156,7 +156,7 @@ var (
 	// teardown reported under can be unknowable (see dropVolumeMetrics).
 	metricWedged = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "miroir_volume_wedged",
-		Help: "1 when the kernel can no longer tear down this volume's DRBD resource (device stuck Detaching after a refcount underflow, LINBIT/drbd#137); teardown is parked at a slow retry and only a node reboot clears the state.",
+		Help: "1 when the kernel can no longer tear down this volume's DRBD resource (device stuck Detaching after a refcount underflow, LINBIT/drbd#137, or a drbdsetup down stranded in uninterruptible sleep with DOWN_IN_PROGRESS pinned); teardown is parked at a slow retry and only a node reboot clears the state.",
 	}, volumeOnlyLabels)
 
 	// Pool gauges carry the pool name; the PodMonitor stamps a node label
