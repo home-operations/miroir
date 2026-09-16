@@ -135,6 +135,10 @@ func (w *AssertionWatcher) Start(ctx context.Context) error {
 }
 
 func (w *AssertionWatcher) drain(log logr.Logger, f *os.File, partial string, replay bool) string {
+	// Re-armed per drain: the deadline is absolute, and without it a
+	// drained ring parks Read until the next kernel record, which also
+	// holds Start's ctx check hostage. See kmsgReadTimeout.
+	_ = f.SetReadDeadline(time.Now().Add(kmsgReadTimeout))
 	buf := make([]byte, 8192)
 	var b strings.Builder
 	b.WriteString(partial)

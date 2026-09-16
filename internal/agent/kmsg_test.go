@@ -21,8 +21,28 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
+
+// newKmsgFIFO stands in for /dev/kmsg: a FIFO is pollable like the char
+// device, so os.File registers it with the netpoller, and the writer held
+// open means a drained read parks instead of seeing EOF. A regular file
+// never reaches that path.
+func newKmsgFIFO(t *testing.T) (string, *os.File) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kmsg")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	return path, w
+}
 
 func TestCaptureKmsgFiltersAndCaps(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kmsg")
@@ -53,5 +73,24 @@ func TestCaptureKmsgFiltersAndCaps(t *testing.T) {
 func TestCaptureKmsgMissingFile(t *testing.T) {
 	if lines := captureKmsg(filepath.Join(t.TempDir(), "absent"), "pvc-1", 30); lines != nil {
 		t.Fatalf("missing file must yield nil, got %v", lines)
+	}
+}
+
+func TestCaptureKmsgReturnsOnDrainedPollableSource(t *testing.T) {
+	path, w := newKmsgFIFO(t)
+	if _, err := w.WriteString("6,1,1,-;drbd pvc-1: conn( Connecting -> StandAlone )\n" +
+		"6,2,2,-;drbd pvc-1: Split-Brain detected but unresolved, dropping connection!\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan []string, 1)
+	go func() { done <- captureKmsg(path, "pvc-1", 1) }()
+	select {
+	case lines := <-done:
+		if len(lines) != 1 || !strings.Contains(lines[0], "Split-Brain detected") {
+			t.Fatalf("want the newest buffered record, got %v", lines)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("captureKmsg must return once the buffered records are drained, not wait for the next one")
 	}
 }
