@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.5](https://github.com/home-operations/miroir/compare/0.12.4...0.12.5) (2026-09-16)
+
+
+### Bug Fixes
+
+* **agent:** bound the kmsg drain with a read deadline ([#502](https://github.com/home-operations/miroir/issues/502)) ([22d850c](https://github.com/home-operations/miroir/commit/22d850c8f1a4df09b400c4132203895f7cba685d))
+
 ## [0.12.4](https://github.com/home-operations/miroir/compare/0.12.3...0.12.4) (2026-09-14)
 
 
