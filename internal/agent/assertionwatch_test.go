@@ -114,3 +114,41 @@ func TestAssertionWatcherTripsTheWedge(t *testing.T) {
 		t.Fatalf("Start() = %v, want nil on shutdown", err)
 	}
 }
+
+func TestAssertionWatcherStopsOnDrainedPollableSource(t *testing.T) {
+	path, w := newKmsgFIFO(t)
+	if _, err := w.WriteString("3,1,1,-;drbd pvc-a/0 drbd1000: ASSERTION i >= 0 FAILED in put_ldev\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	wedge := backend.NewWedge(backend.DefaultWedgeLimit)
+	aw := &AssertionWatcher{
+		Path:     path,
+		Wedge:    wedge,
+		Interval: 10 * time.Millisecond,
+		metric:   prometheus.NewCounter(prometheus.CounterOpts{Name: "test_drbd_assertions_fifo"}),
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- aw.Start(ctx) }()
+
+	deadline := time.After(5 * time.Second)
+	for !wedge.Tripped() {
+		select {
+		case <-deadline:
+			t.Fatal("the watcher must latch an assertion read through a pollable source")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// No further record arrives: shutdown must not wait for the kernel.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() = %v, want nil on shutdown", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start must return on cancel while the source is drained")
+	}
+}

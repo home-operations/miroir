@@ -21,11 +21,20 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // kmsgReadCap bounds the drain loop: /dev/kmsg yields one record per read
 // and a busy logger could otherwise keep the loop alive indefinitely.
 const kmsgReadCap = 8192
+
+// kmsgReadTimeout bounds a single drain of /dev/kmsg. The device is
+// pollable, so os.File registers it with the runtime netpoller and Read
+// parks on a drained ring until the kernel logs another record instead of
+// surfacing EAGAIN: O_NONBLOCK alone does not make the read return. A
+// read deadline turns that park into os.ErrDeadlineExceeded; on a quiet
+// node the next record can be hours away (issue #501).
+const kmsgReadTimeout = 250 * time.Millisecond
 
 // captureKmsg returns the last limit kernel-log records mentioning
 // resource. The DRBD handshake verdict ("Split-Brain detected",
@@ -40,11 +49,14 @@ func captureKmsg(path, resource string, limit int) []string {
 		return nil
 	}
 	defer func() { _ = f.Close() }()
+	// A regular file (tests) is not pollable and refuses the deadline with
+	// os.ErrNoDeadline; its reads cannot park, so the error is moot.
+	_ = f.SetReadDeadline(time.Now().Add(kmsgReadTimeout))
 
 	// Drain everything buffered: /dev/kmsg returns one record per read and
-	// EAGAIN once caught up; EPIPE marks a record overwritten mid-read and
-	// the next read continues. A regular file (tests) arrives in chunks
-	// holding several newline-separated records.
+	// the deadline fires once caught up; EPIPE marks a record overwritten
+	// mid-read and the next read continues. A regular file (tests) arrives
+	// in chunks holding several newline-separated records.
 	var raw strings.Builder
 	buf := make([]byte, 8192)
 	for range kmsgReadCap {
@@ -59,7 +71,7 @@ func captureKmsg(path, resource string, limit int) []string {
 			if errors.Is(err, syscall.EPIPE) {
 				continue
 			}
-			break // EAGAIN (drained), EOF, or anything else
+			break // deadline (drained), EOF, or anything else
 		}
 	}
 

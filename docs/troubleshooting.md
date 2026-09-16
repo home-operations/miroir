@@ -28,6 +28,14 @@
   `7100`) to move miroir's range; existing volumes keep their ports.
   Full forensics in
   [#148](https://github.com/home-operations/miroir/issues/148).
+  The same `err=-98` with no fixed tenant on the port means the range
+  overlaps the kernel's ephemeral ports (`net.ipv4.ip_local_port_range`
+  widened to start below `drbd.portBase`): any outbound host-network
+  socket can then hold a replication port, and the peer parks
+  `StandAlone` until the next `drbdadm adjust` (issue
+  [#501](https://github.com/home-operations/miroir/issues/501)). Either
+  keep the ephemeral range above miroir's ports or reserve them with
+  `net.ipv4.ip_local_reserved_ports`.
 - **`MiroirVolumeOutOfSync` firing while everything reads healthy**:
   `out-of-sync` bits toward a peer with no resync draining them. With the
   connection `Connected` and both disks `UpToDate`, this is one of two
