@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.12.6](https://github.com/home-operations/miroir/compare/0.12.5...0.12.6) (2026-09-19)
+
+
+### Features
+
+* **go:** update module github.com/onsi/ginkgo/v2 (v2.32.2 → v2.33.0) ([#509](https://github.com/home-operations/miroir/issues/509)) ([0910949](https://github.com/home-operations/miroir/commit/091094968efd6eaecbd0d594c3dcf7399df7f8cd))
+
+
+### Bug Fixes
+
+* **go:** update module github.com/onsi/gomega (v1.43.0 → v1.43.1) ([#508](https://github.com/home-operations/miroir/issues/508)) ([9283f4d](https://github.com/home-operations/miroir/commit/9283f4dd73a68fd3aa88c5142ef33bbdb5004161))
+
+
+### Continuous Integration
+
+* **github-action:** Update github-actions ([#515](https://github.com/home-operations/miroir/issues/515)) ([2efb545](https://github.com/home-operations/miroir/commit/2efb545486fe73c3821cc4c04faa0c184e469335))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action docker/setup-buildx-action (v4.4.0 → v4.4.1) ([#516](https://github.com/home-operations/miroir/issues/516)) ([f988577](https://github.com/home-operations/miroir/commit/f988577c562434652735841ad3e283531ffa0b86))
+* **github-action:** update action ubuntu (24.04 → 26.04) ([#513](https://github.com/home-operations/miroir/issues/513)) ([c5051ae](https://github.com/home-operations/miroir/commit/c5051aee6280801eb77f1345a4c9bf3ba6d4170d))
+* **github-action:** update github-actions ([#512](https://github.com/home-operations/miroir/issues/512)) ([117e86b](https://github.com/home-operations/miroir/commit/117e86bf03740821efe58034b015e551c7c017cf))
+* **mise:** update mise tools ([#514](https://github.com/home-operations/miroir/issues/514)) ([4302e72](https://github.com/home-operations/miroir/commit/4302e728e6ddae3ce597098fa822a54413408f83))
+* **mise:** update tool aqua:astral-sh/uv (0.12.13 → 0.12.14) ([#511](https://github.com/home-operations/miroir/issues/511)) ([45c4edb](https://github.com/home-operations/miroir/commit/45c4edbc2a02cbfcd6b0f664933d4718dab77d43))
+* **mise:** update tool lefthook (2.1.12 → 2.1.14) ([#506](https://github.com/home-operations/miroir/issues/506)) ([6c4b628](https://github.com/home-operations/miroir/commit/6c4b628d7e8598838669e7a570e89e5a330de563))
+* **mise:** update tool oxfmt (0.67.0 → 0.68.0) ([#507](https://github.com/home-operations/miroir/issues/507)) ([4bef0d5](https://github.com/home-operations/miroir/commit/4bef0d55de7f26e5deb949f1626cdaab8d23c128))
+* **mise:** update tool setup-envtest (0.25.0 → 0.25.1) ([#504](https://github.com/home-operations/miroir/issues/504)) ([cf42b3a](https://github.com/home-operations/miroir/commit/cf42b3aaa54cfcf46cc2a1b343c37a006e604e0d))
+
 ## [0.12.5](https://github.com/home-operations/miroir/compare/0.12.4...0.12.5) (2026-09-16)
 
 
