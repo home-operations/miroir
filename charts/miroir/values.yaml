@@ -488,4 +488,4 @@ uninstall:
   # `helm uninstall`. Any other non-empty value fails the render.
   confirmation: ""
   # -- Image for the uninstall hook Job (needs only `kubectl`).
-  image: registry.k8s.io/kubectl:v1.37.0
+  image: registry.k8s.io/kubectl:v1.37.1
