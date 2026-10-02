@@ -24,7 +24,7 @@ permissions:
 
 env:
   # renovate: datasource=github-releases depName=helm-unittest/helm-unittest
-  HELM_UNITTEST_VERSION: "v1.1.2"
+  HELM_UNITTEST_VERSION: "v1.2.0"
 
   # The tags e2e-images builds under and every leg pushes to its own
   # runner-local registry. The nodes pull the registry.e2e names instead (see
