@@ -157,7 +157,7 @@ Kubernetes: `>=1.31.0-0`
 | sidecars.provisioner.image | string | `"registry.k8s.io/sig-storage/csi-provisioner:v6.3.0"` |  |
 | sidecars.provisioner.resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Provisioner sidecar resources. |
 | sidecars.provisioner.timeout | string | `"120s"` |  |
-| sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.2.1"` |  |
+| sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.3.0"` |  |
 | sidecars.resizer.resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Resizer sidecar resources. |
 | sidecars.resizer.timeout | string | `"120s"` |  |
 | sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0"` |  |
