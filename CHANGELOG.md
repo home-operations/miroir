@@ -1,5 +1,64 @@
 # Changelog
 
+## [0.12.6](https://github.com/home-operations/miroir/compare/0.12.5...0.12.6) (2026-10-10)
+
+
+### Features
+
+* **go:** update module github.com/onsi/ginkgo/v2 (v2.32.2 → v2.33.0) ([#509](https://github.com/home-operations/miroir/issues/509)) ([0910949](https://github.com/home-operations/miroir/commit/091094968efd6eaecbd0d594c3dcf7399df7f8cd))
+* **go:** update module github.com/onsi/gomega (v1.43.1 → v1.44.0) ([#522](https://github.com/home-operations/miroir/issues/522)) ([b08a5a9](https://github.com/home-operations/miroir/commit/b08a5a956f5f0f38693c335b0e9c7e8929e403a4))
+
+
+### Bug Fixes
+
+* **container:** update image registry.k8s.io/kubectl (v1.37.0 → v1.37.1) ([#519](https://github.com/home-operations/miroir/issues/519)) ([9ed0668](https://github.com/home-operations/miroir/commit/9ed066805fca673f3d5437fd2322e91d36fab4c7))
+* **go:** update kubernetes monorepo (v0.37.0 → v0.37.1) ([#520](https://github.com/home-operations/miroir/issues/520)) ([d06df2c](https://github.com/home-operations/miroir/commit/d06df2c40ee7697506ff568957ed984d610ec52b))
+* **go:** update module github.com/onsi/gomega (v1.43.0 → v1.43.1) ([#508](https://github.com/home-operations/miroir/issues/508)) ([9283f4d](https://github.com/home-operations/miroir/commit/9283f4dd73a68fd3aa88c5142ef33bbdb5004161))
+* **mise:** restore generated lock sidecars ([e346e16](https://github.com/home-operations/miroir/commit/e346e163c93530ca399ba20689ce7291c8dc39c1))
+
+
+### Documentation
+
+* **agents:** point to the org AI Usage Policy instead of restating it ([e869c1b](https://github.com/home-operations/miroir/commit/e869c1bb64e4691cecf0a4086405be41938f0ce6))
+* **agents:** update AI usage policy summary ([023b5dc](https://github.com/home-operations/miroir/commit/023b5dc9cc3cd56d739ab586b753c203ea7ed957))
+
+
+### Continuous Integration
+
+* **github-action:** Update github-actions ([#515](https://github.com/home-operations/miroir/issues/515)) ([2efb545](https://github.com/home-operations/miroir/commit/2efb545486fe73c3821cc4c04faa0c184e469335))
+* **renovate:** remove the dispatch workflow ([15fd4ab](https://github.com/home-operations/miroir/commit/15fd4ab62747eca066ee246e63d99c0ce18352ad))
+
+
+### Miscellaneous Chores
+
+* **deps:** bump Go to 1.27.2 and golang.org/x/net to v0.60.0 ([#548](https://github.com/home-operations/miroir/issues/548)) ([92b2daf](https://github.com/home-operations/miroir/commit/92b2dafc4d67e2827884cc14c061b7af418bf462))
+* **deps:** lock file maintenance (pep621) ([#527](https://github.com/home-operations/miroir/issues/527)) ([67839fd](https://github.com/home-operations/miroir/commit/67839fd72568b620a2aa765d8bc9943c58c18874))
+* **github-action:** update action docker/setup-buildx-action (v4.4.0 → v4.4.1) ([#516](https://github.com/home-operations/miroir/issues/516)) ([f988577](https://github.com/home-operations/miroir/commit/f988577c562434652735841ad3e283531ffa0b86))
+* **github-action:** update action jdx/mise-action (v4.3.0 → v5.0.0) ([#531](https://github.com/home-operations/miroir/issues/531)) ([fa03367](https://github.com/home-operations/miroir/commit/fa03367656e7e4e5d3015b24efac3e8584b1637d))
+* **github-action:** update action jdx/mise-action (v5.0.0 → v5.0.1) ([#537](https://github.com/home-operations/miroir/issues/537)) ([df2d4ce](https://github.com/home-operations/miroir/commit/df2d4ced7770ff3d8d304560cb02dc73fbfdc8e7))
+* **github-action:** update action ubuntu (24.04 → 26.04) ([#513](https://github.com/home-operations/miroir/issues/513)) ([c5051ae](https://github.com/home-operations/miroir/commit/c5051aee6280801eb77f1345a4c9bf3ba6d4170d))
+* **github-action:** update github-actions ([#512](https://github.com/home-operations/miroir/issues/512)) ([117e86b](https://github.com/home-operations/miroir/commit/117e86bf03740821efe58034b015e551c7c017cf))
+* **github-release:** update release helm-unittest/helm-unittest (v1.1.2 → v1.2.0) ([#530](https://github.com/home-operations/miroir/issues/530)) ([808fce2](https://github.com/home-operations/miroir/commit/808fce22dc9a5575c02f0d95ead2f75173f864fe))
+* **github-release:** update release helm-unittest/helm-unittest (v1.2.0 → v1.2.1) ([#535](https://github.com/home-operations/miroir/issues/535)) ([c5fe8d0](https://github.com/home-operations/miroir/commit/c5fe8d0e30af94db52ef42552183e2ca3f8b62b1))
+* **mise:** update mise tools ([#514](https://github.com/home-operations/miroir/issues/514)) ([4302e72](https://github.com/home-operations/miroir/commit/4302e728e6ddae3ce597098fa822a54413408f83))
+* **mise:** update mise tools ([#534](https://github.com/home-operations/miroir/issues/534)) ([d7595b2](https://github.com/home-operations/miroir/commit/d7595b227bc40d13274b79b568209fcf2b75e671))
+* **mise:** update tool aqua:astral-sh/uv (0.12.13 → 0.12.14) ([#511](https://github.com/home-operations/miroir/issues/511)) ([45c4edb](https://github.com/home-operations/miroir/commit/45c4edbc2a02cbfcd6b0f664933d4718dab77d43))
+* **mise:** update tool aqua:astral-sh/uv (0.12.15 → 0.12.16) ([#517](https://github.com/home-operations/miroir/issues/517)) ([0191c42](https://github.com/home-operations/miroir/commit/0191c422b5a66565f39eedfefaf9ab16646ef035))
+* **mise:** update tool aqua:astral-sh/uv (0.12.16 → 0.12.17) ([#518](https://github.com/home-operations/miroir/issues/518)) ([ce77d06](https://github.com/home-operations/miroir/commit/ce77d068968982778fae7e56887678403c5a13cc))
+* **mise:** update tool aqua:astral-sh/uv (0.12.17 → 0.12.18) ([#523](https://github.com/home-operations/miroir/issues/523)) ([57a4643](https://github.com/home-operations/miroir/commit/57a4643278e6fc4ab43c41c63c87509ddedc75a4))
+* **mise:** update tool aqua:astral-sh/uv (0.12.18 → 0.12.19) ([#526](https://github.com/home-operations/miroir/issues/526)) ([db75de2](https://github.com/home-operations/miroir/commit/db75de2c0e19ecaaeab26338544fb4472a446ad3))
+* **mise:** update tool aqua:astral-sh/uv (0.12.19 → 0.12.20) ([#529](https://github.com/home-operations/miroir/issues/529)) ([dcdbcf4](https://github.com/home-operations/miroir/commit/dcdbcf4452f5c277542d80d19c1c21ea1aed7457))
+* **mise:** update tool golangci-lint (2.13.2 → 2.14.0) ([#525](https://github.com/home-operations/miroir/issues/525)) ([b51a752](https://github.com/home-operations/miroir/commit/b51a752d6b3289ecb1deb12f9c9ea5d909f52aa7))
+* **mise:** update tool kubectl (1.37.0 → 1.37.1) ([#524](https://github.com/home-operations/miroir/issues/524)) ([e43f22f](https://github.com/home-operations/miroir/commit/e43f22fe037a24103fec69deed8a236739626248))
+* **mise:** update tool lefthook (2.1.12 → 2.1.14) ([#506](https://github.com/home-operations/miroir/issues/506)) ([6c4b628](https://github.com/home-operations/miroir/commit/6c4b628d7e8598838669e7a570e89e5a330de563))
+* **mise:** update tool lefthook (2.1.14 → 2.1.15) ([#533](https://github.com/home-operations/miroir/issues/533)) ([8d25860](https://github.com/home-operations/miroir/commit/8d25860b2d2e3bf0f60da20fe141bab7bbc9f7e3))
+* **mise:** update tool oxfmt (0.67.0 → 0.68.0) ([#507](https://github.com/home-operations/miroir/issues/507)) ([4bef0d5](https://github.com/home-operations/miroir/commit/4bef0d55de7f26e5deb949f1626cdaab8d23c128))
+* **mise:** update tool oxfmt (0.68.0 → 0.70.0) ([#521](https://github.com/home-operations/miroir/issues/521)) ([f6fbdf7](https://github.com/home-operations/miroir/commit/f6fbdf7682e57d2c3acb62b94efeacb6ea88347d))
+* **mise:** update tool oxfmt (0.70.0 → 0.71.0) ([#528](https://github.com/home-operations/miroir/issues/528)) ([4ec3be9](https://github.com/home-operations/miroir/commit/4ec3be94bb30beb29ba3acf9e21a100f4350fef8))
+* **mise:** update tool setup-envtest (0.25.0 → 0.25.1) ([#504](https://github.com/home-operations/miroir/issues/504)) ([cf42b3a](https://github.com/home-operations/miroir/commit/cf42b3aaa54cfcf46cc2a1b343c37a006e604e0d))
+* **mise:** update tool yq (4.53.6 → 4.54.1) ([#532](https://github.com/home-operations/miroir/issues/532)) ([9073645](https://github.com/home-operations/miroir/commit/90736457a2f2c6406e3bf1834836b4cc24b87535))
+* **mise:** upgrade lockfile to format revision 3 ([4348e9d](https://github.com/home-operations/miroir/commit/4348e9d8ac0d48c53a93ef873ad487000c872436))
+
 ## [0.12.5](https://github.com/home-operations/miroir/compare/0.12.4...0.12.5) (2026-09-16)
 
 
