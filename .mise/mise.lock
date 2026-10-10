@@ -92,26 +92,31 @@ url_api = "https://api.github.com/repos/sigstore/cosign/releases/assets/50328620
 provenance = "cosign"
 
 [[tools.go]]
-version = "1.26.9"
+version = "1.27.2"
 backend = "core:go"
-specifiers = ["1.26.9"]
+specifiers = ["1.27.2"]
 
 [tools.go."platforms.linux-arm64"]
-checksum = "sha256:4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052"
-url = "https://dl.google.com/go/go1.26.9.linux-arm64.tar.gz"
+checksum = "sha256:94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8"
+url = "https://dl.google.com/go/go1.27.2.linux-arm64.tar.gz"
 
 [tools.go."platforms.linux-x64"]
-checksum = "sha256:42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d"
-url = "https://dl.google.com/go/go1.26.9.linux-amd64.tar.gz"
+checksum = "sha256:ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
+url = "https://dl.google.com/go/go1.27.2.linux-amd64.tar.gz"
 
 [tools.go."platforms.macos-arm64"]
-checksum = "sha256:f9bb7c0a02506c5d9bf0d1eb1f7ee6c7684f844ae49558308a0427b830e022cc"
-url = "https://dl.google.com/go/go1.26.9.darwin-arm64.tar.gz"
+checksum = "sha256:76812b213b1b2302c978d28fa52fa92d541704b9e7d9d5db8002c50e4018c4c5"
+url = "https://dl.google.com/go/go1.27.2.darwin-arm64.tar.gz"
 
 [[tools."go:golang.org/x/vuln/cmd/govulncheck"]]
 version = "1.8.0"
 backend = "go:golang.org/x/vuln/cmd/govulncheck"
 specifiers = ["v1.8.0"]
+
+[[tools."go:sigs.k8s.io/controller-tools/cmd/controller-gen"]]
+version = "0.22.0"
+backend = "go:sigs.k8s.io/controller-tools/cmd/controller-gen"
+specifiers = ["v0.22.0"]
 
 [[tools.golangci-lint]]
 version = "2.14.0"
@@ -195,26 +200,6 @@ checksum = "sha256:2d75340ba57a4b4b4c8708a21c2dc8e958a48aaa8bba13b27f77f6e4c0eca
 url = "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-macos-arm64"
 url_api = "https://api.github.com/repos/jqlang/jq/releases/assets/453012783"
 provenance = "github-attestations"
-
-[[tools.kube-controller-tools]]
-version = "0.22.0"
-backend = "github:kubernetes-sigs/controller-tools"
-specifiers = ["0.22.0"]
-
-[tools.kube-controller-tools."platforms.linux-arm64"]
-checksum = "sha256:c5151f30c3a51ddc8d722c18c263b495dae994ca246e9fa8994b1d4c95f3253a"
-url = "https://github.com/kubernetes-sigs/controller-tools/releases/download/v0.22.0/controller-gen-linux-arm64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/controller-tools/releases/assets/541008620"
-
-[tools.kube-controller-tools."platforms.linux-x64"]
-checksum = "sha256:a7d671f0e0da07a67b3a1618a6cab50353dffea5625cd2d8a8b3e18bacb497e6"
-url = "https://github.com/kubernetes-sigs/controller-tools/releases/download/v0.22.0/controller-gen-linux-amd64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/controller-tools/releases/assets/541008622"
-
-[tools.kube-controller-tools."platforms.macos-arm64"]
-checksum = "sha256:5e0d7c16ed9cc0ae887c02ebf5244a2739495c93eeaa7b20ccdd3abb20a53846"
-url = "https://github.com/kubernetes-sigs/controller-tools/releases/download/v0.22.0/controller-gen-darwin-arm64"
-url_api = "https://api.github.com/repos/kubernetes-sigs/controller-tools/releases/assets/541008621"
 
 [[tools.kubectl]]
 version = "1.37.1"
