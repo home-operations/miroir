@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.12.7](https://github.com/home-operations/miroir/compare/0.12.6...0.12.7) (2026-10-21)
+
+
+### Features
+
+* **container:** update image registry.k8s.io/sig-storage/csi-provisioner (v6.3.0 → v6.4.0) ([#558](https://github.com/home-operations/miroir/issues/558)) ([4840e47](https://github.com/home-operations/miroir/commit/4840e475c848e7143357e2239be1e66a20bb03b0))
+* **container:** update image registry.k8s.io/sig-storage/csi-resizer (v2.2.1 → v2.3.0) ([#559](https://github.com/home-operations/miroir/issues/559)) ([d3c6cc8](https://github.com/home-operations/miroir/commit/d3c6cc8c952d5ef425e057cdf38d58a62f9ed087))
+* **container:** update image registry.k8s.io/sig-storage/csi-snapshotter (v8.6.0 → v8.7.0) ([#560](https://github.com/home-operations/miroir/issues/560)) ([0d586f6](https://github.com/home-operations/miroir/commit/0d586f68fcb1247b21fbac63f9e4ccbe9a1e9e15))
+* **go:** update module github.com/prometheus/client_golang (v1.24.1 → v1.25.0) ([#561](https://github.com/home-operations/miroir/issues/561)) ([c36e083](https://github.com/home-operations/miroir/commit/c36e0834e2324ca2507ec63c92a1409f64806f3b))
+* **go:** update module golang.org/x/sys (v0.48.0 → v0.49.0) ([#562](https://github.com/home-operations/miroir/issues/562)) ([de34f3d](https://github.com/home-operations/miroir/commit/de34f3d894c3aec97486f93d309b78dd7abff264))
+* **go:** update module google.golang.org/grpc (v1.83.2 → v1.84.0) ([#563](https://github.com/home-operations/miroir/issues/563)) ([212a0d3](https://github.com/home-operations/miroir/commit/212a0d3ffa20e17ba93cf0ebc78c9d70fa954133))
+* support btrfs for ReadWriteOnce volumes ([#553](https://github.com/home-operations/miroir/issues/553)) ([a243744](https://github.com/home-operations/miroir/commit/a243744b30f52734d0991ee72c108e70e45b5063))
+
+
+### Bug Fixes
+
+* **go:** update module github.com/onsi/ginkgo/v2 (v2.33.0 → v2.33.1) ([#550](https://github.com/home-operations/miroir/issues/550)) ([fb67394](https://github.com/home-operations/miroir/commit/fb673949a02179f9432710bf2207526926ba768b))
+* **go:** update module sigs.k8s.io/controller-runtime (v0.25.1 → v0.25.2) ([#555](https://github.com/home-operations/miroir/issues/555)) ([fd5de30](https://github.com/home-operations/miroir/commit/fd5de30b14abecc72ba86c74ba32c61a86c24d1f))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update github-actions ([#556](https://github.com/home-operations/miroir/issues/556)) ([1c6cc3e](https://github.com/home-operations/miroir/commit/1c6cc3e8c22092eb79cd860a0964e77aaf6ff0c8))
+* **mise:** update mise tools ([#551](https://github.com/home-operations/miroir/issues/551)) ([1be5c2c](https://github.com/home-operations/miroir/commit/1be5c2c6cc1558b996ca9ebf68c5b22722be068d))
+* **mise:** update mise tools ([#552](https://github.com/home-operations/miroir/issues/552)) ([2c7cdde](https://github.com/home-operations/miroir/commit/2c7cdde446f9b8892d73719997c793fd27b0b261))
+* **mise:** update tool go (1.27.2 → 1.27.3) ([#554](https://github.com/home-operations/miroir/issues/554)) ([d291b66](https://github.com/home-operations/miroir/commit/d291b666911e8c96edba7fb60dc8db051d0084f9))
+
 ## [0.12.6](https://github.com/home-operations/miroir/compare/0.12.5...0.12.6) (2026-10-12)
 
 
