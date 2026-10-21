@@ -130,7 +130,7 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, 
 	pid := cmd.Process.Pid
 	r.Wedge.record(pid, line)
 	go func() {
-		<-done
+		<-done //nolint:errcheck // only the wedged child's exit matters, not its status
 		r.Wedge.retire(pid)
 	}()
 	// out is not read here: the copy goroutine still owns it until Wait

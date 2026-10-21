@@ -208,10 +208,10 @@ func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Confi
 			// tears down; DRBD auto-demotes on the last close.
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 			select {
-			case <-done:
+			case <-done: //nolint:errcheck // a deliberate stop; the exit status is moot
 			case <-time.After(15 * time.Second):
 				_ = cmd.Process.Kill()
-				<-done
+				<-done //nolint:errcheck // reaping the killed process
 			}
 			return nil
 		case err := <-done:
@@ -221,7 +221,7 @@ func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Confi
 			// would kill the pod as probe-dead anyway, so exit deliberately
 			// with the real reason in the log.
 			_ = cmd.Process.Kill()
-			<-done
+			<-done //nolint:errcheck // reaping the killed process
 			return err
 		case <-ticker.C:
 			need, err := resizer.NeedResize(dev, mountPath)
