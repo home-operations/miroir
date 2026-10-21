@@ -96,11 +96,11 @@ var _ = Describe("btrfs volume lifecycle", Ordered, func() {
 	})
 })
 
-// The replicated freeze barrier finds the mounted filesystem through
-// mountinfo, where btrfs reports an anonymous st_dev instead of the DRBD
-// device's. Writes left in the page cache reach the snapshot only through
-// that freeze: the cut lands well inside the kernel's 30s dirty-expiry
-// window, so a barrier that misses the mount loses them.
+// A replicated btrfs snapshot must capture writes still in the page
+// cache: the cut lands well inside the kernel's 30s dirty-expiry window,
+// so only the barrier's freeze and DRBD suspend-io writeback get them to
+// the legs. The restore then mounts the copy, whose filesystem UUID
+// matches its source's, wherever the scheduler puts the reader.
 var _ = Describe("replicated btrfs snapshot barrier", Ordered, func() {
 	const (
 		ns    = "miroir-e2e-btrfs-rep"
@@ -125,7 +125,7 @@ var _ = Describe("replicated btrfs snapshot barrier", Ordered, func() {
 		_ = k8s.Delete(ctx, &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: class}})
 	})
 
-	It("snapshots unsynced writes through the filesystem freeze", func() {
+	It("captures page-cache writes in a replicated snapshot", func() {
 		Expect(k8s.Create(ctx, pvc(ns, "rep-data", class, "1Gi", nil))).To(Succeed())
 		Expect(k8s.Create(ctx, pod(ns, "rep-writer", "rep-data"))).To(Succeed())
 		eventuallyPodReady(ctx, ns, "rep-writer")
@@ -141,7 +141,7 @@ var _ = Describe("replicated btrfs snapshot barrier", Ordered, func() {
 		Expect(k8s.Create(ctx, pod(ns, "rep-reader", "rep-restored"))).To(Succeed())
 		eventuallyPodReady(ctx, ns, "rep-reader")
 		Expect(sha(ns, "rep-reader", "/data/unsynced")).To(Equal(want),
-			"page-cache writes missed the snapshot: the barrier did not freeze the btrfs mount")
+			"page-cache writes missed the replicated snapshot")
 	})
 })
 
