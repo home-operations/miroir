@@ -178,7 +178,7 @@ sidecars:
       limits:
         memory: 128Mi
   resizer:
-    image: registry.k8s.io/sig-storage/csi-resizer:v2.2.1
+    image: registry.k8s.io/sig-storage/csi-resizer:v2.3.0
     # Online grow can block on a rebooting node; keep >= provisionTimeout.
     timeout: 120s
     # -- Resizer sidecar resources.
