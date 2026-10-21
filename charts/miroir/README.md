@@ -160,7 +160,7 @@ Kubernetes: `>=1.31.0-0`
 | sidecars.resizer.image | string | `"registry.k8s.io/sig-storage/csi-resizer:v2.3.0"` |  |
 | sidecars.resizer.resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Resizer sidecar resources. |
 | sidecars.resizer.timeout | string | `"120s"` |  |
-| sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.6.0"` |  |
+| sidecars.snapshotter.image | string | `"registry.k8s.io/sig-storage/csi-snapshotter:v8.7.0"` |  |
 | sidecars.snapshotter.resources | object | `{"limits":{"memory":"128Mi"},"requests":{"cpu":"10m","memory":"32Mi"}}` | Snapshotter sidecar resources. |
 | sidecars.snapshotter.timeout | string | `"120s"` |  |
 | storageCapacity.enabled | bool | `false` |  |
