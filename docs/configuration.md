@@ -46,7 +46,7 @@ values are strings; quote the numbers and booleans):
 | `miroir.home-operations.com/quorum`                  | `freeze`           | Replicated only: `freeze` never diverges but halts writes without a peer majority; `last-man-standing` keeps the survivor writable at the risk of split-brain. See [Replication and quorum](replication.md).                                                                                        |
 | `miroir.home-operations.com/allowRemoteVolumeAccess` | `"true"`           | Replicated only: pods on nodes without a replica consume the volume through an ephemeral diskless DRBD leg at replication-network speed. `"false"` pins pods to replica nodes for local reads. See [Remote consumers](remote-consumers.md).                                                         |
 | `miroir.home-operations.com/bitmapGranularity`       | absent (DRBD 4096) | Replicated only: DRBD bitmap block size in bytes, a power of two 4096–1048576. Coarser cuts bitmap RAM proportionally but resyncs more per dirty bit; worth considering for classes holding large volumes. Fixed when a replica's metadata is created: changing the class affects new volumes only. |
-| `csi.storage.k8s.io/fstype`                          | `ext4`             | `ext4` or `xfs`.                                                                                                                                                                                                                                                                                    |
+| `csi.storage.k8s.io/fstype`                          | `ext4`             | `ext4`, `xfs`, or `btrfs` ([not for RWX](#btrfs-volumes)).                                                                                                                                                                                                                                          |
 
 The standard StorageClass fields behave as usual, with two worth
 writing explicitly, because the Kubernetes defaults are rarely what you
@@ -73,6 +73,40 @@ VolumeSnapshotClass, but the feature is off by default: it needs
 group snapshot CRDs and feature gate;
 [Quickstart → Group snapshots](quickstart.md#group-snapshots) lists
 all three switches.
+
+## btrfs volumes
+
+`csi.storage.k8s.io/fstype: btrfs` formats volumes with btrfs, which
+gives any backend transparent compression without needing ZFS.
+Compression is a btrfs mount option, so set it in the class's
+`mountOptions`:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: miroir-btrfs
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+mountOptions:
+  - compress=zstd
+parameters:
+  csi.storage.k8s.io/fstype: btrfs
+```
+
+- Nodes need the `btrfs` kernel module. On Talos it comes from the
+  `siderolabs/btrfs` system extension; see
+  [Requirements](requirements.md#node-setup-by-os).
+- Request at least `128Mi`: `mkfs.btrfs` refuses much smaller devices.
+- A snapshot restore or PVC clone is a block-level copy that carries
+  its source's filesystem UUID. Mounting it on a node where the source
+  is mounted needs kernel 6.7 or newer, which gives the copy a
+  temporary UUID; older kernels refuse to mount the second filesystem.
+- btrfs works for ReadWriteOnce volumes, replicated or not.
+  ReadWriteMany volumes are served by the [NFS gateway](rwx.md), which
+  formats `ext4` or `xfs` only and rejects a btrfs class at
+  provisioning.
 
 ## ZFS zvol settings
 

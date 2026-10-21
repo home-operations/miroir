@@ -1,7 +1,8 @@
 # Image Factory schematic for the QEMU e2e cluster. The siderolabs/drbd extension
 # ships the DRBD 9 kernel module the agent requires; the in-tree drbd.ko is the 8.4
 # API and is not built anyway. siderolabs/zfs ships the ZFS module for the zfs
-# backend leg. The ephemeral profile's kernel args (talos.dashboard.disabled,
+# backend leg, and siderolabs/btrfs the btrfs module the stock image leaves out,
+# for the btrfs specs. The ephemeral profile's kernel args (talos.dashboard.disabled,
 # talos.auditd.disabled, mitigations=off) are merged into this schematic by the
 # action, so they are not repeated here.
 customization:
@@ -9,3 +10,4 @@ customization:
     officialExtensions:
       - siderolabs/drbd
       - siderolabs/zfs
+      - siderolabs/btrfs

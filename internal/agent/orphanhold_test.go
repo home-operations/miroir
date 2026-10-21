@@ -54,6 +54,11 @@ func TestMountinfoListsDevice(t *testing.T) {
 	if !mountinfoListsDevice(fsMount, 1422) {
 		t.Fatal("a filesystem mount backed by the device must match")
 	}
+	// btrfs reports an anonymous st_dev; only its mount source names the device.
+	btrfsMount := []byte("824 25 0:67 / /var/lib/kubelet/plugins/kubernetes.io/csi/x/globalmount rw shared:1 - btrfs /dev/drbd1422 rw,subvolid=5,subvol=/\n")
+	if !mountinfoListsDevice(btrfsMount, 1422) {
+		t.Fatal("a btrfs mount backed by the device must match")
+	}
 	// A raw-block publish is a devtmpfs bind whose root is the device node.
 	bind := []byte("910 25 0:6 /drbd1422 /var/lib/kubelet/pods/u/volumeDevices/x rw - devtmpfs devtmpfs rw\n")
 	if !mountinfoListsDevice(bind, 1422) {

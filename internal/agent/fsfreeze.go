@@ -53,8 +53,10 @@ const freezeTimeout = 30 * time.Second
 //
 // The device is matched against live mounts by device number, so any
 // alias path (/dev/drbd1000, /dev/mapper/…, /dev/zvol/…) finds its
-// mount. A device mounted more than once (staging plus pod binds)
-// shares one superblock; freezing any mountpoint freezes them all.
+// mount; btrfs mounts carry an anonymous st_dev and are matched by
+// their mount source's number instead. A device mounted more than once
+// (staging plus pod binds) shares one superblock; freezing any
+// mountpoint freezes them all.
 type Freezer struct {
 	// mountinfo, devNumber and ioctl are the syscall surface, injectable
 	// in tests.
@@ -135,9 +137,10 @@ func (f *Freezer) Thaw(device string) (string, error) {
 // tear down a frozen filesystem. The unmount must run after it: once the
 // last mountpoint is gone, FITHAW has nothing left to open while the
 // frozen device refuses every new mount — the catch-22 of issue #311.
-// Only block-device mounts (mountinfo major != 0) are touched: opening a
-// dead hard-NFS mountpoint for the ioctl would hang exactly where the
-// unstage path's forced unmount cannot.
+// Only block-device mounts (mountinfo major != 0, or btrfs, whose st_dev
+// is anonymous) are touched: opening a dead hard-NFS mountpoint for the
+// ioctl would hang exactly where the unstage path's forced unmount
+// cannot.
 func (f *Freezer) ThawMountpoint(target string) error {
 	data, err := f.mountinfo()
 	if err != nil {
@@ -149,7 +152,9 @@ func (f *Freezer) ThawMountpoint(target string) error {
 			continue
 		}
 		if maj, _, ok := strings.Cut(fields[2], ":"); !ok || maj == "0" {
-			return nil
+			if fstype, _ := mountFS(fields); fstype != "btrfs" {
+				return nil
+			}
 		}
 		if err := f.ioctl(target, fiThaw); err != nil && !errors.Is(err, unix.EINVAL) {
 			return fmt.Errorf("thaw %s: %w", target, err)
@@ -163,7 +168,7 @@ func (f *Freezer) ThawMountpoint(target string) error {
 // device, matching by device number so alias paths resolve. Filesystems
 // not backed by a block device (devtmpfs bind mounts of the device node
 // included) never match: their mountinfo st_dev is not the device's
-// rdev.
+// rdev, and their mount source is not a device node.
 func (f *Freezer) mountpointOf(device string) (string, error) {
 	rdev, isDev, err := f.devNumber(device)
 	if err != nil || !isDev {
@@ -184,8 +189,38 @@ func (f *Freezer) mountpointOf(device string) (string, error) {
 		if fields[2] == want {
 			return fields[4], nil
 		}
+		if strings.HasPrefix(fields[2], "0:") {
+			if src, ok := f.sourceDev(fields); ok && src == rdev {
+				return fields[4], nil
+			}
+		}
 	}
 	return "", nil
+}
+
+// sourceDev returns the device number of a mountinfo row's mount source
+// when it is a block device node. btrfs reports an anonymous st_dev (0:N)
+// in field 3, so its source is the only link back to the device. Sources
+// outside /dev (NFS's host:/export, pseudo-filesystems) are never stat'ed.
+func (f *Freezer) sourceDev(fields []string) (uint64, bool) {
+	_, src := mountFS(fields)
+	if !strings.HasPrefix(src, "/dev/") {
+		return 0, false
+	}
+	rdev, isDev, err := f.devNumber(src)
+	return rdev, err == nil && isDev
+}
+
+// mountFS returns a mountinfo row's filesystem type and mount source: the
+// two fields after the "-" that ends the variable-length optional fields,
+// or "" for a malformed row.
+func mountFS(fields []string) (fstype, source string) {
+	for i := 6; i+2 < len(fields); i++ {
+		if fields[i] == "-" {
+			return fields[i+1], fields[i+2]
+		}
+	}
+	return "", ""
 }
 
 // freezeMounted freezes the volume's locally mounted filesystem (a
