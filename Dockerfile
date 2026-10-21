@@ -54,6 +54,7 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
     zfsutils-linux \
     e2fsprogs \
     xfsprogs \
+    btrfs-progs \
     # nfs-common: mount.nfs for the CSI node service to mount an RWX
     # volume's NFS export on any consumer node (the server side is the
     # userspace gateway image below, so no nfs-kernel-server here).

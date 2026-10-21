@@ -4,7 +4,8 @@
 - A `kubelet` directory the agent can `hostPath`-mount (default
   `/var/lib/kubelet`; override `agent.kubeletDir` in Helm values).
 - Kernel modules on each storage node (per-OS notes below):
-  `dm_thin_pool` (lvmthin), ZFS (zfs), `loop` plus a reflink-capable
+  `dm_thin_pool` (lvmthin), ZFS (zfs), `btrfs` (btrfs-formatted
+  volumes), `loop` plus a reflink-capable
   filesystem for `baseDir` (loopfile; reflinks are copy-on-write
   file clones: XFS with `reflink=1` or btrfs), and, for replication, the
   DRBD9 `drbd` and `drbd_transport_tcp` modules, **version ≥ 9.3.1**
@@ -38,17 +39,20 @@ Talos is the primary target. For replication use **≥ 1.13.0** (its
 `siderolabs/drbd` extension ships the DRBD 9.3.1 module the agent
 requires). The stock kernel ships `dm_thin_pool`
 and `loop` (the agent loads them on demand), and `/var` is XFS with
-`reflink=1`, so `lvmthin` and `loopfile` work out of the box. DRBD
-and ZFS modules come from [Image Factory][factory] system extensions;
-build the install image with:
+`reflink=1`, so `lvmthin` and `loopfile` work out of the box. DRBD,
+ZFS, and btrfs modules come from [Image Factory][factory] system
+extensions; build the install image with:
 
 - `siderolabs/drbd` for replication
 - `siderolabs/zfs` for the zfs backend
+- `siderolabs/btrfs` for btrfs-formatted volumes (the stock image
+  leaves the module out)
 
 Load DRBD with its usermode helper disabled: the kernel side
 otherwise calls out to `/sbin/drbdadm` on the host, which does not
-exist on Talos. Graceful node shutdown is on by default; size the
-critical-pod window to cover the agent's
+exist on Talos. Nothing autoloads the btrfs module either, so list it
+too if you use btrfs-formatted volumes. Graceful node shutdown is on
+by default; size the critical-pod window to cover the agent's
 `terminationGracePeriodSeconds` (default 60s):
 
 ```yaml
@@ -59,6 +63,7 @@ machine:
         parameters:
           - usermode_helper=disabled
       - name: drbd_transport_tcp
+      - name: btrfs
   kubelet:
     extraConfig:
       shutdownGracePeriod: 120s
@@ -71,8 +76,9 @@ machine:
 
 /// tab | Debian/Ubuntu
 
-Stock kernels ship `dm_thin_pool` and `loop`, so `lvmthin` and
-`loopfile` need nothing extra. For the rest:
+Stock kernels ship `dm_thin_pool`, `loop`, and `btrfs`, so `lvmthin`,
+`loopfile`, and btrfs-formatted volumes need nothing extra. For the
+rest:
 
 - **DRBD9**: the in-tree `drbd.ko` is the 8.4 API and does **not**
   work with miroir's DRBD9 configuration. Install `drbd-dkms` and
