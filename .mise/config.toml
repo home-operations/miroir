@@ -1,6 +1,6 @@
 [tools]
 actionlint = "1.7.12"
-go = "1.27.2"
+go = "1.27.3"
 "go:golang.org/x/vuln/cmd/govulncheck" = "v1.8.0"
 # Built from source so it type-checks with this repo's Go: the prebuilt
 # kube-controller-tools binary (built with Go 1.26) cannot parse the generic
