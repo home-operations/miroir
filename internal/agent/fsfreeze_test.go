@@ -266,6 +266,64 @@ func TestThawMountpointSurfacesRealErrors(t *testing.T) {
 	}
 }
 
+// btrfsMountinfo mirrors a btrfs staging mount on the drbd device: btrfs
+// reports an anonymous st_dev (0:67) rather than 147:0, so only the mount
+// source names the device. The NFS consumer mount shares the 0 major.
+const btrfsMountinfo = `36 21 0:67 / /var/lib/kubelet/plugins/kubernetes.io/csi/miroir/abc/globalmount rw,relatime shared:1 - btrfs /dev/drbd1000 rw,compress=zstd:3,space_cache=v2,subvolid=5,subvol=/
+37 21 0:67 / /var/lib/kubelet/pods/x/volumes/kubernetes.io~csi/pvc-1/mount rw,relatime - btrfs /dev/drbd1000 rw,compress=zstd:3,space_cache=v2,subvolid=5,subvol=/
+41 21 0:70 / /var/lib/kubelet/plugins/kubernetes.io/csi/miroir/nfs/globalmount rw,relatime - nfs4 10.0.0.9:/export rw
+`
+
+func btrfsFreezer(rec *ioctlRecorder) *Freezer {
+	f := testFreezer(rec)
+	f.mountinfo = func() ([]byte, error) { return []byte(btrfsMountinfo), nil }
+	return f
+}
+
+func TestFreezeFindsBtrfsMountBySource(t *testing.T) {
+	rec := &ioctlRecorder{}
+	mp, err := btrfsFreezer(rec).Freeze(t.Context(), devDrbd1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(mp, "/abc/globalmount") {
+		t.Fatalf("must freeze the btrfs staging mount, got %q", mp)
+	}
+	if calls := rec.recorded(); len(calls) != 1 || calls[0] != "freeze "+mp {
+		t.Fatalf("unexpected ioctls: %v", calls)
+	}
+}
+
+func TestThawMountpointThawsBtrfsStagingMount(t *testing.T) {
+	rec := &ioctlRecorder{}
+	f := btrfsFreezer(rec)
+	// The thaw must not hinge on resolving the source: a leaked freeze
+	// stays leaked if an unresolvable source reads as non-block.
+	f.devNumber = func(string) (uint64, bool, error) { return 0, false, nil }
+	target := "/var/lib/kubelet/plugins/kubernetes.io/csi/miroir/abc/globalmount"
+	if err := f.ThawMountpoint(target); err != nil {
+		t.Fatal(err)
+	}
+	if calls := rec.recorded(); len(calls) != 1 || calls[0] != "thaw "+target {
+		t.Fatalf("a btrfs mount's 0 major must not read as non-block: %v", calls)
+	}
+}
+
+func TestThawMountpointSkipsNFSMount(t *testing.T) {
+	rec := &ioctlRecorder{}
+	f := btrfsFreezer(rec)
+	f.devNumber = func(path string) (uint64, bool, error) {
+		t.Errorf("an NFS source must never be stat'ed, got %q", path)
+		return 0, false, nil
+	}
+	if err := f.ThawMountpoint("/var/lib/kubelet/plugins/kubernetes.io/csi/miroir/nfs/globalmount"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.recorded()) != 0 {
+		t.Fatalf("no ioctl may run against an NFS mount: %v", rec.recorded())
+	}
+}
+
 func TestRawBlockBindNeverMatches(t *testing.T) {
 	rec := &ioctlRecorder{}
 	f := testFreezer(rec)

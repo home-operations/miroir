@@ -110,17 +110,20 @@ func deviceMountedAnywhere(procDir string, minor int32) (bool, error) {
 
 // mountinfoListsDevice reports whether one mountinfo table references
 // /dev/drbd<minor>: a filesystem mount carries the device's major:minor
-// in field 3 (the mounted fs's st_dev), and a raw-block publish is a
-// devtmpfs bind whose root (field 4) is the device node's path.
+// in field 3 (the mounted fs's st_dev) or, for btrfs, whose st_dev is
+// anonymous, names the device as its mount source; a raw-block publish
+// is a devtmpfs bind whose root (field 4) is the device node's path.
 func mountinfoListsDevice(data []byte, minor int32) bool {
 	fsDev := fmt.Sprintf("%d:%d", drbdMajor, minor)
 	bindRoot := fmt.Sprintf("/drbd%d", minor)
+	source := fmt.Sprintf("/dev/drbd%d", minor)
 	for line := range strings.Lines(string(data)) {
 		f := strings.Fields(line)
 		if len(f) < 5 {
 			continue
 		}
-		if f[2] == fsDev || f[3] == bindRoot {
+		_, src := mountFS(f)
+		if f[2] == fsDev || f[3] == bindRoot || src == source {
 			return true
 		}
 	}

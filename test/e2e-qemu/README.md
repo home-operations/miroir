@@ -6,8 +6,8 @@ End-to-end tests for the miroir CSI driver against a local Talos cluster, booted
 ## Overview
 
 Almost every CI leg boots the same `cluster.yaml` -- a controller node and two storage
-workers, with the DRBD and ZFS kernel modules baked in by an Image Factory schematic
--- and drives the tests against it. The action boots the shape the document
+workers, with the DRBD, ZFS, and btrfs kernel modules baked in by an Image Factory
+schematic -- and drives the tests against it. The action boots the shape the document
 describes, exports a kubeconfig and talosconfig, and destroys the cluster in its post
 step; `test.sh` then installs the driver from a packaged Helm chart and runs the
 tests.
@@ -54,7 +54,7 @@ point: the DRBD path needs the DRBD 9 module, which only a real Talos node has.
 ```text
 cluster.yaml              the cluster shape every leg but autodiskful boots
 cluster-spare.yaml        the same plus a third worker, for the autodiskful leg
-schematic.yaml            the drbd + zfs system extensions (referenced by both)
+schematic.yaml            the drbd + zfs + btrfs system extensions (referenced by both)
 patches/modules.yaml      shared: the DRBD / dm-thin / zfs kernel modules
 patches/registry.yaml     shared: where the nodes pull the miroir images
 classes.yaml              the StorageClasses / snapshot classes under test
