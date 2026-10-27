@@ -3720,13 +3720,20 @@ func TestReconcileStalledTargetStabilityGate(t *testing.T) {
 			reconcile(t, r, volPvc1)
 			if tc.cycled {
 				backdateStuck(t, r)
-			}
-			reconcile(t, r, volPvc1)
-			if tc.cycled {
+				reconcile(t, r, volPvc1)
 				fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
 				return
 			}
+			reconcile(t, r, volPvc1)
 			fe.notCalledWith(t, "drbdsetup disconnect")
+			// Gated, not merely inside the window: the confirmation clock
+			// never arms, so no later pass can cycle either.
+			r.recoveryMu.Lock()
+			_, armed := r.stuckSince[volPvc1]
+			r.recoveryMu.Unlock()
+			if armed {
+				t.Fatal("a gated stalled target must not arm the confirmation clock")
+			}
 			r.realizedMu.Lock()
 			_, parked := r.realized[volPvc1]
 			r.realizedMu.Unlock()
