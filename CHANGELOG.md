@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.9](https://github.com/home-operations/miroir/compare/0.12.8...0.12.9) (2026-10-27)
+
+
+### Bug Fixes
+
+* **drbd:** serialize restart and teardown with the reconciler's adjust ([#583](https://github.com/home-operations/miroir/issues/583)) ([0a43847](https://github.com/home-operations/miroir/commit/0a43847f7e4fd644f651793d78e74eb3c449eff8))
+
+
+### Documentation
+
+* build the docs site with Astro Starlight instead of MkDocs ([#580](https://github.com/home-operations/miroir/issues/580)) ([45b2bb2](https://github.com/home-operations/miroir/commit/45b2bb2db7293af1193eb74ba571a2397a3530ad))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action jdx/mise-action (v5.2.2 → v5.2.3) ([#579](https://github.com/home-operations/miroir/issues/579)) ([6c90ffd](https://github.com/home-operations/miroir/commit/6c90ffde5cff94b56767e58c84adc0143416495a))
+
 ## [0.12.8](https://github.com/home-operations/miroir/compare/0.12.7...0.12.8) (2026-10-27)
 
 
