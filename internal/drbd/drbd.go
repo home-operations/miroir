@@ -1085,6 +1085,40 @@ func (d *Driver) CyclePeerConnection(ctx context.Context, name string, peerID in
 	return nil
 }
 
+// CycleStalledTargetConnection is CyclePeerConnection for an Inconsistent
+// Secondary leg (Status.UnsettledResyncPeers), whose graceful disconnect
+// the kernel may refuse: DRBD will not drop a device's last access to
+// UpToDate data while a read-only opener holds it ("Need access to
+// UpToDate data"), and the hang this heals left exactly such an opener
+// behind in issue #576 (open:yes, blocked:upper). That opener is never a
+// staged consumer — miroir refuses to stage an Inconsistent leg, and a
+// writable open would have promoted — so a refused graceful disconnect
+// is retried --force, trading the reader's remote data path (its reads
+// fail or stall until the reconnect) for the volume's redundancy. The
+// leg is re-read first: the same refusal meets a leg promoted since the
+// candidate was chosen, whose consumer must keep its path, and forcing
+// skips every kernel-side check. No data moves until the reconnect
+// handshake decides.
+func (d *Driver) CycleStalledTargetConnection(ctx context.Context, name string, peerID int32) error {
+	id := strconv.Itoa(int(peerID))
+	if _, err := d.Exec(ctx, "drbdsetup", "disconnect", name, id); err != nil {
+		st, serr := d.Status(ctx, name)
+		if serr != nil {
+			return fmt.Errorf("disconnect %s peer %s: %w (re-read failed: %w)", name, id, err, serr)
+		}
+		if st.Primary || st.DiskState != DiskInconsistent {
+			return fmt.Errorf("disconnect %s peer %s: %w (leg no longer an Inconsistent Secondary; not forcing)", name, id, err)
+		}
+		if _, ferr := d.Exec(ctx, "drbdsetup", "disconnect", name, id, "--force"); ferr != nil {
+			return fmt.Errorf("disconnect %s peer %s: %w; forced: %w", name, id, err, ferr)
+		}
+	}
+	if _, err := d.Exec(ctx, "drbdsetup", "connect", name, id); err != nil {
+		return fmt.Errorf("connect %s peer %s: %w", name, id, err)
+	}
+	return nil
+}
+
 // WipeMetadata destroys the DRBD metadata on a backing device so it cannot
 // carry a stale generation identifier into a reuse. The resource must be
 // down first — drbdmeta refuses an attached device. Callers treat it as
@@ -1390,6 +1424,7 @@ const (
 	replVerifyS     = "VerifyS"
 	replVerifyT     = "VerifyT"
 	replWFBitMapS   = "WFBitMapS"
+	replWFBitMapT   = "WFBitMapT"
 )
 
 // Status reports this node's view of one resource.
@@ -1466,6 +1501,23 @@ type Status struct {
 	// generation UUIDs, not roles, and only dual-primary leaves no
 	// settled source. Nil when none.
 	StaleBitmapPeers map[int32]bool
+	// UnsettledResyncPeers holds the DRBD node ids of UpToDate peers this
+	// Inconsistent Secondary leg sits connected to with nothing to sync
+	// and no resync starting: replication WFBitMapT or Established, zero
+	// out-of-sync bits, no resync in flight on any leg. DRBD 9.3.4 can
+	// end a resync on different paths at its two ends when a diskless
+	// Primary is writing (issue #576, LINBIT/drbd#148): the source
+	// finishes and settles Established while this target never leaves
+	// WFBitMapT, or settles Established with its disk still
+	// Inconsistent, and nothing re-examines the pair while the
+	// connection stays up. Only this leg can act: a graceful disconnect
+	// is a cluster-wide transaction, and this leg vetoes the source's
+	// while a read-only opener pins it — the state the hang leaves it
+	// in. The same shape is also the ordinary end of a resync run while
+	// this leg could not see the Primary (DRBD keeps an unstable target
+	// Inconsistent and re-runs the handshake once the Primary is back in
+	// view), so the agent gates on that before acting. Nil when none.
+	UnsettledResyncPeers map[int32]bool
 }
 
 // drbdsetup status --json shapes (the fields miroir reads).
@@ -1484,13 +1536,45 @@ type jsonStatus struct {
 		// replication-state and percent-in-sync are per peer-device,
 		// nested under the connection — NOT connection-level fields
 		// (verified against drbd-utils user/v9/drbdsetup.c).
-		PeerDevices []struct {
-			ReplicationState string  `json:"replication-state"`
-			PeerDiskState    string  `json:"peer-disk-state"`
-			PercentInSync    float64 `json:"percent-in-sync"`
-			OutOfSyncKiB     int64   `json:"out-of-sync"`
-		} `json:"peer_devices"`
+		PeerDevices []jsonPeerDevice `json:"peer_devices"`
 	} `json:"connections"`
+}
+
+type jsonPeerDevice struct {
+	ReplicationState string  `json:"replication-state"`
+	PeerDiskState    string  `json:"peer-disk-state"`
+	PercentInSync    float64 `json:"percent-in-sync"`
+	OutOfSyncKiB     int64   `json:"out-of-sync"`
+}
+
+// unsettledResyncPeers computes Status.UnsettledResyncPeers. A resync in
+// flight on any leg disqualifies the whole entry: a third diskful peer
+// serving this one drains the bits toward the others through
+// peers-in-sync, so an Established UpToDate peer with zero bits is then
+// that resync's tail, and its end flips this disk UpToDate by itself.
+func (s jsonStatus) unsettledResyncPeers() map[int32]bool {
+	if len(s.Devices) == 0 || s.Devices[0].DiskState != DiskInconsistent || s.Role == rolePrimary {
+		return nil
+	}
+	var peers map[int32]bool
+	for _, c := range s.Connections {
+		for _, pd := range c.PeerDevices {
+			switch pd.ReplicationState {
+			case replEstablished, replWFBitMapT:
+			case replOff, "":
+				continue
+			default:
+				return nil
+			}
+			if c.ConnectionState == connConnected && pd.PeerDiskState == DiskUpToDate && pd.OutOfSyncKiB == 0 {
+				if peers == nil {
+					peers = map[int32]bool{}
+				}
+				peers[c.PeerNodeID] = true
+			}
+		}
+	}
+	return peers
 }
 
 // wedgeSignature reports the kernel view of a teardown that cannot make
@@ -1611,6 +1695,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 			s.SplitBrain = true
 		}
 	}
+	s.UnsettledResyncPeers = res.unsettledResyncPeers()
 	return s, nil
 }
 

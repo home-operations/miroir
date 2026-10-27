@@ -20,7 +20,20 @@
   or full. `kubectl describe pvc` shows the controller's reason.
 - **Replicated volume stuck in `Degraded`**: one leg isn't
   `UpToDate`. `kubectl describe miroirvolume <name>` shows per-node
-  status; usually a transient DRBD sync.
+  status; usually a transient DRBD sync. If it outlasts the sync, with
+  the `Inconsistent` leg parked `WFBitMapT` (or `Established`) toward
+  an `UpToDate` peer and zero `out-of-sync` on both sides, DRBD 9.3.4
+  ended the resync on the source without the target noticing
+  ([LINBIT/drbd#148](https://github.com/LINBIT/drbd/issues/148); seen
+  after a rolling node upgrade with a diskless Primary writing in
+  [#576](https://github.com/home-operations/miroir/issues/576)). The
+  `Inconsistent` leg's agent cycles the connection within a couple of
+  poll cycles and emits `StuckResyncRecovered`, forcing the disconnect
+  if a read-only opener pins the device (the kernel refuses a graceful
+  one with `Need access to UpToDate data`); the re-run handshake starts
+  the resync. The agent holds off while a Primary exists that this leg
+  cannot see: that is an ordinary unstable resync, which DRBD re-runs
+  itself once the Primary is back in view.
 - **Replicated volume stuck `Connecting`, no split-brain**: a
   host-network tenant (commonly the Ceph mgr dashboard) occupies the
   DRBD replication port; `dmesg` shows
