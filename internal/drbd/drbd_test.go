@@ -1866,6 +1866,74 @@ func TestStatusStuckResyncPeers(t *testing.T) {
 	}
 }
 
+// UnsettledResyncPeers flags, on an Inconsistent Secondary leg, the
+// UpToDate peers it sits connected to with nothing to sync and no resync
+// starting (issue #576): replication WFBitMapT or Established with zero
+// out-of-sync bits. Bits still pending, an Inconsistent peer, and a
+// disconnected peer stay unflagged.
+func TestStatusUnsettledResyncPeers(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Inconsistent","quorum":true}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"WFBitMapT","peer-disk-state":"UpToDate","out-of-sync":0}]},
+				{"peer-node-id":2,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]},
+				{"peer-node-id":3,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"WFBitMapT","peer-disk-state":"UpToDate","out-of-sync":4096}]},
+				{"peer-node-id":4,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"Inconsistent","out-of-sync":0}]},
+				{"peer-node-id":5,"connection-state":"Connecting",
+					"peer_devices":[{"replication-state":"Off","peer-disk-state":"DUnknown","out-of-sync":0}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.UnsettledResyncPeers) != 2 || !s.UnsettledResyncPeers[1] || !s.UnsettledResyncPeers[2] {
+		t.Fatalf("want peers 1 and 2 flagged unsettled, got %v", s.UnsettledResyncPeers)
+	}
+	if s.StuckResyncPeers != nil || s.StaleBitmapPeers != nil {
+		t.Fatalf("an Inconsistent leg holds no bitmap signature, got stuck %v stale %v", s.StuckResyncPeers, s.StaleBitmapPeers)
+	}
+}
+
+// The unsettled signature is void for the whole entry while any leg
+// resyncs (a third diskful peer serving this one), on a Primary (its
+// consumer, not a probe, would see the forced disconnect), and on a leg
+// whose disk is not Inconsistent (nothing left to settle).
+func TestStatusUnsettledResyncPeersExclusions(t *testing.T) {
+	const peer = `{"peer-node-id":1,"connection-state":"Connected",
+		"peer_devices":[{"replication-state":"WFBitMapT","peer-disk-state":"UpToDate","out-of-sync":0}]}`
+	for name, entry := range map[string]string{
+		"resync elsewhere": `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Inconsistent","quorum":true}],
+			"connections":[` + peer + `,
+				{"peer-node-id":2,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"SyncTarget","peer-disk-state":"UpToDate","percent-in-sync":40,"out-of-sync":8192}]}]}]`,
+		"primary": `[{"name":"` + volPvc1 + `","role":"Primary",
+			"devices":[{"disk-state":"Inconsistent","quorum":true}],
+			"connections":[` + peer + `]}]`,
+		"uptodate": `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"UpToDate","quorum":true}],
+			"connections":[` + peer + `]}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: entry}}
+			d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+			s, err := d.Status(t.Context(), volPvc1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.UnsettledResyncPeers != nil {
+				t.Fatalf("want no unsettled peers, got %v", s.UnsettledResyncPeers)
+			}
+		})
+	}
+}
+
 // StaleBitmapPeers flags a one-sided bitmap toward a healthy peer:
 // Connected + Established + peer-disk UpToDate + out-of-sync, whether the
 // peer is the Primary (issue #389) or another Secondary (issue #497). A
@@ -1972,6 +2040,66 @@ func TestCyclePeerConnectionDisconnectFails(t *testing.T) {
 		t.Fatal("want disconnect error")
 	}
 	fe.notCalledWith(t, "drbdsetup connect")
+}
+
+// stalledTargetJSON is an Inconsistent Secondary leg parked WFBitMapT
+// toward its UpToDate peer (issue #576), as drbdsetup status reports it.
+const stalledTargetJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
+	"devices":[{"disk-state":"Inconsistent","quorum":true}],
+	"connections":[{"peer-node-id":1,"connection-state":"Connected",
+		"peer_devices":[{"replication-state":"WFBitMapT","peer-disk-state":"UpToDate","out-of-sync":0}]}]}]`
+
+// The stalled-target cycle forces the disconnect only after the graceful
+// one is refused and the leg re-reads as an Inconsistent Secondary; a leg
+// promoted in between keeps its connection, and a failed force is not
+// followed by a connect.
+func TestCycleStalledTargetConnection(t *testing.T) {
+	const disconnect = "disconnect"
+	refused := errors.New("(-2) Need access to UpToDate data")
+	for name, tc := range map[string]struct {
+		errOnce map[string]error
+		errOn   map[string]error
+		status  string
+		wantErr bool
+		want    []string
+	}{
+		"graceful": {
+			status: stalledTargetJSON,
+			want:   []string{"drbdsetup disconnect " + volPvc1 + " 1", "drbdsetup connect " + volPvc1 + " 1"},
+		},
+		"refused then forced": {
+			errOnce: map[string]error{disconnect: refused},
+			status:  stalledTargetJSON,
+			want: []string{"drbdsetup disconnect " + volPvc1 + " 1", "drbdsetup status --json " + volPvc1,
+				"drbdsetup disconnect " + volPvc1 + " 1 --force", "drbdsetup connect " + volPvc1 + " 1"},
+		},
+		"promoted meanwhile": {
+			errOnce: map[string]error{disconnect: refused},
+			status:  strings.Replace(stalledTargetJSON, `"role":"Secondary"`, `"role":"Primary"`, 1),
+			wantErr: true,
+			want:    []string{"drbdsetup disconnect " + volPvc1 + " 1", "drbdsetup status --json " + volPvc1},
+		},
+		"force fails": {
+			errOn:   map[string]error{disconnect: refused},
+			status:  stalledTargetJSON,
+			wantErr: true,
+			want: []string{"drbdsetup disconnect " + volPvc1 + " 1", "drbdsetup status --json " + volPvc1,
+				"drbdsetup disconnect " + volPvc1 + " 1 --force"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fe := &fakeExec{errOnce: tc.errOnce, errOn: tc.errOn,
+				responses: map[string]string{cmdDrbdsetupStatus: tc.status}}
+			d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+			err := d.CycleStalledTargetConnection(t.Context(), volPvc1, 1)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("wantErr %v, got %v", tc.wantErr, err)
+			}
+			if !slices.Equal(fe.calls, tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, fe.calls)
+			}
+		})
+	}
 }
 
 // A fully in-sync volume reports ResyncPercent 100, and connection-level

@@ -1077,14 +1077,21 @@ type fakeDRBDExec struct {
 	// and needs different answers. Falls back to statusJSON when drained.
 	statusSeq []string
 	responses map[string]string
-	errOn     map[string]error
+	// errOn fails any command line containing the key; a key prefixed
+	// with "=" fails only the exact line, so a retry with an extra flag
+	// can be told apart from the attempt it follows.
+	errOn map[string]error
 }
 
 func (f *fakeDRBDExec) run(_ context.Context, name string, args ...string) (string, error) {
 	line := name + " " + strings.Join(args, " ")
 	f.calls = append(f.calls, line)
 	for key, err := range f.errOn {
-		if strings.Contains(line, key) {
+		if exact, ok := strings.CutPrefix(key, "="); ok {
+			if line == exact {
+				return "", err
+			}
+		} else if strings.Contains(line, key) {
 			return "", err
 		}
 	}
@@ -3531,6 +3538,13 @@ const (
 		"devices":[{"disk-state":"UpToDate","quorum":true}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
 			"peer_devices":[{"replication-state":"Established","peer-disk-state":"Consistent","out-of-sync":5171836}]}]}]`
+	// stalledTargetStatusJSON is the target side of a resync the source
+	// finished alone (issue #576): this leg Inconsistent, parked WFBitMapT
+	// toward a connected UpToDate peer with nothing left to sync.
+	stalledTargetStatusJSON = `[{"name":"pvc-1","role":"Secondary",
+		"devices":[{"disk-state":"Inconsistent","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+			"peer_devices":[{"replication-state":"WFBitMapT","peer-disk-state":"UpToDate","out-of-sync":0}]}]}]`
 	healthyStatusJSON = `[{"name":"pvc-1","role":"Secondary",
 		"devices":[{"disk-state":"UpToDate","quorum":true}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connected",
@@ -3603,6 +3617,131 @@ func TestReconcileStuckResyncCyclesAfterConfirmation(t *testing.T) {
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
 	fe.calledWith(t, "drbdsetup connect pvc-1 1")
+}
+
+// setPeerSlot rewrites node-b's status slot through mutate.
+func setPeerSlot(t *testing.T, r *VolumeReconciler, mutate func(*miroirv1alpha1.ReplicaStatus)) {
+	t.Helper()
+	v := &miroirv1alpha1.MiroirVolume{}
+	if err := r.Get(t.Context(), client.ObjectKey{Name: volPvc1}, v); err != nil {
+		t.Fatal(err)
+	}
+	slot := v.Status.PerNode[nodeB]
+	mutate(&slot)
+	v.Status.PerNode[nodeB] = slot
+	if err := r.Status().Update(t.Context(), v); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stalledTargetSetup is stuckResyncSetup with this leg wearing the
+// stalled-target signature (issue #576) and the peer's slot freshly
+// probed, reporting no Primary.
+func stalledTargetSetup(t *testing.T) (*VolumeReconciler, *fakeDRBDExec) {
+	t.Helper()
+	r, fe := stuckResyncSetup(t)
+	fe.statusJSON = stalledTargetStatusJSON
+	setPeerSlot(t, r, func(s *miroirv1alpha1.ReplicaStatus) { s.LastProbedAt = probeNow() })
+	return r, fe
+}
+
+// The stalled target of a resync the source finished alone (issue #576)
+// cycles the peer connection from its own side once the signature
+// outlives the confirmation window — gracefully when the kernel lets it.
+func TestReconcileStalledTargetCyclesAfterConfirmation(t *testing.T) {
+	r, fe := stalledTargetSetup(t)
+	reconcile(t, r, volPvc1)
+	fe.notCalledWith(t, "drbdsetup disconnect")
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+	fe.notCalledWith(t, "--force")
+	fe.calledWith(t, "drbdsetup connect pvc-1 1")
+}
+
+// A graceful disconnect the kernel refuses (a read-only opener pins the
+// Inconsistent device to its last UpToDate peer) is retried forced.
+func TestReconcileStalledTargetForcesRefusedDisconnect(t *testing.T) {
+	r, fe := stalledTargetSetup(t)
+	fe.errOn = map[string]error{"=drbdsetup disconnect pvc-1 1": errors.New("(-2) Need access to UpToDate data")}
+	reconcile(t, r, volPvc1)
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 1 --force")
+	fe.calledWith(t, "drbdsetup connect pvc-1 1")
+}
+
+// The stability gate: a Primary this leg cannot see — on the diskful
+// peer or on a client leg — makes the same shape the ordinary end of an
+// unstable resync, which the kernel re-runs by itself once the Primary is
+// back in view, and a peer slot too stale to rule a Primary out keeps the
+// case with the kernel too — all uncycled and, since only the peers'
+// status can change that, kept out of the fast path. A Primary this leg
+// does see is the live-writer case of the hang and is cycled.
+func TestReconcileStalledTargetStabilityGate(t *testing.T) {
+	const secondary = "Secondary"
+	for name, tc := range map[string]struct {
+		peerRole string
+		slot     func(*miroirv1alpha1.ReplicaStatus)
+		client   bool
+		cycled   bool
+	}{
+		"unseen primary": {peerRole: secondary, slot: func(s *miroirv1alpha1.ReplicaStatus) { s.PrimarySince = probeNow() }},
+		"stale peer slot": {peerRole: secondary, slot: func(s *miroirv1alpha1.ReplicaStatus) {
+			old := metav1.NewTime(time.Now().Add(-StaleProbeThreshold - time.Minute))
+			s.LastProbedAt = &old
+		}},
+		"unseen client primary": {peerRole: secondary, client: true, slot: func(s *miroirv1alpha1.ReplicaStatus) { s.LastProbedAt = probeNow() }},
+		"seen primary":          {peerRole: "Primary", slot: func(s *miroirv1alpha1.ReplicaStatus) { s.PrimarySince = probeNow() }, cycled: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, fe := stalledTargetSetup(t)
+			fe.statusJSON = strings.Replace(stalledTargetStatusJSON, `"peer-role":"Secondary"`, `"peer-role":"`+tc.peerRole+`"`, 1)
+			setPeerSlot(t, r, tc.slot)
+			if tc.client {
+				// A client leg this target has no connection to, whose
+				// own fresh slot reports it Primary.
+				v := &miroirv1alpha1.MiroirVolume{}
+				if err := r.Get(t.Context(), client.ObjectKey{Name: volPvc1}, v); err != nil {
+					t.Fatal(err)
+				}
+				v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC, NodeID: 2, Address: addrC}}
+				if err := r.Update(t.Context(), v); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Get(t.Context(), client.ObjectKey{Name: volPvc1}, v); err != nil {
+					t.Fatal(err)
+				}
+				v.Status.PerNode[nodeC] = miroirv1alpha1.ReplicaStatus{Diskless: true, PrimarySince: probeNow(), LastProbedAt: probeNow()}
+				if err := r.Status().Update(t.Context(), v); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reconcile(t, r, volPvc1)
+			if tc.cycled {
+				backdateStuck(t, r)
+				reconcile(t, r, volPvc1)
+				fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+				return
+			}
+			reconcile(t, r, volPvc1)
+			fe.notCalledWith(t, "drbdsetup disconnect")
+			// Gated, not merely inside the window: the confirmation clock
+			// never arms, so no later pass can cycle either.
+			r.recoveryMu.Lock()
+			_, armed := r.stuckSince[volPvc1]
+			r.recoveryMu.Unlock()
+			if armed {
+				t.Fatal("a gated stalled target must not arm the confirmation clock")
+			}
+			r.realizedMu.Lock()
+			_, parked := r.realized[volPvc1]
+			r.realizedMu.Unlock()
+			if parked {
+				t.Fatal("a gated stalled target must not park in the fast path")
+			}
+		})
+	}
 }
 
 // Within the confirmation window nothing is cycled, however many passes run

@@ -446,6 +446,7 @@ func statusEqual(a, b drbd.Status) bool {
 		a.OutOfSyncKiB == b.OutOfSyncKiB &&
 		maps.Equal(a.StuckResyncPeers, b.StuckResyncPeers) &&
 		maps.Equal(a.StaleBitmapPeers, b.StaleBitmapPeers) &&
+		maps.Equal(a.UnsettledResyncPeers, b.UnsettledResyncPeers) &&
 		maps.Equal(a.PeerConnected, b.PeerConnected) &&
 		// A peer disk-state flip (DUnknown → Inconsistent at birth) can be
 		// the only change in a pass — without it the winner's fingerprint
@@ -842,8 +843,8 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 	return false
 }
 
-// recoverStuckResync heals the two out-of-sync bitmaps DRBD leaves behind
-// with nothing to drain them:
+// recoverStuckResync heals the resync states DRBD leaves behind with
+// nothing to drain them:
 //
 //   - A resync armed but never started (issue #390): a rapid
 //     promote/demote/promote of a diskless primary mints two current UUIDs
@@ -855,6 +856,15 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 //     pass never runs and the leg parks in WFBitMapS waiting for a bitmap
 //     reply the peer already discarded (issue #397). Both wear
 //     StuckResyncPeers.
+//   - A resync whose two ends disagree on how it ended (issue #576,
+//     LINBIT/drbd#148): with a diskless Primary writing, the source
+//     finishes and settles Established while the target never leaves
+//     WFBitMapT (or settles Established) with its disk Inconsistent and
+//     nothing left to sync. Only the target can act — a graceful
+//     disconnect is a cluster-wide transaction the target vetoes while a
+//     read-only opener pins it, from either side — so it wears
+//     UnsettledResyncPeers, behind unsettledResyncActionable's gate, and
+//     is cycled with a forced fallback.
 //   - Bits stranded by a bitmap clear the kernel refused mid peer-teardown
 //     ("bitmap locked", issue #389), left on a freshly promoted Primary
 //     toward a Secondary after a failover (issue #469), or left between
@@ -863,7 +873,7 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 //     gates — the same kernel shape is a verify finding, which stays
 //     manual).
 //
-// Neither drains in place: the kernel only reconciles a dirty bitmap on a
+// None drains in place: the kernel only reconciles a dirty bitmap on a
 // connection transition (its missed-end-of-resync rescue runs at connect),
 // so the volume sits with degraded redundancy accounting until the
 // connection cycles.
@@ -885,12 +895,12 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
 	peers := st.StuckResyncPeers
 	if r.staleBitmapActionable(vol, st) {
-		if peers == nil {
-			peers = st.StaleBitmapPeers
-		} else {
-			peers = maps.Clone(peers)
-			maps.Copy(peers, st.StaleBitmapPeers)
-		}
+		peers = mergePeers(peers, st.StaleBitmapPeers)
+	}
+	var stalled map[int32]bool
+	if r.unsettledResyncActionable(vol, st) {
+		stalled = st.UnsettledResyncPeers
+		peers = mergePeers(peers, stalled)
 	}
 	// A diskless leg holds no bitmap, so it can never be the stranded
 	// side; whatever it sees is a diskful pair's business to resolve.
@@ -898,7 +908,10 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 		r.recoveryMu.Lock()
 		delete(r.stuckSince, vol.Name)
 		r.recoveryMu.Unlock()
-		return false
+		// A stalled target its gate holds back stays out of the fast
+		// path: the gate reads the other legs' status slots, which no
+		// kernel event re-breaks the fingerprint for.
+		return len(st.UnsettledResyncPeers) > 0
 	}
 	key := stuckPeerKey(peers)
 	r.recoveryMu.Lock()
@@ -920,18 +933,32 @@ func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1
 
 	log := ctrl.LoggerFrom(ctx)
 	for peerID := range peers {
-		log.Info("cycling peer connection to re-run the sync handshake (out-of-sync bitmap, no resync starting)",
+		log.Info("cycling peer connection to re-run the sync handshake (resync never settled, no resync running)",
 			"volume", vol.Name, "peerNodeID", peerID, "outOfSyncKiB", st.OutOfSyncKiB)
-		if err := r.DRBD.CyclePeerConnection(ctx, vol.Name, peerID); err != nil {
+		cycle := r.DRBD.CyclePeerConnection
+		if stalled[peerID] {
+			cycle = r.DRBD.CycleStalledTargetConnection
+		}
+		if err := cycle(ctx, vol.Name, peerID); err != nil {
 			log.Error(err, "stuck-resync connection cycle failed", "volume", vol.Name, "peerNodeID", peerID)
 			continue
 		}
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "StuckResyncRecovered", "CycleConnection",
-				"DRBD carried an out-of-sync bitmap toward peer node %d with no resync running; cycled the connection so the handshake resolves it", peerID)
+				"DRBD left the resync toward peer node %d unsettled with no resync running; cycled the connection so the handshake resolves it", peerID)
 		}
 	}
 	return true
+}
+
+// mergePeers unions two candidate sets without mutating either.
+func mergePeers(a, b map[int32]bool) map[int32]bool {
+	if a == nil {
+		return b
+	}
+	a = maps.Clone(a)
+	maps.Copy(a, b)
+	return a
 }
 
 // stuckMark is one volume's stranded-bitmap confirmation clock: when the
@@ -981,6 +1008,49 @@ func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolum
 		}
 	}
 	return true
+}
+
+// unsettledResyncActionable reports whether the stalled-target candidates
+// in UnsettledResyncPeers are safe to cycle (issue #576). Their kernel
+// shape — this leg Inconsistent, nothing to sync, no resync starting — is
+// also the ordinary end of a resync run while this leg could not see the
+// Primary: DRBD keeps an unstable target Inconsistent and re-runs the
+// handshake by itself once the Primary is back in view, and a cycle in
+// the meantime only repeats the unstable resync. So a Primary this leg
+// does not see keeps the case with the kernel: act only when a connected
+// peer holds the role, or every other placed leg's status slot — client
+// legs included, the usual home of an RWO consumer's Primary — is fresh
+// and reports not holding it. A missing or stale slot (StaleProbeThreshold,
+// the same bar computePhase uses) is an agent that cannot report — a
+// Primary may have come up behind it — and a crashed Primary's lingering
+// PrimarySince holds the case until its agent returns: both err toward
+// leaving the kernel to it.
+func (r *VolumeReconciler) unsettledResyncActionable(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
+	if len(st.UnsettledResyncPeers) == 0 || st.SplitBrain {
+		return false
+	}
+	if st.PeerPrimary {
+		return true
+	}
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node != r.NodeName && rep.Address != "" && !slotRulesOutPrimary(vol, rep.Node) {
+			return false
+		}
+	}
+	for _, cl := range vol.Spec.Clients {
+		if cl.Address != "" && !slotRulesOutPrimary(vol, cl.Node) {
+			return false
+		}
+	}
+	return true
+}
+
+// slotRulesOutPrimary reports whether a leg's status slot is fresh and
+// reports it not holding the Primary role.
+func slotRulesOutPrimary(vol *miroirv1alpha1.MiroirVolume, node string) bool {
+	slot, ok := vol.Status.PerNode[node]
+	return ok && slot.PrimarySince == nil && slot.LastProbedAt != nil &&
+		time.Since(slot.LastProbedAt.Time) <= StaleProbeThreshold
 }
 
 // mintBirthUUID creates a fresh volume's birth generation and returns the
