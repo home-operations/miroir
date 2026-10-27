@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.12.8](https://github.com/home-operations/miroir/compare/0.12.7...0.12.8) (2026-10-27)
+
+
+### Bug Fixes
+
+* **agent:** recover the stalled target of a resync DRBD finished alone ([#578](https://github.com/home-operations/miroir/issues/578)) ([9d9facf](https://github.com/home-operations/miroir/commit/9d9facfbed5613714df763dee3b25ddf9f52ca45))
+
+
+### Continuous Integration
+
+* mark issues and PRs stale after 180 days, close 14 days later ([01256d6](https://github.com/home-operations/miroir/commit/01256d6ff79e26e3b96bfd974685347f9d46196e))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action docker/github-builder (v1.18.0 → v1.18.1) ([#573](https://github.com/home-operations/miroir/issues/573)) ([f9634ad](https://github.com/home-operations/miroir/commit/f9634ad7720a680767a377669cdd37ba28fe4d80))
+* **github-action:** update action docker/login-action (v4.6.0 → v4.7.0) ([#577](https://github.com/home-operations/miroir/issues/577)) ([1b78984](https://github.com/home-operations/miroir/commit/1b789848a16345b67d02159adca3307184310168))
+* **github-action:** update action jdx/mise-action (v5.2.1 → v5.2.2) ([#572](https://github.com/home-operations/miroir/issues/572)) ([f28885c](https://github.com/home-operations/miroir/commit/f28885cc455a1895347d52b9a455dce1fc210d1c))
+* **github-action:** update github-actions ([#565](https://github.com/home-operations/miroir/issues/565)) ([64cbdf6](https://github.com/home-operations/miroir/commit/64cbdf6e75c4810981a6f0922369d071974ba5b0))
+* **mise:** update mise tools ([#571](https://github.com/home-operations/miroir/issues/571)) ([7728ea8](https://github.com/home-operations/miroir/commit/7728ea858de69cad60a281914d96cb42b9bf376c))
+* **mise:** update tool aqua:astral-sh/uv (0.13.1 → 0.13.2) ([#567](https://github.com/home-operations/miroir/issues/567)) ([708341d](https://github.com/home-operations/miroir/commit/708341d94ce91f7e27f93911be3607b8eaaf21c7))
+* **mise:** update tool aqua:astral-sh/uv (0.13.2 → 0.13.3) ([#570](https://github.com/home-operations/miroir/issues/570)) ([3d1b344](https://github.com/home-operations/miroir/commit/3d1b3443d4cf13d988c0824bc08038ced8b5906c))
+* **mise:** update tool aqua:astral-sh/uv (0.13.4 → 0.13.5) ([#574](https://github.com/home-operations/miroir/issues/574)) ([ad4610a](https://github.com/home-operations/miroir/commit/ad4610ad26ba9732bc132b56e1dff4109f5e0d11))
+* **mise:** update tool oxfmt (0.73.0 → 0.74.0) ([#568](https://github.com/home-operations/miroir/issues/568)) ([fc86ce7](https://github.com/home-operations/miroir/commit/fc86ce73ea6506976b91e4f3f6c495a4534a82e0))
+
 ## [0.12.7](https://github.com/home-operations/miroir/compare/0.12.6...0.12.7) (2026-10-21)
 
 
