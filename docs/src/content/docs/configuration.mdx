@@ -1,4 +1,11 @@
-# Configuration
+---
+title: Configuration
+sidebar:
+  label: Helm chart values
+---
+
+import { Code } from "@astrojs/starlight/components";
+import values from "../../../../charts/miroir/values.yaml?raw";
 
 The **miroir** chart installs only the driver; its values are documented
 value-by-value in the generated
@@ -6,27 +13,27 @@ value-by-value in the generated
 (kept in sync with `values.yaml` by helm-docs; CI fails if it goes
 stale). The storage configuration (MiroirNode/MiroirNodeGroup custom
 resources, StorageClasses, and VolumeSnapshotClasses) is plain
-manifests ([Quickstart](quickstart.md) shows the layouts;
+manifests ([Quickstart](/quickstart/) shows the layouts;
 `kubectl explain miroirnode.spec` is the topology reference). This page
 is the orientation layer: which groups of chart values exist, where
 their behavior is explained, and every StorageClass parameter.
 
 - **`drbd`**: replication tuning. `portBase`
-  ([Coexistence](coexistence.md)), `onIoError`, resync knobs,
+  ([Coexistence](/coexistence/)), `onIoError`, resync knobs,
   `verify.algorithm` / `verify.schedule`
-  ([verification](resilience.md)).
+  ([verification](/resilience/)).
 - **Root-level behavior knobs** (the chart root is the controller):
-  `autoTieBreaker` ([Replication and quorum](replication.md)),
-  `autoDiskfulAfter` ([auto-diskful](remote-consumers.md#auto-diskful)),
-  `autoEvictAfter` ([resilience](resilience.md)), `overcommitRatio` /
+  `autoTieBreaker` ([Replication and quorum](/replication/)),
+  `autoDiskfulAfter` ([auto-diskful](/remote-consumers/#auto-diskful)),
+  `autoEvictAfter` ([resilience](/resilience/)), `overcommitRatio` /
   `freeSpaceRatio`, `provisionTimeout`, `storageCapacity`,
   `groupSnapshots`
-  ([Quickstart → Group snapshots](quickstart.md#group-snapshots)).
+  ([Quickstart → Group snapshots](/quickstart/#group-snapshots)).
 - **`gateway`**: the per-RWX-volume NFS gateway. `enabled` (RWX is
   opt-in, off by default) and the gateway image
-  ([ReadWriteMany](rwx.md)).
+  ([ReadWriteMany](/rwx/)).
 - **`monitoring`**: PodMonitor, PrometheusRule, dashboards
-  ([Monitoring](monitoring.md)).
+  ([Monitoring](/monitoring/)).
 - **`agent` / `sidecars`** (and the root's image/resources): workload
   knobs for images, resources, `agent.kubeletDir`,
   `agent.loopfileBaseDirs` (hostPath mounts for loopfile pools: pod
@@ -43,8 +50,8 @@ values are strings; quote the numbers and booleans):
 | ---------------------------------------------------- | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `miroir.home-operations.com/replicas`                | `"1"`              | Replica count, 1–3. Above 1 the volume is DRBD-replicated.                                                                                                                                                                                                                                          |
 | `miroir.home-operations.com/pool`                    | `default`          | The named storage pool the class provisions from. Every replica of a volume lands in this pool on its node, so the pool must exist (in the MiroirNode specs) on at least `replicas` nodes.                                                                                                          |
-| `miroir.home-operations.com/quorum`                  | `freeze`           | Replicated only: `freeze` never diverges but halts writes without a peer majority; `last-man-standing` keeps the survivor writable at the risk of split-brain. See [Replication and quorum](replication.md).                                                                                        |
-| `miroir.home-operations.com/allowRemoteVolumeAccess` | `"true"`           | Replicated only: pods on nodes without a replica consume the volume through an ephemeral diskless DRBD leg at replication-network speed. `"false"` pins pods to replica nodes for local reads. See [Remote consumers](remote-consumers.md).                                                         |
+| `miroir.home-operations.com/quorum`                  | `freeze`           | Replicated only: `freeze` never diverges but halts writes without a peer majority; `last-man-standing` keeps the survivor writable at the risk of split-brain. See [Replication and quorum](/replication/).                                                                                         |
+| `miroir.home-operations.com/allowRemoteVolumeAccess` | `"true"`           | Replicated only: pods on nodes without a replica consume the volume through an ephemeral diskless DRBD leg at replication-network speed. `"false"` pins pods to replica nodes for local reads. See [Remote consumers](/remote-consumers/).                                                          |
 | `miroir.home-operations.com/bitmapGranularity`       | absent (DRBD 4096) | Replicated only: DRBD bitmap block size in bytes, a power of two 4096–1048576. Coarser cuts bitmap RAM proportionally but resyncs more per dirty bit; worth considering for classes holding large volumes. Fixed when a replica's metadata is created: changing the class affects new volumes only. |
 | `csi.storage.k8s.io/fstype`                          | `ext4`             | `ext4`, `xfs`, or `btrfs` ([not for RWX](#btrfs-volumes)).                                                                                                                                                                                                                                          |
 
@@ -54,24 +61,24 @@ want: `volumeBindingMode: WaitForFirstConsumer` (delays provisioning
 until a pod schedules, so placement can prefer that pod's node; the
 default `Immediate` provisions on PVC creation, reasonable only for a
 replicated class consumed remotely) and `allowVolumeExpansion: true`
-(the default forbids [online expansion](quickstart.md#5-expand-online)).
+(the default forbids [online expansion](/quickstart/#5-expand-online)).
 `reclaimPolicy`, `mountOptions`, and the
 `storageclass.kubernetes.io/is-default-class` annotation work exactly as
 documented upstream.
 
 VolumeSnapshotClasses need only `driver: miroir.home-operations.com`
 and a `deletionPolicy`
-([Quickstart](quickstart.md#4-snapshot-and-restore) has the manifest;
+([Quickstart](/quickstart/#4-snapshot-and-restore) has the manifest;
 the snapshot-controller and its CRDs deploy separately). PVC clones
 (`dataSource: {kind: PersistentVolumeClaim}`) need no class of their
 own; the clone's StorageClass just has to match the source volume's
 `replicas` and `pool` ([Quickstart → Clone a
-PVC](quickstart.md#clone-a-pvc)).
+PVC](/quickstart/#clone-a-pvc)).
 VolumeGroupSnapshotClasses take exactly the same two fields as a
 VolumeSnapshotClass, but the feature is off by default: it needs
 `groupSnapshots.enabled: true` in the chart plus the cluster-side
 group snapshot CRDs and feature gate;
-[Quickstart → Group snapshots](quickstart.md#group-snapshots) lists
+[Quickstart → Group snapshots](/quickstart/#group-snapshots) lists
 all three switches.
 
 ## btrfs volumes
@@ -97,14 +104,14 @@ parameters:
 
 - Nodes need the `btrfs` kernel module. On Talos it comes from the
   `siderolabs/btrfs` system extension; see
-  [Requirements](requirements.md#node-setup-by-os).
+  [Requirements](/requirements/#node-setup-by-os).
 - Request at least `128Mi`: `mkfs.btrfs` refuses much smaller devices.
 - A snapshot restore or PVC clone is a block-level copy that carries
   its source's filesystem UUID. Mounting it on a node where the source
   is mounted needs kernel 6.7 or newer, which gives the copy a
   temporary UUID; older kernels refuse to mount the second filesystem.
 - btrfs works for ReadWriteOnce volumes, replicated or not.
-  ReadWriteMany volumes are served by the [NFS gateway](rwx.md), which
+  ReadWriteMany volumes are served by the [NFS gateway](/rwx/), which
   formats `ext4` or `xfs` only and rejects a btrfs class at
   provisioning.
 
@@ -143,9 +150,7 @@ their source volume's properties.
 ## The complete values.yaml
 
 The block below is the chart's real `charts/miroir/values.yaml`,
-pulled in at build time (MkDocs snippets), so the documented defaults
+pulled in at build time, so the documented defaults
 can never drift from the file Helm actually renders.
 
-```yaml
---8<-- "charts/miroir/values.yaml"
-```
+<Code code={values} lang="yaml" title="charts/miroir/values.yaml" />

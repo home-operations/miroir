@@ -1,6 +1,10 @@
-# Quickstart
+---
+title: Quickstart
+---
 
-Check [Requirements](requirements.md) first (kernel modules, graceful
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+Check [Requirements](/requirements/) first (kernel modules, graceful
 node shutdown), then:
 
 ## 1. Pick a storage layout
@@ -16,11 +20,12 @@ rejects unknown fields outright, and pool names and the classes that
 select them sit side by side in whatever file you keep them in. Pods
 can mount miroir volumes from any node with a MiroirNode; data lives
 only on nodes whose pools hold replicas, and the rest consume remotely
-([Remote consumers](remote-consumers.md)). Keep every schedulable node
+([Remote consumers](/remote-consumers/)). Keep every schedulable node
 in the map, or set the `allowRemoteVolumeAccess: "false"` parameter on
 the class so pods stay on replica nodes.
 
-/// tab | One node group (the common case)
+<Tabs>
+<TabItem label="One node group (the common case)">
 
 Every storage node carries the same partition label, so the whole
 fleet is ONE node group: a MiroirNode is materialized per
@@ -83,9 +88,8 @@ leaving the selector orphans its MiroirNode in place (never deleted
 under live volumes); hand-authored MiroirNodes always win over
 groups, so use them for odd-one-out boxes.
 
-///
-
-/// tab | Mixed backends and zones
+</TabItem>
+<TabItem label="Mixed backends and zones">
 
 Heterogeneous nodes are per-node MiroirNodes (or label-partitioned
 groups per disk class). DRBD replicates whatever device each backend
@@ -131,9 +135,8 @@ spec:
         baseDir: /var/lib/miroir
 ```
 
-///
-
-/// tab | Two storage tiers per node
+</TabItem>
+<TabItem label="Two storage tiers per node">
 
 A pool name identifies the same tier across nodes, and a StorageClass
 selects one with the `pool` parameter (classes that name none use
@@ -167,9 +170,8 @@ parameters:
   csi.storage.k8s.io/fstype: ext4
 ```
 
-///
-
-/// tab | Single node, no dedicated disk
+</TabItem>
+<TabItem label="Single node, no dedicated disk">
 
 Dev clusters: loopfile backs volumes with sparse files on an existing
 filesystem. Loopfile base directories must also be listed in the
@@ -201,37 +203,39 @@ parameters:
   csi.storage.k8s.io/fstype: ext4
 ```
 
-///
+</TabItem>
+</Tabs>
 
 A pool's backend is the configuration block it carries: exactly one
 of `lvmthin`, `zfs`, or `loopfile` (write `lvmthin: {}` when the VG
 already exists).
 
-| Backend    | You provide                            | Notes                                                    |
-| ---------- | -------------------------------------- | -------------------------------------------------------- |
-| `lvmthin`  | A partition or disk for the thin pool  | `dm_thin_pool` kernel module                             |
-| `zfs`      | A ZFS pool, you specify the dataset    | ZFS module on the node ([Requirements](requirements.md)) |
-| `loopfile` | A path on a reflink-capable filesystem | `loop` module; XFS `reflink=1` / btrfs                   |
+| Backend    | You provide                            | Notes                                                   |
+| ---------- | -------------------------------------- | ------------------------------------------------------- |
+| `lvmthin`  | A partition or disk for the thin pool  | `dm_thin_pool` kernel module                            |
+| `zfs`      | A ZFS pool, you specify the dataset    | ZFS module on the node ([Requirements](/requirements/)) |
+| `loopfile` | A path on a reflink-capable filesystem | `loop` module; XFS `reflink=1` / btrfs                  |
 
-/// tip | Write the StorageClass fields explicitly
+:::tip[Write the StorageClass fields explicitly]
 
 Write `volumeBindingMode: WaitForFirstConsumer` and
 `allowVolumeExpansion: true` as in the manifests above: the
 Kubernetes defaults (`Immediate`, no expansion) are rarely what you
 want.
 
-///
+:::
 
-[Configuration](configuration.md) documents the driver chart's values
+[Configuration](/configuration/) documents the driver chart's values
 (DRBD tuning, behavior knobs, workloads) and every
-[StorageClass parameter](configuration.md#storageclass-parameters):
+[StorageClass parameter](/configuration/#storageclass-parameters):
 `quorum`, `allowRemoteVolumeAccess`, `bitmapGranularity`, fstype, and
 more. For the MiroirNode spec itself, `kubectl explain miroirnode.spec`
 is always current.
 
 ## 2. Install
 
-/// tab | Helm
+<Tabs syncKey="platform">
+<TabItem label="Helm">
 
 ```bash
 helm install miroir oci://ghcr.io/home-operations/charts/miroir \
@@ -239,9 +243,8 @@ helm install miroir oci://ghcr.io/home-operations/charts/miroir \
 kubectl apply -f topology.yaml
 ```
 
-///
-
-/// tab | Talos
+</TabItem>
+<TabItem label="Talos">
 
 Create and label the namespace first instead of using
 `--create-namespace`. Talos enforces the `baseline` [Pod Security
@@ -261,7 +264,8 @@ kubectl apply -f topology.yaml
 
 [pss]: https://kubernetes.io/docs/concepts/security/pod-security-standards/
 
-///
+</TabItem>
+</Tabs>
 
 The driver chart deploys one `miroir-controller` Deployment and a
 `miroir-agent` DaemonSet on every schedulable node, plus the CRDs, so
@@ -292,7 +296,7 @@ spec:
       storage: 10Gi
 ```
 
-See [Replication and quorum](replication.md) for what the
+See [Replication and quorum](/replication/) for what the
 per-class `quorum` policies do and how the automatic diskless
 tie-breaker fits in.
 
@@ -320,7 +324,7 @@ thaws it right after, and for `replicas: 1` lvmthin volumes the cut
 itself suspends the device with the same flush-and-freeze effect, so
 even data an application wrote without `fsync` is in the snapshot.
 Unreplicated `zfs` and `loopfile` snapshots, all raw block volumes,
-and [RWX volumes](rwx.md) (mounted inside the NFS gateway pod, where
+and [RWX volumes](/rwx/) (mounted inside the NFS gateway pod, where
 the agent's freeze cannot reach) are crash-consistent; quiesce writes
 yourself if you need more there.
 
@@ -417,7 +421,7 @@ With external-snapshotter v8.6 and later the group API is served at
 CRDs with `conversion.strategy: None`; the schemas are identical
 across versions, so no conversion webhook is involved.
 
-/// warning | A stamped conversion webhook breaks group snapshots
+:::caution[A stamped conversion webhook breaks group snapshots]
 
 If another chart has stamped a webhook conversion onto these CRDs
 (some snapshot-controller charts do), group snapshots fail with
@@ -425,7 +429,7 @@ confusing `service not found` or `unexpected conversion version`
 errors while regular snapshots keep working; patch the CRDs back to
 `strategy: None`.
 
-///
+:::
 
 ```yaml
 apiVersion: groupsnapshot.storage.k8s.io/v1
@@ -452,7 +456,7 @@ through `dataSource` exactly like the single-volume restore above.
 Members delete as a set: deleting the VolumeGroupSnapshot removes
 them all, and a member cannot be deleted on its own.
 
-/// note | Snapshots are not backups
+:::note[Snapshots are not backups]
 
 A miroir snapshot is a copy-on-write copy on the same nodes and pool
 as its volume, so it dies with them. For backups exported to durable
@@ -461,7 +465,7 @@ the home-operations backup operator: it makes a
 [kopia](https://kopia.io/) repository a first-class Kubernetes
 resource and schedules backups into it.
 
-///
+:::
 
 ### Stage kopiur backups unreplicated
 

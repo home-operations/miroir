@@ -1,4 +1,6 @@
-# Uninstall
+---
+title: Uninstall
+---
 
 ```bash
 helm uninstall miroir -n miroir-system
@@ -13,13 +15,13 @@ everything as it was.
 
 ## Destroying the data
 
-/// danger | There is no undo
+:::danger[There is no undo]
 
 The armed hook deletes every MiroirVolume and MiroirSnapshot, and the
 agents then erase the DRBD resources and backing devices on the
 nodes. It includes volumes whose PV reclaimPolicy is `Retain`.
 
-///
+:::
 
 To delete every volume as part of the uninstall, arm the pre-delete hook
 first. Helm bakes hooks into the release at install/upgrade time, so the

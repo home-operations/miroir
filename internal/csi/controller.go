@@ -1713,7 +1713,7 @@ func (c *Controller) ControllerGetVolume(ctx context.Context, req *csi.Controlle
 
 // ControllerGetVolumeHealth reports one volume's replication health, derived
 // from the same aggregated status the agents publish. A CO polling volume
-// health is what consumes it; see docs/monitoring.md for which ones do today.
+// health is what consumes it; see the Monitoring docs page for which ones do today.
 func (c *Controller) ControllerGetVolumeHealth(ctx context.Context, req *csi.ControllerGetVolumeHealthRequest) (*csi.ControllerGetVolumeHealthResponse, error) {
 	vol, err := c.requireVolume(ctx, req.GetVolumeId())
 	if err != nil {

@@ -1,4 +1,6 @@
-# Monitoring
+---
+title: Monitoring
+---
 
 Volume health in miroir is reported per node. Each agent exports
 what its own leg of every volume sees, so a problem shows up as a

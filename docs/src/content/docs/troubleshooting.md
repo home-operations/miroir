@@ -1,4 +1,6 @@
-# Troubleshooting
+---
+title: Troubleshooting
+---
 
 - **Agent pod `CrashLoopBackOff` on lvmthin**: partition or disk
   missing, or `dm_thin_pool` not loaded. Check
@@ -13,7 +15,7 @@
   the failure shows up immediately.
 - **Agent pod `CrashLoopBackOff` after a node change**: the DRBD
   kernel module may be below the agent's floor
-  (see [Requirements](requirements.md)); the agent refuses to start
+  (see [Requirements](/requirements/)); the agent refuses to start
   rather than render options the module rejects. The agent log names
   the probed version and the floor.
 - **PVC stays `Pending`**: every node with a MiroirNode is missing
@@ -79,7 +81,7 @@
   a replicated (and therefore syncing) staging volume once per backup
   cycle. Point `spec.staging.storageClassName` at a `replicas: "1"`
   class naming the same pool, per
-  [Stage kopiur backups unreplicated](quickstart.md#stage-kopiur-backups-unreplicated).
+  [Stage kopiur backups unreplicated](/quickstart/#stage-kopiur-backups-unreplicated).
 - **RWX `MiroirVolume` stuck deleting, `Device is held open`**: a
   still-running gateway is the live opener. The controller scales the
   share Deployment to zero itself when the volume is deleted, so check
@@ -90,4 +92,4 @@
   pod stays `Terminating`, the pod is wedged on the device itself and
   the Deployment is no longer the lever: inspect the DRBD resource on
   that node as for a stuck RWO volume. See
-  [ReadWriteMany (RWX)](rwx.md).
+  [ReadWriteMany (RWX)](/rwx/).

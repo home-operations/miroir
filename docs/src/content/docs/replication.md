@@ -1,4 +1,6 @@
-# Replication and quorum
+---
+title: Replication and quorum
+---
 
 Replicated volumes are 2-way synchronous (DRBD "protocol C"): a
 write completes only once both legs have it on disk, so the copies
@@ -7,7 +9,7 @@ are identical at every instant, not eventually.
 The hard problem in any replicated system is not a dead node; it is
 a **partition**: both nodes are alive but can't see each other. If
 both keep accepting writes, the copies diverge
-([split-brain](index.md#terminology)) and one side's writes must
+([split-brain](/#terminology)) and one side's writes must
 eventually be thrown away. The **quorum policy** is the per-class
 answer to that situation, a trade between never diverging and
 staying writable. It is set per StorageClass via the
@@ -36,7 +38,7 @@ as a diskless tie-breaker: a DRBD peer configured with `disk none` that
 joins quorum voting but stores nothing; no backing device, no
 capacity used, no snapshot leg, no part in CSI topology (when a pod
 stages the volume through it, it does coordinate the snapshot write
-barrier — see [remote consumers](remote-consumers.md)). With 3 votes,
+barrier — see [remote consumers](/remote-consumers/)). With 3 votes,
 losing any single node (a data leg _or_ the tie-breaker) leaves a
 majority of 2 and the volume keeps serving.
 
@@ -67,7 +69,7 @@ Behavior and knobs:
   re-add the entry instead. The other direction is allowed: flipping
   `diskless: false` on a tie-breaker makes its agent attach a fresh
   backing device to the live leg and full-sync it (this is how
-  [auto-diskful](remote-consumers.md#auto-diskful) converts a
+  [auto-diskful](/remote-consumers/#auto-diskful) converts a
   tie-breaker).
 
 ## `last-man-standing`
@@ -93,10 +95,10 @@ on upgrade, and the new default only applies to volumes created after
 it.
 
 Volumes are also consumable from nodes that hold no replica at all;
-see [Remote consumers and auto-diskful](remote-consumers.md). For
+see [Remote consumers and auto-diskful](/remote-consumers/). For
 what happens when a disk (rather than a node) fails, and how legs are
 verified against each other, see
-[Disk failures, rebuilds, and verification](resilience.md).
+[Disk failures, rebuilds, and verification](/resilience/).
 
 ## Changing the replica count on restore
 

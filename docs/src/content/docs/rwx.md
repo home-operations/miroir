@@ -1,4 +1,6 @@
-# ReadWriteMany (RWX)
+---
+title: ReadWriteMany (RWX)
+---
 
 A PVC with `accessModes: [ReadWriteMany]` (or `ReadOnlyMany`) on a
 replicated class is served as a **shared filesystem over NFS**: many
@@ -35,7 +37,7 @@ gateway is the only writer, DRBD stays in its normal single-writer
 (single-Primary) mode with all its safety properties intact: miroir
 never enables dual-primary, and there is no cluster filesystem.
 
-/// note | Failover takes tens of seconds, not milliseconds
+:::note[Failover takes tens of seconds, not milliseconds]
 
 If the gateway's node dies, the Deployment reschedules the gateway onto
 a surviving replica node, and NFS clients (hard mounts) reconnect
@@ -45,7 +47,7 @@ the NFSv4 grace period. Client I/O stalls (never errors) across the
 window. This fits the homelab RWX cases (media libraries, shared
 config), not a low-latency-failover HA-NAS.
 
-///
+:::
 
 Things worth knowing:
 

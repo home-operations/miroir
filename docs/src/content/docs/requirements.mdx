@@ -1,4 +1,8 @@
-# Requirements
+---
+title: Requirements
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
 
 - Kubernetes ≥ 1.31.
 - A `kubelet` directory the agent can `hostPath`-mount (default
@@ -17,14 +21,14 @@
   `system-node-critical` pod) is stopped _after_ workloads on reboot
   and can release DRBD backings before the backend pool exports.
 
-/// warning | Graceful node shutdown is not optional for replication
+:::caution[Graceful node shutdown is not optional for replication]
 
 Skip it and a reboot can stop the agent before or alongside the
 workloads instead of after them. The agent then cannot release its DRBD
 backings before the backend pool exports, and unmounting the pool can
 wedge. The per-OS sections below show how to enable it.
 
-///
+:::
 
 All storage userland (`drbdadm`, `lvm`, `zfs`, `mkfs`, `mount.nfs`)
 ships inside the agent image; nodes only provide kernel modules.
@@ -33,7 +37,8 @@ ships inside the agent image; nodes only provide kernel modules.
 
 ## Node setup by OS
 
-/// tab | Talos
+<Tabs syncKey="platform">
+<TabItem label="Talos">
 
 Talos is the primary target. For replication use **≥ 1.13.0** (its
 `siderolabs/drbd` extension ships the DRBD 9.3.1 module the agent
@@ -72,9 +77,8 @@ machine:
 
 [factory]: https://factory.talos.dev
 
-///
-
-/// tab | Debian/Ubuntu
+</TabItem>
+<TabItem label="Debian/Ubuntu">
 
 Stock kernels ship `dm_thin_pool`, `loop`, and `btrfs`, so `lvmthin`,
 `loopfile`, and btrfs-formatted volumes need nothing extra. For the
@@ -97,6 +101,7 @@ rest:
 
 [ppa]: https://launchpad.net/~linbit/+archive/ubuntu/linbit-drbd9-stack
 
-///
+</TabItem>
+</Tabs>
 
 Nothing in the controller or agent is otherwise OS-specific.

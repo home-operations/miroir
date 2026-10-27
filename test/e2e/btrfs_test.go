@@ -146,7 +146,7 @@ var _ = Describe("replicated btrfs snapshot barrier", Ordered, func() {
 })
 
 // btrfsClass builds a btrfs StorageClass on the default lvmthin pool with
-// zstd compression, the configuration docs/configuration.md documents.
+// zstd compression, the configuration the Configuration docs page documents.
 func btrfsClass(name, replicas string) *storagev1.StorageClass {
 	return &storagev1.StorageClass{
 		ObjectMeta:           metav1.ObjectMeta{Name: name},

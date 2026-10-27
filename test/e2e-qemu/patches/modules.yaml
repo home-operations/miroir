@@ -2,7 +2,7 @@
 # usermode_helper=disabled stops DRBD from calling out to /sbin/drbdadm on the host,
 # which Talos does not ship; dm_thin_pool is =m in the Talos kernel with nothing on
 # the host to autoload it; zfs and btrfs come from the schematic's extensions and
-# nothing autoloads them either. Mirrors docs/requirements.md. Applied to every node.
+# nothing autoloads them either. Mirrors the Requirements docs page. Applied to every node.
 machine:
   kernel:
     modules:
