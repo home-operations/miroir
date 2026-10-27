@@ -23,7 +23,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/backend"
@@ -1023,16 +1026,16 @@ func TestDownSecondariesSkipsPrimary(t *testing.T) {
 	fe.notCalledWith(t, "drbdsetup disconnect pvc-1")
 	fe.calledWith(t, "drbdsetup disconnect pvc-2 1")
 	fe.calledWith(t, "drbdsetup down pvc-2")
-	// Peer ids come from the sweep's own status parse — no per-resource
-	// re-fetch (shutdown is time-bounded; see cmd/main.go).
+	// One listing for the sweep, one re-read under the lock per resource
+	// actually downed; the skipped Primary costs no re-read.
 	statusCalls := 0
 	for _, c := range fe.calls {
 		if strings.Contains(c, cmdDrbdsetupStatus) {
 			statusCalls++
 		}
 	}
-	if statusCalls != 1 {
-		t.Fatalf("want exactly 1 status call, got %d: %v", statusCalls, fe.calls)
+	if statusCalls != 2 {
+		t.Fatalf("want exactly 2 status calls, got %d: %v", statusCalls, fe.calls)
 	}
 }
 
@@ -1272,6 +1275,223 @@ func TestRestartDownsAndUps(t *testing.T) {
 	if _, err := os.Stat(d.path(volPvc1 + ".res")); err != nil {
 		t.Fatalf("rendered config must survive a restart: %v", err)
 	}
+}
+
+// gatedExec is a goroutine-safe exec whose first drbdsetup disconnect
+// parks until released, standing in for a teardown the kernel is still
+// draining: everything a restart does after that first disconnect is
+// what must stay ordered ahead of a concurrent adjust.
+type gatedExec struct {
+	mu      sync.Mutex
+	calls   []string
+	gated   sync.Once
+	parked  chan struct{} // closed once the disconnect is in flight
+	release chan struct{} // the disconnect returns once closed
+	status  string
+}
+
+func (g *gatedExec) run(_ context.Context, name string, args ...string) (string, error) {
+	line := name + " " + strings.Join(args, " ")
+	g.mu.Lock()
+	g.calls = append(g.calls, line)
+	g.mu.Unlock()
+	switch {
+	case strings.HasPrefix(line, "drbdsetup disconnect "):
+		g.gated.Do(func() {
+			close(g.parked)
+			<-g.release
+		})
+	case strings.HasPrefix(line, cmdDrbdsetupStatus):
+		return g.status, nil
+	case strings.Contains(line, cmdDumpMD):
+		return "", errors.New("Exclusive open failed. no valid meta data")
+	}
+	return "", nil
+}
+
+func (g *gatedExec) snapshot() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.calls)
+}
+
+func indexOf(calls []string, substr string) int {
+	return slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, substr) })
+}
+
+// Restart's disconnect-then-down must never interleave with Apply's
+// adjust: the disconnects' own state-change events wake the reconciler,
+// and an adjust reconnecting a peer the down is tearing down strands
+// drbdsetup down in del_connection forever (issue #582). Apply parks on
+// the resource lock for the whole restart, so its adjust lands on the
+// re-registered resource, after the up. synctest.Wait observes the
+// parked Apply deterministically: it returns once every goroutine in
+// the bubble is durably blocked, the restart on the exec gate and Apply
+// on the lock.
+func TestRestartSerializesApplyAdjust(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := testResource(nodeA)
+		ge := &gatedExec{
+			parked:  make(chan struct{}),
+			release: make(chan struct{}),
+			status: `[{"name":"` + r.Name + `","role":"Secondary",
+			"devices":[{"disk-state":"` + DiskUpToDate + `"}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+		}
+		d := &Driver{StateDir: t.TempDir(), Exec: ge.run, Mknod: fakeMknod}
+		if err := os.WriteFile(d.path(r.Name+".res"), nil, 0o640); err != nil {
+			t.Fatal(err)
+		}
+
+		// Released on every exit: a failed assertion must not leave the
+		// restart parked on the gate, which would deadlock the bubble.
+		var once sync.Once
+		release := func() { once.Do(func() { close(ge.release) }) }
+		defer release()
+
+		restartDone := make(chan error, 1)
+		go func() { restartDone <- d.Restart(t.Context(), r.Name) }()
+		<-ge.parked
+
+		applyDone := make(chan error, 1)
+		go func() { applyDone <- d.Apply(t.Context(), r) }()
+		synctest.Wait()
+		select {
+		case err := <-applyDone:
+			t.Fatalf("Apply returned (%v) while the teardown was still in flight", err)
+		default:
+		}
+		if calls := ge.snapshot(); indexOf(calls, "adjust") >= 0 {
+			t.Fatalf("adjust ran while the teardown was in flight: %v", calls)
+		}
+
+		release()
+		if err := <-restartDone; err != nil {
+			t.Fatalf("Restart: %v", err)
+		}
+		if err := <-applyDone; err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+		calls := ge.snapshot()
+		down, up, adjust := indexOf(calls, "drbdsetup down "+r.Name), indexOf(calls, "drbdadm up "+r.Name), indexOf(calls, "adjust "+r.Name)
+		if down < 0 || up < down || adjust < up {
+			t.Fatalf("want disconnect, down, up, then adjust; got %v", calls)
+		}
+	})
+}
+
+// The runner gives up on a down at its deadline while the child stays
+// stranded in the kernel, so the restart's lock is released with the
+// teardown still outstanding. Apply must refuse to adjust (a connect
+// would restart the receiver thread the down waits on) until the child
+// drains, and resume on its own once it has.
+func TestApplyRefusesAdjustWhileDownStranded(t *testing.T) {
+	r := testResource(nodeA)
+	fe := &fakeExec{}
+	w := &fakeWedge{stuck: map[string]bool{"drbdsetup down " + r.Name: true}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod, Wedge: w}
+
+	err := d.Apply(t.Context(), r)
+	if !errors.Is(err, ErrDownStranded) {
+		t.Fatalf("Apply = %v, want ErrDownStranded", err)
+	}
+	fe.notCalledWith(t, "adjust")
+
+	w.stuck = nil
+	if err := d.Apply(t.Context(), r); err != nil {
+		t.Fatalf("Apply after the child drained: %v", err)
+	}
+	fe.calledWith(t, "adjust "+r.Name)
+}
+
+// What the sweep listed can be stale by the time it holds a resource's
+// lock: an apply that ran meanwhile may have added a peer, and a down
+// meeting that peer's resync still connected is the hang disconnectPeers
+// exists for. The peers to disconnect come from the re-read under the
+// lock, never from the listing.
+func TestDownSecondariesDisconnectsPeersReadUnderLock(t *testing.T) {
+	listed := `[{"name":"pvc-1","role":"Secondary",
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`
+	fresh := `[{"name":"pvc-1","role":"Secondary",
+		"connections":[{"peer-node-id":1,"connection-state":"Connected"},
+			{"peer-node-id":2,"connection-state":"Connected"}]}]`
+	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: fresh}}
+	// The listing is the stale one; every later status read is fresh.
+	d := &Driver{StateDir: t.TempDir(), Mknod: fakeMknod}
+	first := true
+	d.Exec = func(ctx context.Context, name string, args ...string) (string, error) {
+		out, err := fe.run(ctx, name, args...)
+		if first && strings.HasPrefix(name+" "+strings.Join(args, " "), cmdDrbdsetupStatus) {
+			first = false
+			return listed, nil
+		}
+		return out, err
+	}
+
+	if err := d.DownSecondaries(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "drbdsetup disconnect pvc-1 2")
+	fe.calledWith(t, "drbdsetup down pvc-1")
+}
+
+// A caller whose context has expired never gets the lock, whether the slot
+// is held (it stops waiting) or free (select may pick the ready slot, so
+// the cancellation is re-checked and the slot handed back): a teardown
+// nobody waits for must not start. The holder is unaffected either way.
+func TestLockResourceHonoursContext(t *testing.T) {
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, tc := range []struct {
+		name string
+		held bool
+	}{
+		{"slot held", true},
+		{"slot free", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Driver{}
+			if tc.held {
+				unlock, err := d.lockResource(t.Context(), volPvc1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer unlock()
+			}
+			for range 3 {
+				if _, err := d.lockResource(cancelled, volPvc1); !errors.Is(err, context.Canceled) {
+					t.Fatalf("lockResource with a cancelled context = %v, want context.Canceled", err)
+				}
+			}
+			if tc.held {
+				return
+			}
+			// The slot must have been handed back, not leaked.
+			unlock, err := d.lockResource(t.Context(), volPvc1)
+			if err != nil {
+				t.Fatalf("slot leaked by a refused acquisition: %v", err)
+			}
+			unlock()
+		})
+	}
+}
+
+// The resource lock is per name: holding one resource's lock must not
+// park an operation on another.
+func TestLockResourceIsPerResource(t *testing.T) {
+	d := &Driver{}
+	unlock, err := d.lockResource(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	other, err := d.lockResource(ctx, volPvc2)
+	if err != nil {
+		t.Fatalf("locking pvc-2 parked behind pvc-1's lock: %v", err)
+	}
+	other()
 }
 
 // fakeWedge stands in for the node breaker: it reports exactly the command
