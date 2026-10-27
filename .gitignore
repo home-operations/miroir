@@ -29,6 +29,3 @@ go.work
 .vscode
 .remember/
 *.sock
-
-# Docs site build output
-site/

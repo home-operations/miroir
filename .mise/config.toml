@@ -113,7 +113,7 @@ description = "Run the upstream csi-test sanity suite against the in-process Ide
 run = "go test ./test/sanity/ -count=1"
 
 [tasks.docs]
-description = "Build the docs site (Astro Starlight) into site/, failing on a broken internal link"
+description = "Build the docs site (Astro Starlight) into docs/dist/, failing on a broken internal link"
 dir = "docs"
 run = ["pnpm install --frozen-lockfile", "pnpm run build"]
 

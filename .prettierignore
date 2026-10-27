@@ -9,5 +9,3 @@ charts/miroir/crds/
 config/crd/bases/
 config/rbac/role.yaml
 config/webhook/manifests.yaml
-# The docs site's build output.
-site/

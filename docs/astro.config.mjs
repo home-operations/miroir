@@ -5,8 +5,6 @@ import starlightLinksValidator from "starlight-links-validator";
 
 export default defineConfig({
   site: "https://miroir.home-operations.com",
-  // The repository's site/, which the shared docs-build action publishes.
-  outDir: "../site",
   integrations: [
     // Must precede starlight so its markdown transform sees the mermaid fences first.
     mermaid(),

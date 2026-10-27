@@ -25,5 +25,5 @@ CI runs it on every PR, and `test/e2e-qemu/README.md` documents how to run it lo
 
 The docs site is Astro Starlight: pages live under
 `docs/src/content/docs/`, the sidebar lives in `docs/astro.config.mjs`,
-and `mise run docs` builds the deployable site, failing on a broken
-internal link (CI runs it on every PR).
+and `mise run docs` builds the site, failing on a broken internal
+link. CI runs the same build on every PR.
