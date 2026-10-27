@@ -1744,6 +1744,16 @@ func (s strandedDowns) StrandedCommand(line string) bool {
 	return s[strings.TrimPrefix(line, "drbdsetup down ")]
 }
 
+func (s strandedDowns) Commands() []string {
+	var out []string
+	for name, stuck := range s {
+		if stuck {
+			out = append(out, "drbdsetup down "+name)
+		}
+	}
+	return out
+}
+
 // A down of ours stranded in the kernel wedges the resource while its status
 // still reads healthy: teardown must park exactly like the Detaching
 // signature does, and the TeardownWedged warning must name that

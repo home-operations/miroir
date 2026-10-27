@@ -55,6 +55,7 @@ type Driver struct {
 	// check, leaving the status-derived signature alone.
 	Wedge interface {
 		StrandedCommand(line string) bool
+		Commands() []string
 	}
 
 	// wedgeSeen stamps resources whose teardown wore a wedge fingerprint
@@ -64,6 +65,119 @@ type Driver struct {
 	// required" for a state that resolves itself.
 	wedgeMu   sync.Mutex
 	wedgeSeen map[string]bool
+
+	// resLocks serialises, per resource, the operations that change its
+	// connections or kernel registration (see lockResource) across every
+	// caller sharing the Driver. The CSI node service and the volume
+	// reconciler hold the same Driver but nothing else orders them: a
+	// Restart's disconnects wake the reconciler through events2, and an
+	// adjust landing between those disconnects and the down reconnects a
+	// peer the down is tearing down. del_connection then waits forever on
+	// a receiver thread the connect restarted, stranding drbdsetup down
+	// in uninterruptible sleep (issue #582). Each entry is a one-slot
+	// semaphore rather than a mutex so a waiter can give up with its
+	// context.
+	resMu    sync.Mutex
+	resLocks map[string]chan struct{}
+}
+
+// lockResource takes name's lock and returns its release, or the context's
+// error if that expires first: a cancelled stage or reconcile must not
+// start a disconnect/down sequence once nobody is waiting for it. Held
+// for the whole sequence of an up, adjust, down, detach, connect or
+// disconnect, so a teardown's disconnect-then-down can never interleave
+// with a reconnect. Role changes, suspend/resume, resize and verify stay
+// outside it: none of them (re)connects a peer. Entries are never
+// dropped: one slot per resource name the node has seen is negligible,
+// and dropping one under a waiter would split the lock.
+func (d *Driver) lockResource(ctx context.Context, name string) (unlock func(), err error) {
+	d.resMu.Lock()
+	if d.resLocks == nil {
+		d.resLocks = map[string]chan struct{}{}
+	}
+	slot, ok := d.resLocks[name]
+	if !ok {
+		slot = make(chan struct{}, 1)
+		d.resLocks[name] = slot
+	}
+	d.resMu.Unlock()
+	select {
+	case slot <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("lock %s: %w", name, ctx.Err())
+	}
+	// A free slot and an expired context are both ready; select picks
+	// either, so the cancellation is re-checked after acquisition.
+	if err := ctx.Err(); err != nil {
+		<-slot
+		return nil, fmt.Errorf("lock %s: %w", name, err)
+	}
+	return func() { <-slot }, nil
+}
+
+// tryLockResource is lockResource without the wait: ok is false when
+// another operation holds name. For a sweep over every resource under
+// one shared deadline, a held resource is one someone is actively
+// working on, and queueing behind it would spend the budget the other
+// resources need.
+func (d *Driver) tryLockResource(name string) (unlock func(), ok bool) {
+	d.resMu.Lock()
+	if d.resLocks == nil {
+		d.resLocks = map[string]chan struct{}{}
+	}
+	slot, found := d.resLocks[name]
+	if !found {
+		slot = make(chan struct{}, 1)
+		d.resLocks[name] = slot
+	}
+	d.resMu.Unlock()
+	select {
+	case slot <- struct{}{}:
+		return func() { <-slot }, true
+	default:
+		return nil, false
+	}
+}
+
+// lockLiveResource is lockResource for the operations that connect peers
+// (adjust, connect). A teardown child of ours still stranded in the
+// kernel outlives the lock its caller held — the runner gives up on the
+// child at its deadline — and a connect against that resource restarts
+// exactly the receiver thread a down is waiting on, or re-enters a
+// connection a disconnect is still tearing down, so those operations are
+// refused until the child drains: a stranded down is the ErrDownStranded
+// wedge fingerprint, a stranded disconnect the same ErrBusy deferral its
+// own caller got. Down and Restart classify the down fingerprint
+// themselves (see liveTeardownView).
+func (d *Driver) lockLiveResource(ctx context.Context, name string) (unlock func(), err error) {
+	unlock, err = d.lockResource(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := d.downStranded(name); err != nil {
+		unlock()
+		return nil, err
+	}
+	if err := d.disconnectStranded(name); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+// disconnectStranded reports ErrBusy while a drbdsetup disconnect against
+// any of name's peers (see disconnectPeers) is still stuck in the kernel.
+func (d *Driver) disconnectStranded(name string) error {
+	if d.Wedge == nil {
+		return nil
+	}
+	prefix := backend.CommandLine("drbdsetup", "disconnect", name) + " "
+	for _, line := range d.Wedge.Commands() {
+		if strings.HasPrefix(line, prefix) {
+			return fmt.Errorf("%s stranded in the kernel; deferring: %w", line, backend.ErrBusy)
+		}
+	}
+	return nil
 }
 
 // isMissingMetadata matches drbdadm's complaint when a backing device
@@ -103,6 +217,11 @@ func (d *Driver) ensureMarkedMetadata(ctx context.Context, r Resource) error {
 // ensureMetadata for how the birth generation lands), bring the resource
 // up / adjust.
 func (d *Driver) Apply(ctx context.Context, r Resource) error {
+	unlock, err := d.lockLiveResource(ctx, r.Name)
+	if err != nil {
+		return fmt.Errorf("apply %s: %w", r.Name, err)
+	}
+	defer unlock()
 	// The peers adjust is about to drop, recorded before the kernel forgets
 	// them so their metadata slots can be cleared afterwards (see
 	// forgetRemovedPeers). The kernel view rather than the previous .res
@@ -727,18 +846,49 @@ func (d *Driver) DownSecondaries(ctx context.Context) error {
 		if res.Role == rolePrimary {
 			continue
 		}
-		// Never spawn a down against a wedge fingerprint (issue #195):
-		// it can only hang until the shutdown deadline and strand an
-		// unkillable process into the reboot.
-		if cause := d.wedgeCause(res); cause != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", res.Name, cause))
-			continue
-		}
-		if err := d.downResource(ctx, res.Name, res.peerIDs()); err != nil {
-			errs = append(errs, err)
+		if err := d.downSecondary(ctx, res.Name); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", res.Name, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// downSecondary is one resource's share of DownSecondaries. The early
+// signal path runs the sweep while the manager is still stopping, so a
+// stage or reconcile may hold the resource; one that does is skipped with
+// ErrBusy rather than waited for, so a single slow host command cannot
+// spend the sweep's shared deadline on behalf of every later resource.
+// The sweep's listing is stale by the time the lock is held: an apply may
+// have added a peer whose resync the down must not meet connected, and a
+// restart that gave up on its own down leaves a child stranded in the
+// kernel. Both come from a re-read under the lock. Never spawn a down
+// against a wedge fingerprint (issue #195): it can only hang until the
+// shutdown deadline and strand an unkillable process into the reboot.
+func (d *Driver) downSecondary(ctx context.Context, name string) error {
+	unlock, ok := d.tryLockResource(name)
+	if !ok {
+		return fmt.Errorf("held by another operation; skipping: %w", backend.ErrBusy)
+	}
+	defer unlock()
+	// The runner starts a child before noticing cancellation, so an
+	// exhausted budget is checked here rather than paid for in kill grace.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	parsed, err := d.listStatus(ctx, name)
+	if err != nil {
+		return err
+	}
+	for _, res := range parsed {
+		if res.Name != name || res.Role == rolePrimary {
+			continue
+		}
+		if cause := d.wedgeCause(res); cause != nil {
+			return cause
+		}
+		return d.downResource(ctx, name, res.peerIDs())
+	}
+	return nil
 }
 
 // drbdMajor is DRBD's fixed block-device major number.
@@ -1043,6 +1193,11 @@ func (d *Driver) Demote(ctx context.Context, name string) error {
 // on a volume that never held data; the caller gates on that (see
 // VolumeReconciler.recoverSplitBrain).
 func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
+	unlock, err := d.lockLiveResource(ctx, r.Name)
+	if err != nil {
+		return fmt.Errorf("resolve split-brain %s: %w", r.Name, err)
+	}
+	defer unlock()
 	// Disconnect first, on every role. A plain connect aborts (exit 10,
 	// "Device has a net-config") on any peer that already has one, and after a
 	// split-brain the local node holds a net-config toward at least one peer
@@ -1075,6 +1230,11 @@ func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
 // the connect still fail, the next pass's adjust reconnects the parked
 // leg.
 func (d *Driver) CyclePeerConnection(ctx context.Context, name string, peerID int32) error {
+	unlock, err := d.lockLiveResource(ctx, name)
+	if err != nil {
+		return fmt.Errorf("cycle %s peer %d: %w", name, peerID, err)
+	}
+	defer unlock()
 	id := strconv.Itoa(int(peerID))
 	if _, err := d.Exec(ctx, "drbdsetup", "disconnect", name, id); err != nil {
 		return fmt.Errorf("disconnect %s peer %s: %w", name, id, err)
@@ -1100,6 +1260,11 @@ func (d *Driver) CyclePeerConnection(ctx context.Context, name string, peerID in
 // skips every kernel-side check. No data moves until the reconnect
 // handshake decides.
 func (d *Driver) CycleStalledTargetConnection(ctx context.Context, name string, peerID int32) error {
+	unlock, err := d.lockLiveResource(ctx, name)
+	if err != nil {
+		return fmt.Errorf("cycle %s peer %d: %w", name, peerID, err)
+	}
+	defer unlock()
 	id := strconv.Itoa(int(peerID))
 	if _, err := d.Exec(ctx, "drbdsetup", "disconnect", name, id); err != nil {
 		st, serr := d.Status(ctx, name)
@@ -1279,6 +1444,11 @@ func (d *Driver) clearWedgeSighting(name string) {
 // the first sighting defers (the detach may still be draining), a second
 // consecutive one returns the fingerprint's ErrWedged (wrapped).
 func (d *Driver) Down(ctx context.Context, name string) error {
+	unlock, err := d.lockResource(ctx, name)
+	if err != nil {
+		return fmt.Errorf("down %s: %w", name, err)
+	}
+	defer unlock()
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
@@ -1312,8 +1482,16 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 // The disconnect costs a brief bitmap-based resync on reconnect. A
 // resource wearing a teardown wedge fingerprint is refused outright — a
 // down spawned against it can only hang (see ErrWedged); the caller's
-// retry re-evaluates.
+// retry re-evaluates. The resource lock spans the disconnects, the down
+// and the up: the reconciler's adjust, woken by the disconnects' own
+// state-change events, must find the resource fully re-registered rather
+// than reconnect a peer mid-teardown (see resLocks).
 func (d *Driver) Restart(ctx context.Context, name string) error {
+	unlock, err := d.lockResource(ctx, name)
+	if err != nil {
+		return fmt.Errorf("restart %s: %w", name, err)
+	}
+	defer unlock()
 	peerIDs, wedged := d.liveTeardownView(ctx, name)
 	if wedged != nil {
 		return fmt.Errorf("restart %s: refusing to spawn a down: %w", name, wedged)
@@ -1343,6 +1521,11 @@ func (d *Driver) Restart(ctx context.Context, name string) error {
 // wearing a teardown wedge fingerprint is refused like everywhere else —
 // mid-detach is exactly the state a second detach would race.
 func (d *Driver) ForceDetach(ctx context.Context, name string, minor int32) error {
+	unlock, err := d.lockResource(ctx, name)
+	if err != nil {
+		return fmt.Errorf("force-detach %s: %w", name, err)
+	}
+	defer unlock()
 	parsed, err := d.listStatus(ctx, name)
 	if err != nil {
 		return err
