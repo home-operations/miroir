@@ -3671,30 +3671,52 @@ func TestReconcileStalledTargetForcesRefusedDisconnect(t *testing.T) {
 	fe.calledWith(t, "drbdsetup connect pvc-1 1")
 }
 
-// The stability gate: a Primary this leg cannot see makes the same shape
-// the ordinary end of an unstable resync, which the kernel re-runs by
-// itself once the Primary is back in view, and a peer slot too stale to
-// rule a Primary out keeps the case with the kernel too — both uncycled
-// and, since only the peers' status can change that, kept out of the
-// fast path. A Primary this leg does see is the live-writer case of the
-// hang and is cycled.
+// The stability gate: a Primary this leg cannot see — on the diskful
+// peer or on a client leg — makes the same shape the ordinary end of an
+// unstable resync, which the kernel re-runs by itself once the Primary is
+// back in view, and a peer slot too stale to rule a Primary out keeps the
+// case with the kernel too — all uncycled and, since only the peers'
+// status can change that, kept out of the fast path. A Primary this leg
+// does see is the live-writer case of the hang and is cycled.
 func TestReconcileStalledTargetStabilityGate(t *testing.T) {
+	const secondary = "Secondary"
 	for name, tc := range map[string]struct {
 		peerRole string
 		slot     func(*miroirv1alpha1.ReplicaStatus)
+		client   bool
 		cycled   bool
 	}{
-		"unseen primary": {peerRole: "Secondary", slot: func(s *miroirv1alpha1.ReplicaStatus) { s.PrimarySince = probeNow() }},
-		"stale peer slot": {peerRole: "Secondary", slot: func(s *miroirv1alpha1.ReplicaStatus) {
+		"unseen primary": {peerRole: secondary, slot: func(s *miroirv1alpha1.ReplicaStatus) { s.PrimarySince = probeNow() }},
+		"stale peer slot": {peerRole: secondary, slot: func(s *miroirv1alpha1.ReplicaStatus) {
 			old := metav1.NewTime(time.Now().Add(-StaleProbeThreshold - time.Minute))
 			s.LastProbedAt = &old
 		}},
-		"seen primary": {peerRole: "Primary", slot: func(s *miroirv1alpha1.ReplicaStatus) { s.PrimarySince = probeNow() }, cycled: true},
+		"unseen client primary": {peerRole: secondary, client: true, slot: func(s *miroirv1alpha1.ReplicaStatus) { s.LastProbedAt = probeNow() }},
+		"seen primary":          {peerRole: "Primary", slot: func(s *miroirv1alpha1.ReplicaStatus) { s.PrimarySince = probeNow() }, cycled: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, fe := stalledTargetSetup(t)
 			fe.statusJSON = strings.Replace(stalledTargetStatusJSON, `"peer-role":"Secondary"`, `"peer-role":"`+tc.peerRole+`"`, 1)
 			setPeerSlot(t, r, tc.slot)
+			if tc.client {
+				// A client leg this target has no connection to, whose
+				// own fresh slot reports it Primary.
+				v := &miroirv1alpha1.MiroirVolume{}
+				if err := r.Get(t.Context(), client.ObjectKey{Name: volPvc1}, v); err != nil {
+					t.Fatal(err)
+				}
+				v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC, NodeID: 2, Address: addrC}}
+				if err := r.Update(t.Context(), v); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.Get(t.Context(), client.ObjectKey{Name: volPvc1}, v); err != nil {
+					t.Fatal(err)
+				}
+				v.Status.PerNode[nodeC] = miroirv1alpha1.ReplicaStatus{Diskless: true, PrimarySince: probeNow(), LastProbedAt: probeNow()}
+				if err := r.Status().Update(t.Context(), v); err != nil {
+					t.Fatal(err)
+				}
+			}
 			reconcile(t, r, volPvc1)
 			if tc.cycled {
 				backdateStuck(t, r)

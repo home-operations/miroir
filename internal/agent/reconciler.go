@@ -1018,7 +1018,8 @@ func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolum
 // handshake by itself once the Primary is back in view, and a cycle in
 // the meantime only repeats the unstable resync. So a Primary this leg
 // does not see keeps the case with the kernel: act only when a connected
-// peer holds the role, or every other placed leg's status slot is fresh
+// peer holds the role, or every other placed leg's status slot — client
+// legs included, the usual home of an RWO consumer's Primary — is fresh
 // and reports not holding it. A missing or stale slot (StaleProbeThreshold,
 // the same bar computePhase uses) is an agent that cannot report — a
 // Primary may have come up behind it — and a crashed Primary's lingering
@@ -1032,16 +1033,24 @@ func (r *VolumeReconciler) unsettledResyncActionable(vol *miroirv1alpha1.MiroirV
 		return true
 	}
 	for _, rep := range vol.Spec.Replicas {
-		if rep.Node == r.NodeName || rep.Address == "" {
-			continue
+		if rep.Node != r.NodeName && rep.Address != "" && !slotRulesOutPrimary(vol, rep.Node) {
+			return false
 		}
-		slot, ok := vol.Status.PerNode[rep.Node]
-		if !ok || slot.PrimarySince != nil || slot.LastProbedAt == nil ||
-			time.Since(slot.LastProbedAt.Time) > StaleProbeThreshold {
+	}
+	for _, cl := range vol.Spec.Clients {
+		if cl.Address != "" && !slotRulesOutPrimary(vol, cl.Node) {
 			return false
 		}
 	}
 	return true
+}
+
+// slotRulesOutPrimary reports whether a leg's status slot is fresh and
+// reports it not holding the Primary role.
+func slotRulesOutPrimary(vol *miroirv1alpha1.MiroirVolume, node string) bool {
+	slot, ok := vol.Status.PerNode[node]
+	return ok && slot.PrimarySince == nil && slot.LastProbedAt != nil &&
+		time.Since(slot.LastProbedAt.Time) <= StaleProbeThreshold
 }
 
 // mintBirthUUID creates a fresh volume's birth generation and returns the
