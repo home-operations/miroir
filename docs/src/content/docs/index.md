@@ -1,4 +1,8 @@
-# miroir
+---
+title: miroir
+sidebar:
+  label: Introduction
+---
 
 Replicated block storage for small Kubernetes clusters. CSI driver
 on top of LVM thin, ZFS, or loopfile backends, with optional
@@ -55,7 +59,7 @@ flowchart LR
   territory.
 - You need iSCSI targets or a standalone NFS/file server. miroir
   serves block devices, plus a per-volume NFS export for
-  `ReadWriteMany` (see [ReadWriteMany (RWX)](rwx.md)); it
+  `ReadWriteMany` (see [ReadWriteMany (RWX)](/rwx/)); it
   is not a general-purpose exporter.
 - You're at fleet scale. Resource groups, automatic eviction and
   rebalancing, and multi-site replication are
@@ -101,27 +105,27 @@ require DRBD experience:
 
 ## Where to next
 
-- **[Requirements](requirements.md)**: kernel modules, Talos and
+- **[Requirements](/requirements/)**: kernel modules, Talos and
   Debian/Ubuntu node setup, graceful node shutdown.
-- **[Quickstart](quickstart.md)**: pick a storage layout, install
+- **[Quickstart](/quickstart/)**: pick a storage layout, install
   the chart, claim / snapshot / expand a volume.
-- **[Replication and quorum](replication.md)**: what the `freeze`
+- **[Replication and quorum](/replication/)**: what the `freeze`
   and `last-man-standing` policies do and how the automatic diskless
   tie-breaker fits in.
-- **[Remote consumers and auto-diskful](remote-consumers.md)**:
+- **[Remote consumers and auto-diskful](/remote-consumers/)**:
   mounting volumes from nodes without a replica, and converting
   settled consumers to local replicas.
-- **[Disk failures, rebuilds, and verification](resilience.md)**:
+- **[Disk failures, rebuilds, and verification](/resilience/)**:
   what a failing disk does, auto-evict for dead nodes, and the
   scheduled online verify.
-- **[ReadWriteMany (RWX)](rwx.md)**: shared filesystems over NFS on
+- **[ReadWriteMany (RWX)](/rwx/)**: shared filesystems over NFS on
   top of replicated volumes.
-- **[Upgrading](upgrading.md)**: keeping the CRDs in step, and the
+- **[Upgrading](/upgrading/)**: keeping the CRDs in step, and the
   version-to-version migration steps.
-- **[Node maintenance and upgrades](maintenance.md)**: the safe
+- **[Node maintenance and upgrades](/maintenance/)**: the safe
   per-node loop for reboots and upgrades.
-- **[Monitoring](monitoring.md)**: metrics, starter alerts, and the
+- **[Monitoring](/monitoring/)**: metrics, starter alerts, and the
   Grafana dashboard.
-- **[Helm chart values](configuration.md)**: every chart knob.
-- **[Troubleshooting](troubleshooting.md)**: when something doesn't
+- **[Helm chart values](/configuration/)**: every chart knob.
+- **[Troubleshooting](/troubleshooting/)**: when something doesn't
   go green.

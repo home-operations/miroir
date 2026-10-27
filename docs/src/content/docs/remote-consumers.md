@@ -1,4 +1,6 @@
-# Remote consumers and auto-diskful
+---
+title: Remote consumers and auto-diskful
+---
 
 A pod does not have to run on a node that holds a copy of its
 volume. Replicated volumes are consumable from any node with a

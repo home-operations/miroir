@@ -1,4 +1,8 @@
-# Upgrading
+---
+title: Upgrading
+sidebar:
+  label: Upgrading miroir
+---
 
 Version-to-version migration steps, newest first. Only releases that need you
 to do something appear here; any version not listed upgrades by bumping the
@@ -8,13 +12,13 @@ miroir is pre-1.0, so breaking changes land in minor versions (0.9.0, 0.10.0,
 …). Read the section for every version you are crossing, oldest
 first. Upgrading 0.8.x → 0.10.x means doing 0.9.0 and then 0.10.0.
 
-/// tip | Check before you upgrade
+:::tip[Check before you upgrade]
 
 `helm template` (or a Flux dry-run) against your new values catches the
 chart-side failures below without touching the cluster. None of these
 migrations move data or need volume downtime.
 
-///
+:::
 
 ## Every upgrade: keep the CRDs in step
 
@@ -59,14 +63,14 @@ refuses to start against a driver without `VOLUME_CONDITION`, so the sidecar
 and its `sidecars.healthMonitor` values are gone from the chart. Nothing else
 consumed the old condition.
 
-/// warning | Only if you turned it on
+:::caution[Only if you turned it on]
 
 `sidecars.healthMonitor.enabled` defaults to `false`, so most installs have
 nothing to do. If yours sets it, remove the whole `sidecars.healthMonitor`
 block from your values; leaving it fails the render with a message pointing
 here.
 
-///
+:::
 
 The PVC events the sidecar raised have no replacement on most clusters:
 kubelet's volume-health manager ships in Kubernetes 1.37+ behind the alpha
@@ -74,7 +78,7 @@ kubelet's volume-health manager ships in Kubernetes 1.37+ behind the alpha
 no release that speaks the new RPCs. The `miroir_volume_*` metrics carry the same signals
 (split-brain, disk failed, degraded replication) and the chart's starter alerts
 already fire on them, so alert there instead. See
-[Monitoring](monitoring.md).
+[Monitoring](/monitoring/).
 
 ## 0.10.x → 0.11.0: node topology becomes MiroirNode CRs
 
@@ -105,7 +109,7 @@ MiroirVolume, or pool.
 As above: `upgrade.crds: CreateReplace` for Flux, or `helm show crds ... |
 kubectl apply --server-side -f -` for plain Helm.
 
-/// warning | The CRD update must come first
+:::caution[The CRD update must come first]
 
 Doing this first is what makes the rest of the upgrade safe: the new schema
 refuses the partial topology writes 0.10 agents make while the rollout is in
@@ -113,7 +117,7 @@ flight (see step 3). Skip it and the old schema instead prunes the new pool
 fields from your manifests. The prune is quiet, and the agents then fail
 on configuration you can plainly see in your files.
 
-///
+:::
 
 ### 2. Move the storage configuration to manifests
 
@@ -143,11 +147,11 @@ backend, so exactly one of `lvmthin`/`zfs`/`loopfile` is required even
 when it has nothing to say: an lvmthin pool whose VG already exists
 still writes `lvmthin: {}`. A homogeneous fleet can become one
 `MiroirNodeGroup` instead of per-node objects
-([Quickstart](quickstart.md) shows the layout).
+([Quickstart](/quickstart/) shows the layout).
 
 Each `storageClasses` entry becomes a standard StorageClass manifest:
 the chart's knobs map to `parameters`
-([the full table](configuration.md#storageclass-parameters)), and what
+([the full table](/configuration/#storageclass-parameters)), and what
 the chart used to default now needs writing:
 `volumeBindingMode: WaitForFirstConsumer`, `allowVolumeExpansion: true`,
 and the `storageclass.kubernetes.io/is-default-class` annotation where
@@ -265,8 +269,8 @@ your configuration (`lvmthin.device`, `zfs.dataset`, ...). If a block is
 missing, the CRD update in step 1 was skipped and the old schema pruned it:
 apply the CRDs and then your manifests again.
 
-/// details | Also breaking, but unlikely to affect you
-type: note
+<details>
+<summary>Also breaking, but unlikely to affect you</summary>
 
 - The `--nodes-config` flag and `--mode=setup` are gone, along with the
   per-node setup Jobs and their ServiceAccount. Only custom `agent.extraArgs`
@@ -282,7 +286,7 @@ type: note
 - `helm uninstall` no longer destroys volume data by default. The pre-delete
   hook that deletes every MiroirVolume/MiroirSnapshot is now rendered only
   when `uninstall.confirmation` is set to `yes-really-destroy-data`; see
-  [Uninstall](uninstall.md). If your teardown automation relied on the old
+  [Uninstall](/uninstall/). If your teardown automation relied on the old
   behavior, set the confirmation.
 - The controller pod now tolerates `node.kubernetes.io/unreachable` for 5
   seconds instead of Kubernetes' 300 default, so a dead node stops
@@ -295,7 +299,7 @@ type: note
   publish (and read) only `status.pools`. Anything scraping the flat paths
   directly has been broken since 0.10; use `status.pools[*]`.
 
-///
+</details>
 
 ## 0.9.x → 0.10.0: named storage pools
 
@@ -373,8 +377,8 @@ Each agent creates the new pool's VG and thin-pool at startup. New pools get
 `vg-miroir-<pool>`; the default pool keeps `vg-miroir`, which is why step 2
 needs no data migration.
 
-/// details | Also breaking, but unlikely to affect you
-type: note
+<details>
+<summary>Also breaking, but unlikely to affect you</summary>
 
 - The agent/setup `--lvm-vg` and `--lvm-thinpool` flags are gone; VG naming
   derives from the pool name. The chart never set them; only custom
@@ -388,9 +392,9 @@ type: note
   are not.
 - Do not remove a pool from `nodes` while volumes still reference it. Their
   reconciles and deletions fail loudly (`storage pool "x" is not configured on
-this node`) until the pool returns or the volumes are gone.
+  this node`) until the pool returns or the volumes are gone.
 
-///
+</details>
 
 ## 0.8.x → 0.9.0: RWX is opt-in
 
@@ -398,7 +402,7 @@ Serving ReadWriteMany is now an explicit operator decision. Gateway pods run
 privileged in the release namespace, and anyone who can create a PVC could
 previously cause one to be spawned just by requesting RWX.
 
-/// warning | Set this before upgrading, not after
+:::caution[Set this before upgrading, not after]
 
 **If you serve any RWX volumes, set `gateway.enabled: true` in your Helm
 values before you upgrade.**
@@ -412,7 +416,7 @@ Without it, running gateway pods keep serving until their next restart, but
 the controller stops reconciling them, the gateway RBAC is removed (so a
 restarted gateway cannot read its volume), and new RWX PVCs are rejected.
 
-///
+:::
 
 If you do not use RWX, no action is needed: the default is `false`, and the
 gateway ServiceAccount, RBAC, PodMonitor, and export alert group are simply
@@ -423,4 +427,4 @@ Should you upgrade without the flag and only then notice, setting
 `FailedPrecondition`, so a pending PVC provisions on the external
 provisioner's next retry. **No PVC recreation is needed.**
 
-See [ReadWriteMany (RWX)](rwx.md) for what enabling it entails.
+See [ReadWriteMany (RWX)](/rwx/) for what enabling it entails.

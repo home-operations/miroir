@@ -1,4 +1,8 @@
-# Disk failures, node rebuilds, and verification
+---
+title: Disk failures, node rebuilds, and verification
+sidebar:
+  label: Disk failures, rebuilds, and verification
+---
 
 ## A failing disk is not a failing node
 
@@ -72,7 +76,7 @@ A node with known long outages can opt out with
 longest planned reboot or upgrade window, since eviction discards the
 dead node's copy of the data.
 
-/// note | PV node affinity cannot follow an eviction
+:::note[PV node affinity cannot follow an eviction]
 
 A PersistentVolume's node
 affinity is fixed by Kubernetes at creation and cannot be updated, so
@@ -83,7 +87,7 @@ replica protects the data, but the scheduler cannot place the pod on
 the replacement node. Remote-access volumes (the default for
 replicated classes) carry no such pin and are unaffected.
 
-///
+:::
 
 ## Verification
 
@@ -95,6 +99,6 @@ that cadence, serialized per node, and skipping volumes that are
 resyncing. Findings land in three places: the volume's status
 (`lastVerifyOutOfSyncBytes`), the `miroir_volume_verify_*` metrics,
 and a `VerifyOutOfSync` event. The
-[starter alerts](monitoring.md) flag both findings and a schedule that
+[starter alerts](/monitoring/) flag both findings and a schedule that
 stopped firing. `drbdadm verify <resource>` on a storage node does the
 same by hand.

@@ -1,11 +1,13 @@
-# Node maintenance and upgrades
+---
+title: Node maintenance and upgrades
+---
 
 Upgrading or rebooting nodes one at a time is safe for the data:
 `freeze` volumes never diverge, and with only one side down at a time
 `last-man-standing` cannot split-brain either. Two rules keep it
 non-disruptive as well.
 
-/// warning | Wait for Ready between nodes
+:::caution[Wait for Ready between nodes]
 
 After a node rejoins, its legs resync from the surviving replicas and
 the affected volumes read `Degraded` until that finishes. Draining the
@@ -23,25 +25,25 @@ kubectl wait miroirvolumes --all \
 ```
 
 `miroir_volume_resync_ratio` shows progress, and the
-[starter alerts](monitoring.md) flag sustained degradation.
+[starter alerts](/monitoring/) flag sustained degradation.
 
-///
+:::
 
-/// warning | Cordon before rebooting
+:::caution[Cordon before rebooting]
 
 The agent releases its Secondary DRBD backings at shutdown only when
 the node is cordoned (the gate keeps routine pod restarts from churning
 replication). `kubectl drain` and `talosctl upgrade` cordon for you; a
 bare `reboot` on a Debian/Ubuntu node does not, and risks the
-pool-export wedge the [Requirements](requirements.md) page warns about.
+pool-export wedge the [Requirements](/requirements/) page warns about.
 
-///
+:::
 
 The per-node loop is therefore: cordon and drain, upgrade or reboot,
 wait for the node to rejoin, wait for Ready, uncordon, next node.
 
 While a single node is down, replicated volumes keep serving per the
-quorum table (see [At a glance](replication.md#at-a-glance)), and the
+quorum table (see [At a glance](/replication/#at-a-glance)), and the
 RWX gateway reschedules onto the surviving replica node (client I/O
 stalls for tens of seconds, never errors). Operations that need the
 missing node pause and converge when it returns rather than failing:

@@ -71,7 +71,7 @@ prepare_namespace() {
 }
 
 # The agent creates the parent dataset itself but a zpool is deliberately the
-# operator's (docs/quickstart.md), so the harness plays operator: one privileged pod
+# operator's (the Quickstart docs page), so the harness plays operator: one privileged pod
 # per worker runs zpool create on /dev/vdc, the third virtio disk cluster.yaml
 # attaches to workers. The agent image ships the zfs userland and the host carries
 # the module, exactly like the agent's own execution environment, and the mounts

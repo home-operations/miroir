@@ -29,7 +29,3 @@ go.work
 .vscode
 .remember/
 *.sock
-
-# MkDocs build output and uv-managed venv (docs toolchain)
-site/
-.venv/
