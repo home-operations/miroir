@@ -1404,6 +1404,82 @@ func TestApplyRefusesAdjustWhileDownStranded(t *testing.T) {
 	fe.calledWith(t, "adjust "+r.Name)
 }
 
+// A disconnect killed at its deadline can likewise outlive its caller's
+// lock (disconnectPeers defers with ErrBusy and the restart returns
+// without a down). A connect into that half-torn connection is the same
+// hazard, so Apply defers with the same ErrBusy until the child drains;
+// the name match is exact, so pvc-10's stranded disconnect does not
+// park pvc-1.
+func TestApplyDefersAdjustWhileDisconnectStranded(t *testing.T) {
+	r := testResource(nodeA)
+	fe := &fakeExec{}
+	w := &fakeWedge{stuck: map[string]bool{"drbdsetup disconnect " + r.Name + "0 1": true}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod, Wedge: w}
+
+	if err := d.Apply(t.Context(), r); err != nil {
+		t.Fatalf("Apply with another resource's disconnect stranded: %v", err)
+	}
+	fe.calledWith(t, "adjust "+r.Name)
+
+	fe.calls = nil
+	w.stuck["drbdsetup disconnect "+r.Name+" 1"] = true
+	err := d.Apply(t.Context(), r)
+	if !errors.Is(err, backend.ErrBusy) || errors.Is(err, ErrWedged) {
+		t.Fatalf("Apply = %v, want ErrBusy and not a wedge", err)
+	}
+	fe.notCalledWith(t, "adjust")
+}
+
+// Once the sweep's budget is spent, no resource spawns another command:
+// the runner would start it before noticing and then wait out its kill
+// grace. The slot is handed back, so the final sweep still gets it.
+func TestDownSecondariesStopsSpawningOnceCancelled(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"pvc-1","role":"Secondary",
+			"connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if err := d.downSecondary(ctx, volPvc1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("downSecondary with a spent budget = %v, want context.Canceled", err)
+	}
+	if len(fe.calls) != 0 {
+		t.Fatalf("no command may spawn after cancellation, got %v", fe.calls)
+	}
+	unlock, ok := d.tryLockResource(volPvc1)
+	if !ok {
+		t.Fatal("slot leaked by the cancelled sweep")
+	}
+	unlock()
+}
+
+// The shutdown sweep runs every resource under one deadline, so a
+// resource another operation holds is skipped as ErrBusy, never waited
+// for: the rest of the node's backings still get released.
+func TestDownSecondariesSkipsHeldResource(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[
+			{"name":"pvc-1","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]},
+			{"name":"pvc-2","role":"Secondary","connections":[{"peer-node-id":1,"connection-state":"Connected"}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	unlock, err := d.lockResource(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+
+	err = d.DownSecondaries(t.Context())
+	if !errors.Is(err, backend.ErrBusy) || !strings.Contains(err.Error(), volPvc1) {
+		t.Fatalf("want the held resource reported as ErrBusy, got %v", err)
+	}
+	fe.notCalledWith(t, "drbdsetup down pvc-1")
+	fe.calledWith(t, "drbdsetup disconnect pvc-2 1")
+	fe.calledWith(t, "drbdsetup down pvc-2")
+}
+
 // What the sweep listed can be stale by the time it holds a resource's
 // lock: an apply that ran meanwhile may have added a peer, and a down
 // meeting that peer's resync still connected is the hang disconnectPeers
@@ -1499,6 +1575,16 @@ func TestLockResourceIsPerResource(t *testing.T) {
 type fakeWedge struct{ stuck map[string]bool }
 
 func (f *fakeWedge) StrandedCommand(line string) bool { return f.stuck[line] }
+
+func (f *fakeWedge) Commands() []string {
+	var out []string
+	for line, stuck := range f.stuck {
+		if stuck {
+			out = append(out, line)
+		}
+	}
+	return out
+}
 
 // A drbdsetup down of ours still stranded in the kernel is a wedge
 // fingerprint the status cannot show: the resource reads healthy while its

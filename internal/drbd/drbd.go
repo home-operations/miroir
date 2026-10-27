@@ -55,6 +55,7 @@ type Driver struct {
 	// check, leaving the status-derived signature alone.
 	Wedge interface {
 		StrandedCommand(line string) bool
+		Commands() []string
 	}
 
 	// wedgeSeen stamps resources whose teardown wore a wedge fingerprint
@@ -114,13 +115,40 @@ func (d *Driver) lockResource(ctx context.Context, name string) (unlock func(), 
 	return func() { <-slot }, nil
 }
 
+// tryLockResource is lockResource without the wait: ok is false when
+// another operation holds name. For a sweep over every resource under
+// one shared deadline, a held resource is one someone is actively
+// working on, and queueing behind it would spend the budget the other
+// resources need.
+func (d *Driver) tryLockResource(name string) (unlock func(), ok bool) {
+	d.resMu.Lock()
+	if d.resLocks == nil {
+		d.resLocks = map[string]chan struct{}{}
+	}
+	slot, found := d.resLocks[name]
+	if !found {
+		slot = make(chan struct{}, 1)
+		d.resLocks[name] = slot
+	}
+	d.resMu.Unlock()
+	select {
+	case slot <- struct{}{}:
+		return func() { <-slot }, true
+	default:
+		return nil, false
+	}
+}
+
 // lockLiveResource is lockResource for the operations that connect peers
-// (adjust, connect). A drbdsetup down of ours still stranded in the kernel
-// outlives the lock its caller held — the runner gives up on the child at
-// its deadline — and a connect against that resource restarts exactly the
-// receiver thread the down is waiting on, so those operations are refused
-// with ErrDownStranded until the child drains. Down and Restart classify
-// the same fingerprint themselves (see liveTeardownView).
+// (adjust, connect). A teardown child of ours still stranded in the
+// kernel outlives the lock its caller held — the runner gives up on the
+// child at its deadline — and a connect against that resource restarts
+// exactly the receiver thread a down is waiting on, or re-enters a
+// connection a disconnect is still tearing down, so those operations are
+// refused until the child drains: a stranded down is the ErrDownStranded
+// wedge fingerprint, a stranded disconnect the same ErrBusy deferral its
+// own caller got. Down and Restart classify the down fingerprint
+// themselves (see liveTeardownView).
 func (d *Driver) lockLiveResource(ctx context.Context, name string) (unlock func(), err error) {
 	unlock, err = d.lockResource(ctx, name)
 	if err != nil {
@@ -130,7 +158,26 @@ func (d *Driver) lockLiveResource(ctx context.Context, name string) (unlock func
 		unlock()
 		return nil, err
 	}
+	if err := d.disconnectStranded(name); err != nil {
+		unlock()
+		return nil, err
+	}
 	return unlock, nil
+}
+
+// disconnectStranded reports ErrBusy while a drbdsetup disconnect against
+// any of name's peers (see disconnectPeers) is still stuck in the kernel.
+func (d *Driver) disconnectStranded(name string) error {
+	if d.Wedge == nil {
+		return nil
+	}
+	prefix := backend.CommandLine("drbdsetup", "disconnect", name) + " "
+	for _, line := range d.Wedge.Commands() {
+		if strings.HasPrefix(line, prefix) {
+			return fmt.Errorf("%s stranded in the kernel; deferring: %w", line, backend.ErrBusy)
+		}
+	}
+	return nil
 }
 
 // isMissingMetadata matches drbdadm's complaint when a backing device
@@ -808,19 +855,26 @@ func (d *Driver) DownSecondaries(ctx context.Context) error {
 
 // downSecondary is one resource's share of DownSecondaries. The early
 // signal path runs the sweep while the manager is still stopping, so a
-// stage or reconcile may hold the resource, and the sweep's listing is
-// stale by the time the lock is acquired: an apply may have added a peer
-// whose resync the down must not meet connected, and a restart that gave
-// up on its own down leaves a child stranded in the kernel. Both come
-// from a re-read under the lock. Never spawn a down against a wedge
-// fingerprint (issue #195): it can only hang until the shutdown deadline
-// and strand an unkillable process into the reboot.
+// stage or reconcile may hold the resource; one that does is skipped with
+// ErrBusy rather than waited for, so a single slow host command cannot
+// spend the sweep's shared deadline on behalf of every later resource.
+// The sweep's listing is stale by the time the lock is held: an apply may
+// have added a peer whose resync the down must not meet connected, and a
+// restart that gave up on its own down leaves a child stranded in the
+// kernel. Both come from a re-read under the lock. Never spawn a down
+// against a wedge fingerprint (issue #195): it can only hang until the
+// shutdown deadline and strand an unkillable process into the reboot.
 func (d *Driver) downSecondary(ctx context.Context, name string) error {
-	unlock, err := d.lockResource(ctx, name)
-	if err != nil {
-		return err
+	unlock, ok := d.tryLockResource(name)
+	if !ok {
+		return fmt.Errorf("held by another operation; skipping: %w", backend.ErrBusy)
 	}
 	defer unlock()
+	// The runner starts a child before noticing cancellation, so an
+	// exhausted budget is checked here rather than paid for in kill grace.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	parsed, err := d.listStatus(ctx, name)
 	if err != nil {
 		return err
