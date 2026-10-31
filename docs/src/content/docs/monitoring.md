@@ -46,7 +46,7 @@ unknown falls back to its volume name in `pvc`, with an empty
 | `miroir_volume_verify_last_timestamp_seconds` | unix time of the last completed scheduled verify; alert on staleness to catch a schedule that stopped firing                                                           |
 | `miroir_volume_verify_out_of_sync_bytes`      | out-of-sync bytes the last scheduled verify found (0 = clean)                                                                                                          |
 | `miroir_volume_wedged`                        | 1 when the kernel can no longer tear down this volume's DRBD resource (stuck Detaching, LINBIT/drbd#137, or a stranded `drbdsetup down`); only a node reboot clears it |
-| `miroir_volume_needs_restage`                 | 1 while the kernel has lost a write under a filesystem still mounted here; restart the consuming pod to restage. Absent otherwise                                      |
+| `miroir_volume_needs_restage`                 | 1 while the kernel has lost a write under a filesystem still mounted here; restart the pod mounting it (RWX: the gateway pod)                                          |
 
 Each agent additionally exports its pool capacities
 (`miroir_pool_capacity_bytes` / `miroir_pool_allocated_bytes` /

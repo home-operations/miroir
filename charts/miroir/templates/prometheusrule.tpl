@@ -288,7 +288,8 @@ spec:
               quorum loss) while the filesystem stayed mounted. ext4 keeps
               serving it until its next metadata change, which then aborts the
               journal and remounts read-only, possibly weeks later. Restart the
-              consuming pod to restage the volume; the restage runs fsck.
+              pod mounting the volume to restage it (the restage runs fsck): the
+              consuming pod, or the volume's NFS gateway pod for an RWX volume.
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

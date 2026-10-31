@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,25 +75,27 @@ func TestParseFSEvent(t *testing.T) {
 	}
 }
 
-// writebackVol is pvc-1 with a leg on nodeA at minor 1036.
-func writebackVol(conds ...metav1.Condition) *miroirv1alpha1.MiroirVolume {
-	return &miroirv1alpha1.MiroirVolume{
+// writebackVol is pvc-1 with legs on nodeA (minor 1036) and node-b; erred
+// lists the nodes whose slot already carries a WritebackError.
+func writebackVol(erred ...string) *miroirv1alpha1.MiroirVolume {
+	vol := &miroirv1alpha1.MiroirVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: volPvc1},
 		Status: miroirv1alpha1.MiroirVolumeStatus{
-			PerNode:    map[string]miroirv1alpha1.ReplicaStatus{nodeA: {DRBDMinor: 1036}},
-			Conditions: conds,
+			PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {DRBDMinor: 1036},
+				nodeB: {DRBDMinor: 1036},
+			},
 		},
 	}
-}
-
-func raisedOn(node string) metav1.Condition {
-	return metav1.Condition{
-		Type:               miroirv1alpha1.ConditionFilesystemNeedsRestage,
-		Status:             metav1.ConditionTrue,
-		Reason:             reasonWritebackError,
-		Message:            restagePrefix(node) + "lost write",
-		LastTransitionTime: metav1.Now(),
+	for _, node := range erred {
+		st := vol.Status.PerNode[node]
+		st.WritebackError = &miroirv1alpha1.WritebackError{Since: metav1.Now(), Record: "lost write"}
+		vol.Status.PerNode[node] = st
 	}
+	if len(erred) > 0 {
+		setRestageCondition(vol)
+	}
+	return vol
 }
 
 // writebackFixture is a fake /proc: one process seeing mountinfo, and
@@ -117,23 +120,30 @@ func restageCond(t *testing.T, c client.Client) *metav1.Condition {
 	return meta.FindStatusCondition(getVol(t, c).Status.Conditions, miroirv1alpha1.ConditionFilesystemNeedsRestage)
 }
 
+func writebackErrorOn(t *testing.T, c client.Client, node string) *miroirv1alpha1.WritebackError {
+	t.Helper()
+	return getVol(t, c).Status.PerNode[node].WritebackError
+}
+
 func TestWritebackWatcherFlagsALostWriteUnderAMount(t *testing.T) {
 	metricNeedsRestage.Reset()
-	unreachable := metav1.Condition{
-		Type: miroirv1alpha1.ConditionNodeUnreachable, Status: metav1.ConditionFalse,
-		Reason: "NodeReachable", LastTransitionTime: metav1.Now(),
-	}
-	c := newClient(t, writebackVol(unreachable))
+	vol := writebackVol()
+	meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+		Type: miroirv1alpha1.ConditionNodeUnreachable, Status: metav1.ConditionFalse, Reason: "NodeReachable",
+	})
+	c := newClient(t, vol)
 	w, rec := newWritebackWatcher(c, writebackFixture(t, drbd1036Mounted, time.Now().Add(-time.Hour)))
 
 	w.handle(t.Context(), logr.Discard(), []string{lostAsyncWrite})
 
-	cond := restageCond(t, c)
-	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != reasonWritebackError {
-		t.Fatalf("condition = %+v, want True/%s", cond, reasonWritebackError)
+	we := writebackErrorOn(t, c, nodeA)
+	if we == nil || !strings.Contains(we.Record, "logical block 2") {
+		t.Fatalf("writebackError = %+v, want the kernel record", we)
 	}
-	if !strings.HasPrefix(cond.Message, "node "+nodeA+": ") || !strings.Contains(cond.Message, "logical block 2") {
-		t.Fatalf("message %q must name the node and quote the kernel record", cond.Message)
+	cond := restageCond(t, c)
+	if cond == nil || cond.Status != metav1.ConditionTrue || !strings.Contains(cond.Message, nodeA) ||
+		!strings.Contains(cond.Message, "restart the consuming pod") {
+		t.Fatalf("condition = %+v, want True naming %s and the consuming pod", cond, nodeA)
 	}
 	if meta.FindStatusCondition(getVol(t, c).Status.Conditions, miroirv1alpha1.ConditionNodeUnreachable) == nil {
 		t.Fatal("the update must keep the volume's other conditions")
@@ -144,7 +154,7 @@ func TestWritebackWatcherFlagsALostWriteUnderAMount(t *testing.T) {
 			t.Fatalf("event = %q, want a FilesystemNeedsRestage warning", e)
 		}
 	default:
-		t.Fatal("raising the condition must emit a warning event")
+		t.Fatal("raising the error must emit a warning event")
 	}
 	if got := testutil.ToFloat64(metricNeedsRestage.WithLabelValues(volPvc1, volPvc1, "")); got != 1 {
 		t.Fatalf("needs_restage gauge = %v, want 1", got)
@@ -156,6 +166,19 @@ func TestWritebackWatcherFlagsALostWriteUnderAMount(t *testing.T) {
 	case e := <-rec.Events:
 		t.Fatalf("an already-flagged mount must not warn again, got %q", e)
 	default:
+	}
+}
+
+// An RWX volume's filesystem is mounted by its gateway, so the advice must
+// not point at the NFS consumers.
+func TestWritebackWatcherPointsRWXAtTheGateway(t *testing.T) {
+	vol := writebackVol()
+	vol.Spec.Export = &miroirv1alpha1.ExportSpec{}
+	c := newClient(t, vol)
+	w, _ := newWritebackWatcher(c, writebackFixture(t, drbd1036Mounted, time.Now().Add(-time.Hour)))
+	w.handle(t.Context(), logr.Discard(), []string{lostAsyncWrite})
+	if cond := restageCond(t, c); cond == nil || !strings.Contains(cond.Message, "NFS gateway pod") {
+		t.Fatalf("condition = %+v, want the gateway named", cond)
 	}
 }
 
@@ -176,6 +199,9 @@ func TestWritebackWatcherSkips(t *testing.T) {
 			c := newClient(t, writebackVol())
 			w, _ := newWritebackWatcher(c, writebackFixture(t, tc.mountinfo, time.Now().Add(-time.Hour)))
 			w.handle(t.Context(), logr.Discard(), tc.lines)
+			if we := writebackErrorOn(t, c, nodeA); we != nil {
+				t.Fatalf("writebackError = %+v, want none", we)
+			}
 			if cond := restageCond(t, c); cond != nil {
 				t.Fatalf("condition = %+v, want none", cond)
 			}
@@ -188,31 +214,99 @@ func TestWritebackWatcherSkips(t *testing.T) {
 
 func TestWritebackWatcherClears(t *testing.T) {
 	cases := []struct {
-		name       string
-		mountinfo  string
-		booted     time.Time
-		lines      []string
-		wantReason string
+		name      string
+		mountinfo string
+		booted    time.Time
+		lines     []string
 	}{
-		{"fresh superblock", drbd1036Mounted, time.Now().Add(-time.Hour), []string{ext4Mounted}, reasonRemounted},
-		{"superblock torn down", drbd1036Mounted, time.Now().Add(-time.Hour), []string{ext4Unmounting}, reasonUnmounted},
-		{"no mount left", otherMountsOnly, time.Now().Add(-time.Hour), nil, reasonUnmounted},
-		{"rebooted since", drbd1036Mounted, time.Now().Add(time.Hour), nil, reasonRebooted},
+		{"fresh superblock", drbd1036Mounted, time.Now().Add(-time.Hour), []string{ext4Mounted}},
+		{"superblock torn down", drbd1036Mounted, time.Now().Add(-time.Hour), []string{ext4Unmounting}},
+		{"no mount left", otherMountsOnly, time.Now().Add(-time.Hour), nil},
+		{"rebooted since", drbd1036Mounted, time.Now().Add(time.Hour), nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			metricNeedsRestage.Reset()
-			c := newClient(t, writebackVol(raisedOn(nodeA)))
+			c := newClient(t, writebackVol(nodeA))
 			w, _ := newWritebackWatcher(c, writebackFixture(t, tc.mountinfo, tc.booted))
 			w.handle(t.Context(), logr.Discard(), tc.lines)
+			if we := writebackErrorOn(t, c, nodeA); we != nil {
+				t.Fatalf("writebackError = %+v, want cleared", we)
+			}
 			cond := restageCond(t, c)
-			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != tc.wantReason {
-				t.Fatalf("condition = %+v, want False/%s", cond, tc.wantReason)
+			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonRestaged {
+				t.Fatalf("condition = %+v, want False/%s", cond, reasonRestaged)
 			}
 			if n := testutil.CollectAndCount(metricNeedsRestage); n != 0 {
 				t.Fatalf("needs_restage series = %d, want none once cleared", n)
 			}
 		})
+	}
+}
+
+// Each node's entry is its own: node-b's unresolved error survives this
+// node raising and then clearing its own, and keeps the condition True.
+func TestWritebackWatcherKeepsAnotherNodesError(t *testing.T) {
+	metricNeedsRestage.Reset()
+	c := newClient(t, writebackVol(nodeB))
+	w, _ := newWritebackWatcher(c, writebackFixture(t, drbd1036Mounted, time.Now().Add(-time.Hour)))
+
+	w.handle(t.Context(), logr.Discard(), []string{lostAsyncWrite})
+	if cond := restageCond(t, c); cond == nil || !strings.Contains(cond.Message, nodeA+", "+nodeB) {
+		t.Fatalf("condition = %+v, want both nodes named", cond)
+	}
+
+	w.handle(t.Context(), logr.Discard(), []string{ext4Mounted})
+	if writebackErrorOn(t, c, nodeA) != nil {
+		t.Fatal("this node's remount must clear its own entry")
+	}
+	if writebackErrorOn(t, c, nodeB) == nil {
+		t.Fatal("node-b's entry must survive this node's clear")
+	}
+	if cond := restageCond(t, c); cond == nil || cond.Status != metav1.ConditionTrue || strings.Contains(cond.Message, nodeA) {
+		t.Fatalf("condition = %+v, want True naming node-b only", cond)
+	}
+	if n := testutil.CollectAndCount(metricNeedsRestage); n != 0 {
+		t.Fatalf("needs_restage series = %d, want none on this node", n)
+	}
+}
+
+// laggingCache lists from a stale informer while every read through the
+// API reader and every write reaches the live store.
+type laggingCache struct {
+	client.Client
+	stale client.Client
+}
+
+func (l laggingCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return l.stale.List(ctx, list, opts...)
+}
+
+// The informer can lag this watcher's own raise. A sweep in that window
+// must keep the flag, and a remount seen in it must still clear the entry.
+func TestWritebackWatcherSurvivesALaggingCache(t *testing.T) {
+	metricNeedsRestage.Reset()
+	live := newClient(t, writebackVol())
+	w, _ := newWritebackWatcher(live, writebackFixture(t, drbd1036Mounted, time.Now().Add(-time.Hour)))
+	w.handle(t.Context(), logr.Discard(), []string{lostAsyncWrite})
+	if writebackErrorOn(t, live, nodeA) == nil {
+		t.Fatal("the raise must land")
+	}
+
+	w.Client = laggingCache{Client: live, stale: newClient(t, writebackVol())}
+	w.Reader = live
+	w.lastSweep = time.Time{}
+	w.handle(t.Context(), logr.Discard(), nil)
+	if !w.flagged[volPvc1] {
+		t.Fatal("a sweep over a lagging cache must keep the flag")
+	}
+	if n := testutil.CollectAndCount(metricNeedsRestage); n != 1 {
+		t.Fatalf("needs_restage series = %d, want 1", n)
+	}
+
+	w.handle(t.Context(), logr.Discard(), []string{ext4Mounted})
+	if writebackErrorOn(t, live, nodeA) != nil {
+		t.Fatal("a remount seen while the cache lags must still clear the entry")
 	}
 }
 
@@ -237,30 +331,15 @@ func TestWritebackWatcherDropsADeletedVolume(t *testing.T) {
 	}
 }
 
-// Only the node whose mount holds the error may clear it: the same minor
-// remounting elsewhere says nothing about that mount.
-func TestWritebackWatcherLeavesAnotherNodesCondition(t *testing.T) {
-	metricNeedsRestage.Reset()
-	c := newClient(t, writebackVol(raisedOn("node-b")))
-	w, _ := newWritebackWatcher(c, writebackFixture(t, otherMountsOnly, time.Now().Add(time.Hour)))
-	w.handle(t.Context(), logr.Discard(), []string{ext4Mounted})
-	if cond := restageCond(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
-		t.Fatalf("condition = %+v, want node-b's raise kept", cond)
-	}
-	if n := testutil.CollectAndCount(metricNeedsRestage); n != 0 {
-		t.Fatalf("needs_restage series = %d, want none for another node's mount", n)
-	}
-}
-
-// The sweep publishes the gauge for a condition raised before the agent
+// The sweep publishes the gauge for an entry raised before the agent
 // started, so a restart does not lose the signal.
-func TestWritebackWatcherSweepPublishesExistingCondition(t *testing.T) {
+func TestWritebackWatcherSweepPublishesExistingError(t *testing.T) {
 	metricNeedsRestage.Reset()
-	c := newClient(t, writebackVol(raisedOn(nodeA)))
+	c := newClient(t, writebackVol(nodeA))
 	w, _ := newWritebackWatcher(c, writebackFixture(t, drbd1036Mounted, time.Now().Add(-time.Hour)))
 	w.handle(t.Context(), logr.Discard(), nil)
-	if cond := restageCond(t, c); cond == nil || cond.Status != metav1.ConditionTrue {
-		t.Fatalf("condition = %+v, want kept while the mount lives", cond)
+	if writebackErrorOn(t, c, nodeA) == nil {
+		t.Fatal("the entry must stay while the mount lives")
 	}
 	if got := testutil.ToFloat64(metricNeedsRestage.WithLabelValues(volPvc1, volPvc1, "")); got != 1 {
 		t.Fatalf("needs_restage gauge = %v, want 1", got)

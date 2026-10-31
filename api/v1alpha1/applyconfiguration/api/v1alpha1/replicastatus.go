@@ -102,6 +102,10 @@ type ReplicaStatusApplyConfiguration struct {
 	// read as healthy, mirroring the Linstor pattern of distinguishing
 	// "exists in CRD" from "live and reachable."
 	LastProbedAt *v1.Time `json:"lastProbedAt,omitempty"`
+	// WritebackError is set by this node's agent when the kernel lost a
+	// write under a filesystem mounted here, and cleared once that mount
+	// is gone or replaced.
+	WritebackError *WritebackErrorApplyConfiguration `json:"writebackError,omitempty"`
 }
 
 // ReplicaStatusApplyConfiguration constructs a declarative configuration of the ReplicaStatus type for use with
@@ -243,5 +247,13 @@ func (b *ReplicaStatusApplyConfiguration) WithVerifyStartedAt(value v1.Time) *Re
 // If called multiple times, the LastProbedAt field is set to the value of the last call.
 func (b *ReplicaStatusApplyConfiguration) WithLastProbedAt(value v1.Time) *ReplicaStatusApplyConfiguration {
 	b.LastProbedAt = &value
+	return b
+}
+
+// WithWritebackError sets the WritebackError field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the WritebackError field is set to the value of the last call.
+func (b *ReplicaStatusApplyConfiguration) WithWritebackError(value *WritebackErrorApplyConfiguration) *ReplicaStatusApplyConfiguration {
+	b.WritebackError = value
 	return b
 }

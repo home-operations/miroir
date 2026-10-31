@@ -27,11 +27,13 @@ filesystem on top to need a restage (a pod restart) once the volume
 recovers. ext4 usually goes read-only during the outage. When only
 background writeback failed, it stays `rw` instead and fails on its
 next metadata change, possibly weeks later. The agent catches those
-lost writes in the kernel log and flags the volume with a
+lost writes in the kernel log and records them per node in
+`status.perNode.<node>.writebackError`, with a
 `FilesystemNeedsRestage` condition, a Warning event, and the
 `miroir_volume_needs_restage` gauge (see
-[monitoring](/monitoring/)). Restarting the consuming pod restages
-the volume, runs fsck, and clears the flag.
+[monitoring](/monitoring/)). Restarting the pod that mounts the
+volume restages it, runs fsck, and clears the flag. For an RWX
+volume that is the NFS gateway pod, not the consumers.
 
 Two data replicas on their own are only 2 votes, and majority of 2 is
 2: _any_ disconnect would halt writes on both sides. That is what the

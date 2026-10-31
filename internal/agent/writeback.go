@@ -22,6 +22,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,7 @@ const (
 	defaultRestageSweepInterval = 30 * time.Second
 
 	reasonWritebackError = "WritebackError"
+	reasonRestaged       = "Restaged"
 	reasonRemounted      = "Remounted"
 	reasonUnmounted      = "Unmounted"
 	reasonRebooted       = "Rebooted"
@@ -53,7 +55,7 @@ const (
 
 var metricNeedsRestage = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 	Name: "miroir_volume_needs_restage",
-	Help: "1 while the kernel has lost a write under a filesystem still mounted on this node; ext4 aborts its journal on the next metadata change. Restart the consuming pod to restage. Absent otherwise.",
+	Help: "1 while the kernel has lost a write under a filesystem still mounted on this node; ext4 aborts its journal on the next metadata change. Restart the pod mounting it (the NFS gateway pod for RWX) to restage. Absent otherwise.",
 }, volumeOnlyLabels)
 
 func init() {
@@ -115,13 +117,14 @@ func parseMinor(s string, ev fsEvent) (int32, fsEvent) {
 	return int32(minor), ev
 }
 
-// WritebackWatcher maintains ConditionFilesystemNeedsRestage from the
-// kernel log (issue #594). A quorum loss under policy freeze can fail only
-// async writeback: ext4 keeps the mount rw and the error stays latent
-// until jbd2 trips on it at the next metadata change, possibly weeks later.
+// WritebackWatcher maintains this node's ReplicaStatus.WritebackError
+// from the kernel log (issue #594). A quorum loss under policy freeze can
+// fail only async writeback: ext4 keeps the mount rw and the error stays
+// latent until jbd2 trips on it at the next metadata change, possibly
+// weeks later.
 type WritebackWatcher struct {
 	Client client.Client
-	// Reader backs the read-modify-write of each condition update, so the
+	// Reader backs the read-modify-write of each status update, so the
 	// optimistic lock does not spin on a lagging cache; nil uses Client.
 	Reader   client.Reader
 	NodeName string
@@ -137,7 +140,9 @@ type WritebackWatcher struct {
 
 	// pending holds each minor's last unapplied event; an API failure
 	// keeps it for the next poll.
-	pending   map[int32]pendingEvent
+	pending map[int32]pendingEvent
+	// flagged mirrors the volumes whose slot carries a WritebackError, ahead
+	// of the informer cache after this watcher's own writes.
 	flagged   map[string]bool
 	lastSweep time.Time
 }
@@ -203,25 +208,16 @@ func (w *WritebackWatcher) apply(ctx context.Context, log logr.Logger, vols []mi
 	if vol == nil {
 		return true, nil
 	}
-	// w.flagged covers the informer lagging a condition this watcher just
-	// raised; updateCondition rereads uncached before writing either way.
-	raised := w.flagged[vol.Name] || needsRestageOn(vol.Status.Conditions, w.NodeName)
 	if p.ev != fsEventLostWrite {
-		if !raised {
-			return true, nil
-		}
+		// No cached precheck: the cache can lag a raise this watcher just
+		// wrote, and clear rereads uncached anyway.
 		reason := reasonRemounted
 		if p.ev == fsEventUnmounted {
 			reason = reasonUnmounted
 		}
-		if err := w.clear(ctx, vol.Name, reason); err != nil {
-			return false, err
-		}
-		w.unflag(vol.Name)
-		log.Info("filesystem journal reset; cleared the restage condition", "volume", vol.Name, "reason", reason)
-		return true, nil
+		return true, w.clear(ctx, log, vol.Name, reason)
 	}
-	if raised {
+	if w.flagged[vol.Name] || vol.Status.PerNode[w.NodeName].WritebackError != nil {
 		return true, nil
 	}
 	mounted, err := deviceMountedAnywhere(w.procDir(), minor)
@@ -233,10 +229,13 @@ func (w *WritebackWatcher) apply(ctx context.Context, log logr.Logger, vols []mi
 			"volume", vol.Name, "record", p.record)
 		return true, nil
 	}
-	msg := restagePrefix(w.NodeName) + fmt.Sprintf("the kernel lost a write to /dev/drbd%d under the mounted filesystem (%s). "+
-		"ext4 aborts its journal and goes read-only on its next metadata change; restart the consuming pod to restage the volume.",
-		minor, p.record)
-	changed, err := w.mark(ctx, vol.Name, msg)
+	changed, err := w.updateSlot(ctx, vol.Name, func(st *miroirv1alpha1.ReplicaStatus) bool {
+		if st.WritebackError != nil {
+			return false
+		}
+		st.WritebackError = &miroirv1alpha1.WritebackError{Since: metav1.Now(), Record: p.record}
+		return true
+	})
 	if apierrors.IsNotFound(err) {
 		return true, nil
 	}
@@ -245,6 +244,8 @@ func (w *WritebackWatcher) apply(ctx context.Context, log logr.Logger, vols []mi
 	}
 	w.flag(vol)
 	if changed {
+		msg := fmt.Sprintf("kernel lost a write to /dev/drbd%d under the filesystem mounted on %s (%s); %s",
+			minor, w.NodeName, p.record, restageAdvice(vol))
 		log.Info("kernel lost a write under a mounted filesystem; volume needs restage",
 			"volume", vol.Name, "record", p.record)
 		if w.Recorder != nil {
@@ -255,8 +256,17 @@ func (w *WritebackWatcher) apply(ctx context.Context, log logr.Logger, vols []mi
 	return true, nil
 }
 
-// sweep clears conditions whose mount is gone without a kernel line apply
-// saw (the ext4 messages are rate limited; other filesystems log nothing
+// restageAdvice names what to restart: an RWX volume's filesystem is
+// mounted by its NFS gateway, not by the pods consuming the export.
+func restageAdvice(vol *miroirv1alpha1.MiroirVolume) string {
+	if vol.Spec.Export != nil {
+		return "delete the volume's NFS gateway pod to restage it"
+	}
+	return "restart the consuming pod to restage the volume"
+}
+
+// sweep clears entries whose mount is gone without a kernel line apply saw
+// (the ext4 messages are rate limited; other filesystems log nothing
 // parseFSEvent knows), and publishes the gauge for the rest.
 func (w *WritebackWatcher) sweep(ctx context.Context, log logr.Logger) {
 	w.lastSweep = time.Now()
@@ -269,42 +279,50 @@ func (w *WritebackWatcher) sweep(ctx context.Context, log logr.Logger) {
 	if err != nil {
 		log.Error(err, "reading boot time; reboot clears are skipped this sweep")
 	}
-	stale := maps.Clone(w.flagged)
+	unseen := maps.Clone(w.flagged)
 	for i := range vols.Items {
 		vol := &vols.Items[i]
-		if !needsRestageOn(vol.Status.Conditions, w.NodeName) {
+		st, ok := vol.Status.PerNode[w.NodeName]
+		if !ok || st.WritebackError == nil {
 			continue
 		}
-		if reason := w.mountGone(vol, booted); reason != "" {
-			err := w.clear(ctx, vol.Name, reason)
-			if err == nil {
-				log.Info("filesystem no longer mounted; cleared the restage condition", "volume", vol.Name, "reason", reason)
-				continue
+		delete(unseen, vol.Name)
+		if reason := w.mountGone(st, booted); reason != "" {
+			if err := w.clear(ctx, log, vol.Name, reason); err != nil {
+				log.Error(err, "clearing a writeback error", "volume", vol.Name)
 			}
-			log.Error(err, "clearing the restage condition", "volume", vol.Name)
+			continue
 		}
-		delete(stale, vol.Name)
 		w.flag(vol)
 	}
-	for name := range stale {
-		w.unflag(name)
+	// A flag the cache does not show yet may be this watcher's own fresh
+	// raise: only an uncached read can retire it.
+	for name := range unseen {
+		vol := &miroirv1alpha1.MiroirVolume{}
+		err := w.reader().Get(ctx, types.NamespacedName{Name: name}, vol)
+		switch {
+		case apierrors.IsNotFound(err):
+			w.unflag(name)
+		case err != nil:
+			log.Error(err, "rereading a flagged volume", "volume", name)
+		case vol.Status.PerNode[w.NodeName].WritebackError == nil:
+			w.unflag(name)
+		}
 	}
 }
 
-// mountGone returns the clear reason when the mount the condition names
+// mountGone returns the clear reason when the mount the entry describes
 // can no longer exist, or "" while it may.
-func (w *WritebackWatcher) mountGone(vol *miroirv1alpha1.MiroirVolume, booted time.Time) string {
-	cond := meta.FindStatusCondition(vol.Status.Conditions, miroirv1alpha1.ConditionFilesystemNeedsRestage)
-	if !booted.IsZero() && cond.LastTransitionTime.Time.Before(booted) {
+func (w *WritebackWatcher) mountGone(st miroirv1alpha1.ReplicaStatus, booted time.Time) string {
+	if !booted.IsZero() && st.WritebackError.Since.Time.Before(booted) {
 		return reasonRebooted
 	}
-	minor := vol.Status.PerNode[w.NodeName].DRBDMinor
-	if minor <= 0 {
+	if st.DRBDMinor <= 0 {
 		return reasonUnmounted
 	}
-	// A failed check keeps the condition: "could not check" must never
-	// read as "not mounted".
-	if mounted, err := deviceMountedAnywhere(w.procDir(), minor); err == nil && !mounted {
+	// A failed check keeps the entry: "could not check" must never read as
+	// "not mounted".
+	if mounted, err := deviceMountedAnywhere(w.procDir(), st.DRBDMinor); err == nil && !mounted {
 		return reasonUnmounted
 	}
 	return ""
@@ -334,74 +352,84 @@ func (w *WritebackWatcher) reader() client.Reader {
 	return w.Client
 }
 
-// mark raises the condition for this node; false when it already was.
-func (w *WritebackWatcher) mark(ctx context.Context, name, msg string) (bool, error) {
-	return w.updateCondition(ctx, name, func(conds *[]metav1.Condition) bool {
-		if needsRestageOn(*conds, w.NodeName) {
+// clear drops this node's entry; a deleted volume has nothing to clear.
+func (w *WritebackWatcher) clear(ctx context.Context, log logr.Logger, name, reason string) error {
+	changed, err := w.updateSlot(ctx, name, func(st *miroirv1alpha1.ReplicaStatus) bool {
+		if st.WritebackError == nil {
 			return false
 		}
-		// Removed first so a condition another node raised restarts its
-		// transition time: the sweep compares it against this node's boot.
-		meta.RemoveStatusCondition(conds, miroirv1alpha1.ConditionFilesystemNeedsRestage)
-		meta.SetStatusCondition(conds, metav1.Condition{
-			Type:    miroirv1alpha1.ConditionFilesystemNeedsRestage,
-			Status:  metav1.ConditionTrue,
-			Reason:  reasonWritebackError,
-			Message: msg,
-		})
+		st.WritebackError = nil
 		return true
 	})
+	if err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	w.unflag(name)
+	if changed {
+		log.Info("filesystem mount replaced or gone; cleared the writeback error", "volume", name, "reason", reason)
+	}
+	return nil
 }
 
-// clear lowers the condition when this node raised it.
-func (w *WritebackWatcher) clear(ctx context.Context, name, reason string) error {
-	_, err := w.updateCondition(ctx, name, func(conds *[]metav1.Condition) bool {
-		if !needsRestageOn(*conds, w.NodeName) {
-			return false
-		}
-		meta.SetStatusCondition(conds, metav1.Condition{
-			Type:   miroirv1alpha1.ConditionFilesystemNeedsRestage,
-			Status: metav1.ConditionFalse,
-			Reason: reason,
-		})
-		return true
-	})
-	return client.IgnoreNotFound(err)
-}
-
-// updateCondition merge-patches the volume's conditions under an
-// optimistic lock: a merge patch replaces the whole list, so an unlocked
-// write would drop a condition another writer added since the read.
-func (w *WritebackWatcher) updateCondition(ctx context.Context, name string, mutate func(*[]metav1.Condition) bool) (bool, error) {
+// updateSlot mutates this node's status slot and rederives the volume
+// condition from every slot, in one merge patch under an optimistic lock:
+// the patch carries the whole conditions list, so an unlocked write would
+// drop a condition or another node's entry written since the read. The
+// reconciler's apply leaves WritebackError alone, as it never sends it.
+func (w *WritebackWatcher) updateSlot(ctx context.Context, name string, mutate func(*miroirv1alpha1.ReplicaStatus) bool) (bool, error) {
 	var changed bool
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		vol := &miroirv1alpha1.MiroirVolume{}
 		if err := w.reader().Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 			return err
 		}
+		st, ok := vol.Status.PerNode[w.NodeName]
+		if !ok {
+			changed = false
+			return nil
+		}
 		base := vol.DeepCopy()
-		changed = mutate(&vol.Status.Conditions)
+		changed = mutate(&st)
 		if !changed {
 			return nil
 		}
+		vol.Status.PerNode[w.NodeName] = st
+		setRestageCondition(vol)
 		return w.Client.Status().Patch(ctx, vol, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 	})
 	if err != nil {
-		return false, fmt.Errorf("writeback: update %s condition: %w", name, err)
+		return false, fmt.Errorf("writeback: update %s status: %w", name, err)
 	}
 	return changed, nil
 }
 
-// restagePrefix opens the condition message with the node whose mount
-// holds the error: only that node's remount resets it.
-func restagePrefix(node string) string {
-	return "node " + node + ": "
-}
-
-// needsRestageOn reports whether the condition is raised for node's mount.
-func needsRestageOn(conds []metav1.Condition, node string) bool {
-	c := meta.FindStatusCondition(conds, miroirv1alpha1.ConditionFilesystemNeedsRestage)
-	return c != nil && c.Status == metav1.ConditionTrue && strings.HasPrefix(c.Message, restagePrefix(node))
+// setRestageCondition derives ConditionFilesystemNeedsRestage from the
+// nodes reporting a WritebackError.
+func setRestageCondition(vol *miroirv1alpha1.MiroirVolume) {
+	var nodes []string
+	for node, st := range vol.Status.PerNode {
+		if st.WritebackError != nil {
+			nodes = append(nodes, node)
+		}
+	}
+	if len(nodes) == 0 {
+		if meta.IsStatusConditionTrue(vol.Status.Conditions, miroirv1alpha1.ConditionFilesystemNeedsRestage) {
+			meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+				Type:   miroirv1alpha1.ConditionFilesystemNeedsRestage,
+				Status: metav1.ConditionFalse,
+				Reason: reasonRestaged,
+			})
+		}
+		return
+	}
+	slices.Sort(nodes)
+	meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+		Type:   miroirv1alpha1.ConditionFilesystemNeedsRestage,
+		Status: metav1.ConditionTrue,
+		Reason: reasonWritebackError,
+		Message: fmt.Sprintf("kernel lost a write under the filesystem mounted on %s (status.perNode.<node>.writebackError); %s",
+			strings.Join(nodes, ", "), restageAdvice(vol)),
+	})
 }
 
 func volumeForMinor(vols []miroirv1alpha1.MiroirVolume, node string, minor int32) *miroirv1alpha1.MiroirVolume {

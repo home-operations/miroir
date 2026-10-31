@@ -488,6 +488,9 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: verifyStartedAt
       type:
         namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
+    - name: writebackError
+      type:
+        namedType: com.github.home-operations.miroir.api.v1alpha1.WritebackError
 - name: com.github.home-operations.miroir.api.v1alpha1.SnapshotNodeState
   scalar: string
 - name: com.github.home-operations.miroir.api.v1alpha1.VolumeClient
@@ -516,6 +519,15 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: snapshotName
       type:
         scalar: string
+- name: com.github.home-operations.miroir.api.v1alpha1.WritebackError
+  map:
+    fields:
+    - name: record
+      type:
+        scalar: string
+    - name: since
+      type:
+        namedType: io.k8s.apimachinery.pkg.apis.meta.v1.Time
 - name: com.github.home-operations.miroir.api.v1alpha1.ZFSPool
   map:
     fields:
