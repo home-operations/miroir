@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 )
@@ -307,6 +310,61 @@ func TestWritebackWatcherSurvivesALaggingCache(t *testing.T) {
 	w.handle(t.Context(), logr.Discard(), []string{ext4Mounted})
 	if writebackErrorOn(t, live, nodeA) != nil {
 		t.Fatal("a remount seen while the cache lags must still clear the entry")
+	}
+}
+
+// A clear that fails stays pending: the poll after the API recovers must
+// still retire the entry, even though the remount record is long gone.
+func TestWritebackWatcherRetriesAFailedClear(t *testing.T) {
+	failures := 1
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(writebackVol(nodeA)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, cl client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				if failures > 0 {
+					failures--
+					return errors.New("apiserver unavailable")
+				}
+				return cl.SubResource(sub).Patch(ctx, obj, patch, opts...)
+			},
+		}).Build()
+	w, _ := newWritebackWatcher(c, writebackFixture(t, drbd1036Mounted, time.Now().Add(-time.Hour)))
+	w.SweepInterval = time.Hour
+
+	w.handle(t.Context(), logr.Discard(), []string{ext4Mounted})
+	if writebackErrorOn(t, c, nodeA) == nil || len(w.pending) != 1 {
+		t.Fatalf("pending = %v, want the failed clear kept", w.pending)
+	}
+	w.handle(t.Context(), logr.Discard(), nil)
+	if we := writebackErrorOn(t, c, nodeA); we != nil {
+		t.Fatalf("writebackError = %+v, want cleared on retry", we)
+	}
+}
+
+// Replica removal drops a slot along with its error; the condition must
+// follow what the remaining slots report.
+func TestWritebackWatcherRederivesAfterSlotRemoval(t *testing.T) {
+	cases := []struct {
+		name       string
+		remaining  []string
+		wantStatus metav1.ConditionStatus
+	}{
+		{"last erred slot removed", nil, metav1.ConditionFalse},
+		{"another erred slot remains", []string{nodeA}, metav1.ConditionTrue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vol := writebackVol(append([]string{nodeB}, tc.remaining...)...)
+			delete(vol.Status.PerNode, nodeB)
+			c := newClient(t, vol)
+			w, _ := newWritebackWatcher(c, writebackFixture(t, drbd1036Mounted, time.Now().Add(-time.Hour)))
+			w.handle(t.Context(), logr.Discard(), nil)
+			cond := restageCond(t, c)
+			if cond == nil || cond.Status != tc.wantStatus || strings.Contains(cond.Message, nodeB) {
+				t.Fatalf("condition = %+v, want %s without %s", cond, tc.wantStatus, nodeB)
+			}
+		})
 	}
 }
 

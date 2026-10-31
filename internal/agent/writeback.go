@@ -215,7 +215,10 @@ func (w *WritebackWatcher) apply(ctx context.Context, log logr.Logger, vols []mi
 		if p.ev == fsEventUnmounted {
 			reason = reasonUnmounted
 		}
-		return true, w.clear(ctx, log, vol.Name, reason)
+		if err := w.clear(ctx, log, vol.Name, reason); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if w.flagged[vol.Name] || vol.Status.PerNode[w.NodeName].WritebackError != nil {
 		return true, nil
@@ -282,6 +285,13 @@ func (w *WritebackWatcher) sweep(ctx context.Context, log logr.Logger) {
 	unseen := maps.Clone(w.flagged)
 	for i := range vols.Items {
 		vol := &vols.Items[i]
+		// A slot dropped with its error (replica removal) leaves the
+		// condition behind; any agent may rederive it.
+		if restageConditionStale(vol) {
+			if _, err := w.updateVolume(ctx, vol.Name, setRestageCondition); err != nil {
+				log.Error(err, "rederiving the restage condition", "volume", vol.Name)
+			}
+		}
 		st, ok := vol.Status.PerNode[w.NodeName]
 		if !ok || st.WritebackError == nil {
 			continue
@@ -372,29 +382,36 @@ func (w *WritebackWatcher) clear(ctx context.Context, log logr.Logger, name, rea
 }
 
 // updateSlot mutates this node's status slot and rederives the volume
-// condition from every slot, in one merge patch under an optimistic lock:
-// the patch carries the whole conditions list, so an unlocked write would
-// drop a condition or another node's entry written since the read. The
-// reconciler's apply leaves WritebackError alone, as it never sends it.
+// condition from every slot. The reconciler's apply leaves WritebackError
+// alone, as it never sends it.
 func (w *WritebackWatcher) updateSlot(ctx context.Context, name string, mutate func(*miroirv1alpha1.ReplicaStatus) bool) (bool, error) {
+	return w.updateVolume(ctx, name, func(vol *miroirv1alpha1.MiroirVolume) bool {
+		st, ok := vol.Status.PerNode[w.NodeName]
+		if !ok || !mutate(&st) {
+			return false
+		}
+		vol.Status.PerNode[w.NodeName] = st
+		setRestageCondition(vol)
+		return true
+	})
+}
+
+// updateVolume rereads the volume uncached and merge-patches its status
+// under an optimistic lock: the patch carries the whole conditions list,
+// so an unlocked write would drop a condition or another node's entry
+// written since the read.
+func (w *WritebackWatcher) updateVolume(ctx context.Context, name string, mutate func(*miroirv1alpha1.MiroirVolume) bool) (bool, error) {
 	var changed bool
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		vol := &miroirv1alpha1.MiroirVolume{}
 		if err := w.reader().Get(ctx, types.NamespacedName{Name: name}, vol); err != nil {
 			return err
 		}
-		st, ok := vol.Status.PerNode[w.NodeName]
-		if !ok {
-			changed = false
-			return nil
-		}
 		base := vol.DeepCopy()
-		changed = mutate(&st)
+		changed = mutate(vol)
 		if !changed {
 			return nil
 		}
-		vol.Status.PerNode[w.NodeName] = st
-		setRestageCondition(vol)
 		return w.Client.Status().Patch(ctx, vol, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 	})
 	if err != nil {
@@ -403,9 +420,17 @@ func (w *WritebackWatcher) updateSlot(ctx context.Context, name string, mutate f
 	return changed, nil
 }
 
+// restageConditionStale reports whether the condition disagrees with the
+// slots, without touching vol.
+func restageConditionStale(vol *miroirv1alpha1.MiroirVolume) bool {
+	probe := *vol
+	probe.Status.Conditions = slices.Clone(vol.Status.Conditions)
+	return setRestageCondition(&probe)
+}
+
 // setRestageCondition derives ConditionFilesystemNeedsRestage from the
-// nodes reporting a WritebackError.
-func setRestageCondition(vol *miroirv1alpha1.MiroirVolume) {
+// nodes reporting a WritebackError; true when it changed.
+func setRestageCondition(vol *miroirv1alpha1.MiroirVolume) bool {
 	var nodes []string
 	for node, st := range vol.Status.PerNode {
 		if st.WritebackError != nil {
@@ -413,17 +438,17 @@ func setRestageCondition(vol *miroirv1alpha1.MiroirVolume) {
 		}
 	}
 	if len(nodes) == 0 {
-		if meta.IsStatusConditionTrue(vol.Status.Conditions, miroirv1alpha1.ConditionFilesystemNeedsRestage) {
-			meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
-				Type:   miroirv1alpha1.ConditionFilesystemNeedsRestage,
-				Status: metav1.ConditionFalse,
-				Reason: reasonRestaged,
-			})
+		if !meta.IsStatusConditionTrue(vol.Status.Conditions, miroirv1alpha1.ConditionFilesystemNeedsRestage) {
+			return false
 		}
-		return
+		return meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+			Type:   miroirv1alpha1.ConditionFilesystemNeedsRestage,
+			Status: metav1.ConditionFalse,
+			Reason: reasonRestaged,
+		})
 	}
 	slices.Sort(nodes)
-	meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
+	return meta.SetStatusCondition(&vol.Status.Conditions, metav1.Condition{
 		Type:   miroirv1alpha1.ConditionFilesystemNeedsRestage,
 		Status: metav1.ConditionTrue,
 		Reason: reasonWritebackError,
