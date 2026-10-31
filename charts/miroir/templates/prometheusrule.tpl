@@ -46,7 +46,7 @@ metadata:
 spec:
   groups:
     {{- /* Keep in sync with the rules below. */}}
-    {{- $volumeAlerts := list "MiroirVolumeSplitBrain" "MiroirVolumeQuorumLost" "MiroirVolumeSuspendedBarrier" "MiroirVolumeTeardownWedged" "MiroirVolumeDiskFailed" "MiroirVolumeNotUpToDate" "MiroirVolumeDisconnected" "MiroirVolumeOutOfSync" "MiroirVolumeRemoteConsumer" }}
+    {{- $volumeAlerts := list "MiroirVolumeSplitBrain" "MiroirVolumeQuorumLost" "MiroirVolumeSuspendedBarrier" "MiroirVolumeTeardownWedged" "MiroirVolumeDiskFailed" "MiroirVolumeNotUpToDate" "MiroirVolumeDisconnected" "MiroirVolumeOutOfSync" "MiroirVolumeRemoteConsumer" "MiroirVolumeFilesystemNeedsRestage" }}
     {{- if .Values.drbd.verify.schedule }}
     {{- $volumeAlerts = append $volumeAlerts "MiroirVolumeVerifyStale" }}
     {{- end }}
@@ -265,6 +265,30 @@ spec:
               speed. Set autoDiskfulAfter to convert settled consumers to a
               local replica, pin the workload to a replica node, or accept
               the network path.
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- end }}
+
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeFilesystemNeedsRestage" "severity" "warning" }}
+        {{- if include "miroir.alertEnabled" $rule }}
+        - alert: MiroirVolumeFilesystemNeedsRestage
+          expr: miroir_volume_needs_restage == 1
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
+          labels:
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
+          annotations:
+            summary: >-
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }} lost a
+              write under its mounted filesystem on {{ "{{" }} $labels.node {{ "}}" }}
+            description: >-
+              The kernel failed a write to the DRBD device (typically during a
+              quorum loss) while the filesystem stayed mounted. ext4 keeps
+              serving it until its next metadata change, which then aborts the
+              journal and remounts read-only, possibly weeks later. Restart the
+              consuming pod to restage the volume; the restage runs fsck.
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

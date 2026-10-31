@@ -48,6 +48,12 @@ const (
 // gate staging.
 const ConditionNodeUnreachable = "NodeUnreachable"
 
+// ConditionFilesystemNeedsRestage indicates that the kernel lost a write
+// under a filesystem mounted on the node named in the message. ext4 keeps
+// serving that mount until its next metadata change aborts the journal;
+// only a new mount resets it. Maintained by that node's agent.
+const ConditionFilesystemNeedsRestage = "FilesystemNeedsRestage"
+
 // Replica is one placement of the volume's data — a DRBD peer when the
 // volume is replicated.
 type Replica struct {

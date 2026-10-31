@@ -23,8 +23,15 @@ cannot reach a majority of the volume's peers refuses writes (the
 workload sees I/O errors) instead of carrying on alone. Two isolated
 sides can never both write, so there is nothing to un-diverge later;
 when connectivity returns, the stale side simply resyncs. Expect the
-filesystem on top to have gone read-only in the meantime, so the pod
-usually needs a restart once the volume recovers.
+filesystem on top to need a restage (a pod restart) once the volume
+recovers. ext4 usually goes read-only during the outage. When only
+background writeback failed, it stays `rw` instead and fails on its
+next metadata change, possibly weeks later. The agent catches those
+lost writes in the kernel log and flags the volume with a
+`FilesystemNeedsRestage` condition, a Warning event, and the
+`miroir_volume_needs_restage` gauge (see
+[monitoring](/monitoring/)). Restarting the consuming pod restages
+the volume, runs fsck, and clears the flag.
 
 Two data replicas on their own are only 2 votes, and majority of 2 is
 2: _any_ disconnect would halt writes on both sides. That is what the
