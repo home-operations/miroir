@@ -562,6 +562,23 @@ spec:
                         stale-bitmap self-heal must not cycle this volume's connections.
                       format: date-time
                       type: string
+                    writebackError:
+                      description: |-
+                        WritebackError is set by this node's agent when the kernel lost a
+                        write under a filesystem mounted here, and cleared once that mount
+                        is gone or replaced.
+                      properties:
+                        record:
+                          description: Record is the kernel log line.
+                          type: string
+                        since:
+                          description: Since is when the node's agent saw the failure.
+                          format: date-time
+                          type: string
+                      required:
+                      - record
+                      - since
+                      type: object
                   required:
                   - deviceCreated
                   type: object

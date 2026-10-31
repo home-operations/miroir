@@ -17,11 +17,20 @@ limitations under the License.
 package agent
 
 import (
+	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/go-logr/logr"
+)
+
+const (
+	kmsgPollInterval = time.Second
+	defaultKmsgPath  = "/dev/kmsg"
 )
 
 // kmsgReadCap bounds the drain loop: /dev/kmsg yields one record per read
@@ -85,4 +94,106 @@ func captureKmsg(path, resource string, limit int) []string {
 		lines = lines[len(lines)-limit:]
 	}
 	return lines
+}
+
+// tailKmsg drains the kernel log ring on entry, then every interval until
+// ctx is cancelled, handing each drain's complete records to handle.
+// replay marks the first drain: the boot history before the caller
+// started. handle runs on every tick, even with kmsg unopenable.
+func tailKmsg(ctx context.Context, log logr.Logger, path string, interval time.Duration, handle func(lines []string, replay bool)) {
+	if path == "" {
+		path = defaultKmsgPath
+	}
+	if interval <= 0 {
+		interval = kmsgPollInterval
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		log.Error(err, "kmsg unavailable; retrying on every poll")
+	}
+
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	var partial string
+	replay := true
+	for {
+		var lines []string
+		drained := false
+		if f != nil {
+			lines, partial = drainKmsg(f, partial)
+			drained = true
+		}
+		handle(lines, replay && drained)
+		if drained {
+			replay = false
+		}
+		select {
+		case <-ctx.Done():
+			if f != nil {
+				_ = f.Close()
+			}
+			return
+		case <-tick.C:
+		}
+		if f == nil {
+			if nf, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
+				f = nf
+			}
+		}
+	}
+}
+
+// drainKmsg reads every buffered record. partial carries a record split
+// across drains, which a regular file in tests can produce.
+func drainKmsg(f *os.File, partial string) (lines []string, rest string) {
+	// Re-armed per drain: the deadline is absolute, and without it a
+	// drained ring parks Read until the next kernel record, which also
+	// holds the caller's ctx check hostage. See kmsgReadTimeout.
+	_ = f.SetReadDeadline(time.Now().Add(kmsgReadTimeout))
+	buf := make([]byte, 8192)
+	var b strings.Builder
+	b.WriteString(partial)
+	for range kmsgReadCap {
+		n, err := f.Read(buf)
+		if n > 0 {
+			b.Write(buf[:n])
+		}
+		if err != nil {
+			if errors.Is(err, syscall.EPIPE) {
+				continue
+			}
+			break
+		}
+	}
+	data := b.String()
+	lines = strings.Split(data, "\n")
+	if strings.HasSuffix(data, "\n") {
+		rest = ""
+	} else {
+		rest = lines[len(lines)-1]
+	}
+	return lines[:len(lines)-1], rest
+}
+
+// kernelPayload returns a kmsg record's message when the record comes from
+// the kernel. The first field is (facility<<3)|severity; kernel messages
+// have facility 0 (priority 0-7), userspace gets 8+, so the gate rejects
+// lines forged through /dev/kmsg writes.
+func kernelPayload(line string) (string, bool) {
+	prio, rest, ok := strings.Cut(line, ",")
+	if !ok {
+		return "", false
+	}
+	p, err := strconv.Atoi(prio)
+	if err != nil || p >= 8 {
+		return "", false
+	}
+	return kmsgPayload(rest), true
+}
+
+func kmsgPayload(line string) string {
+	if _, rest, ok := strings.Cut(line, ";"); ok {
+		return rest
+	}
+	return line
 }

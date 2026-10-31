@@ -713,6 +713,12 @@ func main() {
 			}
 			addRunnable(watcher, "unable to add DRBD event watcher")
 			addRunnable(&agent.AssertionWatcher{Wedge: storageWedge}, "unable to add DRBD assertion watcher")
+			addRunnable(&agent.WritebackWatcher{
+				Client:   mgr.GetClient(),
+				Reader:   mgr.GetAPIReader(),
+				NodeName: nodeName,
+				Recorder: mgr.GetEventRecorder("miroir-agent"),
+			}, "unable to add writeback error watcher")
 		}
 		reconciler := &agent.VolumeReconciler{
 			Client:     mgr.GetClient(),

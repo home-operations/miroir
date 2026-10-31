@@ -18,11 +18,7 @@ package agent
 
 import (
 	"context"
-	"errors"
-	"os"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -31,11 +27,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/home-operations/miroir/internal/backend"
-)
-
-const (
-	assertionWatchInterval = time.Second
-	defaultKmsgPath        = "/dev/kmsg"
 )
 
 var metricDRBDAssertions = prometheus.NewCounter(prometheus.CounterOpts{
@@ -54,19 +45,11 @@ var fatalDRBDAssertions = []string{
 }
 
 // isFatalDRBDAssertion matches a kernel-origin DRBD assertion with one of
-// the fatal signatures. The first kmsg field is (facility<<3)|severity;
-// kernel messages have facility 0 (priority 0-7), userspace gets 8+, so
-// the priority gate rejects forged lines — a false positive is reboot-only.
+// the fatal signatures; kernelPayload's priority gate rejects forged lines,
+// since a false positive is reboot-only.
 func isFatalDRBDAssertion(line string) bool {
-	prio, rest, ok := strings.Cut(line, ",")
-	if !ok {
-		return false
-	}
-	p, err := strconv.Atoi(prio)
-	if err != nil || p >= 8 {
-		return false
-	}
-	if !strings.Contains(rest, "ASSERTION") {
+	rest, ok := kernelPayload(line)
+	if !ok || !strings.Contains(rest, "ASSERTION") {
 		return false
 	}
 	for _, sig := range fatalDRBDAssertions {
@@ -95,73 +78,13 @@ func (w *AssertionWatcher) Start(ctx context.Context) error {
 	if w.metric == nil {
 		w.metric = metricDRBDAssertions
 	}
-	interval := w.Interval
-	if interval <= 0 {
-		interval = assertionWatchInterval
-	}
-	path := w.Path
-	if path == "" {
-		path = defaultKmsgPath
-	}
-
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		log.Error(err, "kmsg unavailable; assertions will not trip the breaker this run")
-	}
-
-	tick := time.NewTicker(interval)
-	defer tick.Stop()
-	var partial string
-	replay := true
-	for {
-		if f != nil {
-			partial = w.drain(log, f, partial, replay)
-			replay = false
-		}
-		select {
-		case <-ctx.Done():
-			if f != nil {
-				_ = f.Close()
-			}
-			return nil
-		case <-tick.C:
-		}
-		if f == nil {
-			if nf, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
-				f = nf
-			}
-		}
-	}
+	tailKmsg(ctx, log, w.Path, w.Interval, func(lines []string, replay bool) {
+		w.handle(log, lines, replay)
+	})
+	return nil
 }
 
-func (w *AssertionWatcher) drain(log logr.Logger, f *os.File, partial string, replay bool) string {
-	// Re-armed per drain: the deadline is absolute, and without it a
-	// drained ring parks Read until the next kernel record, which also
-	// holds Start's ctx check hostage. See kmsgReadTimeout.
-	_ = f.SetReadDeadline(time.Now().Add(kmsgReadTimeout))
-	buf := make([]byte, 8192)
-	var b strings.Builder
-	b.WriteString(partial)
-	for range kmsgReadCap {
-		n, err := f.Read(buf)
-		if n > 0 {
-			b.Write(buf[:n])
-		}
-		if err != nil {
-			if errors.Is(err, syscall.EPIPE) {
-				continue
-			}
-			break
-		}
-	}
-	data := b.String()
-	lines := strings.Split(data, "\n")
-	if strings.HasSuffix(data, "\n") {
-		partial = ""
-	} else {
-		partial = lines[len(lines)-1]
-		lines = lines[:len(lines)-1]
-	}
+func (w *AssertionWatcher) handle(log logr.Logger, lines []string, replay bool) {
 	for _, line := range lines {
 		if !isFatalDRBDAssertion(line) {
 			continue
@@ -175,12 +98,4 @@ func (w *AssertionWatcher) drain(log logr.Logger, f *os.File, partial string, re
 		log.Info("DRBD kernel assertion sighted; node command breaker latched until reboot",
 			"record", kmsgPayload(line))
 	}
-	return partial
-}
-
-func kmsgPayload(line string) string {
-	if _, rest, ok := strings.Cut(line, ";"); ok {
-		return rest
-	}
-	return line
 }

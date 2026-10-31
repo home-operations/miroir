@@ -272,6 +272,7 @@ func deleteVolumeSeries(volume string) {
 	metricVerifyOutOfSyncBytes.DeletePartialMatch(byVolume)
 	metricDisklessPrimary.DeletePartialMatch(byVolume)
 	metricWedged.DeletePartialMatch(byVolume)
+	metricNeedsRestage.DeletePartialMatch(byVolume)
 }
 
 // recordDisklessMetrics publishes a diskless leg's view. Deliberately not

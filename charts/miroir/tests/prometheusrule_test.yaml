@@ -36,7 +36,7 @@ tests:
           value: miroir.volumes
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 9
+          count: 10
       - equal:
           path: spec.groups[1].name
           value: miroir.pools
@@ -93,15 +93,15 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 10
+          count: 11
       - equal:
-          path: spec.groups[0].rules[9].alert
+          path: spec.groups[0].rules[10].alert
           value: MiroirVolumeVerifyStale
       - equal:
-          path: spec.groups[0].rules[9].labels.severity
+          path: spec.groups[0].rules[10].labels.severity
           value: warning
       - equal:
-          path: spec.groups[0].rules[9].expr
+          path: spec.groups[0].rules[10].expr
           value: time() - miroir_volume_verify_last_timestamp_seconds > 9 * 86400
 
   - it: should mark IO-freezing conditions critical
@@ -135,6 +135,22 @@ tests:
       - equal:
           path: spec.groups[0].rules[4].labels.severity
           value: warning
+
+  - it: should warn on a filesystem that needs a restage
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[9].alert
+          value: MiroirVolumeFilesystemNeedsRestage
+      - equal:
+          path: spec.groups[0].rules[9].labels.severity
+          value: warning
+      - equal:
+          path: spec.groups[0].rules[9].expr
+          value: miroir_volume_needs_restage == 1
+      - notExists:
+          path: spec.groups[0].rules[9].for
 
   - it: should add extra labels to the PrometheusRule
     set:
@@ -178,7 +194,7 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 8
+          count: 9
       # RemoteConsumer moves up into OutOfSync's slot.
       - equal:
           path: spec.groups[0].rules[7].alert

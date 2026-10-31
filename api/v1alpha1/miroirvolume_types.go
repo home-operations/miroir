@@ -48,6 +48,10 @@ const (
 // gate staging.
 const ConditionNodeUnreachable = "NodeUnreachable"
 
+// ConditionFilesystemNeedsRestage is True while any node reports a
+// ReplicaStatus.WritebackError. Maintained by the agents.
+const ConditionFilesystemNeedsRestage = "FilesystemNeedsRestage"
+
 // Replica is one placement of the volume's data — a DRBD peer when the
 // volume is replicated.
 type Replica struct {
@@ -364,6 +368,21 @@ type ReplicaStatus struct {
 	// "exists in CRD" from "live and reachable."
 	// +optional
 	LastProbedAt *metav1.Time `json:"lastProbedAt,omitempty"`
+	// WritebackError is set by this node's agent when the kernel lost a
+	// write under a filesystem mounted here, and cleared once that mount
+	// is gone or replaced.
+	// +optional
+	WritebackError *WritebackError `json:"writebackError,omitempty"`
+}
+
+// WritebackError records a write the kernel lost under a filesystem
+// mounted on the node. ext4 keeps serving such a mount until its next
+// metadata change aborts the journal; only a new mount resets it.
+type WritebackError struct {
+	// Since is when the node's agent saw the failure.
+	Since metav1.Time `json:"since"`
+	// Record is the kernel log line.
+	Record string `json:"record"`
 }
 
 // ExportStatus is the observed state of an RWX volume's NFS gateway,

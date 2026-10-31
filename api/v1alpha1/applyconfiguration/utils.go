@@ -84,6 +84,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &apiv1alpha1.VolumeClientApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("VolumeSource"):
 		return &apiv1alpha1.VolumeSourceApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("WritebackError"):
+		return &apiv1alpha1.WritebackErrorApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ZFSPool"):
 		return &apiv1alpha1.ZFSPoolApplyConfiguration{}
 
