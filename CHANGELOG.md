@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.12.10](https://github.com/home-operations/miroir/compare/0.12.9...0.12.10) (2026-11-07)
+
+
+### Features
+
+* **agent:** flag filesystems with a latent writeback error after quorum loss ([#600](https://github.com/home-operations/miroir/issues/600)) ([4e81e96](https://github.com/home-operations/miroir/commit/4e81e962da0232513cdf0a7881cf136cb5fb28f4))
+
+
+### Bug Fixes
+
+* **container:** update image registry.k8s.io/kubectl (v1.37.1 → v1.37.2) ([#584](https://github.com/home-operations/miroir/issues/584)) ([c22ba8e](https://github.com/home-operations/miroir/commit/c22ba8ea43fd045f23d0f96c9288b50e1b462d86))
+
+
+### Continuous Integration
+
+* **govulncheck:** run the scan on a schedule ([1c56caf](https://github.com/home-operations/miroir/commit/1c56cafecfb25b0ff5c4bed36223e35f2106648e))
+* replace the shared workflow-lint action with zizmor-action ([52fd57c](https://github.com/home-operations/miroir/commit/52fd57c2af364ab26ea23b514d80d38703e90925))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action jdx/mise-action (v5.2.3 → v5.2.4) ([#590](https://github.com/home-operations/miroir/issues/590)) ([2b281bf](https://github.com/home-operations/miroir/commit/2b281bfa0c983db765b2faf0c3da4903b9ace253))
+* **github-action:** update action jdx/mise-action (v5.2.4 → v5.2.5) ([#602](https://github.com/home-operations/miroir/issues/602)) ([18ea09f](https://github.com/home-operations/miroir/commit/18ea09f0d08584081edaba56363db4394036dff6))
+* **github-action:** update github-actions ([#605](https://github.com/home-operations/miroir/issues/605)) ([34f34ba](https://github.com/home-operations/miroir/commit/34f34baf5c0eec2f21e97621f6d63a0d291deed7))
+* **go:** update kubernetes monorepo (v0.37.1 → v0.37.2) ([#597](https://github.com/home-operations/miroir/issues/597)) ([2d03dde](https://github.com/home-operations/miroir/commit/2d03ddeec18434bb39b04da802b3a0db1a16d286))
+* **go:** update module github.com/onsi/ginkgo/v2 (v2.33.1 → v2.34.0) ([#601](https://github.com/home-operations/miroir/issues/601)) ([f99f652](https://github.com/home-operations/miroir/commit/f99f6524229d920f99979b023c4ca95efcdaeb95))
+* **go:** update module google.golang.org/grpc (v1.84.0 → v1.85.0) ([#591](https://github.com/home-operations/miroir/issues/591)) ([81dd6e6](https://github.com/home-operations/miroir/commit/81dd6e6a685942d50cd2a99ae7a5e72bb34a3d25))
+* **go:** update module k8s.io/mount-utils (v0.37.1 → v0.37.2) ([#592](https://github.com/home-operations/miroir/issues/592)) ([831f5b9](https://github.com/home-operations/miroir/commit/831f5b92573bb8d1fd56380e13eb264daf36928e))
+* **go:** update module k8s.io/utils (cf1189d → ca04ba5) ([#575](https://github.com/home-operations/miroir/issues/575)) ([878ae32](https://github.com/home-operations/miroir/commit/878ae32a1b66b9d01d5ab619689f2c501caef021))
+* **mise:** update mise tools ([#607](https://github.com/home-operations/miroir/issues/607)) ([38ec0bd](https://github.com/home-operations/miroir/commit/38ec0bdbbd76ec3caa3b597f04a03c738841d6a0))
+* **mise:** update tool kubectl (1.37.1 → 1.37.2) ([#596](https://github.com/home-operations/miroir/issues/596)) ([fdb7a82](https://github.com/home-operations/miroir/commit/fdb7a820646ad81d78963dfdb8b51acaa78edb31))
+* **mise:** update tool node (26.12.1 → v26.13.0) ([#595](https://github.com/home-operations/miroir/issues/595)) ([bea96e0](https://github.com/home-operations/miroir/commit/bea96e00f6f6c507b5797c3c992f15987a2b728d))
+* **mise:** update tool oxfmt (0.74.0 → 0.75.0) ([#589](https://github.com/home-operations/miroir/issues/589)) ([c17c7df](https://github.com/home-operations/miroir/commit/c17c7df632d2c55bc4cf2cad7f76c596dcc07faf))
+* **mise:** update tool pnpm (12.15.0 → 12.16.0) ([#588](https://github.com/home-operations/miroir/issues/588)) ([dfe6f64](https://github.com/home-operations/miroir/commit/dfe6f64e59cab6f20446356bbefca0e027f5ec95))
+* **mise:** update tool pnpm (12.16.0 → 12.16.1) ([#593](https://github.com/home-operations/miroir/issues/593)) ([f587632](https://github.com/home-operations/miroir/commit/f5876328de2b6688464d68fe2ed468eaeebadfbe))
+* **mise:** update tool talos (1.14.4 → 1.14.5) ([#586](https://github.com/home-operations/miroir/issues/586)) ([78b0c1e](https://github.com/home-operations/miroir/commit/78b0c1ea50acc95b4548ca264b0f4ebfc4f86712))
+* **npm:** update dependency @astrojs/starlight (0.42.7 → 0.42.8) ([#598](https://github.com/home-operations/miroir/issues/598)) ([b65e39e](https://github.com/home-operations/miroir/commit/b65e39e01ff59f838e41811e8d5b970236c165e1))
+* **npm:** update dependency @astrojs/starlight (0.42.8 → 0.42.9) ([#606](https://github.com/home-operations/miroir/issues/606)) ([0a90d4a](https://github.com/home-operations/miroir/commit/0a90d4aeab1606f0e104ccadd292329b0e9f44a4))
+* **npm:** update dependency astro (7.4.2 → 7.4.4) ([#599](https://github.com/home-operations/miroir/issues/599)) ([783a907](https://github.com/home-operations/miroir/commit/783a907e1b1e2728df2d3ab15e7e5bdd92a403fd))
+* **npm:** update dependency astro (7.4.4 → 7.4.5) ([#603](https://github.com/home-operations/miroir/issues/603)) ([309387e](https://github.com/home-operations/miroir/commit/309387ee492a14d505ab0aa15a4c7eca51d8d1fb))
+* **npm:** update dependency astro (7.4.5 → 7.4.6) ([#608](https://github.com/home-operations/miroir/issues/608)) ([904412f](https://github.com/home-operations/miroir/commit/904412f08cd040fbcb59ddbee20ffe54aabf4d80))
+* **npm:** update dependency astro (7.4.6 → 7.4.7) ([#609](https://github.com/home-operations/miroir/issues/609)) ([fbe2923](https://github.com/home-operations/miroir/commit/fbe2923a2c71d3176c84235b92a3c3eed75f2720))
+* **npm:** update dependency mermaid (12.2.0 → 12.3.0) ([#604](https://github.com/home-operations/miroir/issues/604)) ([c8fa014](https://github.com/home-operations/miroir/commit/c8fa014bb4fa4882af2da76bfcfec7fe7f7624f7))
+* **renovate:** extend the org preset from home-operations/.github ([77c8ba9](https://github.com/home-operations/miroir/commit/77c8ba9c78796cc24212846f52611facaa03600f))
+
 ## [0.12.9](https://github.com/home-operations/miroir/compare/0.12.8...0.12.9) (2026-10-27)
 
 
