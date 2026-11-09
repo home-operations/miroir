@@ -20,7 +20,7 @@ setup-envtest = "0.25.2"
 talos = "1.14.5"
 zizmor = "1.32.0"
 "aqua:dadav/helm-schema" = "0.24.0"
-yq = "4.54.1"
+yq = "4.54.2"
 
 [tasks.manifests]
 description = "Generate CRD and RBAC manifests"
