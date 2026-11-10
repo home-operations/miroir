@@ -198,7 +198,7 @@ func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Confi
 
 	ticker := time.NewTicker(cfg.ResizePoll)
 	defer ticker.Stop()
-	resizer := mount.NewResizeFs(mounter.Exec)
+	grow := newGrower(mounter, dev, mountPath, log)
 
 	for {
 		select {
@@ -224,18 +224,7 @@ func supervise(ctx context.Context, mounter *mount.SafeFormatAndMount, cfg Confi
 			<-done //nolint:errcheck // reaping the killed process
 			return err
 		case <-ticker.C:
-			need, err := resizer.NeedResize(dev, mountPath)
-			if err != nil {
-				log.Info("resize check failed", "reason", err.Error())
-				continue
-			}
-			if need {
-				if _, err := resizer.Resize(dev, mountPath); err != nil {
-					log.Info("filesystem grow failed", "reason", err.Error())
-				} else {
-					log.Info("filesystem grown to device", "mount", mountPath)
-				}
-			}
+			grow.tick()
 		}
 	}
 }
