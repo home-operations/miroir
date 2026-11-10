@@ -545,6 +545,8 @@ tests:
       - notContains:
           path: spec.template.spec.containers[0].args
           content: --gateway-service-account=miroir-gateway
+      - notExists:
+          path: spec.template.spec.containers[0].args[?(@ =~ /^--gateway-resources=/)]
 
   # RWX: the controller is told which gateway image and ServiceAccount
   # to spawn per-volume NFS gateways with.
@@ -561,3 +563,23 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --gateway-service-account=miroir-gateway
+      # The default carries requests only: the gateway's cgroup is charged
+      # the export's page cache, so a memory limit OOM-kills it whenever a
+      # client write burst outruns DRBD writeback.
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-resources={"requests":{"cpu":"10m","memory":"64Mi"}}
+  - it: renders gateway.resources as the controller's --gateway-resources JSON
+    documentIndex: 0
+    set:
+      gateway.enabled: true
+      gateway.resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 1Gi
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --gateway-resources={"limits":{"memory":"1Gi"},"requests":{"cpu":"50m","memory":"128Mi"}}

@@ -424,6 +424,31 @@
           "required": [],
           "title": "image",
           "type": "object"
+        },
+        "resources": {
+          "description": "Gateway container resources, applied to every per-volume gateway\nDeployment. No memory limit by default: the gateway performs all of the\nexport's reads and writes, so the kernel charges the exported\nfilesystem's page cache to the gateway pod's cgroup, and dirty pages\ndrain only as fast as DRBD replicates them. Under a limit the gateway is\nOOM-killed (an NFS grace period for every client) whenever a client\nwrite burst outruns that writeback.",
+          "properties": {
+            "requests": {
+              "properties": {
+                "cpu": {
+                  "default": "10m",
+                  "title": "cpu",
+                  "type": "string"
+                },
+                "memory": {
+                  "default": "64Mi",
+                  "title": "memory",
+                  "type": "string"
+                }
+              },
+              "required": [],
+              "title": "requests",
+              "type": "object"
+            }
+          },
+          "required": [],
+          "title": "resources",
+          "type": "object"
         }
       },
       "required": [],

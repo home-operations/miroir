@@ -68,6 +68,23 @@ func diskfulNodes(vol *miroirv1alpha1.MiroirVolume) []string {
 	return nodes
 }
 
+// DefaultResources is the gateway container's resource spec when the
+// controller is given none: a small request and no memory limit. The
+// gateway does every export read and write itself, so the kernel charges
+// the exported filesystem's page cache to the gateway's cgroup, and dirty
+// pages drain only as fast as DRBD replicates them. Under a limit the
+// cgroup is OOM-killed (an NFS grace period for every client) whenever a
+// client write burst outruns that writeback. Operators who want a limit
+// set one explicitly.
+func DefaultResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("10m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+	}
+}
+
 // buildDeployment renders the desired gateway Deployment for a volume.
 // replicas:1 with the Recreate strategy: two gateways writing the same
 // device is exactly the dual-primary case single-primary DRBD forbids, so
@@ -76,7 +93,7 @@ func diskfulNodes(vol *miroirv1alpha1.MiroirVolume) []string {
 // immediately — there the real dual-writer fence is DRBD's single
 // Primary claim (the replacement's promote fails until the old claim
 // dies with its node).
-func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, serviceAccount string) *appsv1.Deployment {
+func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, serviceAccount string, resources corev1.ResourceRequirements) *appsv1.Deployment {
 	labels := shareLabels(vol.Name)
 	privileged := true
 	return &appsv1.Deployment{
@@ -117,15 +134,7 @@ func buildDeployment(vol *miroirv1alpha1.MiroirVolume, namespace, image, service
 						VolumeMounts: []corev1.VolumeMount{{
 							Name: "dev", MountPath: "/dev",
 						}},
-						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("10m"),
-								corev1.ResourceMemory: resource.MustParse("64Mi"),
-							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceMemory: resource.MustParse("256Mi"),
-							},
-						},
+						Resources: resources,
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(nfsPort)},

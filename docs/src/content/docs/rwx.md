@@ -37,6 +37,15 @@ gateway is the only writer, DRBD stays in its normal single-writer
 (single-Primary) mode with all its safety properties intact: miroir
 never enables dual-primary, and there is no cluster filesystem.
 
+The gateway pod does every read and write on the export, so the kernel
+charges the exported filesystem's page cache to the gateway's own
+cgroup, and dirty pages drain only as fast as DRBD replicates them. The
+chart therefore gives the gateway container requests but no memory
+limit (`gateway.resources`): under a limit, a client write burst that
+outruns DRBD writeback ends in an OOM kill and an NFS grace period for
+every client. Set `gateway.resources.limits` only if you have measured
+the gateway's cgroup under your workload.
+
 :::note[Failover takes tens of seconds, not milliseconds]
 
 If the gateway's node dies, the Deployment reschedules the gateway onto
