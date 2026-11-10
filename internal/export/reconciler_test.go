@@ -80,6 +80,7 @@ func newReconcilerWithInterceptor(fns interceptor.Funcs, objs ...client.Object) 
 		Namespace:      testNS,
 		Image:          "ghcr.io/home-operations/miroir-gateway:test",
 		ServiceAccount: "miroir-gateway",
+		Resources:      DefaultResources(),
 	}, cl
 }
 
@@ -349,7 +350,7 @@ func TestReconcileAlreadyDeletingVolumeScalesExistingGateway(t *testing.T) {
 	vol.Finalizers = []string{testFinalizer}
 	now := metav1.Now()
 	vol.DeletionTimestamp = &now
-	existing := buildDeployment(vol, testNS, "ghcr.io/home-operations/miroir-gateway:test", "miroir-gateway")
+	existing := buildDeployment(vol, testNS, "ghcr.io/home-operations/miroir-gateway:test", "miroir-gateway", DefaultResources())
 	existing.OwnerReferences = []metav1.OwnerReference{
 		*metav1.NewControllerRef(vol, miroirv1alpha1.GroupVersion.WithKind("MiroirVolume")),
 	}
@@ -372,7 +373,7 @@ func TestReconcileDeletingVolumeLeavesUnownedGateway(t *testing.T) {
 	vol.DeletionTimestamp = &now
 	previous := exportVolume("pvc-foreign", nodeA, nodeB)
 	previous.UID = "uid-previous-incarnation"
-	existing := buildDeployment(vol, testNS, "ghcr.io/home-operations/miroir-gateway:test", "miroir-gateway")
+	existing := buildDeployment(vol, testNS, "ghcr.io/home-operations/miroir-gateway:test", "miroir-gateway", DefaultResources())
 	existing.OwnerReferences = []metav1.OwnerReference{
 		*metav1.NewControllerRef(previous, miroirv1alpha1.GroupVersion.WithKind("MiroirVolume")),
 	}

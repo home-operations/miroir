@@ -110,6 +110,7 @@ Kubernetes: `>=1.31.0-0`
 | gateway.image.pullPolicy | string | `"IfNotPresent"` |  |
 | gateway.image.repository | string | `"ghcr.io/home-operations/miroir-gateway"` |  |
 | gateway.image.tag | string | `""` |  |
+| gateway.resources | object | `{"requests":{"cpu":"10m","memory":"64Mi"}}` | Gateway container resources, applied to every per-volume gateway Deployment. No memory limit by default: the gateway performs all of the export's reads and writes, so the kernel charges the exported filesystem's page cache to the gateway pod's cgroup, and dirty pages drain only as fast as DRBD replicates them. Under a limit the gateway is OOM-killed (an NFS grace period for every client) whenever a client write burst outruns that writeback. |
 | global.affinity | object | `{}` |  |
 | global.commonLabels | object | `{}` | Labels stamped on every rendered object (fleet-wide labelling). |
 | global.imagePullSecrets | list | `[]` | Pull secrets added to every pod (controller, agent, uninstall). |

@@ -24,9 +24,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -167,7 +169,8 @@ func setupTopology(mgr ctrl.Manager) error {
 // setupExport registers the RWX gateway reconciler, which maintains the
 // per-volume NFS-Ganesha Deployment and Service. It is skipped when no
 // gateway image is configured — RWX is off until the chart wires one.
-func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string) error {
+func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string,
+	resources corev1.ResourceRequirements) error {
 	if image == "" {
 		setupLog.Info("no --gateway-image set; RWX (ReadWriteMany) volumes are disabled")
 		return nil
@@ -177,11 +180,35 @@ func setupExport(mgr ctrl.Manager, namespace, image, serviceAccount string) erro
 		Namespace:      namespace,
 		Image:          image,
 		ServiceAccount: serviceAccount,
+		Resources:      resources,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("export reconciler: %w", err)
 	}
 	return nil
+}
+
+// parseGatewayResources decodes --gateway-resources, a JSON
+// ResourceRequirements (the chart renders its gateway.resources value with
+// toJson). Empty selects export.DefaultResources. Unknown fields are an
+// error: the chart schema is permissive, so a misspelt "limit" would
+// otherwise leave gateways unlimited without a word.
+func parseGatewayResources(raw string) (corev1.ResourceRequirements, error) {
+	if raw == "" {
+		return export.DefaultResources(), nil
+	}
+	var res corev1.ResourceRequirements
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&res); err != nil {
+		return corev1.ResourceRequirements{}, fmt.Errorf("--gateway-resources: %w", err)
+	}
+	// More() stops at a stray closing delimiter, so decode again and
+	// require EOF to reject anything after the object.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return corev1.ResourceRequirements{}, errors.New("--gateway-resources: trailing data after the JSON object")
+	}
+	return res, nil
 }
 
 // fetchMiroirNode reads this node's MiroirNode straight from the API
@@ -425,6 +452,7 @@ func main() {
 		podNamespace     string
 		gatewayImage     string
 		gatewaySA        string
+		gatewayResources string
 
 		// agent mode
 		nodeName          string
@@ -472,6 +500,8 @@ func main() {
 		"container image for per-RWX-volume NFS gateway pods; empty disables RWX (controller)")
 	flag.StringVar(&gatewaySA, "gateway-service-account", "",
 		"ServiceAccount for gateway pods, with the RBAC the gateway needs (controller)")
+	flag.StringVar(&gatewayResources, "gateway-resources", "",
+		"JSON ResourceRequirements for the gateway container; empty → 10m/64Mi requests, no limits (controller)")
 	flag.IntVar(&volumeWorkers, "volume-workers", 4,
 		"concurrent volume reconciles per agent (agent)")
 	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
@@ -592,7 +622,12 @@ func main() {
 			setupLog.Error(err, "unable to set up topology reconcilers")
 			os.Exit(1)
 		}
-		if err := setupExport(mgr, podNamespace, gatewayImage, gatewaySA); err != nil {
+		gwResources, err := parseGatewayResources(gatewayResources)
+		if err != nil {
+			setupLog.Error(err, "invalid gateway resources")
+			os.Exit(1)
+		}
+		if err := setupExport(mgr, podNamespace, gatewayImage, gatewaySA, gwResources); err != nil {
 			setupLog.Error(err, "unable to set up export reconciler")
 			os.Exit(1)
 		}

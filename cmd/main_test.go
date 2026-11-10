@@ -27,8 +27,10 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
@@ -41,6 +43,7 @@ import (
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/agent"
+	"github.com/home-operations/miroir/internal/export"
 )
 
 func TestCSIServerRunsOnEveryReplica(t *testing.T) {
@@ -348,4 +351,58 @@ func TestAgentShutdownDownSecondariesRequiresCordon(_ *testing.T) {
 	// A nil driver is intentional: an uncordoned node must return before any
 	// teardown is attempted.
 	agentShutdownDownSecondaries(&agent.CordonWatcher{}, nil)
+}
+
+func TestParseGatewayResources(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    corev1.ResourceRequirements
+		wantErr bool
+	}{
+		{
+			name: "empty selects the default without a memory limit",
+			raw:  "",
+			want: export.DefaultResources(),
+		},
+		{
+			name: "JSON from the chart is decoded as given",
+			raw:  `{"requests":{"cpu":"10m","memory":"64Mi"},"limits":{"memory":"1Gi"}}`,
+			want: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("10m"),
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+				},
+				Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")},
+			},
+		},
+		{
+			name: "an explicit empty object means no requests or limits at all",
+			raw:  `{}`,
+			want: corev1.ResourceRequirements{},
+		},
+		{name: "malformed JSON is rejected", raw: `{"requests":`, wantErr: true},
+		{name: "an unknown field is rejected rather than silently dropped", raw: `{"limit":{"memory":"1Gi"}}`, wantErr: true},
+		{name: "trailing data is rejected", raw: `{} {}`, wantErr: true},
+		{name: "a stray closing brace is rejected", raw: `{}}`, wantErr: true},
+		{name: "a stray closing bracket is rejected", raw: `{}]`, wantErr: true},
+		{name: "a bad quantity is rejected", raw: `{"limits":{"memory":"lots"}}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseGatewayResources(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got %+v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !apiequality.Semantic.DeepEqual(got, tt.want) {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
 }

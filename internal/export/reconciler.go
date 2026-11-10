@@ -58,6 +58,9 @@ type Reconciler struct {
 	// with the RBAC the gateway needs (miroirvolumes get/list/watch +
 	// status patch).
 	ServiceAccount string
+	// Resources is the gateway container's resource spec (see
+	// DefaultResources for why the default carries no memory limit).
+	Resources corev1.ResourceRequirements
 }
 
 // Reconcile ensures the gateway Deployment and Service exist for an RWX
@@ -113,7 +116,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // its node affinity when the volume's replica set changes. It reports
 // whether a gateway pod is currently available (the export-ready signal).
 func (r *Reconciler) ensureDeployment(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (bool, error) {
-	want := buildDeployment(vol, r.Namespace, r.Image, r.ServiceAccount)
+	want := buildDeployment(vol, r.Namespace, r.Image, r.ServiceAccount, r.Resources)
 	dep := &appsv1.Deployment{}
 	dep.Name = want.Name
 	dep.Namespace = want.Namespace

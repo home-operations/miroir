@@ -80,6 +80,7 @@ spec:
             {{- if .Values.gateway.enabled }}
             - --gateway-image={{ include "miroir.gatewayImage" . }}
             - --gateway-service-account={{ include "miroir.gatewayName" . }}
+            - {{ printf "--gateway-resources=%s" (toJson .Values.gateway.resources) | quote }}
             {{- end }}
             {{- if eq (include "miroir.leaderElectionEnabled" .) "true" }}
             - --leader-elect=true
