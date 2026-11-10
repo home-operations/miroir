@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/http"
@@ -202,7 +203,9 @@ func parseGatewayResources(raw string) (corev1.ResourceRequirements, error) {
 	if err := dec.Decode(&res); err != nil {
 		return corev1.ResourceRequirements{}, fmt.Errorf("--gateway-resources: %w", err)
 	}
-	if dec.More() {
+	// More() stops at a stray closing delimiter, so decode again and
+	// require EOF to reject anything after the object.
+	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		return corev1.ResourceRequirements{}, errors.New("--gateway-resources: trailing data after the JSON object")
 	}
 	return res, nil

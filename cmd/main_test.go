@@ -384,6 +384,8 @@ func TestParseGatewayResources(t *testing.T) {
 		{name: "malformed JSON is rejected", raw: `{"requests":`, wantErr: true},
 		{name: "an unknown field is rejected rather than silently dropped", raw: `{"limit":{"memory":"1Gi"}}`, wantErr: true},
 		{name: "trailing data is rejected", raw: `{} {}`, wantErr: true},
+		{name: "a stray closing brace is rejected", raw: `{}}`, wantErr: true},
+		{name: "a stray closing bracket is rejected", raw: `{}]`, wantErr: true},
 		{name: "a bad quantity is rejected", raw: `{"limits":{"memory":"lots"}}`, wantErr: true},
 	}
 	for _, tt := range tests {
