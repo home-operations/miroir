@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.12.11](https://github.com/home-operations/miroir/compare/0.12.10...0.12.11) (2026-11-14)
+
+
+### Miscellaneous Chores
+
+* **mise:** update tool go (1.27.3 → 1.27.4) ([#625](https://github.com/home-operations/miroir/issues/625)) ([cc451c2](https://github.com/home-operations/miroir/commit/cc451c25bb14557a7379ceb839bc6a24a30c0b61))
+* **mise:** update tool node (26.13.0 → v26.13.1) ([#624](https://github.com/home-operations/miroir/issues/624)) ([939a0f8](https://github.com/home-operations/miroir/commit/939a0f8b2a89919f18c7afc37d64245d185d03f1))
+* **mise:** update tool yq (4.54.2 → 4.54.3) ([#622](https://github.com/home-operations/miroir/issues/622)) ([df8eead](https://github.com/home-operations/miroir/commit/df8eeadc00117757a19bc903d0adc8fce2099094))
+* **npm:** update dependency @astrojs/starlight (0.42.10 → 0.42.11) ([#626](https://github.com/home-operations/miroir/issues/626)) ([69438a6](https://github.com/home-operations/miroir/commit/69438a6916c976a2c759cc5cfab20bd2653e0a3f))
+* **npm:** update dependency astro (7.4.10 → 7.4.11) ([#623](https://github.com/home-operations/miroir/issues/623)) ([64407d7](https://github.com/home-operations/miroir/commit/64407d7e631992be9a2a842481793a6e220d4b6c))
+* **npm:** update dependency astro (7.4.7 → 7.4.8) ([#619](https://github.com/home-operations/miroir/issues/619)) ([cc6fe51](https://github.com/home-operations/miroir/commit/cc6fe51a73e386bd179d4a67ea41138cca99f9c3))
+* **npm:** update dependency astro (7.4.8 → 7.4.10) ([#621](https://github.com/home-operations/miroir/issues/621)) ([0833b81](https://github.com/home-operations/miroir/commit/0833b8137cfcac968c1e276556998a3f1a14745c))
+
 ## [0.12.10](https://github.com/home-operations/miroir/compare/0.12.9...0.12.10) (2026-11-10)
 
 
