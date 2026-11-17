@@ -1959,6 +1959,10 @@ func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1al
 		return miroirv1alpha1.VolumeReady, readyReplicas
 	case realized > 0:
 		return miroirv1alpha1.VolumeDegraded, readyReplicas
+	case vol.Spec.DRBD != nil && vol.Status.Activated:
+		// Activated, not Formatted: a restore inherits Formatted while
+		// its legs still sync, and Failed aborts provisioning.
+		return miroirv1alpha1.VolumeFailed, readyReplicas
 	default:
 		return miroirv1alpha1.VolumeCreating, readyReplicas
 	}

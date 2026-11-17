@@ -46,7 +46,7 @@ metadata:
 spec:
   groups:
     {{- /* Keep in sync with the rules below. */}}
-    {{- $volumeAlerts := list "MiroirVolumeSplitBrain" "MiroirVolumeQuorumLost" "MiroirVolumeSuspendedBarrier" "MiroirVolumeTeardownWedged" "MiroirVolumeDiskFailed" "MiroirVolumeNotUpToDate" "MiroirVolumeDisconnected" "MiroirVolumeOutOfSync" "MiroirVolumeRemoteConsumer" "MiroirVolumeFilesystemNeedsRestage" }}
+    {{- $volumeAlerts := list "MiroirVolumeSplitBrain" "MiroirVolumeQuorumLost" "MiroirVolumeSuspendedBarrier" "MiroirVolumeTeardownWedged" "MiroirVolumeDiskFailed" "MiroirVolumeNotUpToDate" "MiroirVolumeDisconnected" "MiroirVolumeOutOfSync" "MiroirVolumeRemoteConsumer" "MiroirVolumeFilesystemNeedsRestage" "MiroirVolumeNoUpToDateReplica" }}
     {{- if .Values.drbd.verify.schedule }}
     {{- $volumeAlerts = append $volumeAlerts "MiroirVolumeVerifyStale" }}
     {{- end }}
@@ -290,6 +290,28 @@ spec:
               journal and remounts read-only, possibly weeks later. Restart the
               pod mounting the volume to restage it (the restage runs fsck): the
               consuming pod, or the volume's NFS gateway pod for an RWX volume.
+            {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+        {{- end }}
+        {{- $rule = dict "root" $ "alert" "MiroirVolumeNoUpToDateReplica" "severity" "critical" "for" "5m" }}
+        {{- if include "miroir.alertEnabled" $rule }}
+        - alert: MiroirVolumeNoUpToDateReplica
+          expr: max by (volume, pvc, pvc_namespace) (miroir_volume_up_to_date) == 0
+          {{- with include "miroir.alertRuleFor" $rule }}
+          for: {{ . }}
+          {{- end }}
+          labels:
+            {{- include "miroir.alertRuleLabels" $rule | nindent 12 }}
+          annotations:
+            summary: >-
+              Volume {{ "{{" }} $labels.pvc_namespace {{ "}}" }}/{{ "{{" }} $labels.pvc {{ "}}" }}
+              has no UpToDate replica
+            description: >-
+              No diskful leg is UpToDate, so the volume cannot be staged
+              and DRBD has no source to resync from. Check
+              kubectl describe miroirvolume {{ "{{" }} $labels.volume {{ "}}" }}
+              and the kernel log on the replica nodes.
             {{- with .Values.monitoring.prometheusRule.additionalRuleAnnotations }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

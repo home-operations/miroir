@@ -59,6 +59,19 @@ func withServingLeg(vol *miroirv1alpha1.MiroirVolume, node string) *miroirv1alph
 	return vol
 }
 
+// withOutdatedLegs adds replicated legs that hold their device but are
+// Outdated.
+func withOutdatedLegs(vol *miroirv1alpha1.MiroirVolume, nodes ...string) *miroirv1alpha1.MiroirVolume {
+	vol.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+	for _, node := range nodes {
+		vol = withServingLeg(vol, node)
+		st := vol.Status.PerNode[node]
+		st.DiskState = "Outdated"
+		vol.Status.PerNode[node] = st
+	}
+	return vol
+}
+
 // healthEntry is a status/reason pair flattened for comparison.
 type healthEntry struct {
 	status csi.VolumeHealthErrorType
@@ -149,6 +162,12 @@ func TestVolumeHealth(t *testing.T) {
 			vol:          withServingLeg(activated(volWithStatus("v", miroirv1alpha1.VolumeFailed, nil)), nodeA),
 			want:         []healthEntry{{csi.VolumeHealthErrorType_DEGRADED, reasonReplicaUnrealized}},
 			wantContains: "serving from its remaining legs",
+		},
+		{
+			name:         "activated volume with no UpToDate replica is inaccessible",
+			vol:          withOutdatedLegs(activated(volWithStatus("v", miroirv1alpha1.VolumeFailed, nil)), nodeA, nodeB),
+			want:         []healthEntry{{csi.VolumeHealthErrorType_INACCESSIBLE, reasonNoUpToDateReplica}},
+			wantContains: "no diskful replica is UpToDate",
 		},
 		{
 			name:         "creating on a volume that has carried data is a regression",

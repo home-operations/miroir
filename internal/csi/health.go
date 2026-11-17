@@ -38,6 +38,7 @@ const (
 	reasonBackingDeviceLost    = "BackingDeviceLost"
 	reasonReplicaUnrealized    = "ReplicaUnrealized"
 	reasonReplicaOutOfSync     = "ReplicaOutOfSync"
+	reasonNoUpToDateReplica    = "NoUpToDateReplica"
 	reasonNoQuorum             = "NoQuorum"
 )
 
@@ -140,6 +141,11 @@ func phaseHealth(vol *miroirv1alpha1.MiroirVolume, carried bool) *csi.VolumeHeal
 	default:
 		return nil
 	}
+	if vol.Status.Activated && vol.Spec.DRBD != nil && !anyUpToDateReplica(vol) {
+		// Before anyBackingDevice: the devices exist but none can serve.
+		return entryf(csi.VolumeHealthErrorType_INACCESSIBLE, reasonNoUpToDateReplica,
+			"no diskful replica is UpToDate; the volume cannot be staged")
+	}
 	if anyBackingDevice(vol) {
 		// A leg still holds its device, so a peer keeps serving: redundancy
 		// is reduced, access is not lost.
@@ -161,6 +167,16 @@ func phaseHealth(vol *miroirv1alpha1.MiroirVolume, carried bool) *csi.VolumeHeal
 func anyBackingDevice(vol *miroirv1alpha1.MiroirVolume) bool {
 	for _, rep := range vol.Spec.DiskfulReplicas() {
 		if st, ok := vol.Status.PerNode[rep.Node]; ok && st.DeviceCreated {
+			return true
+		}
+	}
+	return false
+}
+
+// anyUpToDateReplica reports whether any diskful replica is UpToDate.
+func anyUpToDateReplica(vol *miroirv1alpha1.MiroirVolume) bool {
+	for _, rep := range vol.Spec.DiskfulReplicas() {
+		if st, ok := vol.Status.PerNode[rep.Node]; ok && st.DiskState == drbd.DiskUpToDate {
 			return true
 		}
 	}
