@@ -36,6 +36,13 @@ title: Troubleshooting
   the resync. The agent holds off while a Primary exists that this leg
   cannot see: that is an ordinary unstable resync, which DRBD re-runs
   itself once the Primary is back in view.
+- **Replicated volume `Failed` with `0/N` ready after it has served**:
+  no diskful leg is `UpToDate`, so the volume cannot be staged and
+  DRBD has no source to resync from. `MiroirVolumeNoUpToDateReplica`
+  fires and nothing recovers it automatically. Seen on DRBD 9.3.4 when
+  a read on an idle tie-breaker made it send a new current UUID that
+  outdated both diskful legs
+  ([#636](https://github.com/home-operations/miroir/issues/636)).
 - **Replicated volume stuck `Connecting`, no split-brain**: a
   host-network tenant (commonly the Ceph mgr dashboard) occupies the
   DRBD replication port; `dmesg` shows

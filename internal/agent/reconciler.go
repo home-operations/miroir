@@ -1921,9 +1921,13 @@ func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1al
 	ready := 0
 	realized := 0
 	failed := false
+	upToDate := false
 	for _, rep := range diskfulReplicas {
 		st, ok := vol.Status.PerNode[rep.Node]
 		replicated := vol.Spec.DRBD != nil
+		// Tracked apart from realized: a leg awaiting an online grow is
+		// below spec size yet still holds current data.
+		upToDate = upToDate || (ok && st.DiskState == drbd.DiskUpToDate)
 		realizedReplica := ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
 			(!replicated || st.DiskState == drbd.DiskUpToDate)
 		switch {
@@ -1959,6 +1963,10 @@ func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1al
 		return miroirv1alpha1.VolumeReady, readyReplicas
 	case realized > 0:
 		return miroirv1alpha1.VolumeDegraded, readyReplicas
+	case vol.Spec.DRBD != nil && vol.Status.Activated && !upToDate:
+		// Activated, not Formatted: a restore inherits Formatted while
+		// its legs still sync, and Failed aborts provisioning.
+		return miroirv1alpha1.VolumeFailed, readyReplicas
 	default:
 		return miroirv1alpha1.VolumeCreating, readyReplicas
 	}

@@ -36,7 +36,7 @@ tests:
           value: miroir.volumes
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 10
+          count: 11
       - equal:
           path: spec.groups[1].name
           value: miroir.pools
@@ -85,6 +85,23 @@ tests:
           path: spec.groups[2].name
           value: miroir.agents
 
+  - it: should page when a volume has no UpToDate replica left
+    set:
+      monitoring.prometheusRule.enabled: true
+    asserts:
+      - equal:
+          path: spec.groups[0].rules[10].alert
+          value: MiroirVolumeNoUpToDateReplica
+      - equal:
+          path: spec.groups[0].rules[10].labels.severity
+          value: critical
+      - equal:
+          path: spec.groups[0].rules[10].expr
+          value: max by (volume, pvc, pvc_namespace) (miroir_volume_up_to_date) == 0
+      - equal:
+          path: spec.groups[0].rules[10].for
+          value: 5m
+
   - it: should render the verify staleness rule only with a verify schedule
     set:
       monitoring.prometheusRule.enabled: true
@@ -93,15 +110,15 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 11
+          count: 12
       - equal:
-          path: spec.groups[0].rules[10].alert
+          path: spec.groups[0].rules[11].alert
           value: MiroirVolumeVerifyStale
       - equal:
-          path: spec.groups[0].rules[10].labels.severity
+          path: spec.groups[0].rules[11].labels.severity
           value: warning
       - equal:
-          path: spec.groups[0].rules[10].expr
+          path: spec.groups[0].rules[11].expr
           value: time() - miroir_volume_verify_last_timestamp_seconds > 9 * 86400
 
   - it: should mark IO-freezing conditions critical
@@ -194,7 +211,7 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.groups[0].rules
-          count: 9
+          count: 10
       # RemoteConsumer moves up into OutOfSync's slot.
       - equal:
           path: spec.groups[0].rules[7].alert

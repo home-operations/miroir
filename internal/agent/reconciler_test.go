@@ -58,6 +58,7 @@ const (
 	volPvc1               = "pvc-1"
 	snapSnap1             = "snap-1"
 	diskStateUpToDate     = "UpToDate"
+	diskStateOutdated     = "Outdated"
 	diskStateInconsistent = "Inconsistent"
 	diskStateDiskless     = "Diskless"
 	nodeC                 = "node-c"
@@ -2593,6 +2594,63 @@ func TestComputePhaseMixing(t *testing.T) {
 			},
 			want:      miroirv1alpha1.VolumeDegraded,
 			wantReady: oneOfTwo,
+		},
+		{
+			name: "activated volume with every diskful replica Outdated (failed)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					Activated: true,
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateOutdated, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateOutdated, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeFailed,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "activated volume mid-expansion keeps its UpToDate replicas (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 2 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					Activated: true,
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "never-activated volume with no UpToDate replica (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					Formatted: true,
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
 		},
 		{
 			name: "both diskful replicas disconnected (degraded)",
