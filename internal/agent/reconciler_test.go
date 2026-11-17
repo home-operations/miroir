@@ -2615,6 +2615,25 @@ func TestComputePhaseMixing(t *testing.T) {
 			wantReady: noneOfTwo,
 		},
 		{
+			name: "activated volume mid-expansion keeps its UpToDate replicas (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 2 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					Activated: true,
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
+		},
+		{
 			name: "never-activated volume with no UpToDate replica (creating)",
 			vol: &miroirv1alpha1.MiroirVolume{
 				Spec: miroirv1alpha1.MiroirVolumeSpec{
