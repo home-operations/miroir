@@ -2,7 +2,7 @@ min_version = "2026.11.1"
 
 [tools]
 go = "1.27.4"
-"go:golang.org/x/vuln/cmd/govulncheck" = "v1.9.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "v1.10.0"
 # Built from source so it type-checks with this repo's Go: the prebuilt
 # kube-controller-tools binary (built with Go 1.26) cannot parse the generic
 # methods in the Go 1.27 standard library.
