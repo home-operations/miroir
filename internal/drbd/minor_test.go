@@ -17,8 +17,10 @@ limitations under the License.
 package drbd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -29,7 +31,7 @@ func TestAllocateMinorStableSequentialPersistent(t *testing.T) {
 	dir := t.TempDir()
 	d := &Driver{StateDir: dir}
 
-	a, err := d.AllocateMinor("pvc-a")
+	a, err := d.AllocateMinor(t.Context(), "pvc-a", 0)
 	if err != nil {
 		t.Fatalf("allocate pvc-a: %v", err)
 	}
@@ -37,7 +39,7 @@ func TestAllocateMinorStableSequentialPersistent(t *testing.T) {
 		t.Errorf("first minor = %d, want %d", a, minorBase)
 	}
 
-	b, err := d.AllocateMinor("pvc-b")
+	b, err := d.AllocateMinor(t.Context(), "pvc-b", 0)
 	if err != nil {
 		t.Fatalf("allocate pvc-b: %v", err)
 	}
@@ -46,16 +48,16 @@ func TestAllocateMinorStableSequentialPersistent(t *testing.T) {
 	}
 
 	// Repeat call is stable, not a new allocation.
-	if again, _ := d.AllocateMinor("pvc-a"); again != a {
+	if again, _ := d.AllocateMinor(t.Context(), "pvc-a", 0); again != a {
 		t.Errorf("repeat pvc-a = %d, want stable %d", again, a)
 	}
 
 	// A fresh Driver over the same StateDir reads the persisted assignment.
 	fresh := &Driver{StateDir: dir}
-	if got, _ := fresh.AllocateMinor("pvc-a"); got != a {
+	if got, _ := fresh.AllocateMinor(t.Context(), "pvc-a", 0); got != a {
 		t.Errorf("after reload pvc-a = %d, want persisted %d", got, a)
 	}
-	if got, _ := fresh.AllocateMinor("pvc-c"); got != minorBase+2 {
+	if got, _ := fresh.AllocateMinor(t.Context(), "pvc-c", 0); got != minorBase+2 {
 		t.Errorf("new volume after reload = %d, want %d", got, minorBase+2)
 	}
 }
@@ -85,7 +87,7 @@ func TestAllocateMinorSkipsMinorsFromOwnRender(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := d.AllocateMinor("pvc-new")
+	got, err := d.AllocateMinor(t.Context(), "pvc-new", 0)
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -104,7 +106,7 @@ func TestDownReleasesMinorAssignment(t *testing.T) {
 	fe := &fakeExec{}
 	d := &Driver{StateDir: dir, Exec: fe.run, Mknod: fakeMknod}
 
-	first, err := d.AllocateMinor("pvc-1")
+	first, err := d.AllocateMinor(t.Context(), "pvc-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +118,7 @@ func TestDownReleasesMinorAssignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A fresh volume reclaims the freed minor instead of advancing past it.
-	reused, err := d.AllocateMinor(volPvc2)
+	reused, err := d.AllocateMinor(t.Context(), volPvc2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,12 +136,159 @@ func TestAllocateMinorRecoversOwnMinorFromRes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := d.AllocateMinor("pvc-1")
+	got, err := d.AllocateMinor(t.Context(), "pvc-1", 0)
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
 	if got != 1004 {
 		t.Errorf("minor = %d, want the recovered 1004", got)
+	}
+}
+
+// A preferred minor is the one the volume's status publishes; it can
+// outlive StateDir, so it yields to whatever this node recorded since,
+// unless the kernel still runs the volume on it.
+func TestAllocateMinorPreferred(t *testing.T) {
+	const other = "pvc-other"
+	resWithMinor := func(name string, minor int32) string {
+		return "resource \"" + name + "\" {\n    device minor " + strconv.Itoa(int(minor)) + ";\n}\n"
+	}
+	liveOn1013 := `[{"name":"` + volPvc1 + `","devices":[{"minor":1013}]}]`
+	notUp := errors.New("exit status 10: pvc-1: No such resource")
+	tests := []struct {
+		name      string
+		assigned  string           // minor.assign content
+		res       map[string]int32 // rendered .res per volume
+		status    string           // kernel view of the volume
+		statusErr error
+		preferred int32
+		want      int32
+		wantErr   bool
+	}{
+		{name: "free preferred minor is taken", preferred: 1013, want: 1013},
+		{name: "no preference takes the lowest free minor", want: minorBase},
+		{
+			name:      "preferred minor assigned to another volume",
+			assigned:  other + " 1013\n",
+			preferred: 1013,
+			want:      minorBase,
+		},
+		{
+			name:      "preferred minor rendered by another volume",
+			res:       map[string]int32{other: 1013},
+			statusErr: notUp,
+			preferred: 1013,
+			want:      minorBase,
+		},
+		{
+			name:      "own assignment wins over the preference",
+			assigned:  volPvc1 + " 1002\n",
+			preferred: 1013,
+			want:      1002,
+		},
+		{
+			name:      "own render wins over the preference",
+			res:       map[string]int32{volPvc1: 1004},
+			preferred: 1013,
+			want:      1004,
+		},
+		{
+			name:      "own render yields to another volume's assignment",
+			assigned:  other + " 1013\n",
+			res:       map[string]int32{volPvc1: 1013, other: 1013},
+			preferred: 1013,
+			want:      minorBase,
+		},
+		{
+			name:      "own render yields to another volume's render",
+			res:       map[string]int32{volPvc1: 1013, other: 1013},
+			statusErr: notUp,
+			preferred: 1013,
+			want:      minorBase,
+		},
+		{
+			name:      "running on the contested own render keeps it",
+			assigned:  other + " 1013\n",
+			res:       map[string]int32{volPvc1: 1013, other: 1013},
+			status:    liveOn1013,
+			preferred: 1013,
+			want:      1013,
+		},
+		{
+			name:      "running on the contested preferred minor keeps it",
+			assigned:  other + " 1013\n",
+			status:    liveOn1013,
+			preferred: 1013,
+			want:      1013,
+		},
+		{
+			name:      "running on another minor yields the contested one",
+			assigned:  other + " 1013\n",
+			status:    `[{"name":"` + volPvc1 + `","devices":[{"minor":1002}]}]`,
+			preferred: 1013,
+			want:      minorBase,
+		},
+		{
+			name:      "unreadable kernel view defers",
+			assigned:  other + " 1013\n",
+			statusErr: errors.New("exit status 20"),
+			preferred: 1013,
+			wantErr:   true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			statusCmd := cmdDrbdsetupStatus + " --json " + volPvc1
+			fe := &fakeExec{}
+			if tc.status != "" {
+				fe.responses = map[string]string{statusCmd: tc.status}
+			}
+			if tc.statusErr != nil {
+				fe.errOn = map[string]error{statusCmd: tc.statusErr}
+			}
+			d := &Driver{StateDir: dir, Exec: fe.run}
+			if tc.assigned != "" {
+				if err := os.WriteFile(filepath.Join(dir, "minor.assign"), []byte(tc.assigned), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for name, minor := range tc.res {
+				if err := os.WriteFile(filepath.Join(dir, name+".res"), []byte(resWithMinor(name, minor)), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			got, err := d.AllocateMinor(t.Context(), volPvc1, tc.preferred)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("minor = %d, want an error", got)
+				}
+				raw, err := os.ReadFile(filepath.Join(dir, "minor.assign"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(raw) != tc.assigned {
+					t.Fatalf("failed allocation rewrote minor.assign: %q", raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("allocate: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("minor = %d, want %d", got, tc.want)
+			}
+			// The allocation is recorded, and a dropped claim is replaced:
+			// the other volume never ends up on the same minor.
+			next, err := d.AllocateMinor(t.Context(), other, 0)
+			if err != nil {
+				t.Fatalf("allocate %s: %v", other, err)
+			}
+			if next == got {
+				t.Fatalf("minor %d handed out twice", got)
+			}
+		})
 	}
 }
 
@@ -156,7 +305,7 @@ func TestAllocateMinorSkipsMinorsUsedInResFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := d.AllocateMinor("pvc-new")
+	got, err := d.AllocateMinor(t.Context(), "pvc-new", 0)
 	if err != nil {
 		t.Fatalf("allocate: %v", err)
 	}
@@ -175,7 +324,7 @@ func TestSweepOrphansReleasesMinorAssignment(t *testing.T) {
 	}}
 	d := &Driver{StateDir: dir, Exec: fe.run, Mknod: fakeMknod}
 
-	first, err := d.AllocateMinor("pvc-1")
+	first, err := d.AllocateMinor(t.Context(), "pvc-1", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +335,7 @@ func TestSweepOrphansReleasesMinorAssignment(t *testing.T) {
 	if err := d.SweepOrphans(t.Context(), func(string) bool { return false }); err != nil {
 		t.Fatal(err)
 	}
-	reused, err := d.AllocateMinor(volPvc2)
+	reused, err := d.AllocateMinor(t.Context(), volPvc2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

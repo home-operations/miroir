@@ -282,7 +282,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Replicated: layer DRBD on the backing device. Pods attach the DRBD
 	// device, never the backing LV/zvol directly.
-	minor, err := r.assignMinor(vol)
+	minor, err := r.assignMinor(ctx, vol)
 	if err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
@@ -1803,12 +1803,10 @@ func replicaStatusAC(st miroirv1alpha1.ReplicaStatus) *acv1alpha1.ReplicaStatusA
 	return ac
 }
 
-// assignMinor returns the DRBD minor for this volume, allocating a free one if unset.
-func (r *VolumeReconciler) assignMinor(vol *miroirv1alpha1.MiroirVolume) (int32, error) {
-	if m := vol.Status.PerNode[r.NodeName].DRBDMinor; m > 0 {
-		return m, nil
-	}
-	return r.DRBD.AllocateMinor(vol.Name)
+// assignMinor returns the DRBD minor reserved for this volume on this
+// node, preferring the one its status already publishes.
+func (r *VolumeReconciler) assignMinor(ctx context.Context, vol *miroirv1alpha1.MiroirVolume) (int32, error) {
+	return r.DRBD.AllocateMinor(ctx, vol.Name, vol.Status.PerNode[r.NodeName].DRBDMinor)
 }
 
 // growLeg brings this leg up to the spec size after DRBD has attached it:

@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -634,7 +635,7 @@ func (d *Driver) WipeForeignMetadata(ctx context.Context, name, disk string) (re
 		return err
 	}
 	probeName := "@foreign-metadata-probe/" + name
-	minor, err := d.AllocateMinor(probeName)
+	minor, err := d.AllocateMinor(ctx, probeName, 0)
 	if err != nil {
 		return fmt.Errorf("reserve foreign metadata probe minor for %s: %w", name, err)
 	}
@@ -940,7 +941,13 @@ func (d *Driver) releaseMinor(volume string) error {
 // AllocateMinor assigns a DRBD minor to a volume, returning the same
 // minor on future calls. Serialised by an advisory flock the kernel
 // releases on close or process death, then persisted via atomic rename.
-func (d *Driver) AllocateMinor(volume string) (int32, error) {
+//
+// preferred (0 for none) is the minor the volume's status publishes. It
+// outlives StateDir (a node reinstall wipes the directory, not the CR),
+// so it is honoured only while no other volume on this node holds it,
+// and is recorded like any other assignment so a later allocation cannot
+// hand it out again.
+func (d *Driver) AllocateMinor(ctx context.Context, volume string, preferred int32) (int32, error) {
 	unlock, err := d.lockMinors()
 	if err != nil {
 		return 0, err
@@ -958,23 +965,61 @@ func (d *Driver) AllocateMinor(volume string) (int32, error) {
 	// state (crash between render and record, or a lost minor.assign):
 	// recover the volume's minor from its own file instead of assigning a
 	// fresh one — the kernel resource may still be running on it.
-	if m, ok := d.minorFromOwnRes(volume); ok {
-		assigned[volume] = m
-		if err := d.writeAssignments(assigned); err != nil {
-			return 0, err
-		}
-		return m, nil
+	m, ok := d.minorFromOwnRes(volume)
+	if !ok {
+		m = preferred
 	}
-	used := d.scanUsedMinors(assigned)
-	m := minorBase
-	for used[m] {
-		m++
+	used := d.scanUsedMinors(assigned, volume)
+	if m > 0 && used[m] {
+		// Two volumes claim the minor, and drbdadm refuses to parse a
+		// config directory holding a duplicate, failing every resource on
+		// the node. The kernel settles it: the volume running on the
+		// minor keeps it and the other claim is dropped, to be replaced
+		// when that volume next allocates. Renumbering the running one
+		// instead would have adjust delete and recreate its device.
+		live, err := d.liveOnMinor(ctx, volume, m)
+		if err != nil {
+			return 0, fmt.Errorf("allocate minor for %s: %w", volume, err)
+		}
+		if live {
+			maps.DeleteFunc(assigned, func(_ string, held int32) bool { return held == m })
+		} else {
+			m = 0
+		}
+	}
+	if m <= 0 {
+		m = minorBase
+		for used[m] {
+			m++
+		}
 	}
 	assigned[volume] = m
 	if err := d.writeAssignments(assigned); err != nil {
 		return 0, err
 	}
 	return m, nil
+}
+
+// liveOnMinor reports whether the kernel runs the volume on the minor.
+func (d *Driver) liveOnMinor(ctx context.Context, volume string, minor int32) (bool, error) {
+	parsed, err := d.listStatus(ctx, volume)
+	if err != nil {
+		if strings.Contains(err.Error(), "No such resource") {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, res := range parsed {
+		if res.Name != volume {
+			continue
+		}
+		for _, dev := range res.Devices {
+			if dev.Minor == minor {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // minorsInRes parses the device minors out of a rendered .res: miroir's
@@ -1040,7 +1085,10 @@ func (d *Driver) writeAssignments(m map[string]int32) error {
 	return writeFileAtomic(d.path("minor.assign"), buf.Bytes(), 0o640)
 }
 
-func (d *Driver) scanUsedMinors(assigned map[string]int32) map[int32]bool {
+// scanUsedMinors collects the minors held by every volume but the named
+// one: all assignment records (the caller has established the volume has
+// none) and every other volume's rendered .res.
+func (d *Driver) scanUsedMinors(assigned map[string]int32, volume string) map[int32]bool {
 	used := map[int32]bool{}
 	for _, m := range assigned {
 		used[m] = true
@@ -1050,7 +1098,7 @@ func (d *Driver) scanUsedMinors(assigned map[string]int32) map[int32]bool {
 		return used
 	}
 	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".res") {
+		if name, found := strings.CutSuffix(e.Name(), ".res"); !found || name == volume {
 			continue
 		}
 		raw, err := os.ReadFile(d.path(e.Name()))
@@ -1709,6 +1757,7 @@ type jsonStatus struct {
 	Role          string `json:"role"`
 	SuspendedUser bool   `json:"suspended-user"`
 	Devices       []struct {
+		Minor     int32  `json:"minor"`
 		DiskState string `json:"disk-state"`
 		Quorum    bool   `json:"quorum"`
 	} `json:"devices"`
