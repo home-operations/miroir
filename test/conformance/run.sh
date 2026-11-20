@@ -7,6 +7,7 @@
 #   FOCUS='.*snapshot.*' ./run.sh             # narrow down
 #   TESTDRIVER=testdriver-local.yaml ./run.sh # miroir-local (lvmthin)
 #   TESTDRIVER=testdriver-zfs.yaml ./run.sh   # miroir-zfs (replicated zfs)
+#   TESTDRIVER=testdriver-btrfs.yaml ./run.sh # miroir-btrfs (replicated btrfs)
 #   TESTDRIVER=testdriver-rwx.yaml ./run.sh   # filesystem-only RWX/ROX
 #   SHARD=2 ./run.sh                          # one third of the set (1, 2 or 3)
 #   VERBOSE=1 ./run.sh                        # per-spec live output

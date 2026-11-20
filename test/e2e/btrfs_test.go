@@ -16,11 +16,12 @@ import (
 )
 
 // btrfs on miroir-local's lvmthin pool. The upstream storage suite has no
-// btrfs patterns, so this is the only on-hardware proof of the format,
-// mount-option, grow, and restore paths for it. The restore lands on the
-// source's node (a local snapshot never leaves it), so it also proves the
-// kernel mounts a block-level copy beside its still-mounted source despite
-// the shared filesystem UUID.
+// btrfs patterns; the btrfs CI legs run its default-fs patterns against the
+// replicated miroir-btrfs class, so this is the only on-hardware proof of
+// the format, mount-option, grow, and restore paths for an unreplicated
+// btrfs volume. The restore lands on the source's node (a local snapshot
+// never leaves it), so it also proves the kernel mounts a block-level copy
+// beside its still-mounted source despite the shared filesystem UUID.
 var _ = Describe("btrfs volume lifecycle", Ordered, func() {
 	const (
 		ns    = "miroir-e2e-btrfs"

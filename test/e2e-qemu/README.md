@@ -23,6 +23,7 @@ so a failure names the path that broke:
 | `local-1` to `local-3`           | the parallel upstream block/filesystem suite, sharded  | `miroir-local`      |
 | `replicated-1` to `replicated-3` | the parallel upstream block/filesystem suite, sharded  | `miroir-replicated` |
 | `zfs-1` to `zfs-3`               | the parallel upstream block/filesystem suite, sharded  | `miroir-zfs`        |
+| `btrfs-1` to `btrfs-3`           | the parallel upstream filesystem suite, sharded        | `miroir-btrfs`      |
 | `rwx`                            | the parallel upstream filesystem-only RWX/ROX suite    | `miroir-replicated` |
 | `serial`                         | upstream `[Serial]` specs, one process                 | `miroir-replicated` |
 | `autodiskful`                    | the auto-diskful Go spec only, on `cluster-spare.yaml` | `miroir-replicated` |
@@ -34,14 +35,17 @@ replicas: 1) class, and the local legs drive the upstream suite against that sam
 replicated legs drive that upstream suite against the DRBD (replicas: 2) class, group
 snapshots included; the zfs legs drive it against the same DRBD shape backed by the
 zfs pool instead, so replication pairs zvol with zvol and the zfs snapshot/restore
-path runs under the suite. The rwx leg enables the NFS gateway and advertises only
+path runs under the suite. The btrfs legs drive it against a replicated class that
+formats btrfs. The suite has no btrfs patterns of its own, so these legs run only the
+patterns that format with the class's filesystem type. The rwx leg enables the NFS gateway and advertises only
 filesystem volume modes, while the serial leg gives exclusive-cluster specs a single
 Ginkgo process.
 
 A fresh cluster costs each leg about six minutes, so CI splits a suite only while each
 share takes longer than that. The two slowest Go specs take about six minutes each.
-Each of them has a Ginkgo label and a leg of its own. The local, replicated and zfs
-suites each run in three shards, which `SHARD` selects in `test/conformance/run.sh`.
+Each of them has a Ginkgo label and a leg of its own. The local, replicated, zfs and
+btrfs suites each run in three shards, which `SHARD` selects in
+`test/conformance/run.sh`.
 The shards split a suite by the upstream test suite name. Shard 3 skips what shards 1
 and 2 select, so a suite that upstream adds still runs.
 
@@ -105,7 +109,7 @@ talosctl kubeconfig /tmp/miroir-e2e/kubeconfig --nodes 10.5.0.2 --force
 set -gx CLUSTER_NAME miroir-e2e
 set -gx KUBECONFIG /tmp/miroir-e2e/kubeconfig
 set -gx TALOSCONFIG /tmp/miroir-e2e/talosconfig
-set -gx TESTDRIVER testdriver.yaml # or testdriver-local.yaml / testdriver-zfs.yaml / testdriver-rwx.yaml
+set -gx TESTDRIVER testdriver.yaml # or testdriver-{local,zfs,btrfs,rwx}.yaml
 set -gx RUN_SPECS 1                # also run the Go specs (CI gives them legs of their own)
 set -gx STORAGE_CAPACITY_ENABLED true
 # Required with testdriver-rwx.yaml:

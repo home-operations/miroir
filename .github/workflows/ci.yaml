@@ -220,6 +220,17 @@ jobs:
             testdriver: testdriver-zfs.yaml
             capacity: "true"
             shard: "3"
+          # The upstream suite's filesystem patterns against the replicated
+          # btrfs class (see testdriver-btrfs.yaml for what it leaves out).
+          - suite: btrfs-1
+            testdriver: testdriver-btrfs.yaml
+            shard: "1"
+          - suite: btrfs-2
+            testdriver: testdriver-btrfs.yaml
+            shard: "2"
+          - suite: btrfs-3
+            testdriver: testdriver-btrfs.yaml
+            shard: "3"
           # Filesystem-only multi-node access through the NFS gateway. Keeping this
           # separate avoids advertising unsupported raw-block RWX.
           - suite: rwx
