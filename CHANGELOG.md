@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.12.11](https://github.com/home-operations/miroir/compare/0.12.10...0.12.11) (2026-11-20)
+
+
+### Bug Fixes
+
+* **agent:** report an activated volume with no UpToDate replica as Failed ([#637](https://github.com/home-operations/miroir/issues/637)) ([7ae0f5c](https://github.com/home-operations/miroir/commit/7ae0f5c62812711d6f21f90b8360772325c0f7fc))
+* **drbd:** reserve the status minor so a rebuilt node cannot duplicate it ([#648](https://github.com/home-operations/miroir/issues/648)) ([de0552f](https://github.com/home-operations/miroir/commit/de0552fe516ade50e14404548f0e82598827f148))
+
+
+### Continuous Integration
+
+* **e2e:** split the long e2e legs and add btrfs legs ([#649](https://github.com/home-operations/miroir/issues/649)) ([d9a047d](https://github.com/home-operations/miroir/commit/d9a047daebf0d14203c1e62e13fb994ea7389982))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update action jdx/mise-action (v5.2.7 → v5.2.8) ([#632](https://github.com/home-operations/miroir/issues/632)) ([da375f6](https://github.com/home-operations/miroir/commit/da375f6c4c0907d6ee8eded84c88a305471ae86f))
+* **github-action:** update action jdx/mise-action (v5.2.8 → v5.2.9) ([#643](https://github.com/home-operations/miroir/issues/643)) ([553740d](https://github.com/home-operations/miroir/commit/553740d2f868442db00788d582e05f7744a56068))
+* **go:** update module github.com/container-storage-interface/spec (v1.13.0 → v1.14.0) ([#639](https://github.com/home-operations/miroir/issues/639)) ([c60208a](https://github.com/home-operations/miroir/commit/c60208a7ca4862645a6debc176bfe8de8a57e8e5))
+* **go:** update module sigs.k8s.io/controller-runtime (v0.25.2 → v0.25.3) ([#633](https://github.com/home-operations/miroir/issues/633)) ([ce58d11](https://github.com/home-operations/miroir/commit/ce58d11b8bac39a3e5681152c39e64923f644947))
+* **mise:** install oxfmt from GitHub releases ([#638](https://github.com/home-operations/miroir/issues/638)) ([20b98c8](https://github.com/home-operations/miroir/commit/20b98c818a749746e085db63f3268845ae449cbd))
+* **mise:** update tool github:oxc-project/oxc (0.75.0 → 0.78.0) ([#640](https://github.com/home-operations/miroir/issues/640)) ([504fa9c](https://github.com/home-operations/miroir/commit/504fa9cd2ded170f898044fa9c8206c61a9deec5))
+* **mise:** update tool github:oxc-project/oxc (0.78.0 → 0.79.0) ([#646](https://github.com/home-operations/miroir/issues/646)) ([bf4e912](https://github.com/home-operations/miroir/commit/bf4e912db89b653ea86598d11d7d8c01510575aa))
+* **mise:** update tool go (1.27.3 → 1.27.4) ([#625](https://github.com/home-operations/miroir/issues/625)) ([cc451c2](https://github.com/home-operations/miroir/commit/cc451c25bb14557a7379ceb839bc6a24a30c0b61))
+* **mise:** update tool go:golang.org/x/vuln/cmd/govulncheck (1.9.0 → v1.10.0) ([#641](https://github.com/home-operations/miroir/issues/641)) ([3d4f45c](https://github.com/home-operations/miroir/commit/3d4f45c31181d97bc5cca1ea6aa83ed04366d702))
+* **mise:** update tool helm (4.3.1 → 4.3.2) ([#634](https://github.com/home-operations/miroir/issues/634)) ([ef45dc2](https://github.com/home-operations/miroir/commit/ef45dc22ccf51fac941e6184ecfc1a3c934b0b86))
+* **mise:** update tool node (26.13.0 → v26.13.1) ([#624](https://github.com/home-operations/miroir/issues/624)) ([939a0f8](https://github.com/home-operations/miroir/commit/939a0f8b2a89919f18c7afc37d64245d185d03f1))
+* **mise:** update tool pnpm (12.18.0 → 12.20.0) ([#630](https://github.com/home-operations/miroir/issues/630)) ([cfe1617](https://github.com/home-operations/miroir/commit/cfe161761e64f900dfc917f7540b9e0a53987117))
+* **mise:** update tool pnpm (12.20.0 → 12.21.0) ([#635](https://github.com/home-operations/miroir/issues/635)) ([53625d2](https://github.com/home-operations/miroir/commit/53625d220e4af0530dcf78e36889157fde26b147))
+* **mise:** update tool setup-envtest (0.25.2 → 0.25.3) ([#644](https://github.com/home-operations/miroir/issues/644)) ([9369f6b](https://github.com/home-operations/miroir/commit/9369f6ba4e5e86cc6a241c7777b16611333ee1b3))
+* **mise:** update tool talos (1.14.5 → 1.14.6) ([#627](https://github.com/home-operations/miroir/issues/627)) ([3c26f9a](https://github.com/home-operations/miroir/commit/3c26f9a985a0e1f05b82158af1cdaece50501a96))
+* **mise:** update tool yq (4.54.2 → 4.54.3) ([#622](https://github.com/home-operations/miroir/issues/622)) ([df8eead](https://github.com/home-operations/miroir/commit/df8eeadc00117757a19bc903d0adc8fce2099094))
+* **npm:** update dependency @astrojs/starlight (0.42.10 → 0.42.11) ([#626](https://github.com/home-operations/miroir/issues/626)) ([69438a6](https://github.com/home-operations/miroir/commit/69438a6916c976a2c759cc5cfab20bd2653e0a3f))
+* **npm:** update dependency @astrojs/starlight (0.42.11 → 0.43.1) ([#629](https://github.com/home-operations/miroir/issues/629)) ([16999f8](https://github.com/home-operations/miroir/commit/16999f8adcf4e21329fcf0394a2c7001dd0b74e8))
+* **npm:** update dependency astro (7.4.10 → 7.4.11) ([#623](https://github.com/home-operations/miroir/issues/623)) ([64407d7](https://github.com/home-operations/miroir/commit/64407d7e631992be9a2a842481793a6e220d4b6c))
+* **npm:** update dependency astro (7.4.11 → 7.4.12) ([#628](https://github.com/home-operations/miroir/issues/628)) ([89faad7](https://github.com/home-operations/miroir/commit/89faad781332b4be8bad4a97a36124bdd7f188c5))
+* **npm:** update dependency astro (7.4.12 → 7.4.13) ([#645](https://github.com/home-operations/miroir/issues/645)) ([74f9b78](https://github.com/home-operations/miroir/commit/74f9b78e1be7243c990fcb7948e362d44b94d731))
+* **npm:** update dependency astro (7.4.7 → 7.4.8) ([#619](https://github.com/home-operations/miroir/issues/619)) ([cc6fe51](https://github.com/home-operations/miroir/commit/cc6fe51a73e386bd179d4a67ea41138cca99f9c3))
+* **npm:** update dependency astro (7.4.8 → 7.4.10) ([#621](https://github.com/home-operations/miroir/issues/621)) ([0833b81](https://github.com/home-operations/miroir/commit/0833b8137cfcac968c1e276556998a3f1a14745c))
+
 ## [0.12.10](https://github.com/home-operations/miroir/compare/0.12.9...0.12.10) (2026-11-10)
 
 
