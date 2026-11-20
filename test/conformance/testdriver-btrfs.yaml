@@ -1,0 +1,44 @@
+# Driver definition for the upstream Kubernetes external-storage e2e
+# suite (test/e2e/storage/external). Run via ./run.sh.
+#
+# Drives the replicated btrfs class (replicas: 2 over lvmthin). The suite
+# has no btrfs patterns, but its default-fs patterns format with the
+# class's fstype, so leaving SupportedFsType at that default runs only
+# them. Block is off for the same reason: raw-block specs never format a
+# filesystem, and testdriver.yaml already runs them on this shape.
+# run.sh skips the specs this class cannot pass.
+StorageClass:
+  FromExistingClassName: miroir-btrfs
+SnapshotClass:
+  FromExistingClassName: miroir-snap
+GroupSnapshotClass:
+  FromExistingClassName: miroir-group-snap
+DriverInfo:
+  Name: miroir.home-operations.com
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 10Gi
+  SupportedMountOption:
+    noatime: {}
+  Capabilities:
+    persistence: true
+    block: false
+    exec: true
+    fsGroup: true
+    multipods: true
+    controllerExpansion: true
+    nodeExpansion: true
+    onlineExpansion: true
+    offlineExpansion: true
+    snapshotDataSource: true
+    groupSnapshot: true
+    pvcDataSource: true
+    topology: true
+    singleNodeVolume: false
+    # btrfs is ReadWriteOnce only: the NFS gateway rejects a btrfs class.
+    RWX: false
+    multiplePVsSameID: true
+    readWriteOncePod: true
+    # Off for the reason testdriver.yaml gives: DRBD reserves the full size
+    # on every replica, and the parallel-clone specs starve.
+    capacity: false

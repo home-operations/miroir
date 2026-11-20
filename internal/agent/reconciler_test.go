@@ -2381,6 +2381,82 @@ func TestReconcileWipedNodeForcesFullSync(t *testing.T) {
 	fe.notCalledWith(t, "new-current-uuid") // just-created metadata → full SyncTarget
 }
 
+// A reinstalled node starts with an empty StateDir while the CRs still
+// publish its pre-wipe minors. The diskful leg loses its status minor with
+// the stale DeviceCreated flag and allocates afresh; the diskless leg keeps
+// its status minor. The two must not land on the same minor: drbdadm
+// parses every .res in StateDir, so one duplicate fails every resource on
+// the node.
+func TestReconcileWipedNodeKeepsMinorsDistinct(t *testing.T) {
+	for _, order := range [][]string{{volPvc1, volPvc2}, {volPvc2, volPvc1}} {
+		t.Run(strings.Join(order, " then "), func(t *testing.T) {
+			s := newScheme(t)
+			diskful := vol(volPvc1, nodeA, nodeB)
+			diskful.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7000}
+			diskful.Spec.Replicas[0].NodeID = 0
+			diskful.Spec.Replicas[0].Address = addrA
+			diskful.Spec.Replicas[1].NodeID = 1
+			diskful.Spec.Replicas[1].Address = addrB
+			diskful.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {DeviceCreated: true, DevicePath: "/dev/drbd1004", DRBDMinor: 1004},
+			}
+
+			tieBreaker := vol(volPvc2, nodeB, nodeC)
+			tieBreaker.Spec.DRBD = &miroirv1alpha1.DRBDSpec{Port: 7001}
+			tieBreaker.Spec.Replicas[0].NodeID = 0
+			tieBreaker.Spec.Replicas[0].Address = addrB
+			tieBreaker.Spec.Replicas[1].NodeID = 1
+			tieBreaker.Spec.Replicas[1].Address = addrC
+			tieBreaker.Spec.Replicas = append(tieBreaker.Spec.Replicas, miroirv1alpha1.Replica{
+				Node: nodeA, NodeID: 2, Address: addrA, Diskless: true,
+			})
+			tieBreaker.Finalizers = append(tieBreaker.Finalizers, constants.FinalizerPrefix+nodeA)
+			// The minor a fresh allocation hands out first on the empty StateDir.
+			tieBreaker.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+				nodeA: {Diskless: true, DevicePath: "/dev/drbd1000", DRBDMinor: 1000},
+			}
+
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(diskful, tieBreaker).
+				WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+				Build()
+			fe := &fakeDRBDExec{}
+			r := &VolumeReconciler{
+				Client:   c,
+				NodeName: nodeA,
+				Pools:    poolsOf(newFakeBackend()), // Exists() == false: the wipe took the device
+				DRBD:     &drbd.Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+			}
+			for _, name := range order {
+				if name == volPvc1 {
+					fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
+						"devices":[{"disk-state":"Inconsistent"}],"connections":[]}]`
+					fe.statusSeq = []string{statusNotInKernel, statusNotInKernel}
+				} else {
+					fe.statusJSON = `[{"name":"` + volPvc2 + `","role":"Secondary",
+						"devices":[{"disk-state":"` + diskStateDiskless + `"}],
+						"connections":[{"peer-node-id":0,"connection-state":"Connected"},{"peer-node-id":1,"connection-state":"Connected"}]}]`
+				}
+				reconcile(t, r, name)
+			}
+
+			minors := map[string]int32{}
+			for _, name := range order {
+				got := &miroirv1alpha1.MiroirVolume{}
+				if err := c.Get(t.Context(), types.NamespacedName{Name: name}, got); err != nil {
+					t.Fatal(err)
+				}
+				minors[name] = got.Status.PerNode[nodeA].DRBDMinor
+				if minors[name] <= 0 {
+					t.Fatalf("%s reports no minor: %+v", name, got.Status.PerNode[nodeA])
+				}
+			}
+			if minors[volPvc1] == minors[volPvc2] {
+				t.Fatalf("both volumes rendered minor %d", minors[volPvc1])
+			}
+		})
+	}
+}
+
 func TestReconcileDisklessTieBreaker(t *testing.T) {
 	s := newScheme(t)
 	fb := newFakeBackend()

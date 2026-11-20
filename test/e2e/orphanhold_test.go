@@ -73,7 +73,7 @@ func agentExec(ctx context.Context, node, sh string) string {
 // drbdsetup down is refused forever. The reclaim must force-detach the
 // backing, finish the deletion, and leave only the pinned kernel minor
 // for the post-reboot orphan sweep.
-var _ = Describe("orphaned-hold teardown reclaim", Ordered, func() {
+var _ = Describe("orphaned-hold teardown reclaim", Ordered, Label("orphanhold"), func() {
 	const ns = "miroir-e2e-orphan"
 	ctx := context.Background()
 

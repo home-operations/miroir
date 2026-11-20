@@ -15,35 +15,47 @@ tests.
 The legs mostly run the same document and differ in what `test.sh` drives against it,
 so a failure names the path that broke:
 
-| Leg           | Runs                                                   | Class               |
-| ------------- | ------------------------------------------------------ | ------------------- |
-| `specs`       | miroir's own Go specs                                  | `miroir-local`      |
-| `local`       | the parallel upstream block/filesystem suite           | `miroir-local`      |
-| `replicated`  | the parallel upstream block/filesystem suite           | `miroir-replicated` |
-| `zfs`         | the parallel upstream block/filesystem suite           | `miroir-zfs`        |
-| `rwx`         | the parallel upstream filesystem-only RWX/ROX suite    | `miroir-replicated` |
-| `serial`      | upstream `[Serial]` specs, one process                 | `miroir-replicated` |
-| `autodiskful` | the auto-diskful Go spec only, on `cluster-spare.yaml` | `miroir-replicated` |
+| Leg                              | Runs                                                   | Class               |
+| -------------------------------- | ------------------------------------------------------ | ------------------- |
+| `specs`                          | miroir's own Go specs, except the two below            | `miroir-local`      |
+| `specs-unreachability`           | the agent-eviction Go spec                             | `miroir-replicated` |
+| `specs-orphanhold`               | the orphaned-hold reclaim Go spec                      | `miroir-replicated` |
+| `local-1` to `local-3`           | the parallel upstream block/filesystem suite, sharded  | `miroir-local`      |
+| `replicated-1` to `replicated-3` | the parallel upstream block/filesystem suite, sharded  | `miroir-replicated` |
+| `zfs-1` to `zfs-3`               | the parallel upstream block/filesystem suite, sharded  | `miroir-zfs`        |
+| `btrfs-1` to `btrfs-3`           | the parallel upstream filesystem suite, sharded        | `miroir-btrfs`      |
+| `rwx`                            | the parallel upstream filesystem-only RWX/ROX suite    | `miroir-replicated` |
+| `serial`                         | upstream `[Serial]` specs, one process                 | `miroir-replicated` |
+| `autodiskful`                    | the auto-diskful Go spec only, on `cluster-spare.yaml` | `miroir-replicated` |
 
 miroir's Go specs (`test/e2e`) assert the local lifecycle, snapshot/restore, block and
-placement behaviour the upstream suite does not; the specs leg runs them
-(`RUN_SPECS=1`, `RUN_CONFORMANCE=0`) against the miroir-local (lvmthin, replicas: 1)
-class, and the local leg drives the upstream suite against that same class. They used
-to share one leg and run back to back, which made it the longest by about fourteen
-minutes; a cluster of their own costs each about six. The replicated leg drives that
-upstream suite against the DRBD (replicas: 2) class, group snapshots included; the zfs
-leg drives it against the same DRBD shape backed by the zfs pool instead, so
-replication pairs zvol with zvol and the zfs snapshot/restore path runs under the
-suite. The rwx leg enables the NFS gateway and advertises only filesystem volume
-modes, while the serial leg gives exclusive-cluster specs a single Ginkgo process.
+placement behaviour the upstream suite does not; the specs legs run them
+(`RUN_SPECS=1`, `RUN_CONFORMANCE=0`) mostly against the miroir-local (lvmthin,
+replicas: 1) class, and the local legs drive the upstream suite against that same class. The
+replicated legs drive that upstream suite against the DRBD (replicas: 2) class, group
+snapshots included; the zfs legs drive it against the same DRBD shape backed by the
+zfs pool instead, so replication pairs zvol with zvol and the zfs snapshot/restore
+path runs under the suite. The btrfs legs drive it against a replicated class that
+formats btrfs. The suite has no btrfs patterns of its own, so these legs run only the
+patterns that format with the class's filesystem type. The rwx leg enables the NFS gateway and advertises only
+filesystem volume modes, while the serial leg gives exclusive-cluster specs a single
+Ginkgo process.
+
+A fresh cluster costs each leg about six minutes, so CI splits a suite only while each
+share takes longer than that. The two slowest Go specs take about six minutes each.
+Each of them has a Ginkgo label and a leg of its own. The local, replicated, zfs and
+btrfs suites each run in three shards, which `SHARD` selects in
+`test/conformance/run.sh`.
+The shards split a suite by the upstream test suite name. Shard 3 skips what shards 1
+and 2 select, so a suite that upstream adds still runs.
 
 The autodiskful leg is the one that boots a different shape. Auto-diskful converts a
 settled diskless leg into a local replica, and a 2-replica volume only gets a diskless
 tie-breaker when some storage node carries no replica -- so this leg boots
 `cluster-spare.yaml` (a third worker) and installs the chart with `autoDiskfulAfter`
-set. Its spec is the only one carrying the `autodiskful` Ginkgo label: every other leg
-runs `SPEC_LABELS=!autodiskful` and skips it, and this leg selects it and skips the
-upstream suite (`RUN_CONFORMANCE=0`) rather than replaying it on a third cluster.
+set. Its spec is the only one with the `autodiskful` Ginkgo label. The other specs
+legs exclude it through `SPEC_LABELS`. This leg selects it and skips the upstream
+suite (`RUN_CONFORMANCE=0`) rather than replaying it on a third cluster.
 
 The specs, local and zfs legs enable CSI storage capacity publication (the replicated
 block lane keeps it off, where DRBD's full-size reservation on every replica starves
@@ -97,8 +109,8 @@ talosctl kubeconfig /tmp/miroir-e2e/kubeconfig --nodes 10.5.0.2 --force
 set -gx CLUSTER_NAME miroir-e2e
 set -gx KUBECONFIG /tmp/miroir-e2e/kubeconfig
 set -gx TALOSCONFIG /tmp/miroir-e2e/talosconfig
-set -gx TESTDRIVER testdriver.yaml # or testdriver-local.yaml / testdriver-zfs.yaml / testdriver-rwx.yaml
-set -gx RUN_SPECS 1                # also run the Go specs (CI gives them their own leg)
+set -gx TESTDRIVER testdriver.yaml # or testdriver-{local,zfs,btrfs,rwx}.yaml
+set -gx RUN_SPECS 1                # also run the Go specs (CI gives them legs of their own)
 set -gx STORAGE_CAPACITY_ENABLED true
 # Required with testdriver-rwx.yaml:
 set -gx GATEWAY_ENABLED true

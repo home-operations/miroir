@@ -250,7 +250,8 @@ main() {
 
     # Which storage class the upstream suite drives. testdriver.yaml is the replicated
     # (DRBD over lvmthin) class; testdriver-local.yaml the single-node lvmthin one;
-    # testdriver-zfs.yaml the replicated zfs one. run.sh reads SKIP / PROCS / VERBOSE
+    # testdriver-zfs.yaml the replicated zfs one; testdriver-btrfs.yaml the
+    # replicated btrfs-formatted one. run.sh reads SKIP / PROCS / VERBOSE
     # / FOCUS from the environment, so the workflow sets those.
     export TESTDRIVER="${TESTDRIVER:-testdriver.yaml}"
 
