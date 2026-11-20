@@ -41,6 +41,16 @@ FOCUS=${FOCUS:-'miroir.home-operations.com'}
 # the cluster; the volumeMode host check nsenters the node and runs sh,
 # which Talos does not ship.
 SKIP=${SKIP:-'\[Disruptive\]|\[Serial\]|should not mount / map unused volumes'}
+# Specs the btrfs class cannot pass. Through v1.37 the suite sizes the
+# group-snapshot StatefulSet claims at its own 1Mi minimum instead of the
+# driver's SupportedSizeRange, and mkfs.btrfs refuses a device that small.
+# The failed-binding spec registers because testdriver-btrfs.yaml turns
+# block off, then expects a raw-block claim to stay Pending; miroir
+# provisions raw block from this class.
+if [ "${TESTDRIVER##*/}" = testdriver-btrfs.yaml ]; then
+    SKIP="$SKIP|should create snapshots for StatefulSet volumes and verify data consistency after restore"
+    SKIP="$SKIP|should fail in binding dynamic provisioned PV to PVC"
+fi
 PROCS=${PROCS:-4}
 
 # Shards split the set by upstream test suite name, the word after the

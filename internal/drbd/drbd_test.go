@@ -1752,7 +1752,7 @@ func TestWipeForeignMetadataWipesUncleanMetadata(t *testing.T) {
 func TestSweepOrphansReleasesReclaimLeftoverAssignments(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: `[]`}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	if _, err := d.AllocateMinor("pvc-zombie"); err != nil {
+	if _, err := d.AllocateMinor(t.Context(), "pvc-zombie", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1772,7 +1772,7 @@ func TestSweepOrphansKeepsAssignmentWhileZombieLives(t *testing.T) {
 	fe := &fakeExec{responses: map[string]string{cmdDrbdsetupStatus: `[
 		{"name":"pvc-zombie","role":"Secondary","devices":[{"disk-state":"Diskless"}],"connections":[]}]`}}
 	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
-	if _, err := d.AllocateMinor("pvc-zombie"); err != nil {
+	if _, err := d.AllocateMinor(t.Context(), "pvc-zombie", 0); err != nil {
 		t.Fatal(err)
 	}
 
