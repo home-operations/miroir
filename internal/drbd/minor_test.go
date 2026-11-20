@@ -235,6 +235,28 @@ func TestAllocateMinorPreferred(t *testing.T) {
 			preferred: 1013,
 			wantErr:   true,
 		},
+		{
+			name:      "own assignment yields to another volume's assignment",
+			assigned:  volPvc1 + " 1013\n" + other + " 1013\n",
+			res:       map[string]int32{volPvc1: 1013, other: 1013},
+			statusErr: notUp,
+			preferred: 1013,
+			want:      minorBase,
+		},
+		{
+			name:      "running on the contested own assignment keeps it",
+			assigned:  volPvc1 + " 1013\n" + other + " 1013\n",
+			res:       map[string]int32{volPvc1: 1013, other: 1013},
+			status:    liveOn1013,
+			preferred: 1013,
+			want:      1013,
+		},
+		{
+			name:      "contested own assignment with an unreadable kernel view defers",
+			assigned:  volPvc1 + " 1013\n" + other + " 1013\n",
+			statusErr: errors.New("exit status 20"),
+			wantErr:   true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

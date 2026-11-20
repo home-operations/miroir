@@ -958,16 +958,22 @@ func (d *Driver) AllocateMinor(ctx context.Context, volume string, preferred int
 	if err != nil {
 		return 0, err
 	}
-	if m, ok := assigned[volume]; ok {
+	// The volume's own record stands unless another volume's record holds
+	// the same minor; that one is contested like any other claim below.
+	m, recorded := assigned[volume]
+	delete(assigned, volume)
+	if recorded && !slices.Contains(slices.Collect(maps.Values(assigned)), m) {
 		return m, nil
 	}
 	// A .res without an assignment record is our own partially-recorded
 	// state (crash between render and record, or a lost minor.assign):
 	// recover the volume's minor from its own file instead of assigning a
 	// fresh one — the kernel resource may still be running on it.
-	m, ok := d.minorFromOwnRes(volume)
-	if !ok {
-		m = preferred
+	if !recorded {
+		var ok bool
+		if m, ok = d.minorFromOwnRes(volume); !ok {
+			m = preferred
+		}
 	}
 	used := d.scanUsedMinors(assigned, volume)
 	if m > 0 && used[m] {
@@ -1086,8 +1092,8 @@ func (d *Driver) writeAssignments(m map[string]int32) error {
 }
 
 // scanUsedMinors collects the minors held by every volume but the named
-// one: all assignment records (the caller has established the volume has
-// none) and every other volume's rendered .res.
+// one: all assignment records (the caller has removed the volume's own)
+// and every other volume's rendered .res.
 func (d *Driver) scanUsedMinors(assigned map[string]int32, volume string) map[int32]bool {
 	used := map[int32]bool{}
 	for _, m := range assigned {
