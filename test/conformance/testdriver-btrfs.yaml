@@ -6,6 +6,7 @@
 # class's fstype, so leaving SupportedFsType at that default runs only
 # them. Block is off for the same reason: raw-block specs never format a
 # filesystem, and testdriver.yaml already runs them on this shape.
+# run.sh skips the specs this class cannot pass.
 StorageClass:
   FromExistingClassName: miroir-btrfs
 SnapshotClass:
