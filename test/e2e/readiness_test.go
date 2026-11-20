@@ -206,7 +206,7 @@ var _ = Describe("stale readiness detection (LastProbedAt)", Ordered, func() {
 // Test 2: CSI node unreachability surfacing (Phase 3)
 // ————————————————————————————————————————————————————————————————
 
-var _ = Describe("CSI node unreachability surfacing", Ordered, func() {
+var _ = Describe("CSI node unreachability surfacing", Ordered, Label("unreachability"), func() {
 	const ns = "miroir-e2e-csi-unreach"
 	ctx := context.Background()
 
