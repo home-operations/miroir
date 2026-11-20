@@ -47,7 +47,7 @@ jobs:
       deploy: false
 
   # Built once and handed to every e2e leg, so they all install identical bytes
-  # instead of six builds racing one GHA cache scope apiece.
+  # instead of a build per leg racing one GHA cache scope apiece.
   e2e-images:
     if: >-
       ${{ github.event_name != 'push'
@@ -160,27 +160,77 @@ jobs:
       # should not cost us the signal from the other.
       fail-fast: false
       matrix:
+        # A fresh cluster costs each leg ~6 minutes, so a suite is split only
+        # while its share still outlasts that.
         include:
           # miroir's own Go specs against the local (lvmthin, replicas:1) class.
-          # Its own leg because run back to back with the upstream suite below
-          # they made a single 38-minute lane, and neither needs the other's
-          # state -- a fresh cluster costs ~6 minutes, the split saves ~14.
+          # The two slowest take ~6 minutes each, so each gets its own leg.
           - suite: specs
             testdriver: testdriver-local.yaml
             specs: "1"
+            specLabels: "!autodiskful && !unreachability && !orphanhold"
             conformance: "0"
             capacity: "true"
-          # The upstream external-storage suite against that same local class.
-          - suite: local
+          - suite: specs-unreachability
+            testdriver: testdriver-local.yaml
+            specs: "1"
+            specLabels: unreachability
+            conformance: "0"
+            capacity: "true"
+          - suite: specs-orphanhold
+            testdriver: testdriver-local.yaml
+            specs: "1"
+            specLabels: orphanhold
+            conformance: "0"
+            capacity: "true"
+          # The upstream external-storage suite against that same local class,
+          # in the three shards test/conformance/run.sh defines.
+          - suite: local-1
             testdriver: testdriver-local.yaml
             capacity: "true"
+            shard: "1"
+          - suite: local-2
+            testdriver: testdriver-local.yaml
+            capacity: "true"
+            shard: "2"
+          - suite: local-3
+            testdriver: testdriver-local.yaml
+            capacity: "true"
+            shard: "3"
           # The upstream suite against the replicated (DRBD, replicas:2) class,
           # group snapshots included.
-          - suite: replicated
+          - suite: replicated-1
             testdriver: testdriver.yaml
-          - suite: zfs
+            shard: "1"
+          - suite: replicated-2
+            testdriver: testdriver.yaml
+            shard: "2"
+          - suite: replicated-3
+            testdriver: testdriver.yaml
+            shard: "3"
+          - suite: zfs-1
             testdriver: testdriver-zfs.yaml
             capacity: "true"
+            shard: "1"
+          - suite: zfs-2
+            testdriver: testdriver-zfs.yaml
+            capacity: "true"
+            shard: "2"
+          - suite: zfs-3
+            testdriver: testdriver-zfs.yaml
+            capacity: "true"
+            shard: "3"
+          # The upstream suite's filesystem patterns against the replicated
+          # btrfs class (see testdriver-btrfs.yaml for what it leaves out).
+          - suite: btrfs-1
+            testdriver: testdriver-btrfs.yaml
+            shard: "1"
+          - suite: btrfs-2
+            testdriver: testdriver-btrfs.yaml
+            shard: "2"
+          - suite: btrfs-3
+            testdriver: testdriver-btrfs.yaml
+            shard: "3"
           # Filesystem-only multi-node access through the NFS gateway. Keeping this
           # separate avoids advertising unsupported raw-block RWX.
           - suite: rwx
@@ -319,6 +369,7 @@ jobs:
           PROCS: ${{ matrix.procs || '4' }}
           FOCUS: ${{ matrix.focus }}
           SKIP: ${{ matrix.skip }}
+          SHARD: ${{ matrix.shard }}
           VERBOSE: "1"
 
       - name: Diagnostics

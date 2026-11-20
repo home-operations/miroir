@@ -1,7 +1,8 @@
 # Storage classes for the QEMU e2e: plain manifests, exactly what the docs tell users
 # to author. The topology (a MiroirNodeGroup) is applied by test.sh, which knows the
 # worker data disks. The class names match test/conformance/testdriver.yaml,
-# testdriver-local.yaml, and testdriver-zfs.yaml (FromExistingClassName).
+# testdriver-local.yaml, testdriver-zfs.yaml, and testdriver-btrfs.yaml
+# (FromExistingClassName).
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -38,6 +39,20 @@ parameters:
   miroir.home-operations.com/replicas: "2"
   miroir.home-operations.com/pool: zfs
   csi.storage.k8s.io/fstype: ext4
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: miroir-btrfs
+provisioner: miroir.home-operations.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+mountOptions:
+  - compress=zstd
+parameters:
+  miroir.home-operations.com/replicas: "2"
+  csi.storage.k8s.io/fstype: btrfs
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
