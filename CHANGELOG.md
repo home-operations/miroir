@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.12](https://github.com/home-operations/miroir/compare/0.12.11...0.12.12) (2026-11-21)
+
+
+### Bug Fixes
+
+* **agent:** gate readiness on DRBD state and fix review findings ([#652](https://github.com/home-operations/miroir/issues/652)) ([7b503e7](https://github.com/home-operations/miroir/commit/7b503e7835363be899553fb54f81d74332b62142))
+
 ## [0.12.11](https://github.com/home-operations/miroir/compare/0.12.10...0.12.11) (2026-11-20)
 
 
