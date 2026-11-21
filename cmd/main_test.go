@@ -18,11 +18,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
-	"slices"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,20 +30,14 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/agent"
-	"github.com/home-operations/miroir/internal/drbd"
 	"github.com/home-operations/miroir/internal/export"
 )
 
@@ -58,60 +49,6 @@ func TestCSIServerRunsOnEveryReplica(t *testing.T) {
 	var r manager.LeaderElectionRunnable = csiRunnable{}
 	if r.NeedLeaderElection() {
 		t.Fatal("csiRunnable must opt out of leader election")
-	}
-}
-
-func TestTransientAPIError(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil", nil, false},
-		{"unauthorized", apierrors.NewUnauthorized("no creds"), false},
-		{"forbidden", apierrors.NewForbidden(schema.GroupResource{}, "x", errors.New("rbac")), false},
-		{"notfound", apierrors.NewNotFound(schema.GroupResource{}, "x"), false},
-		{"no kind match", &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "miroir.io", Kind: "MiroirNode"}}, false},
-		// The failure that crashed the agent on startup: a dial error while
-		// the control plane is still recovering — must be retried.
-		{"dial error", errors.New("dial tcp 10.43.0.1:443: connect: no route to host"), true},
-		{"service unavailable", apierrors.NewServiceUnavailable("starting"), true},
-	}
-	for _, tc := range cases {
-		if got := transientAPIError(tc.err); got != tc.want {
-			t.Errorf("%s: transientAPIError = %v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestListWithRetrySucceeds(t *testing.T) {
-	s := runtime.NewScheme()
-	if err := miroirv1alpha1.AddToScheme(s); err != nil {
-		t.Fatal(err)
-	}
-	c := fake.NewClientBuilder().WithScheme(s).Build()
-	if err := listWithRetry(t.Context(), c, &miroirv1alpha1.MiroirVolumeList{}, apiStartupWait); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestListWithRetryReturnsTerminalErrorImmediately(t *testing.T) {
-	s := runtime.NewScheme()
-	if err := miroirv1alpha1.AddToScheme(s); err != nil {
-		t.Fatal(err)
-	}
-	// A terminal (non-transient) error must abort the wait at once rather
-	// than block for apiStartupWait — otherwise a misconfiguration would
-	// look like a slow startup.
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithInterceptorFuncs(interceptor.Funcs{
-			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
-				return apierrors.NewUnauthorized("no creds")
-			},
-		}).Build()
-	err := listWithRetry(t.Context(), c, &miroirv1alpha1.MiroirVolumeList{}, apiStartupWait)
-	if !apierrors.IsUnauthorized(err) {
-		t.Fatalf("want the terminal Unauthorized returned, got %v", err)
 	}
 }
 
@@ -155,7 +92,7 @@ func warmNodeMapping(t *testing.T, cfg *rest.Config, objs map[client.Object]cach
 	if err != nil {
 		t.Fatal(err)
 	}
-	return warmRESTMapper(mapper, scheme, objs, apiStartupWait)
+	return warmRESTMapper(mapper, scheme, objs, agent.APIStartupWait)
 }
 
 var nodeByObject = map[client.Object]cache.ByObject{&corev1.Node{}: {}}
@@ -352,12 +289,6 @@ func TestFinishManagerShutdownSignalDuringBarrierRunsFullSweep(t *testing.T) {
 	}
 }
 
-func TestAgentShutdownDownSecondariesRequiresCordon(_ *testing.T) {
-	// A nil driver is intentional: an uncordoned node must return before any
-	// teardown is attempted.
-	agentShutdownDownSecondaries(&agent.CordonWatcher{}, nil)
-}
-
 func TestParseGatewayResources(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -407,68 +338,6 @@ func TestParseGatewayResources(t *testing.T) {
 			}
 			if !apiequality.Semantic.DeepEqual(got, tt.want) {
 				t.Fatalf("got %+v, want %+v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestResumeStaleBarriers(t *testing.T) {
-	const suspendedStatus = `[{"name":"pvc-1","suspended-user":true}]`
-	now := metav1.Now()
-	liveRound := &miroirv1alpha1.MiroirSnapshot{
-		ObjectMeta: metav1.ObjectMeta{Name: "snap-1"},
-		Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-1"},
-		Status:     miroirv1alpha1.MiroirSnapshotStatus{IOSuspended: true, SuspendedAt: &now},
-	}
-	tests := []struct {
-		name       string
-		status     string
-		objs       []client.Object
-		wantLists  bool
-		wantResume bool
-	}{
-		{name: "nothing suspended reads no API", status: "[]"},
-		{name: "barrier of a live round stays", status: suspendedStatus, objs: []client.Object{liveRound}, wantLists: true},
-		{name: "barrier no round records is lifted", status: suspendedStatus, wantLists: true, wantResume: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := runtime.NewScheme()
-			if err := miroirv1alpha1.AddToScheme(s); err != nil {
-				t.Fatal(err)
-			}
-			lists := 0
-			c := fake.NewClientBuilder().WithScheme(s).WithObjects(tt.objs...).
-				WithInterceptorFuncs(interceptor.Funcs{
-					List: func(ctx context.Context, c client.WithWatch, l client.ObjectList, o ...client.ListOption) error {
-						lists++
-						return c.List(ctx, l, o...)
-					},
-				}).Build()
-			var calls []string
-			// The kernel must be read before any round is listed.
-			statusBeforeLists := false
-			exec := func(_ context.Context, name string, args ...string) (string, error) {
-				line := name + " " + strings.Join(args, " ")
-				calls = append(calls, line)
-				if strings.HasPrefix(line, "drbdsetup status") {
-					statusBeforeLists = lists == 0
-					return tt.status, nil
-				}
-				return "", nil
-			}
-			driver := &drbd.Driver{StateDir: t.TempDir(), Exec: exec}
-			if err := resumeStaleBarriers(t.Context(), c, driver, nil, "node-a", time.Second); err != nil {
-				t.Fatal(err)
-			}
-			if !statusBeforeLists {
-				t.Fatal("the kernel view must be read before the rounds are listed")
-			}
-			if (lists > 0) != tt.wantLists {
-				t.Fatalf("API lists = %d, want any: %v", lists, tt.wantLists)
-			}
-			if got := slices.Contains(calls, "drbdadm resume-io pvc-1"); got != tt.wantResume {
-				t.Fatalf("resume-io issued = %v, want %v (calls %v)", got, tt.wantResume, calls)
 			}
 		})
 	}

@@ -29,7 +29,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -41,15 +40,12 @@ import (
 	"github.com/robfig/cron/v3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apimachinery/pkg/util/wait"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -66,7 +62,6 @@ import (
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/agent"
 	"github.com/home-operations/miroir/internal/backend"
-	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/csi"
 	"github.com/home-operations/miroir/internal/drbd"
 	"github.com/home-operations/miroir/internal/export"
@@ -208,25 +203,6 @@ func parseGatewayResources(raw string) (corev1.ResourceRequirements, error) {
 	return res, nil
 }
 
-// fetchMiroirNode reads this node's MiroirNode straight from the API
-// server (the cache has not started), retrying transient errors within the
-// startup budget so a reboot that races control-plane recovery does not
-// churn through CrashLoopBackOff. found is false when no MiroirNode names
-// this node — it holds no storage and runs a client-only agent.
-func fetchMiroirNode(r client.Reader, name string, budget time.Duration) (*miroirv1alpha1.MiroirNode, bool, error) {
-	node := &miroirv1alpha1.MiroirNode{}
-	err := apiWithRetry(context.Background(), budget, func(ctx context.Context) error {
-		return r.Get(ctx, types.NamespacedName{Name: name}, node)
-	})
-	if apierrors.IsNotFound(err) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	return node, true, nil
-}
-
 // cacheOptions builds the manager cache config. SSA-heavy objects grow a
 // managedFields entry per field manager (every agent + the CSI controller
 // write each volume), so strip them from cached copies — nothing reads
@@ -262,107 +238,6 @@ func cacheOptions(mode, namespace, nodeName string) cache.Options {
 		}
 	}
 	return opts
-}
-
-// volumeGroupFor names the LVM VG backing a pool. The default pool keeps
-// the pre-multi-pool name so existing VGs keep working across the upgrade;
-// every other pool gets its own suffixed VG.
-func volumeGroupFor(pool string) string {
-	if pool == miroirv1alpha1.DefaultPoolName {
-		return "vg-miroir"
-	}
-	return "vg-miroir-" + pool
-}
-
-// clientOnlyReason explains why this node's agent serves client-only, or
-// returns "" when the MiroirNode carries usable pools.
-func clientOnlyReason(found bool, miroirNode *miroirv1alpha1.MiroirNode, flat nodemap.Node) string {
-	switch {
-	case !found:
-		return "no MiroirNode for this node; running client-only node service"
-	case len(flat.Pools) > 0:
-		return ""
-	case len(miroirNode.Spec.Pools) > 0:
-		// Pools exist in the spec but none flattened: block-less entries,
-		// which only a pre-0.11 stored object can carry.
-		return "MiroirNode pools carry no backend block (a pre-0.11 stored object?): " +
-			"apply this node's MiroirNode manifest; running client-only node service"
-	default:
-		return "MiroirNode declares no usable pools; running client-only node service"
-	}
-}
-
-// agentTopology reads this node's MiroirNode (with the startup retry
-// budget) and arms the watcher that restarts the agent when the pool spec
-// drifts from this snapshot — or appears at all — so a chart-applied pool
-// edit reaches the agent without the ConfigMap-checksum pod roll it used
-// to ride. found is false for a client-only node (no MiroirNode).
-func agentTopology(mgr manager.Manager, nodeName string, stop context.CancelFunc,
-) (*miroirv1alpha1.MiroirNode, bool, error) {
-	miroirNode, found, err := fetchMiroirNode(mgr.GetAPIReader(), nodeName, apiStartupWait)
-	if err != nil {
-		return nil, false, fmt.Errorf("unable to read this node's MiroirNode: %w", err)
-	}
-	var bootedPools []miroirv1alpha1.MiroirNodePool
-	if found {
-		bootedPools = miroirNode.Spec.Pools
-	}
-	if err := (&agent.TopologyWatcher{
-		Client:      mgr.GetClient(),
-		NodeName:    nodeName,
-		BootedPools: bootedPools,
-		Stop:        stop,
-	}).SetupWithManager(mgr); err != nil {
-		return nil, false, fmt.Errorf("unable to set up topology watcher: %w", err)
-	}
-	return miroirNode, found, nil
-}
-
-// poolBackendsFor builds one backend per pool from this node's flattened
-// MiroirNode spec. run is the shared wedge-tracking executor, so a kernel
-// that strands an lvm or zfs child trips the same node-scoped breaker the
-// DRBD driver reports to.
-func poolBackendsFor(nodeName string, entry nodemap.Node, run backend.Exec) (agent.Pools, error) {
-	pools := agent.Pools{}
-	for name, p := range entry.Pools {
-		be, err := backend.New(p.Backend, backend.Config{
-			VolumeGroup:     volumeGroupFor(name),
-			ThinPool:        "thinpool",
-			Device:          p.Device,
-			Dataset:         p.ZFSDataset,
-			ZFSVolBlockSize: p.ZFSVolBlockSizeBytes(),
-			ZFSCompression:  p.ZFSCompression,
-			PoolSize:        p.ThinPoolSize,
-			BaseDir:         p.BaseDir,
-		}, run)
-		if err != nil {
-			return nil, fmt.Errorf("backend for node %s pool %s: %w", nodeName, name, err)
-		}
-		pools[name] = agent.PoolBackend{Backend: be, Type: p.Backend}
-	}
-	return pools, nil
-}
-
-// setupAgentPools bootstraps the node-local pools before the agent serves
-// anything: first start on a fresh node creates PV/VG/thin-pool (lvmthin)
-// or the parent dataset (zfs). One bad pool must not take the good ones
-// down — its volumes fail their reconciles with real errors while the
-// rest of the node keeps serving. All pools failing means the node is
-// misconfigured wholesale; exit like the single-pool agent always did so
-// the CrashLoopBackOff is impossible to miss.
-func setupAgentPools(pools agent.Pools) error {
-	failed := 0
-	for _, name := range slices.Sorted(maps.Keys(pools)) {
-		if err := pools[name].Backend.Setup(context.Background()); err != nil {
-			setupLog.Error(err, "backend pool setup failed; volumes in this pool will fail until it is fixed",
-				"pool", name)
-			failed++
-		}
-	}
-	if failed == len(pools) {
-		return fmt.Errorf("every pool failed setup (%d pools)", len(pools))
-	}
-	return nil
 }
 
 // validateMode rejects an unknown --mode before anything reaches the API.
@@ -698,9 +573,9 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 	// pools flatten to nothing (none declared, or only block-less
 	// entries from a pre-0.11 stored object that survives revalidation)
 	// holds no storage either and gets the same treatment —
-	// setupAgentPools would read zero pools as "every pool failed" and
+	// agent.SetupPools would read zero pools as "every pool failed" and
 	// crash-loop.
-	miroirNode, found, err := agentTopology(mgr, o.nodeName, stop)
+	miroirNode, found, err := agent.LoadTopology(mgr, o.nodeName, stop)
 	if err != nil {
 		return hooks, err
 	}
@@ -708,7 +583,7 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 	if found {
 		flat = nodemap.FromSpec(miroirNode.Spec)
 	}
-	if msg := clientOnlyReason(found, miroirNode, flat); msg != "" {
+	if msg := agent.ClientOnlyReason(found, miroirNode, flat); msg != "" {
 		setupLog.Info(msg, "node", o.nodeName)
 		// No volume reconciler runs here, so a client leg could never
 		// be realized: the node service refuses RWO remote-access
@@ -723,11 +598,11 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 		node.Wedge = storageWedge
 		return hooks, serveCSI(mgr, o.csiSocket, identity, nil, node)
 	}
-	pools, err := poolBackendsFor(o.nodeName, flat, runHost)
+	pools, err := agent.PoolBackendsFor(o.nodeName, flat, runHost)
 	if err != nil {
 		return hooks, fmt.Errorf("unable to build the node's backends: %w", err)
 	}
-	if err := setupAgentPools(pools); err != nil {
+	if err := agent.SetupPools(pools); err != nil {
 		return hooks, err
 	}
 	drbdDriver := &drbd.Driver{StateDir: o.drbdStateDir, Exec: runHost, Wedge: storageWedge}
@@ -736,7 +611,7 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 	// it proactively on nodes that ship it) and run without the DRBD
 	// machinery when the kernel side is absent — otherwise the events
 	// watcher hot-loops "exit status 20" every 5s forever.
-	drbdKernel, drbdUtils, drbdReady, err := probeDRBD(drbdDriver)
+	drbdKernel, drbdUtils, drbdReady, err := agent.ProbeDRBD(drbdDriver)
 	if err != nil {
 		return hooks, err
 	}
@@ -753,13 +628,13 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 		// execution itself is best-effort and logged inside — a wedged
 		// resource (LINBIT/drbd#137) must not keep the agent from
 		// serving the node's healthy volumes.
-		if err := sweepOrphans(context.Background(), mgr.GetAPIReader(), o.nodeName, drbdDriver); err != nil {
+		if err := agent.SweepOrphans(context.Background(), mgr.GetAPIReader(), o.nodeName, drbdDriver); err != nil {
 			return hooks, fmt.Errorf("orphan sweep failed: %w", err)
 		}
 		// Lift any IO barrier left by a previous agent crash; same
 		// fatal-only-on-API-failure contract.
-		if err := resumeStaleBarriers(context.Background(), mgr.GetAPIReader(), drbdDriver,
-			agent.NewFreezer(), o.nodeName, apiStartupWait); err != nil {
+		if err := agent.ResumeStaleBarriers(context.Background(), mgr.GetAPIReader(), drbdDriver,
+			agent.NewFreezer(), o.nodeName, agent.APIStartupWait); err != nil {
 			return hooks, fmt.Errorf("barrier resume sweep failed: %w", err)
 		}
 	}
@@ -776,9 +651,9 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 	}
 	var drbdEvents chan event.GenericEvent
 	if drbdReady {
-		hooks.sweep = func() { agentShutdownSweep(mgr.GetAPIReader(), cordon, drbdDriver, o.nodeName) }
-		hooks.barrierSweep = func() { agentShutdownBarrierSweep(mgr.GetAPIReader(), drbdDriver, o.nodeName) }
-		hooks.early = func() { agentShutdownDownSecondaries(cordon, drbdDriver) }
+		hooks.sweep = func() { agent.ShutdownSweep(mgr.GetAPIReader(), cordon, drbdDriver, o.nodeName) }
+		hooks.barrierSweep = func() { agent.ShutdownBarrierSweep(mgr.GetAPIReader(), drbdDriver, o.nodeName) }
+		hooks.early = func() { agent.ShutdownDownSecondaries(cordon, drbdDriver) }
 		// events2 turns kernel state changes into immediate reconciles;
 		// the 30s poll remains as the safety net.
 		drbdEvents = make(chan event.GenericEvent, 64)
@@ -828,7 +703,7 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 		return hooks, fmt.Errorf("unable to set up agent reconciler: %w", err)
 	}
 	freezer := agent.NewFreezer()
-	if err := addBarrierSweep(mgr, drbdReady, drbdDriver, freezer, o.nodeName); err != nil {
+	if err := agent.AddBarrierSweep(mgr, drbdReady, drbdDriver, freezer, o.nodeName); err != nil {
 		return hooks, err
 	}
 	snapReconciler := &agent.SnapshotReconciler{
@@ -872,7 +747,7 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 	if err := addVerifyScheduler(mgr, o.nodeName, drbdReady, o.verifySchedule, drbdDriver); err != nil {
 		return hooks, err
 	}
-	if err := addWedgeSampler(mgr, storageWedge); err != nil {
+	if err := agent.AddWedgeSampler(mgr, storageWedge); err != nil {
 		return hooks, err
 	}
 	node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), o.nodeName, drbdDriver)
@@ -907,31 +782,12 @@ func finishManagerShutdown(err error, signalCtx, managerCtx context.Context,
 	return err
 }
 
-// apiStartupWait bounds how long the startup sweeps wait for the API server,
-// so a reboot that races control-plane recovery does not exit on the first
-// dial error and churn through CrashLoopBackOff. Kept under the liveness
-// kill window: the probe endpoints are not up until the manager starts.
-const apiStartupWait = 45 * time.Second
-
 // apiDialTimeout replaces client-go's 30s default dial timeout. A dial to
 // a not-yet-routable service VIP hangs for the whole timeout, which would
-// leave a single effective retry inside apiStartupWait; an API server that
+// leave a single effective retry inside agent.APIStartupWait; an API server that
 // takes longer than 10s to accept a connection is unreachable for every
 // practical purpose.
 const apiDialTimeout = 10 * time.Second
-
-// drbdShutdownTimeout bounds the Secondary-teardown sweep at shutdown.
-const drbdShutdownTimeout = 15 * time.Second
-
-// barrierSweepInterval paces the periodic stranded-barrier sweep (addBarrierSweep).
-const barrierSweepInterval = 5 * time.Minute
-
-// apiShutdownWait bounds the shutdown barrier sweep's API access: the
-// termination grace budget is 60s and the manager stop plus
-// DownSecondaries can already spend 45s of it. apiStartupWait would
-// guarantee a SIGKILL mid-sweep. The periodic mid-runtime sweep reuses it:
-// a short per-tick budget whose failure just logs and retries next tick.
-const apiShutdownWait = 5 * time.Second
 
 // signalShutdown starts cleanup as soon as the OS signal arrives, rather
 // than waiting for controller-runtime to finish stopping its runnables. Its
@@ -986,33 +842,9 @@ func (s *signalShutdown) finish() bool {
 	return false
 }
 
-// apiWithRetry retries one API call until it succeeds, hits a terminal
-// (non-transient) error, or the budget elapses — so a control plane still
-// coming back up does not crash the process on startup. It is the one
-// retry policy every pre-manager API access shares.
-func apiWithRetry(ctx context.Context, budget time.Duration, op func(ctx context.Context) error) error {
-	var lastErr error
-	waitErr := wait.PollUntilContextTimeout(ctx, 2*time.Second, budget, true,
-		func(ctx context.Context) (bool, error) {
-			lastErr = op(ctx)
-			if lastErr == nil {
-				return true, nil
-			}
-			if !transientAPIError(lastErr) {
-				return false, lastErr
-			}
-			setupLog.Info("API server not ready; retrying", "error", lastErr.Error())
-			return false, nil
-		})
-	if waitErr != nil && lastErr != nil {
-		return lastErr
-	}
-	return waitErr
-}
-
 // newManager builds the controller-runtime manager. NewManager resolves every cached (ByObject) type through the
 // RESTMapper at construction time, an API access that precedes every other
-// apiWithRetry call site and would otherwise exit on the first dial error:
+// agent.APIWithRetry call site and would otherwise exit on the first dial error:
 // a hostNetwork agent can only reach the service VIP once the CNI has
 // programmed it, which lags the pod start on a node reboot. The mapper
 // provider warms those lookups under the startup retry policy first, and
@@ -1029,7 +861,7 @@ func newManager(opts ctrl.Options) (manager.Manager, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := warmRESTMapper(mapper, opts.Scheme, opts.Cache.ByObject, apiStartupWait); err != nil {
+		if err := warmRESTMapper(mapper, opts.Scheme, opts.Cache.ByObject, agent.APIStartupWait); err != nil {
 			return nil, err
 		}
 		return mapper, nil
@@ -1054,7 +886,7 @@ func warmRESTMapper(mapper meta.RESTMapper, scheme *runtime.Scheme,
 		}
 		gvks = append(gvks, gvk)
 	}
-	return apiWithRetry(context.Background(), budget, func(context.Context) error {
+	return agent.APIWithRetry(context.Background(), budget, func(context.Context) error {
 		for _, gvk := range gvks {
 			if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
 				return fmt.Errorf("warm RESTMapper: %w", err)
@@ -1062,313 +894,6 @@ func warmRESTMapper(mapper meta.RESTMapper, scheme *runtime.Scheme,
 		}
 		return nil
 	})
-}
-
-// listWithRetry retries an API list with the shared startup retry policy.
-func listWithRetry(ctx context.Context, c client.Reader, list client.ObjectList, budget time.Duration) error {
-	return apiWithRetry(ctx, budget, func(ctx context.Context) error { return c.List(ctx, list) })
-}
-
-// transientAPIError reports whether an API error is worth retrying. Dial
-// failures during control-plane recovery (connection refused, no route to
-// host) arrive as non-APIStatus errors; only explicit terminal statuses
-// (auth, not-found, invalid) and a kind the server does not serve (the
-// CRDs are not installed) are treated as permanent.
-func transientAPIError(err error) bool {
-	switch {
-	case err == nil:
-		return false
-	case apierrors.IsUnauthorized(err), apierrors.IsForbidden(err),
-		apierrors.IsNotFound(err), apierrors.IsInvalid(err),
-		meta.IsNoMatchError(err):
-		return false
-	default:
-		return true
-	}
-}
-
-// agentShutdownDownSecondaries demotes all Primaries then brings down every
-// Secondary on a cordoned node, releasing backing devices so the OS can tear
-// down storage pools without EIO. The early signal path deliberately does not
-// perform API access, so it can start before manager shutdown has completed.
-func agentShutdownDownSecondaries(cordon *agent.CordonWatcher, driver *drbd.Driver) {
-	if cordon.Cordoned() {
-		ctx, cancel := context.WithTimeout(context.Background(), drbdShutdownTimeout)
-		defer cancel()
-		setupLog.Info("node cordoned; demoting Primaries and releasing DRBD backings for shutdown")
-		// Demote first: --force terminates pending I/O so the subsequent
-		// down and the OS teardown cannot wedge on a metadata flush.
-		if err := driver.DemoteAll(ctx); err != nil {
-			setupLog.Error(err, "DRBD shutdown demote failed; attempting down sweep anyway")
-		}
-		if err := driver.DownSecondaries(ctx); err != nil {
-			setupLog.Error(err, "DRBD shutdown teardown failed; node reboot may stall")
-		}
-	}
-}
-
-func agentShutdownBarrierSweep(c client.Reader, driver *drbd.Driver, nodeName string) {
-	// Short API budget: the chart grants 60s of termination grace and the
-	// manager stop + DownSecondaries already spend up to 45s of it. A
-	// stranded barrier missed here is lifted by the startup sweep on the
-	// next boot.
-	if err := resumeStaleBarriers(context.Background(), c, driver,
-		agent.NewFreezer(), nodeName, apiShutdownWait); err != nil {
-		setupLog.Error(err, "shutdown barrier sweep failed")
-	}
-}
-
-// agentShutdownSweep is the final idempotent shutdown pass.
-func agentShutdownSweep(c client.Reader, cordon *agent.CordonWatcher, driver *drbd.Driver, nodeName string) {
-	agentShutdownDownSecondaries(cordon, driver)
-	agentShutdownBarrierSweep(c, driver, nodeName)
-}
-
-// addBarrierSweep runs the startup/shutdown stranded-barrier sweep
-// mid-runtime too: a wedged suspend-io (LINBIT/drbd#137) can set the kernel
-// flag after drbdadm reported failure, leaving a frozen volume no recorded
-// round owns until the agent restarts. resumeStaleBarriers skips live rounds
-// (fresh ioSuspended timestamp); a round past agent.SuspendDeadline is void
-// by protocol anyway. A round is briefly invisible between its suspend-io
-// and its status patch, so a tick can in theory lift a live coordinator's
-// barrier — bounded: the cut phase re-asserts suspend-io per leg (though
-// not the thawed freeze, so that round's cut degrades from fs-consistent
-// to crash-consistent). API-list failures are logged, not fatal: the next
-// tick retries.
-func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, freezer *agent.Freezer,
-	nodeName string) error {
-	if !drbdReady {
-		return nil
-	}
-	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		ticker := time.NewTicker(barrierSweepInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-ticker.C:
-				if err := resumeStaleBarriers(ctx, mgr.GetAPIReader(), driver, freezer, nodeName, apiShutdownWait); err != nil {
-					setupLog.Error(err, "periodic barrier sweep incomplete")
-				}
-			}
-		}
-	})); err != nil {
-		return fmt.Errorf("unable to add periodic barrier sweep: %w", err)
-	}
-	return nil
-}
-
-// wedgeSampleInterval paces the node-scoped breaker's gauge: short enough to
-// show the jam building rather than only its aftermath, and cheap at one
-// /proc/<pid>/stat read per outstanding child.
-const wedgeSampleInterval = 30 * time.Second
-
-// addWedgeSampler publishes the node-scoped breaker's state on a timer and
-// logs its transitions. Sampled rather than event-driven because the count
-// self-heals: a gauge written only when a child strands would page forever
-// after the node recovered.
-func addWedgeSampler(mgr manager.Manager, w *backend.Wedge) error {
-	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-		ticker := time.NewTicker(wedgeSampleInterval)
-		defer ticker.Stop()
-		open := false
-		for {
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-ticker.C:
-				agent.RecordNodeWedge(w)
-				// Edges only: a jammed node stays jammed until it reboots,
-				// and repeating the line every 30s buries it.
-				if tripped := w.Tripped(); tripped != open {
-					open = tripped
-					if tripped {
-						setupLog.Error(w.Err(), "node storage stack wedged; refusing further storage commands until this node reboots",
-							"stranded", w.Stranded())
-					} else {
-						setupLog.Info("node storage stack recovered; resuming storage commands")
-					}
-				}
-			}
-		}
-	})); err != nil {
-		return fmt.Errorf("unable to add the wedge sampler: %w", err)
-	}
-	return nil
-}
-
-// sweepOrphans removes DRBD state with no owning volume on this node. c
-// must be an uncached reader: the manager has not started yet.
-// Returns an error only when the volume list cannot be fetched; the sweep
-// itself is best-effort and its failures are logged here.
-func sweepOrphans(ctx context.Context, c client.Reader, nodeName string, driver *drbd.Driver) error {
-	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := listWithRetry(ctx, c, vols, apiStartupWait); err != nil {
-		return err
-	}
-	owned := map[string]bool{}
-	for _, v := range vols.Items {
-		for _, rep := range v.Spec.Replicas {
-			if rep.Node == nodeName {
-				owned[v.Name] = true
-			}
-		}
-		// A held finalizer without a spec entry is a replica pending
-		// removal: its teardown is the reconciler's, gated on the
-		// remaining replicas' health — not the orphan sweep's.
-		for _, f := range v.Finalizers {
-			if f == constants.FinalizerPrefix+nodeName {
-				owned[v.Name] = true
-			}
-		}
-	}
-	if err := driver.SweepOrphans(ctx,
-		func(name string) bool { return owned[name] }); err != nil {
-		setupLog.Error(err, "orphan sweep incomplete")
-	}
-	return nil
-}
-
-// resumeStaleBarriers lifts suspend-io left behind by a previous crash.
-// The kernel's view drives the sweep: a crash between suspend-io and the
-// status patch leaves a frozen device no snapshot records. It is read
-// before the rounds are listed, so a barrier is never judged against a
-// listing older than itself. Barriers whose round is still within the
-// deadline are the reconciler's to drive. c must be an uncached reader.
-// Returns an error only when a round list cannot be fetched; resume
-// failures are per-resource and logged here.
-func resumeStaleBarriers(ctx context.Context, c client.Reader, driver *drbd.Driver, freezer *agent.Freezer,
-	nodeName string, apiBudget time.Duration) error {
-	suspended, err := driver.UserSuspended(ctx)
-	if err != nil {
-		// No kernel view (e.g. module not loaded yet) also means nothing
-		// can be suspended — don't block agent startup on it.
-		setupLog.Error(err, "cannot list suspended resources; skipping barrier sweep")
-		return nil
-	}
-	if len(suspended) == 0 {
-		return nil
-	}
-	snaps := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := listWithRetry(ctx, c, snaps, apiBudget); err != nil {
-		return err
-	}
-	fresh := map[string]bool{}
-	for _, s := range snaps.Items {
-		if s.Status.IOSuspended && s.Status.SuspendedAt != nil &&
-			time.Since(s.Status.SuspendedAt.Time) < agent.SuspendDeadline {
-			fresh[s.Spec.VolumeName] = true
-		}
-	}
-	// A group round's ioSuspended lives on the group object, not on its
-	// member snapshots — without this, every volume of a live group round
-	// reads as stale and the sweep resumes (and thaws) mid-cut. Member
-	// volumes come from the member snapshots; perLeg slot keys
-	// ("<volume>/<node>") cover a member already torn out of the list.
-	groups := &miroirv1alpha1.MiroirSnapshotGroupList{}
-	if err := listWithRetry(ctx, c, groups, apiBudget); err != nil {
-		return err
-	}
-	snapVol := map[string]string{}
-	for _, s := range snaps.Items {
-		snapVol[s.Name] = s.Spec.VolumeName
-	}
-	for _, g := range groups.Items {
-		if !g.Status.IOSuspended || g.Status.SuspendedAt == nil ||
-			time.Since(g.Status.SuspendedAt.Time) >= agent.SuspendDeadline {
-			continue
-		}
-		for _, name := range g.Spec.SnapshotNames {
-			if vol := snapVol[name]; vol != "" {
-				fresh[vol] = true
-			}
-		}
-		for key := range g.Status.PerLeg {
-			if vol, _, ok := strings.Cut(key, "/"); ok {
-				fresh[vol] = true
-			}
-		}
-	}
-	var errs []error
-	var stale []string
-	for _, vol := range suspended {
-		if fresh[vol] {
-			continue
-		}
-		stale = append(stale, vol)
-		setupLog.Info("lifting stale IO barrier", "volume", vol)
-		if err := driver.ResumeIO(ctx, vol); err != nil {
-			errs = append(errs, fmt.Errorf("resume stale barrier on %s: %w", vol, err))
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
-		setupLog.Error(err, "barrier resume sweep incomplete")
-	}
-	// A crash mid-round can leave the filesystem freeze behind exactly
-	// like the barrier; the reconcilers only thaw volumes whose snapshot
-	// objects still exist, so the sweep covers the rest. Fresh rounds
-	// keep their freeze — their own close lifts it.
-	if len(stale) > 0 && freezer != nil {
-		vols := &miroirv1alpha1.MiroirVolumeList{}
-		if err := listWithRetry(ctx, c, vols, apiBudget); err != nil {
-			setupLog.Error(err, "cannot list volumes; skipping freeze thaw sweep")
-			return nil
-		}
-		paths := map[string]string{}
-		for i := range vols.Items {
-			paths[vols.Items[i].Name] = vols.Items[i].Status.PerNode[nodeName].DevicePath
-		}
-		for _, name := range stale {
-			if device := paths[name]; device != "" {
-				mp, err := freezer.Thaw(device)
-				switch {
-				case err != nil:
-					setupLog.Error(err, "cannot thaw stale filesystem freeze", "volume", name)
-				case mp == "":
-					// Usually a leg that never froze (only mounted legs do),
-					// but a freeze leaked before its mount went away is
-					// unreachable now — mount refuses the frozen device and
-					// FITHAW needs a mountpoint. Not silent, so
-					// the leak never looks like success; the stage-time
-					// recovery is what clears it.
-					setupLog.Info("stale barrier volume is not mounted; nothing to thaw here",
-						"volume", name, "device", device)
-				}
-			}
-		}
-	}
-	return nil
-}
-
-// probeDRBD reports whether the DRBD kernel side is usable and, when it
-// is, the module and drbd-utils versions — an error below drbd.KernelFloor:
-// a 9.3.1-era option rendered against an older module errors drbdadm for
-// every resource on the node, so failing fast here beats poisoning them
-// all later. Talos ≥ 1.13.0 ships a module at the floor.
-func probeDRBD(driver *drbd.Driver) (version, utilsVersion string, ready bool, err error) {
-	if !driver.KernelAvailable(context.Background()) {
-		return "", "", false, nil
-	}
-	v, err := driver.KernelVersion(context.Background())
-	if err != nil {
-		// The module answered but the version read flaked; running
-		// unchecked beats refusing a working node.
-		setupLog.Error(err, "cannot read DRBD kernel module version; skipping floor check")
-		return "", "", true, nil
-	}
-	if drbd.BelowKernelFloor(v) {
-		return "", "", false, fmt.Errorf(
-			"DRBD kernel module %s is below the supported floor %s; upgrade the node (Talos >= 1.13.0)",
-			v, drbd.KernelFloor)
-	}
-	utils, err := driver.UtilsVersion(context.Background())
-	if err != nil {
-		// Informational only: an empty value beats refusing a working node.
-		setupLog.Error(err, "cannot read drbd-utils version")
-	}
-	agent.RecordDRBDVersions(v, utils)
-	return v, utils, true, nil
 }
 
 // csiRunnable marks the CSI server as running on every replica rather than
