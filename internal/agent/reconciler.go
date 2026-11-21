@@ -345,8 +345,11 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	r.storeIfSettled(vol, st, requeue, reportSize, splitActive || stuckActive)
-	r.Startup.Observe(vol.Name, legSettled(st, vol, r.NodeName, localDiskless))
+	recovering := splitActive || stuckActive
+	r.storeIfSettled(vol, st, requeue, reportSize, recovering)
+	// st predates any connection cycle recovery just ran, so a recovering
+	// leg is never settled on its strength.
+	r.Startup.Observe(vol.Name, !recovering && legSettled(st, vol, r.NodeName, localDiskless))
 	return ctrl.Result{RequeueAfter: requeue}, nil
 }
 

@@ -3937,6 +3937,27 @@ func TestReconcileStuckResyncFingerprintLifecycle(t *testing.T) {
 	}
 }
 
+// A leg wearing the stranded-bitmap signature reads connected and UpToDate,
+// but its recovery is still pending: the agent must not report ready on it,
+// neither while the confirmation clock runs nor on the pass that cycles the
+// connection.
+func TestReconcileStuckResyncHoldsStartupGate(t *testing.T) {
+	r, _ := stuckResyncSetup(t)
+	r.Startup = &StartupGate{Reader: r.Client, NodeName: nodeA, Deadline: time.Now().Add(time.Hour)}
+	r.Startup.Baseline(volPvc1, true)
+	readyz := httptest.NewRequest("GET", "/readyz", nil)
+
+	reconcile(t, r, volPvc1)
+	if r.Startup.Check(readyz) == nil {
+		t.Fatal("ready while the stuck-resync confirmation clock is running")
+	}
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	if r.Startup.Check(readyz) == nil {
+		t.Fatal("ready on the status read before the connection was cycled")
+	}
+}
+
 // staleBitmapStatusJSON is the stale one-sided-bitmap signature (issue
 // #389): out-of-sync bits toward a connected, UpToDate Primary peer with
 // replication Established and this leg Secondary — everything healthy but
