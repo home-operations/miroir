@@ -123,16 +123,18 @@ const (
 // milliseconds on healthy hardware.
 const drbdBarrierTimeout = 30 * time.Second
 
-// barrierFailed classifies one barrier-path failure: fast backoff below
-// barrierFailLimit, then a Warning Event and the parked retry.
+// barrierFailed counts one barrier-path failure of this snapshot's round and
+// paces the retry (see barrierFailure).
 func (r *SnapshotReconciler) barrierFailed(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
-	r.barrierFailsMu.Lock()
-	if r.barrierFails == nil {
-		r.barrierFails = map[string]int{}
-	}
-	r.barrierFails[snap.Name]++
-	fails := r.barrierFails[snap.Name]
-	r.barrierFailsMu.Unlock()
+	fails := bumpFails(&r.barrierFailsMu, &r.barrierFails, snap.Name)
+	ctx = ctrl.LoggerInto(ctx, ctrl.LoggerFrom(ctx).WithValues("snapshot", snap.Name))
+	return barrierFailure(ctx, r.Recorder, snap, "snapshot", vol.Name, fails, cause)
+}
+
+// barrierFailure paces the fails-th consecutive barrier-path failure of one
+// round: the workqueue's fast backoff below barrierFailLimit, then a single
+// Warning Event and the parked retry.
+func barrierFailure(ctx context.Context, rec events.EventRecorder, round client.Object, noun, volume string, fails int, cause error) (ctrl.Result, error) {
 	if fails < barrierFailLimit {
 		return ctrl.Result{}, cause
 	}
@@ -140,13 +142,25 @@ func (r *SnapshotReconciler) barrierFailed(ctx context.Context, snap *miroirv1al
 		// Escalated on the crossing cycle; the parked retry stays quiet.
 		return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
 	}
-	ctrl.LoggerFrom(ctx).Error(cause, "cannot drive the snapshot barrier; parking the retry",
-		"snapshot", snap.Name, "volume", vol.Name, "attempts", fails)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(snap, nil, corev1.EventTypeWarning, "BarrierStuck", "Suspend",
-			"cannot drive the snapshot barrier on %s after %d attempts: %v", vol.Name, fails, cause)
+	ctrl.LoggerFrom(ctx).Error(cause, "cannot drive the "+noun+" barrier; parking the retry",
+		"volume", volume, "attempts", fails)
+	if rec != nil {
+		rec.Eventf(round, nil, corev1.EventTypeWarning, "BarrierStuck", "Suspend",
+			"cannot drive the %s barrier on %s after %d attempts: %v", noun, volume, fails, cause)
 	}
 	return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
+}
+
+// bumpFails increments name's consecutive-failure count under mu and
+// returns it.
+func bumpFails(mu *sync.Mutex, fails *map[string]int, name string) int {
+	mu.Lock()
+	defer mu.Unlock()
+	if *fails == nil {
+		*fails = map[string]int{}
+	}
+	(*fails)[name]++
+	return (*fails)[name]
 }
 
 // clearBarrierFails resets the snapshot's consecutive-failure count.

@@ -313,13 +313,7 @@ const (
 // the escalation — an ErrBusy from the backend sweep looks identical to a
 // held-open device without it — and demotes to V(1) once parked.
 func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
-	r.busyMu.Lock()
-	if r.busyFails == nil {
-		r.busyFails = map[string]int{}
-	}
-	r.busyFails[vol.Name]++
-	fails := r.busyFails[vol.Name]
-	r.busyMu.Unlock()
+	fails := bumpFails(&r.busyMu, &r.busyFails, vol.Name)
 	if fails < busyFailLimit {
 		ctrl.LoggerFrom(ctx).Info("device busy during teardown, retrying",
 			"volume", vol.Name, "attempts", fails, "error", cause)

@@ -24,7 +24,6 @@ import (
 	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -752,30 +751,12 @@ func (r *GroupSnapshotReconciler) resumeIO(ctx context.Context, name string) err
 	return r.DRBD.ResumeIO(ctx, name)
 }
 
-// barrierFailed mirrors SnapshotReconciler.barrierFailed for the group
-// round: fast backoff below barrierFailLimit, then a Warning Event and
-// the parked retry.
+// barrierFailed counts one barrier-path failure of this group's round and
+// paces the retry (see barrierFailure).
 func (r *GroupSnapshotReconciler) barrierFailed(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
-	r.barrierFailsMu.Lock()
-	if r.barrierFails == nil {
-		r.barrierFails = map[string]int{}
-	}
-	r.barrierFails[grp.Name]++
-	fails := r.barrierFails[grp.Name]
-	r.barrierFailsMu.Unlock()
-	if fails < barrierFailLimit {
-		return ctrl.Result{}, cause
-	}
-	if fails > barrierFailLimit {
-		return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
-	}
-	ctrl.LoggerFrom(ctx).Error(cause, "cannot drive the group snapshot barrier; parking the retry",
-		"group", grp.Name, "volume", vol.Name, "attempts", fails)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(grp, nil, corev1.EventTypeWarning, "BarrierStuck", "Suspend",
-			"cannot drive the group snapshot barrier on %s after %d attempts: %v", vol.Name, fails, cause)
-	}
-	return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
+	fails := bumpFails(&r.barrierFailsMu, &r.barrierFails, grp.Name)
+	ctx = ctrl.LoggerInto(ctx, ctrl.LoggerFrom(ctx).WithValues("group", grp.Name))
+	return barrierFailure(ctx, r.Recorder, grp, "group snapshot", vol.Name, fails, cause)
 }
 
 func (r *GroupSnapshotReconciler) clearBarrierFails(name string) {
