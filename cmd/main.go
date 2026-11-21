@@ -142,13 +142,6 @@ func setupMembership(mgr ctrl.Manager, nodes nodemap.Source, autoTieBreaker bool
 	return nil
 }
 
-func setupPhaseReconciler(mgr ctrl.Manager) {
-	if err := (&agent.PhaseReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up volume phase reconciler")
-		os.Exit(1)
-	}
-}
-
 // setupTopology registers the cross-object topology reconcilers: the
 // conflict pass (duplicate replication addresses reported as MiroirNode
 // conditions — a CRD validates one object at a time, and placement
@@ -304,11 +297,11 @@ func clientOnlyReason(found bool, miroirNode *miroirv1alpha1.MiroirNode, flat no
 // drifts from this snapshot — or appears at all — so a chart-applied pool
 // edit reaches the agent without the ConfigMap-checksum pod roll it used
 // to ride. found is false for a client-only node (no MiroirNode).
-func agentTopology(mgr manager.Manager, nodeName string, stop context.CancelFunc) (*miroirv1alpha1.MiroirNode, bool) {
+func agentTopology(mgr manager.Manager, nodeName string, stop context.CancelFunc,
+) (*miroirv1alpha1.MiroirNode, bool, error) {
 	miroirNode, found, err := fetchMiroirNode(mgr.GetAPIReader(), nodeName, apiStartupWait)
 	if err != nil {
-		setupLog.Error(err, "unable to read this node's MiroirNode")
-		os.Exit(1)
+		return nil, false, fmt.Errorf("unable to read this node's MiroirNode: %w", err)
 	}
 	var bootedPools []miroirv1alpha1.MiroirNodePool
 	if found {
@@ -320,10 +313,9 @@ func agentTopology(mgr manager.Manager, nodeName string, stop context.CancelFunc
 		BootedPools: bootedPools,
 		Stop:        stop,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up topology watcher")
-		os.Exit(1)
+		return nil, false, fmt.Errorf("unable to set up topology watcher: %w", err)
 	}
-	return miroirNode, found
+	return miroirNode, found, nil
 }
 
 // poolBackendsFor builds one backend per pool from this node's flattened
@@ -358,7 +350,7 @@ func poolBackendsFor(nodeName string, entry nodemap.Node, run backend.Exec) (age
 // rest of the node keeps serving. All pools failing means the node is
 // misconfigured wholesale; exit like the single-pool agent always did so
 // the CrashLoopBackOff is impossible to miss.
-func setupAgentPools(pools agent.Pools) {
+func setupAgentPools(pools agent.Pools) error {
 	failed := 0
 	for _, name := range slices.Sorted(maps.Keys(pools)) {
 		if err := pools[name].Backend.Setup(context.Background()); err != nil {
@@ -368,40 +360,39 @@ func setupAgentPools(pools agent.Pools) {
 		}
 	}
 	if failed == len(pools) {
-		setupLog.Error(nil, "every pool failed setup", "pools", len(pools))
-		os.Exit(1)
+		return fmt.Errorf("every pool failed setup (%d pools)", len(pools))
 	}
+	return nil
 }
 
-// validateMode exits on an unknown --mode before anything reaches the API.
-func validateMode(mode string) {
+// validateMode rejects an unknown --mode before anything reaches the API.
+func validateMode(mode string) error {
 	if !slices.Contains([]string{modeController, modeAgent, modeGateway}, mode) {
-		setupLog.Error(nil, "--mode must be controller, agent, or gateway", "value", mode)
-		os.Exit(1)
+		return fmt.Errorf("--mode must be controller, agent, or gateway, got %q", mode)
 	}
+	return nil
 }
 
-// validateDRBDPortBase exits on an out-of-range base: the allocator hands
+// validateDRBDPortBase rejects an out-of-range base: the allocator hands
 // out ports ascending from it, so a base near 65535 overflows the port
 // space only once volumes accumulate — fail at startup instead.
-func validateDRBDPortBase(base int) {
+func validateDRBDPortBase(base int) error {
 	if base < 1024 || base > 64000 {
-		setupLog.Error(nil, "--drbd-port-base must be within 1024-64000", "value", base)
-		os.Exit(1)
+		return fmt.Errorf("--drbd-port-base must be within 1024-64000, got %d", base)
 	}
+	return nil
 }
 
 // addVerifyScheduler registers the online-verify scheduler when a schedule is
 // set and the DRBD kernel side is present. An invalid cron spec is a
 // misconfiguration — fail at startup rather than silently never verifying.
-func addVerifyScheduler(mgr manager.Manager, nodeName string, drbdReady bool, schedule string, d *drbd.Driver) {
+func addVerifyScheduler(mgr manager.Manager, nodeName string, drbdReady bool, schedule string, d *drbd.Driver) error {
 	if !drbdReady || schedule == "" {
-		return
+		return nil
 	}
 	parsed, err := cron.ParseStandard(schedule)
 	if err != nil {
-		setupLog.Error(err, "invalid --verify-schedule", "value", schedule)
-		os.Exit(1)
+		return fmt.Errorf("invalid --verify-schedule %q: %w", schedule, err)
 	}
 	if err := mgr.Add(&agent.VerifyScheduler{
 		Client:   mgr.GetClient(),
@@ -410,147 +401,172 @@ func addVerifyScheduler(mgr manager.Manager, nodeName string, drbdReady bool, sc
 		Schedule: parsed,
 		Recorder: mgr.GetEventRecorder("miroir-agent"),
 	}); err != nil {
-		setupLog.Error(err, "unable to add verify scheduler")
-		os.Exit(1)
+		return fmt.Errorf("unable to add verify scheduler: %w", err)
 	}
+	return nil
 }
 
 // runGateway serves one RWX volume over NFS and blocks until the process
 // is signalled. It builds a direct client (no manager/cache) and drives
-// the host's DRBD/mount tooling like the agent, exiting non-zero if the
-// export ever fails so the pod restarts.
-func runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir, httpAddr string) {
-	if nodeName == "" {
-		setupLog.Error(nil, "--node-name (or NODE_NAME) is required in gateway mode")
-		os.Exit(1)
+// the host's DRBD/mount tooling like the agent; a failed export is an
+// error so the pod restarts.
+func runGateway(o options) error {
+	if o.nodeName == "" {
+		return errors.New("--node-name (or NODE_NAME) is required in gateway mode")
 	}
-	if volumeName == "" {
-		setupLog.Error(nil, "--volume is required in gateway mode")
-		os.Exit(1)
+	if o.volumeName == "" {
+		return errors.New("--volume is required in gateway mode")
 	}
-	cl, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	cfg, err := ctrl.GetConfig()
 	if err != nil {
-		setupLog.Error(err, "unable to build client")
-		os.Exit(1)
+		return fmt.Errorf("unable to load the kube config: %w", err)
 	}
-	drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: backend.RealExec}
+	cl, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return fmt.Errorf("unable to build client: %w", err)
+	}
+	drbdDriver := &drbd.Driver{StateDir: o.drbdStateDir, Exec: backend.RealExec}
 	if err := gateway.Run(ctrl.SetupSignalHandler(), cl, drbdDriver, gateway.Config{
-		VolumeID:    volumeName,
-		NodeName:    nodeName,
-		ExportDir:   exportDir,
-		GaneshaConf: ganeshaConf,
-		HTTPAddr:    httpAddr,
+		VolumeID:    o.volumeName,
+		NodeName:    o.nodeName,
+		ExportDir:   o.exportDir,
+		GaneshaConf: o.ganeshaConf,
+		HTTPAddr:    o.metricsAddr,
 	}, setupLog.WithName("gateway")); err != nil {
-		setupLog.Error(err, "gateway exited")
+		return fmt.Errorf("gateway exited: %w", err)
+	}
+	return nil
+}
+
+// options holds the parsed command line.
+type options struct {
+	mode             string
+	csiSocket        string
+	metricsAddr      string
+	provisionTimeout time.Duration
+	overcommitRatio  float64
+	freeSpaceRatio   float64
+	autoTieBreaker   bool
+	autoDiskfulAfter time.Duration
+	autoEvictAfter   time.Duration
+	drbdPortBase     int
+	leaderElect      bool
+	leaderElectionID string
+	leaderElectionNS string
+	podNamespace     string
+	gatewayImage     string
+	gatewaySA        string
+	gatewayResources string
+
+	// agent mode
+	nodeName          string
+	drbdStateDir      string
+	poolStatsInterval time.Duration
+	volumeWorkers     int
+	verifySchedule    string
+
+	// gateway mode
+	volumeName  string
+	exportDir   string
+	ganeshaConf string
+}
+
+func parseFlags() (options, zap.Options) {
+	var o options
+	flag.StringVar(&o.mode, "mode", "", "controller | agent | gateway")
+	flag.StringVar(&o.csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
+	flag.StringVar(&o.metricsAddr, "metrics-bind-address", ":8081",
+		"single operational endpoint: /metrics plus the /healthz and /readyz probes (org port standard)")
+	flag.StringVar(&o.nodeName, "node-name", os.Getenv("NODE_NAME"), "this node's name (agent)")
+	flag.DurationVar(&o.provisionTimeout, "provision-timeout", 0,
+		"wait for agents to realise a new volume (controller; 0 → default)")
+	flag.Float64Var(&o.overcommitRatio, "overcommit-ratio", 0,
+		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
+	flag.Float64Var(&o.freeSpaceRatio, "free-space-ratio", 0,
+		"max provisioned-over-physically-free per pool before CreateVolume is refused (controller; 0 → default 20.0)")
+	flag.DurationVar(&o.autoDiskfulAfter, "auto-diskful-after", 0,
+		"convert a diskless client leg into a diskful replica once it has been attached this long "+
+			"(controller; 0 disables; needs a storage node with capacity — see LINSTOR auto-diskful)")
+	flag.DurationVar(&o.autoEvictAfter, "auto-evict-after", 0,
+		"re-place a dead storage node's replicas once its MiroirNode heartbeat has been stale this long "+
+			"(controller; 0 disables; needs a spare storage node — see LINSTOR auto-evict)")
+	flag.BoolVar(&o.autoTieBreaker, "auto-tie-breaker", true,
+		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
+	flag.IntVar(&o.drbdPortBase, "drbd-port-base", 7000,
+		"lowest TCP port for DRBD replication links, one per replicated volume ascending "+
+			"(controller; raise to avoid host-network tenants like Ceph mgr dashboard on 7000)")
+	flag.BoolVar(&o.leaderElect, "leader-elect", false,
+		"elect a leader via a coordination.k8s.io Lease so extra replicas stand by warm (controller)")
+	flag.StringVar(&o.leaderElectionID, "leader-election-id", "miroir-controller",
+		"leader-election Lease name; keep it stable across upgrades (controller)")
+	flag.StringVar(&o.leaderElectionNS, "leader-election-namespace", "",
+		"leader-election Lease namespace; empty auto-detects the pod's namespace in-cluster (controller)")
+	flag.StringVar(&o.podNamespace, "namespace", os.Getenv("POD_NAMESPACE"),
+		"the controller's own namespace, where per-RWX-volume gateway workloads are created (controller)")
+	flag.StringVar(&o.gatewayImage, "gateway-image", "",
+		"container image for per-RWX-volume NFS gateway pods; empty disables RWX (controller)")
+	flag.StringVar(&o.gatewaySA, "gateway-service-account", "",
+		"ServiceAccount for gateway pods, with the RBAC the gateway needs (controller)")
+	flag.StringVar(&o.gatewayResources, "gateway-resources", "",
+		"JSON ResourceRequirements for the gateway container; empty → 10m/64Mi requests, no limits (controller)")
+	flag.IntVar(&o.volumeWorkers, "volume-workers", 4,
+		"concurrent volume reconciles per agent (agent)")
+	flag.DurationVar(&o.poolStatsInterval, "pool-stats-interval", 0,
+		"how often the agent republishes pool capacity (agent; 0 → default 60s)")
+	flag.StringVar(&o.verifySchedule, "verify-schedule", "",
+		"cron spec (5-field, agent-local time) for scheduled online verify of the volumes this "+
+			"node coordinates (agent; empty disables; requires verify-alg in the DRBD common config)")
+	flag.StringVar(&o.drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
+		"rendered DRBD config dir (agent; hostPath-backed)")
+	flag.StringVar(&o.volumeName, "volume", "", "MiroirVolume to export over NFS (gateway)")
+	flag.StringVar(&o.exportDir, "export-dir", "/export",
+		"parent directory for the per-volume mount point (gateway)")
+	flag.StringVar(&o.ganeshaConf, "ganesha-conf", "/etc/ganesha/ganesha.conf",
+		"path the rendered NFS-Ganesha config is written to (gateway)")
+	zapOpts := zap.Options{Development: false}
+	zapOpts.BindFlags(flag.CommandLine)
+	flag.Parse()
+	return o, zapOpts
+}
+
+func main() {
+	o, zapOpts := parseFlags()
+	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
+	setupLog.Info("starting miroir", "mode", o.mode, "version", version, "commit", commit)
+	if err := run(o); err != nil {
+		setupLog.Error(err, "miroir exited")
 		os.Exit(1)
 	}
 }
 
-func main() {
-	var (
-		mode             string
-		csiSocket        string
-		metricsAddr      string
-		provisionTimeout time.Duration
-		overcommitRatio  float64
-		freeSpaceRatio   float64
-		autoTieBreaker   bool
-		autoDiskfulAfter time.Duration
-		autoEvictAfter   time.Duration
-		drbdPortBase     int
-		leaderElect      bool
-		leaderElectionID string
-		leaderElectionNS string
-		podNamespace     string
-		gatewayImage     string
-		gatewaySA        string
-		gatewayResources string
+// agentHooks is what agent mode hands back to run: its readiness check and
+// the sweeps around manager shutdown (nil without the DRBD kernel side).
+type agentHooks struct {
+	ready        healthz.Checker
+	sweep        func()
+	barrierSweep func()
+	early        func()
+}
 
-		// agent mode
-		nodeName          string
-		drbdStateDir      string
-		poolStatsInterval time.Duration
-		volumeWorkers     int
-		verifySchedule    string
-
-		// gateway mode
-		volumeName  string
-		exportDir   string
-		ganeshaConf string
-	)
-	flag.StringVar(&mode, "mode", "", "controller | agent | gateway")
-	flag.StringVar(&csiSocket, "csi-socket", "/csi/csi.sock", "CSI gRPC unix socket path")
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8081",
-		"single operational endpoint: /metrics plus the /healthz and /readyz probes (org port standard)")
-	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"), "this node's name (agent)")
-	flag.DurationVar(&provisionTimeout, "provision-timeout", 0,
-		"wait for agents to realise a new volume (controller; 0 → default)")
-	flag.Float64Var(&overcommitRatio, "overcommit-ratio", 0,
-		"max provisioned-over-capacity per pool before CreateVolume is refused (controller; 0 → default 2.0)")
-	flag.Float64Var(&freeSpaceRatio, "free-space-ratio", 0,
-		"max provisioned-over-physically-free per pool before CreateVolume is refused (controller; 0 → default 20.0)")
-	flag.DurationVar(&autoDiskfulAfter, "auto-diskful-after", 0,
-		"convert a diskless client leg into a diskful replica once it has been attached this long "+
-			"(controller; 0 disables; needs a storage node with capacity — see LINSTOR auto-diskful)")
-	flag.DurationVar(&autoEvictAfter, "auto-evict-after", 0,
-		"re-place a dead storage node's replicas once its MiroirNode heartbeat has been stale this long "+
-			"(controller; 0 disables; needs a spare storage node — see LINSTOR auto-evict)")
-	flag.BoolVar(&autoTieBreaker, "auto-tie-breaker", true,
-		"add a diskless tie-breaker to 2-replica freeze volumes when a spare node exists (controller)")
-	flag.IntVar(&drbdPortBase, "drbd-port-base", 7000,
-		"lowest TCP port for DRBD replication links, one per replicated volume ascending "+
-			"(controller; raise to avoid host-network tenants like Ceph mgr dashboard on 7000)")
-	flag.BoolVar(&leaderElect, "leader-elect", false,
-		"elect a leader via a coordination.k8s.io Lease so extra replicas stand by warm (controller)")
-	flag.StringVar(&leaderElectionID, "leader-election-id", "miroir-controller",
-		"leader-election Lease name; keep it stable across upgrades (controller)")
-	flag.StringVar(&leaderElectionNS, "leader-election-namespace", "",
-		"leader-election Lease namespace; empty auto-detects the pod's namespace in-cluster (controller)")
-	flag.StringVar(&podNamespace, "namespace", os.Getenv("POD_NAMESPACE"),
-		"the controller's own namespace, where per-RWX-volume gateway workloads are created (controller)")
-	flag.StringVar(&gatewayImage, "gateway-image", "",
-		"container image for per-RWX-volume NFS gateway pods; empty disables RWX (controller)")
-	flag.StringVar(&gatewaySA, "gateway-service-account", "",
-		"ServiceAccount for gateway pods, with the RBAC the gateway needs (controller)")
-	flag.StringVar(&gatewayResources, "gateway-resources", "",
-		"JSON ResourceRequirements for the gateway container; empty → 10m/64Mi requests, no limits (controller)")
-	flag.IntVar(&volumeWorkers, "volume-workers", 4,
-		"concurrent volume reconciles per agent (agent)")
-	flag.DurationVar(&poolStatsInterval, "pool-stats-interval", 0,
-		"how often the agent republishes pool capacity (agent; 0 → default 60s)")
-	flag.StringVar(&verifySchedule, "verify-schedule", "",
-		"cron spec (5-field, agent-local time) for scheduled online verify of the volumes this "+
-			"node coordinates (agent; empty disables; requires verify-alg in the DRBD common config)")
-	flag.StringVar(&drbdStateDir, "drbd-state-dir", "/etc/drbd.d",
-		"rendered DRBD config dir (agent; hostPath-backed)")
-	flag.StringVar(&volumeName, "volume", "", "MiroirVolume to export over NFS (gateway)")
-	flag.StringVar(&exportDir, "export-dir", "/export",
-		"parent directory for the per-volume mount point (gateway)")
-	flag.StringVar(&ganeshaConf, "ganesha-conf", "/etc/ganesha/ganesha.conf",
-		"path the rendered NFS-Ganesha config is written to (gateway)")
-	opts := zap.Options{Development: false}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
-
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-	setupLog.Info("starting miroir", "mode", mode, "version", version, "commit", commit)
-
-	validateMode(mode)
-	validateDRBDPortBase(drbdPortBase)
-
-	// Gateway mode drives the host directly and needs no controller-runtime
-	// manager, so it builds none and exits before one is constructed.
-	if mode == modeGateway {
-		// The gateway skips the manager but serves the same operational
-		// endpoint itself (/healthz liveness + /metrics) on metricsAddr.
-		runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir, metricsAddr)
-		return
+func run(o options) error {
+	if err := validateMode(o.mode); err != nil {
+		return err
+	}
+	if err := validateDRBDPortBase(o.drbdPortBase); err != nil {
+		return err
 	}
 
-	mgr := newManager(ctrl.Options{
+	// Gateway mode drives the host directly and needs no controller-runtime
+	// manager, so it builds none. It serves the same operational endpoint
+	// itself (/healthz liveness + /metrics) on metricsAddr.
+	if o.mode == modeGateway {
+		return runGateway(o)
+	}
+
+	mgr, err := newManager(ctrl.Options{
 		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: metricsAddr},
-		Cache:   cacheOptions(mode, podNamespace, nodeName),
+		Metrics: metricsserver.Options{BindAddress: o.metricsAddr},
+		Cache:   cacheOptions(o.mode, o.podNamespace, o.nodeName),
 		// The dedicated health-probe server is disabled; the probes are
 		// co-hosted on the (plain HTTP) metrics listener so each workload
 		// exposes a single operational port — the agent runs hostNetwork,
@@ -563,9 +579,9 @@ func main() {
 		// reach the driver over the pod-local socket. Gated on controller
 		// mode: agents are per-node singletons, and a shared Lease would
 		// serialize the whole DaemonSet down to one working node.
-		LeaderElection:          mode == modeController && leaderElect,
-		LeaderElectionID:        leaderElectionID,
-		LeaderElectionNamespace: leaderElectionNS,
+		LeaderElection:          o.mode == modeController && o.leaderElect,
+		LeaderElectionID:        o.leaderElectionID,
+		LeaderElectionNamespace: o.leaderElectionNS,
 		// Safe because nothing runs after mgr.Start returns in controller
 		// mode (the shutdown sweep is agent-only), so the released Lease
 		// can't be beaten to by a still-writing old leader.
@@ -581,22 +597,16 @@ func main() {
 			UsePriorityQueue: new(false),
 		},
 	})
+	if err != nil {
+		return err
+	}
 	// healthz.CheckHandler returns 200 when the checker passes and 500
 	// otherwise — the contract a kubelet HTTP probe expects.
 	if err := mgr.AddMetricsServerExtraHandler("/healthz", healthz.CheckHandler{Checker: healthz.Ping}); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+		return fmt.Errorf("unable to set up health check: %w", err)
 	}
-	ready := healthz.Ping
 
-	identity := &csi.Identity{Version: version, WithController: mode == modeController}
-
-	// Agent mode only, run around manager shutdown: release DRBD backings when
-	// the node is going down and lift any leftover write barrier — both are
-	// kernel state that outlives the process.
-	var shutdownSweep func()
-	var shutdownBarrierSweep func()
-	var shutdownEarly func()
+	identity := &csi.Identity{Version: version, WithController: o.mode == modeController}
 
 	// Keep OS-signal cancellation separate from manager cancellation: the
 	// topology watcher can restart the manager without looking like a node
@@ -605,252 +615,269 @@ func main() {
 	managerCtx, stopManager := context.WithCancel(signalCtx)
 	defer stopManager()
 
-	switch mode {
-	case modeController:
-		// The topology is watch-driven: placement and membership fold the
-		// MiroirNode CRs from the cache on every RPC/reconcile, so a
-		// chart-applied topology edit takes effect without a restart.
-		nodes := &nodemap.CRSource{Reader: mgr.GetClient()}
-		controller := &csi.Controller{
-			Client:           mgr.GetClient(),
-			APIReader:        mgr.GetAPIReader(),
-			Nodes:            nodes,
-			ProvisionTimeout: provisionTimeout,
-			OvercommitRatio:  overcommitRatio,
-			FreeSpaceRatio:   freeSpaceRatio,
-			AutoTieBreaker:   autoTieBreaker,
-			RWXEnabled:       gatewayImage != "",
-			DRBDPortBase:     int32(drbdPortBase),
-			Recorder:         mgr.GetEventRecorder("miroir-controller"),
-		}
-		setupPhaseReconciler(mgr)
-		if err := setupMembership(mgr, nodes, autoTieBreaker, autoDiskfulAfter, autoEvictAfter); err != nil {
-			setupLog.Error(err, "unable to set up membership reconcilers")
-			os.Exit(1)
-		}
-		if err := setupTopology(mgr); err != nil {
-			setupLog.Error(err, "unable to set up topology reconcilers")
-			os.Exit(1)
-		}
-		gwResources, err := parseGatewayResources(gatewayResources)
-		if err != nil {
-			setupLog.Error(err, "invalid gateway resources")
-			os.Exit(1)
-		}
-		if err := setupExport(mgr, podNamespace, gatewayImage, gatewaySA, gwResources); err != nil {
-			setupLog.Error(err, "unable to set up export reconciler")
-			os.Exit(1)
-		}
-		serveCSI(mgr, csiSocket, identity, controller, nil)
-
-	case modeAgent:
-		if nodeName == "" {
-			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in agent mode")
-			os.Exit(1)
-		}
-		// One breaker for the whole agent: the DRBD driver, the pool
-		// backends and the node service all spawn into the same kernel
-		// storage path, so the jam is counted once across all of them.
-		storageWedge := backend.NewWedge(backend.DefaultWedgeLimit)
-		runHost := (&backend.Runner{Wedge: storageWedge}).Run
-		// The DaemonSet's chart-side scope is every schedulable node, but
-		// only storage nodes run agent-backed backends. A node with no
-		// MiroirNode holds no volumes and runs a client-only node service so
-		// pods there can still mount RWX (NFS) volumes. A MiroirNode whose
-		// pools flatten to nothing (none declared, or only block-less
-		// entries from a pre-0.11 stored object that survives revalidation)
-		// holds no storage either and gets the same treatment —
-		// setupAgentPools would read zero pools as "every pool failed" and
-		// crash-loop.
-		miroirNode, found := agentTopology(mgr, nodeName, stopManager)
-		var flat nodemap.Node
-		if found {
-			flat = nodemap.FromSpec(miroirNode.Spec)
-		}
-		if msg := clientOnlyReason(found, miroirNode, flat); msg != "" {
-			setupLog.Info(msg, "node", nodeName)
-			// No volume reconciler runs here, so a client leg could never
-			// be realized: the node service refuses RWO remote-access
-			// staging outright (ClientOnly) — RWX/NFS staging needs no
-			// DRBD leg and still works. No kernel-floor probe either: with
-			// client legs refused nothing touches DRBD on this node, and
-			// the probe's fatal below-floor exit would crash-loop a
-			// consumer-only node over a check that protects nothing here.
-			clientDRBD := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost, Wedge: storageWedge}
-			node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, clientDRBD)
-			node.ClientOnly = true
-			node.Wedge = storageWedge
-			serveCSI(mgr, csiSocket, identity, nil, node)
-			break
-		}
-		pools, err := poolBackendsFor(nodeName, flat, runHost)
-		if err != nil {
-			setupLog.Error(err, "unable to build the node's backends")
-			os.Exit(1)
-		}
-		setupAgentPools(pools)
-		drbdDriver := &drbd.Driver{StateDir: drbdStateDir, Exec: runHost, Wedge: storageWedge}
-		// The binary is always in the image; what a local-only node lacks
-		// is the kernel module. Probe once (the modprobe inside also loads
-		// it proactively on nodes that ship it) and run without the DRBD
-		// machinery when the kernel side is absent — otherwise the events
-		// watcher hot-loops "exit status 20" every 5s forever.
-		drbdKernel, drbdUtils, drbdReady := probeDRBD(drbdDriver)
-		if !drbdReady {
-			setupLog.Info("DRBD kernel module unavailable; running local-only " +
-				"(no events watcher, no orphan/barrier/shutdown sweeps)")
-		}
-		if drbdReady {
-			// Reap kernel resources and rendered config orphaned by a crash
-			// between up and down — they hold backing devices open forever.
-			// The sweeps return an error only when the API list fails: exit
-			// so the restart retries it (without the list they cannot tell
-			// orphaned from owned, and nothing else re-runs them). Sweep
-			// execution itself is best-effort and logged inside — a wedged
-			// resource (LINBIT/drbd#137) must not keep the agent from
-			// serving the node's healthy volumes.
-			if err := sweepOrphans(context.Background(), mgr.GetAPIReader(), nodeName, drbdDriver); err != nil {
-				setupLog.Error(err, "orphan sweep failed")
-				os.Exit(1)
-			}
-			// Lift any IO barrier left by a previous agent crash; same
-			// fatal-only-on-API-failure contract.
-			if err := resumeStaleBarriers(context.Background(), mgr.GetAPIReader(), drbdDriver,
-				agent.NewFreezer(), nodeName, apiStartupWait); err != nil {
-				setupLog.Error(err, "barrier resume sweep failed")
-				os.Exit(1)
-			}
-		}
-		// Tracks this node's cordon state so shutdownSweep can tell a node
-		// reboot/upgrade (drained, so cordoned) from a routine pod restart.
-		// The sentinel file gates the DaemonSet preStop hook the same way.
-		cordon := &agent.CordonWatcher{
-			Client:       mgr.GetClient(),
-			NodeName:     nodeName,
-			SentinelPath: agent.CordonSentinelPath,
-		}
-		if err := cordon.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to set up cordon watcher")
-			os.Exit(1)
-		}
-		var drbdEvents chan event.GenericEvent
-		if drbdReady {
-			shutdownSweep = func() { agentShutdownSweep(mgr.GetAPIReader(), cordon, drbdDriver, nodeName) }
-			shutdownBarrierSweep = func() { agentShutdownBarrierSweep(mgr.GetAPIReader(), drbdDriver, nodeName) }
-			shutdownEarly = func() { agentShutdownDownSecondaries(cordon, drbdDriver) }
-			// events2 turns kernel state changes into immediate reconciles;
-			// the 30s poll remains as the safety net.
-			drbdEvents = make(chan event.GenericEvent, 64)
-			watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
-				ev := event.GenericEvent{Object: &miroirv1alpha1.MiroirVolume{
-					ObjectMeta: metav1.ObjectMeta{Name: resource},
-				}}
-				select {
-				case drbdEvents <- ev:
-				case <-ctx.Done():
-				}
-			}}
-			addRunnable := func(r manager.Runnable, msg string) {
-				if err := mgr.Add(r); err != nil {
-					setupLog.Error(err, msg)
-					os.Exit(1)
-				}
-			}
-			addRunnable(watcher, "unable to add DRBD event watcher")
-			addRunnable(&agent.AssertionWatcher{Wedge: storageWedge}, "unable to add DRBD assertion watcher")
-			addRunnable(&agent.WritebackWatcher{
-				Client:   mgr.GetClient(),
-				Reader:   mgr.GetAPIReader(),
-				NodeName: nodeName,
-				Recorder: mgr.GetEventRecorder("miroir-agent"),
-			}, "unable to add writeback error watcher")
-		}
-		reconciler := &agent.VolumeReconciler{
-			Client:     mgr.GetClient(),
-			NodeName:   nodeName,
-			Pools:      pools,
-			DRBD:       drbdDriver,
-			DRBDEvents: drbdEvents,
-			Workers:    volumeWorkers,
-			Recorder:   mgr.GetEventRecorder("miroir-agent"),
-			Startup: &agent.StartupGate{
-				Reader:   mgr.GetClient(),
-				NodeName: nodeName,
-				Deadline: time.Now().Add(agent.StartupSettleTimeout),
-			},
-		}
-		ready = reconciler.Startup.Check
-		if err := reconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to set up agent reconciler")
-			os.Exit(1)
-		}
-		freezer := agent.NewFreezer()
-		addBarrierSweep(mgr, drbdReady, drbdDriver, freezer, nodeName)
-		snapReconciler := &agent.SnapshotReconciler{
-			Client:   mgr.GetClient(),
-			NodeName: nodeName,
-			Pools:    pools,
-			DRBD:     drbdDriver,
-			Reader:   mgr.GetAPIReader(),
-			Recorder: mgr.GetEventRecorder("miroir-agent"),
-			Freezer:  freezer,
-		}
-		if err := snapReconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to set up snapshot reconciler")
-			os.Exit(1)
-		}
-		groupReconciler := &agent.GroupSnapshotReconciler{
-			Client:   mgr.GetClient(),
-			NodeName: nodeName,
-			Pools:    pools,
-			DRBD:     drbdDriver,
-			Reader:   mgr.GetAPIReader(),
-			Recorder: mgr.GetEventRecorder("miroir-agent"),
-			Freezer:  freezer,
-		}
-		if err := groupReconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to set up group snapshot reconciler")
-			os.Exit(1)
-		}
-		// Publishes this node's pool capacities for capacity-aware placement.
-		if err := mgr.Add(&agent.PoolStatsPublisher{
-			Client:           mgr.GetClient(),
-			NodeName:         nodeName,
-			Pools:            pools,
-			Interval:         poolStatsInterval,
-			Recorder:         mgr.GetEventRecorder("miroir-agent"),
-			DRBDVersion:      drbdKernel,
-			DRBDUtilsVersion: drbdUtils,
-		}); err != nil {
-			setupLog.Error(err, "unable to add pool stats publisher")
-			os.Exit(1)
-		}
-		// Scheduled online verify — the only cross-leg integrity check. Needs
-		// the DRBD kernel side, so it is gated on drbdReady like the sweeps.
-		addVerifyScheduler(mgr, nodeName, drbdReady, verifySchedule, drbdDriver)
-		addWedgeSampler(mgr, storageWedge)
-		node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, drbdDriver)
-		node.Wedge = storageWedge
-		serveCSI(mgr, csiSocket, identity, nil, node)
+	// The hooks run around manager shutdown in agent mode only: release DRBD
+	// backings when the node is going down and lift any leftover write
+	// barrier — both are kernel state that outlives the process.
+	hooks := agentHooks{ready: healthz.Ping}
+	if o.mode == modeController {
+		err = setupController(mgr, o, identity)
+	} else {
+		hooks, err = setupAgent(mgr, o, identity, stopManager)
+	}
+	if err != nil {
+		return err
 	}
 
-	if err := mgr.AddMetricsServerExtraHandler("/readyz", healthz.CheckHandler{Checker: ready}); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+	if err := mgr.AddMetricsServerExtraHandler("/readyz", healthz.CheckHandler{Checker: hooks.ready}); err != nil {
+		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
 
 	setupLog.Info("starting manager")
 	var earlyCleanup *signalShutdown
-	if shutdownSweep != nil {
-		earlyCleanup = armSignalShutdown(signalCtx, shutdownEarly)
+	if hooks.sweep != nil {
+		earlyCleanup = armSignalShutdown(signalCtx, hooks.early)
 	}
-	err := mgr.Start(managerCtx)
-	err = finishManagerShutdown(err, signalCtx, managerCtx, shutdownSweep,
-		shutdownBarrierSweep, earlyCleanup)
+	err = mgr.Start(managerCtx)
+	err = finishManagerShutdown(err, signalCtx, managerCtx, hooks.sweep, hooks.barrierSweep, earlyCleanup)
 	if err != nil {
-		setupLog.Error(err, "manager exited")
-		os.Exit(1)
+		return fmt.Errorf("manager exited: %w", err)
 	}
+	return nil
+}
+
+func setupController(mgr ctrl.Manager, o options, identity *csi.Identity) error {
+	// The topology is watch-driven: placement and membership fold the
+	// MiroirNode CRs from the cache on every RPC/reconcile, so a
+	// chart-applied topology edit takes effect without a restart.
+	nodes := &nodemap.CRSource{Reader: mgr.GetClient()}
+	controller := &csi.Controller{
+		Client:           mgr.GetClient(),
+		APIReader:        mgr.GetAPIReader(),
+		Nodes:            nodes,
+		ProvisionTimeout: o.provisionTimeout,
+		OvercommitRatio:  o.overcommitRatio,
+		FreeSpaceRatio:   o.freeSpaceRatio,
+		AutoTieBreaker:   o.autoTieBreaker,
+		RWXEnabled:       o.gatewayImage != "",
+		DRBDPortBase:     int32(o.drbdPortBase),
+		Recorder:         mgr.GetEventRecorder("miroir-controller"),
+	}
+	if err := (&agent.PhaseReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to set up volume phase reconciler: %w", err)
+	}
+	if err := setupMembership(mgr, nodes, o.autoTieBreaker, o.autoDiskfulAfter, o.autoEvictAfter); err != nil {
+		return fmt.Errorf("unable to set up membership reconcilers: %w", err)
+	}
+	if err := setupTopology(mgr); err != nil {
+		return fmt.Errorf("unable to set up topology reconcilers: %w", err)
+	}
+	gwResources, err := parseGatewayResources(o.gatewayResources)
+	if err != nil {
+		return fmt.Errorf("invalid gateway resources: %w", err)
+	}
+	if err := setupExport(mgr, o.podNamespace, o.gatewayImage, o.gatewaySA, gwResources); err != nil {
+		return fmt.Errorf("unable to set up export reconciler: %w", err)
+	}
+	return serveCSI(mgr, o.csiSocket, identity, controller, nil)
+}
+
+func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop context.CancelFunc) (agentHooks, error) {
+	hooks := agentHooks{ready: healthz.Ping}
+	if o.nodeName == "" {
+		return hooks, errors.New("--node-name (or NODE_NAME) is required in agent mode")
+	}
+	// One breaker for the whole agent: the DRBD driver, the pool
+	// backends and the node service all spawn into the same kernel
+	// storage path, so the jam is counted once across all of them.
+	storageWedge := backend.NewWedge(backend.DefaultWedgeLimit)
+	runHost := (&backend.Runner{Wedge: storageWedge}).Run
+	// The DaemonSet's chart-side scope is every schedulable node, but
+	// only storage nodes run agent-backed backends. A node with no
+	// MiroirNode holds no volumes and runs a client-only node service so
+	// pods there can still mount RWX (NFS) volumes. A MiroirNode whose
+	// pools flatten to nothing (none declared, or only block-less
+	// entries from a pre-0.11 stored object that survives revalidation)
+	// holds no storage either and gets the same treatment —
+	// setupAgentPools would read zero pools as "every pool failed" and
+	// crash-loop.
+	miroirNode, found, err := agentTopology(mgr, o.nodeName, stop)
+	if err != nil {
+		return hooks, err
+	}
+	var flat nodemap.Node
+	if found {
+		flat = nodemap.FromSpec(miroirNode.Spec)
+	}
+	if msg := clientOnlyReason(found, miroirNode, flat); msg != "" {
+		setupLog.Info(msg, "node", o.nodeName)
+		// No volume reconciler runs here, so a client leg could never
+		// be realized: the node service refuses RWO remote-access
+		// staging outright (ClientOnly) — RWX/NFS staging needs no
+		// DRBD leg and still works. No kernel-floor probe either: with
+		// client legs refused nothing touches DRBD on this node, and
+		// the probe's fatal below-floor exit would crash-loop a
+		// consumer-only node over a check that protects nothing here.
+		clientDRBD := &drbd.Driver{StateDir: o.drbdStateDir, Exec: runHost, Wedge: storageWedge}
+		node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), o.nodeName, clientDRBD)
+		node.ClientOnly = true
+		node.Wedge = storageWedge
+		return hooks, serveCSI(mgr, o.csiSocket, identity, nil, node)
+	}
+	pools, err := poolBackendsFor(o.nodeName, flat, runHost)
+	if err != nil {
+		return hooks, fmt.Errorf("unable to build the node's backends: %w", err)
+	}
+	if err := setupAgentPools(pools); err != nil {
+		return hooks, err
+	}
+	drbdDriver := &drbd.Driver{StateDir: o.drbdStateDir, Exec: runHost, Wedge: storageWedge}
+	// The binary is always in the image; what a local-only node lacks
+	// is the kernel module. Probe once (the modprobe inside also loads
+	// it proactively on nodes that ship it) and run without the DRBD
+	// machinery when the kernel side is absent — otherwise the events
+	// watcher hot-loops "exit status 20" every 5s forever.
+	drbdKernel, drbdUtils, drbdReady, err := probeDRBD(drbdDriver)
+	if err != nil {
+		return hooks, err
+	}
+	if !drbdReady {
+		setupLog.Info("DRBD kernel module unavailable; running local-only " +
+			"(no events watcher, no orphan/barrier/shutdown sweeps)")
+	}
+	if drbdReady {
+		// Reap kernel resources and rendered config orphaned by a crash
+		// between up and down — they hold backing devices open forever.
+		// The sweeps return an error only when the API list fails: exit
+		// so the restart retries it (without the list they cannot tell
+		// orphaned from owned, and nothing else re-runs them). Sweep
+		// execution itself is best-effort and logged inside — a wedged
+		// resource (LINBIT/drbd#137) must not keep the agent from
+		// serving the node's healthy volumes.
+		if err := sweepOrphans(context.Background(), mgr.GetAPIReader(), o.nodeName, drbdDriver); err != nil {
+			return hooks, fmt.Errorf("orphan sweep failed: %w", err)
+		}
+		// Lift any IO barrier left by a previous agent crash; same
+		// fatal-only-on-API-failure contract.
+		if err := resumeStaleBarriers(context.Background(), mgr.GetAPIReader(), drbdDriver,
+			agent.NewFreezer(), o.nodeName, apiStartupWait); err != nil {
+			return hooks, fmt.Errorf("barrier resume sweep failed: %w", err)
+		}
+	}
+	// Tracks this node's cordon state so shutdownSweep can tell a node
+	// reboot/upgrade (drained, so cordoned) from a routine pod restart.
+	// The sentinel file gates the DaemonSet preStop hook the same way.
+	cordon := &agent.CordonWatcher{
+		Client:       mgr.GetClient(),
+		NodeName:     o.nodeName,
+		SentinelPath: agent.CordonSentinelPath,
+	}
+	if err := cordon.SetupWithManager(mgr); err != nil {
+		return hooks, fmt.Errorf("unable to set up cordon watcher: %w", err)
+	}
+	var drbdEvents chan event.GenericEvent
+	if drbdReady {
+		hooks.sweep = func() { agentShutdownSweep(mgr.GetAPIReader(), cordon, drbdDriver, o.nodeName) }
+		hooks.barrierSweep = func() { agentShutdownBarrierSweep(mgr.GetAPIReader(), drbdDriver, o.nodeName) }
+		hooks.early = func() { agentShutdownDownSecondaries(cordon, drbdDriver) }
+		// events2 turns kernel state changes into immediate reconciles;
+		// the 30s poll remains as the safety net.
+		drbdEvents = make(chan event.GenericEvent, 64)
+		watcher := &drbd.EventWatcher{Notify: func(ctx context.Context, resource string) {
+			ev := event.GenericEvent{Object: &miroirv1alpha1.MiroirVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: resource},
+			}}
+			select {
+			case drbdEvents <- ev:
+			case <-ctx.Done():
+			}
+		}}
+		for _, r := range []struct {
+			runnable manager.Runnable
+			name     string
+		}{
+			{watcher, "DRBD event watcher"},
+			{&agent.AssertionWatcher{Wedge: storageWedge}, "DRBD assertion watcher"},
+			{&agent.WritebackWatcher{
+				Client:   mgr.GetClient(),
+				Reader:   mgr.GetAPIReader(),
+				NodeName: o.nodeName,
+				Recorder: mgr.GetEventRecorder("miroir-agent"),
+			}, "writeback error watcher"},
+		} {
+			if err := mgr.Add(r.runnable); err != nil {
+				return hooks, fmt.Errorf("unable to add %s: %w", r.name, err)
+			}
+		}
+	}
+	reconciler := &agent.VolumeReconciler{
+		Client:     mgr.GetClient(),
+		NodeName:   o.nodeName,
+		Pools:      pools,
+		DRBD:       drbdDriver,
+		DRBDEvents: drbdEvents,
+		Workers:    o.volumeWorkers,
+		Recorder:   mgr.GetEventRecorder("miroir-agent"),
+		Startup: &agent.StartupGate{
+			Reader:   mgr.GetClient(),
+			NodeName: o.nodeName,
+			Deadline: time.Now().Add(agent.StartupSettleTimeout),
+		},
+	}
+	hooks.ready = reconciler.Startup.Check
+	if err := reconciler.SetupWithManager(mgr); err != nil {
+		return hooks, fmt.Errorf("unable to set up agent reconciler: %w", err)
+	}
+	freezer := agent.NewFreezer()
+	if err := addBarrierSweep(mgr, drbdReady, drbdDriver, freezer, o.nodeName); err != nil {
+		return hooks, err
+	}
+	snapReconciler := &agent.SnapshotReconciler{
+		Client:   mgr.GetClient(),
+		NodeName: o.nodeName,
+		Pools:    pools,
+		DRBD:     drbdDriver,
+		Reader:   mgr.GetAPIReader(),
+		Recorder: mgr.GetEventRecorder("miroir-agent"),
+		Freezer:  freezer,
+	}
+	if err := snapReconciler.SetupWithManager(mgr); err != nil {
+		return hooks, fmt.Errorf("unable to set up snapshot reconciler: %w", err)
+	}
+	groupReconciler := &agent.GroupSnapshotReconciler{
+		Client:   mgr.GetClient(),
+		NodeName: o.nodeName,
+		Pools:    pools,
+		DRBD:     drbdDriver,
+		Reader:   mgr.GetAPIReader(),
+		Recorder: mgr.GetEventRecorder("miroir-agent"),
+		Freezer:  freezer,
+	}
+	if err := groupReconciler.SetupWithManager(mgr); err != nil {
+		return hooks, fmt.Errorf("unable to set up group snapshot reconciler: %w", err)
+	}
+	// Publishes this node's pool capacities for capacity-aware placement.
+	if err := mgr.Add(&agent.PoolStatsPublisher{
+		Client:           mgr.GetClient(),
+		NodeName:         o.nodeName,
+		Pools:            pools,
+		Interval:         o.poolStatsInterval,
+		Recorder:         mgr.GetEventRecorder("miroir-agent"),
+		DRBDVersion:      drbdKernel,
+		DRBDUtilsVersion: drbdUtils,
+	}); err != nil {
+		return hooks, fmt.Errorf("unable to add pool stats publisher: %w", err)
+	}
+	// Scheduled online verify — the only cross-leg integrity check. Needs
+	// the DRBD kernel side, so it is gated on drbdReady like the sweeps.
+	if err := addVerifyScheduler(mgr, o.nodeName, drbdReady, o.verifySchedule, drbdDriver); err != nil {
+		return hooks, err
+	}
+	if err := addWedgeSampler(mgr, storageWedge); err != nil {
+		return hooks, err
+	}
+	node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), o.nodeName, drbdDriver)
+	node.Wedge = storageWedge
+	return hooks, serveCSI(mgr, o.csiSocket, identity, nil, node)
 }
 
 // finishManagerShutdown completes the shutdown coordination after the
@@ -983,8 +1010,7 @@ func apiWithRetry(ctx context.Context, budget time.Duration, op func(ctx context
 	return waitErr
 }
 
-// newManager builds the controller-runtime manager and exits the process
-// on failure. NewManager resolves every cached (ByObject) type through the
+// newManager builds the controller-runtime manager. NewManager resolves every cached (ByObject) type through the
 // RESTMapper at construction time, an API access that precedes every other
 // apiWithRetry call site and would otherwise exit on the first dial error:
 // a hostNetwork agent can only reach the service VIP once the CNI has
@@ -992,8 +1018,11 @@ func apiWithRetry(ctx context.Context, budget time.Duration, op func(ctx context
 // provider warms those lookups under the startup retry policy first, and
 // the lazy mapper caches per API group, so NewManager's own lookups are
 // then served locally and cannot race a second outage.
-func newManager(opts ctrl.Options) manager.Manager {
-	cfg := ctrl.GetConfigOrDie()
+func newManager(opts ctrl.Options) (manager.Manager, error) {
+	cfg, err := ctrl.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load the kube config: %w", err)
+	}
 	cfg.Dial = (&net.Dialer{Timeout: apiDialTimeout, KeepAlive: 30 * time.Second}).DialContext
 	opts.MapperProvider = func(c *rest.Config, hc *http.Client) (meta.RESTMapper, error) {
 		mapper, err := apiutil.NewDynamicRESTMapper(c, hc)
@@ -1007,10 +1036,9 @@ func newManager(opts ctrl.Options) manager.Manager {
 	}
 	mgr, err := ctrl.NewManager(cfg, opts)
 	if err != nil {
-		setupLog.Error(err, "unable to create manager")
-		os.Exit(1)
+		return nil, fmt.Errorf("unable to create manager: %w", err)
 	}
-	return mgr
+	return mgr, nil
 }
 
 // warmRESTMapper resolves the REST mapping of every cached type under the
@@ -1108,9 +1136,9 @@ func agentShutdownSweep(c client.Reader, cordon *agent.CordonWatcher, driver *dr
 // to crash-consistent). API-list failures are logged, not fatal: the next
 // tick retries.
 func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, freezer *agent.Freezer,
-	nodeName string) {
+	nodeName string) error {
 	if !drbdReady {
-		return
+		return nil
 	}
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		ticker := time.NewTicker(barrierSweepInterval)
@@ -1126,9 +1154,9 @@ func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, f
 			}
 		}
 	})); err != nil {
-		setupLog.Error(err, "unable to add periodic barrier sweep")
-		os.Exit(1)
+		return fmt.Errorf("unable to add periodic barrier sweep: %w", err)
 	}
+	return nil
 }
 
 // wedgeSampleInterval paces the node-scoped breaker's gauge: short enough to
@@ -1140,7 +1168,7 @@ const wedgeSampleInterval = 30 * time.Second
 // logs its transitions. Sampled rather than event-driven because the count
 // self-heals: a gauge written only when a child strands would page forever
 // after the node recovered.
-func addWedgeSampler(mgr manager.Manager, w *backend.Wedge) {
+func addWedgeSampler(mgr manager.Manager, w *backend.Wedge) error {
 	if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 		ticker := time.NewTicker(wedgeSampleInterval)
 		defer ticker.Stop()
@@ -1165,9 +1193,9 @@ func addWedgeSampler(mgr manager.Manager, w *backend.Wedge) {
 			}
 		}
 	})); err != nil {
-		setupLog.Error(err, "unable to add the wedge sampler")
-		os.Exit(1)
+		return fmt.Errorf("unable to add the wedge sampler: %w", err)
 	}
+	return nil
 }
 
 // sweepOrphans removes DRBD state with no owning volume on this node. c
@@ -1314,25 +1342,25 @@ func resumeStaleBarriers(ctx context.Context, c client.Reader, driver *drbd.Driv
 }
 
 // probeDRBD reports whether the DRBD kernel side is usable and, when it
-// is, the module and drbd-utils versions — exiting below drbd.KernelFloor:
+// is, the module and drbd-utils versions — an error below drbd.KernelFloor:
 // a 9.3.1-era option rendered against an older module errors drbdadm for
 // every resource on the node, so failing fast here beats poisoning them
 // all later. Talos ≥ 1.13.0 ships a module at the floor.
-func probeDRBD(driver *drbd.Driver) (version, utilsVersion string, ready bool) {
+func probeDRBD(driver *drbd.Driver) (version, utilsVersion string, ready bool, err error) {
 	if !driver.KernelAvailable(context.Background()) {
-		return "", "", false
+		return "", "", false, nil
 	}
 	v, err := driver.KernelVersion(context.Background())
 	if err != nil {
 		// The module answered but the version read flaked; running
 		// unchecked beats refusing a working node.
 		setupLog.Error(err, "cannot read DRBD kernel module version; skipping floor check")
-		return "", "", true
+		return "", "", true, nil
 	}
 	if drbd.BelowKernelFloor(v) {
-		setupLog.Error(nil, "DRBD kernel module is below the supported floor; upgrade the node (Talos >= 1.13.0)",
-			"version", v, "floor", drbd.KernelFloor)
-		os.Exit(1)
+		return "", "", false, fmt.Errorf(
+			"DRBD kernel module %s is below the supported floor %s; upgrade the node (Talos >= 1.13.0)",
+			v, drbd.KernelFloor)
 	}
 	utils, err := driver.UtilsVersion(context.Background())
 	if err != nil {
@@ -1340,7 +1368,7 @@ func probeDRBD(driver *drbd.Driver) (version, utilsVersion string, ready bool) {
 		setupLog.Error(err, "cannot read drbd-utils version")
 	}
 	agent.RecordDRBDVersions(v, utils)
-	return v, utils, true
+	return v, utils, true, nil
 }
 
 // csiRunnable marks the CSI server as running on every replica rather than
@@ -1355,7 +1383,8 @@ func (csiRunnable) NeedLeaderElection() bool { return false }
 
 // serveCSI runs the CSI gRPC server alongside the manager; controller and
 // node are mutually exclusive (one per mode).
-func serveCSI(mgr ctrl.Manager, socket string, identity *csi.Identity, controller *csi.Controller, node *csi.Node) {
+func serveCSI(mgr ctrl.Manager, socket string, identity *csi.Identity, controller *csi.Controller, node *csi.Node,
+) error {
 	err := mgr.Add(csiRunnable{manager.RunnableFunc(func(ctx context.Context) error {
 		// CSI RPCs read CRs through the manager's cache; wait for sync so
 		// early kubelet/sidecar calls don't race a cold cache.
@@ -1368,7 +1397,7 @@ func serveCSI(mgr ctrl.Manager, socket string, identity *csi.Identity, controlle
 		return csi.Serve(ctx, socket, identity, nil, node)
 	})})
 	if err != nil {
-		setupLog.Error(err, "unable to add CSI server to manager")
-		os.Exit(1)
+		return fmt.Errorf("unable to add CSI server to manager: %w", err)
 	}
+	return nil
 }
