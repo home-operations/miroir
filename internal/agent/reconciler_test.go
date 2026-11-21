@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -481,8 +482,14 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{
 		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
-		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+		DRBD:    &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+		Startup: &StartupGate{Reader: c, NodeName: nodeA, Deadline: time.Now().Add(time.Hour)},
 	}
+	readyz := httptest.NewRequest("GET", "/readyz", nil)
+	if r.Startup.Check(readyz) == nil {
+		t.Fatal("agent must not report ready before its replicated leg was reconciled")
+	}
+	r.Startup.Baseline(volPvc1, true)
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -491,6 +498,9 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	}
 	if res.RequeueAfter == 0 {
 		t.Fatal("replicated volumes must requeue to refresh DRBD state")
+	}
+	if err := r.Startup.Check(readyz); err != nil {
+		t.Fatalf("a connected UpToDate leg must open the startup gate: %v", err)
 	}
 	if fb.created[volPvc1] != 1<<30 {
 		t.Fatal("backing device not created")

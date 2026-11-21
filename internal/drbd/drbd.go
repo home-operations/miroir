@@ -75,7 +75,7 @@ type Driver struct {
 	// adjust landing between those disconnects and the down reconnects a
 	// peer the down is tearing down. del_connection then waits forever on
 	// a receiver thread the connect restarted, stranding drbdsetup down
-	// in uninterruptible sleep (issue #582). Each entry is a one-slot
+	// in uninterruptible sleep. Each entry is a one-slot
 	// semaphore rather than a mutex so a waiter can give up with its
 	// context.
 	resMu    sync.Mutex
@@ -324,7 +324,7 @@ func (d *Driver) removedPeers(ctx context.Context, r Resource) ([]int32, error) 
 		return nil, err
 	}
 	parsed, err := d.listStatus(ctx, r.Name)
-	if err != nil && !strings.Contains(err.Error(), "No such resource") {
+	if err != nil && !isNoSuchResource(err) {
 		return nil, fmt.Errorf("apply %s: %w", r.Name, err)
 	}
 	for _, res := range parsed {
@@ -384,7 +384,7 @@ func (d *Driver) writePendingForgets(name string, ids []int32) error {
 // unconfigured slot wearing it as a missing diskless tiebreaker: on a
 // 2-replica freeze volume that phantom doubles the tiebreaker electorate,
 // so the next single diskful loss drops quorum with the real tiebreaker
-// still connected (issue #478). Only forget-peer clears the slot. It
+// still connected. Only forget-peer clears the slot. It
 // requires the peer to be unconfigured, hence after adjust, and is a
 // no-op on a diskless leg, which has no metadata to hold the flag. The
 // pending marker is cleared only once every forget has succeeded.
@@ -428,9 +428,9 @@ func (d *Driver) ensureMetadata(ctx context.Context, r Resource) error {
 		return serr
 	}
 	if hasMD && os.IsNotExist(serr) {
-		// Metadata without any marker: lost hostPath state. Recreate only
-		// when the GI proves no Primary ever wrote; anything else is a
-		// live volume — adopt it untouched.
+		// Metadata without any marker: lost hostPath state. Treat it as
+		// freshly created only when the GI proves no Primary ever wrote;
+		// anything else is a live volume — adopt it untouched.
 		if !virginMetadata(dump, r.Name) {
 			return d.markAdopted(r.Name)
 		}
@@ -722,7 +722,7 @@ func (d *Driver) SweepOrphans(ctx context.Context, owned func(name string) bool)
 			continue
 		}
 		// A wedged orphan's down can only hang 30s and strand another
-		// unkillable process (issue #195); the signature is already in
+		// unkillable process; the signature is already in
 		// hand from this sweep's own parse, so skip without spawning one.
 		if cause := d.wedgeCause(res); cause != nil {
 			errs = append(errs, fmt.Errorf("orphan %s: %w", res.Name, cause))
@@ -818,7 +818,7 @@ func (d *Driver) DemoteAll(ctx context.Context) error {
 		if res.Role != rolePrimary {
 			continue
 		}
-		// Never spawn a demote against a wedge fingerprint (issue #195):
+		// Never spawn a demote against a wedge fingerprint:
 		// it can only hang. DownSecondaries reports these separately.
 		if cause := d.wedgeCause(res); cause != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", res.Name, cause))
@@ -863,7 +863,7 @@ func (d *Driver) DownSecondaries(ctx context.Context) error {
 // have added a peer whose resync the down must not meet connected, and a
 // restart that gave up on its own down leaves a child stranded in the
 // kernel. Both come from a re-read under the lock. Never spawn a down
-// against a wedge fingerprint (issue #195): it can only hang until the
+// against a wedge fingerprint: it can only hang until the
 // shutdown deadline and strand an unkillable process into the reboot.
 func (d *Driver) downSecondary(ctx context.Context, name string) error {
 	unlock, ok := d.tryLockResource(name)
@@ -975,7 +975,10 @@ func (d *Driver) AllocateMinor(ctx context.Context, volume string, preferred int
 			m = preferred
 		}
 	}
-	used := d.scanUsedMinors(assigned, volume)
+	used, err := d.scanUsedMinors(assigned, volume)
+	if err != nil {
+		return 0, fmt.Errorf("allocate minor for %s: %w", volume, err)
+	}
 	if m > 0 && used[m] {
 		// Two volumes claim the minor, and drbdadm refuses to parse a
 		// config directory holding a duplicate, failing every resource on
@@ -1010,7 +1013,7 @@ func (d *Driver) AllocateMinor(ctx context.Context, volume string, preferred int
 func (d *Driver) liveOnMinor(ctx context.Context, volume string, minor int32) (bool, error) {
 	parsed, err := d.listStatus(ctx, volume)
 	if err != nil {
-		if strings.Contains(err.Error(), "No such resource") {
+		if isNoSuchResource(err) {
 			return false, nil
 		}
 		return false, err
@@ -1094,28 +1097,33 @@ func (d *Driver) writeAssignments(m map[string]int32) error {
 // scanUsedMinors collects the minors held by every volume but the named
 // one: all assignment records (the caller has removed the volume's own)
 // and every other volume's rendered .res.
-func (d *Driver) scanUsedMinors(assigned map[string]int32, volume string) map[int32]bool {
+// An unreadable .res is an error, not a free minor: handing its number out
+// again would give drbdadm a duplicate.
+func (d *Driver) scanUsedMinors(assigned map[string]int32, volume string) (map[int32]bool, error) {
 	used := map[int32]bool{}
 	for _, m := range assigned {
 		used[m] = true
 	}
 	entries, err := os.ReadDir(d.StateDir)
-	if err != nil {
-		return used
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
 	}
 	for _, e := range entries {
 		if name, found := strings.CutSuffix(e.Name(), ".res"); !found || name == volume {
 			continue
 		}
 		raw, err := os.ReadFile(d.path(e.Name()))
-		if err != nil {
+		if os.IsNotExist(err) {
 			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		for _, m := range minorsInRes(raw) {
 			used[m] = true
 		}
 	}
-	return used
+	return used, nil
 }
 
 // ensureDeviceNode creates /dev/drbd<minor> if absent (mknod; the agent
@@ -1193,7 +1201,7 @@ func IsWinner(r Resource) bool {
 // zeros. Run on the winner (IsWinner) only, and only while the volume has
 // never held data — the caller gates on both (see agent birthInitPending).
 // One replicated UUID cannot birth-diverge, unlike per-node manufactured
-// generations (issue #139).
+// generations.
 func (d *Driver) InitialUUID(ctx context.Context, name string) error {
 	if _, err := d.adm(ctx, "new-current-uuid", "--clear-bitmap", name+"/0"); err != nil {
 		return fmt.Errorf("new-current-uuid %s: %w", name, err)
@@ -1276,7 +1284,7 @@ func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
 // CyclePeerConnection disconnects and reconnects one peer so DRBD re-runs
 // that connection's sync handshake — the only trigger for the
 // missed-end-of-resync rescue, which is gated on a fresh connect and is
-// what resolves a stranded bitmap (issue #390): equal current UUIDs
+// what resolves a stranded bitmap: equal current UUIDs
 // discard it outright, divergent ones start the resync the bits called
 // for. drbdsetup on both legs: it takes the peer by node id with no
 // config parse, and unlike drbdadm's disconnect it keeps the peer and
@@ -1454,13 +1462,18 @@ func (d *Driver) downResource(ctx context.Context, name string, peerIDs []int32)
 // liveTeardownView reports the resource's DRBD peer node ids per the
 // kernel's live view — the ids downResource must disconnect — and the
 // wedge fingerprint the resource wears, if any (see wedgeCause). A
-// stranded down counts even when the status is unreadable or lists no
-// entry: the stuck child, not the status, is that fingerprint's evidence.
-func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []int32, wedged error) {
+// stranded down counts even when the status lists no entry: the stuck
+// child, not the status, is that fingerprint's evidence. A resource the
+// kernel does not know has no peers; any other status failure is returned,
+// since a down that skipped the disconnects could meet a live connection.
+func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []int32, wedged, err error) {
 	wedged = d.downStranded(name)
 	parsed, err := d.listStatus(ctx, name)
 	if err != nil {
-		return nil, wedged
+		if wedged != nil || isNoSuchResource(err) {
+			return nil, wedged, nil
+		}
+		return nil, nil, err
 	}
 	for _, res := range parsed {
 		if res.Name != name {
@@ -1471,7 +1484,13 @@ func (d *Driver) liveTeardownView(ctx context.Context, name string) (peerIDs []i
 			wedged = ErrWedged
 		}
 	}
-	return peerIDs, wedged
+	return peerIDs, wedged, nil
+}
+
+// isNoSuchResource matches drbdsetup's answer for a resource that is not
+// configured in the kernel.
+func isNoSuchResource(err error) bool {
+	return strings.Contains(err.Error(), "No such resource")
 }
 
 // markWedgeSighting records one sighting of a wedge fingerprint and
@@ -1506,7 +1525,10 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 	if _, err := os.Stat(d.path(name + ".res")); os.IsNotExist(err) {
 		return nil // never configured here
 	}
-	peerIDs, wedged := d.liveTeardownView(ctx, name)
+	peerIDs, wedged, err := d.liveTeardownView(ctx, name)
+	if err != nil {
+		return fmt.Errorf("down %s: %w", name, err)
+	}
 	if wedged != nil {
 		if d.markWedgeSighting(name) {
 			return fmt.Errorf("down %s: %w", name, wedged)
@@ -1532,7 +1554,7 @@ func (d *Driver) Down(ctx context.Context, name string) error {
 // keeping the rendered config and the minor assignment. It exists for one
 // consumer: a filesystem freeze leaked onto an unmounted device pins the
 // bdev's freeze count with no mountpoint left for FITHAW, and dropping the
-// minor's bdev inode is the only remaining way to clear it (issue #311).
+// minor's bdev inode is the only remaining way to clear it.
 // The disconnect costs a brief bitmap-based resync on reconnect. A
 // resource wearing a teardown wedge fingerprint is refused outright — a
 // down spawned against it can only hang (see ErrWedged); the caller's
@@ -1546,7 +1568,10 @@ func (d *Driver) Restart(ctx context.Context, name string) error {
 		return fmt.Errorf("restart %s: %w", name, err)
 	}
 	defer unlock()
-	peerIDs, wedged := d.liveTeardownView(ctx, name)
+	peerIDs, wedged, err := d.liveTeardownView(ctx, name)
+	if err != nil {
+		return fmt.Errorf("restart %s: %w", name, err)
+	}
 	if wedged != nil {
 		return fmt.Errorf("restart %s: refusing to spawn a down: %w", name, wedged)
 	}
@@ -1718,7 +1743,7 @@ type Status struct {
 	// issue #390): either a second after-unstable pass collapsed it back
 	// to Established (#390's original shape), or that pass never ran and
 	// the leg parked in WFBitMapS waiting for a bitmap reply the peer
-	// already discarded (issue #397). Nothing in-kernel re-examines
+	// already discarded. Nothing in-kernel re-examines
 	// either while the connection stays up. Only the leg holding the
 	// bitmap sees it — the peer still reads this node as UpToDate — so at
 	// most one node acts on it. Nil when no peer is stuck.
@@ -1729,12 +1754,12 @@ type Status struct {
 	// UpToDate, out-of-sync above zero. Bits stranded by a bitmap clear
 	// the kernel refused mid peer-teardown ("bitmap locked") never drain
 	// on their own — DRBD only reconciles a dirty bitmap on a connection
-	// transition (issue #389). The same kernel shape is also a verify
+	// transition. The same kernel shape is also a verify
 	// finding, which must stay manual — the agent gates on the recorded
 	// verify outcome before acting. Any pair but Primary/Primary
-	// qualifies — a Secondary leg toward the Primary (#389), the Primary
-	// toward a Secondary (issue #469), or a Secondary toward another
-	// Secondary (issue #497): the re-handshake takes its direction from
+	// qualifies — a Secondary leg toward the Primary, the Primary
+	// toward a Secondary, or a Secondary toward another
+	// Secondary: the re-handshake takes its direction from
 	// generation UUIDs, not roles, and only dual-primary leaves no
 	// settled source. Nil when none.
 	StaleBitmapPeers map[int32]bool
@@ -1886,7 +1911,7 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 			s.OutOfSyncKiB = max(s.OutOfSyncKiB, pd.OutOfSyncKiB)
 			// Out-of-sync bits toward a connected peer with no resync
 			// running and the peer-disk parked Consistent: a bitmap DRBD
-			// armed and abandoned (issue #390). The race's terminal shape
+			// armed and abandoned. The race's terminal shape
 			// is a timing lottery — Established when a second
 			// after-unstable pass collapsed the exchange, WFBitMapS when
 			// it never ran and the peer discarded the bitmap reply (issue

@@ -92,6 +92,9 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, 
 	if err := r.Wedge.Err(); err != nil {
 		return "", fmt.Errorf("%s: %w", line, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("%s: %w", line, err)
+	}
 	ctx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
 	cmd := exec.Command(name, args...)
@@ -169,7 +172,7 @@ func Busy(err error) error {
 		strings.Contains(s, "in use"),
 		strings.Contains(s, "has children"),     // zfs: snapshots exist
 		strings.Contains(s, "dependent clones"): // zfs: restore clones exist
-		return fmt.Errorf("%w: %v", ErrBusy, err)
+		return fmt.Errorf("%w: %w", ErrBusy, err)
 	}
 	return err
 }

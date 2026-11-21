@@ -45,21 +45,7 @@ const restartBackoff = 5 * time.Second
 func (w *EventWatcher) Start(ctx context.Context) error {
 	log := ctrl.Log.WithName("drbd-events")
 	for ctx.Err() == nil {
-		cmd := exec.CommandContext(ctx, "drbdsetup", "events2", "all")
-		out, err := cmd.StdoutPipe()
-		if err == nil {
-			if err = cmd.Start(); err != nil {
-				// Unstarted: the restart loop would leak one pipe fd
-				// per attempt.
-				_ = out.Close()
-			}
-		}
-		if err == nil {
-			err = w.scan(ctx, out)
-			if werr := cmd.Wait(); err == nil {
-				err = werr
-			}
-		}
+		err := w.stream(ctx, exec.CommandContext(ctx, "drbdsetup", "events2", "all"))
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -73,10 +59,32 @@ func (w *EventWatcher) Start(ctx context.Context) error {
 	return nil
 }
 
+// stream runs one events2 process to its end, delivering its lines.
+func (w *EventWatcher) stream(ctx context.Context, cmd *exec.Cmd) error {
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		// Unstarted: the restart loop would leak one pipe fd per attempt.
+		_ = out.Close()
+		return err
+	}
+	err = w.scan(ctx, out)
+	if err != nil {
+		// Nothing reads the pipe any more: left running, the child blocks
+		// on its next write and Wait never returns.
+		_ = cmd.Process.Kill()
+	}
+	if werr := cmd.Wait(); err == nil {
+		err = werr
+	}
+	return err
+}
+
 // scan reads events2 lines until EOF and returns the scanner error, if any.
 // The 1 MiB buffer lifts bufio.Scanner's 64 KiB default token cap so an
-// unusually long line cannot silently end the stream; a surfaced error lets
-// Start log it and respawn rather than the pipe filling and wedging Wait.
+// unusually long line cannot silently end the stream.
 func (w *EventWatcher) scan(ctx context.Context, r io.Reader) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)

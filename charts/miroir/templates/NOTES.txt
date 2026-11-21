@@ -3,7 +3,7 @@
 miroir {{ .Chart.AppVersion }} has been installed in namespace "{{ .Release.Namespace }}".
 
 Workloads:
-  controller  Deployment/{{ include "miroir.controllerName" . }}        1 replica
+  controller  Deployment/{{ include "miroir.controllerName" . }}        {{ .Values.replicaCount }} replica(s)
   agent       DaemonSet/{{ include "miroir.agentName" . }}            one per schedulable node
 
 Before provisioning volumes, apply the storage configuration — the node
@@ -19,6 +19,3 @@ Verify the rollout:
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "miroir.name" . }}
   kubectl -n {{ .Release.Namespace }} get daemonset {{ include "miroir.agentName" . }}
   kubectl get csidriver {{ include "miroir.csiDriverName" . }}
-
-Smoke test (creates a PVC, writes/reads data, exercises a snapshot + failover):
-  ./test/smoke/smoke.sh

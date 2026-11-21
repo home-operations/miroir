@@ -19,6 +19,9 @@ package backend
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -878,5 +881,44 @@ func TestBusyClassifiesHeldOpen(t *testing.T) {
 	}
 	if Busy(nil) != nil {
 		t.Error("Busy(nil) must be nil")
+	}
+}
+
+// A snapshot that vanished mid-call must not fail the delete just because
+// another same-named snapshot is still waiting its turn in the loop.
+func TestZFSDeleteSnapshotVanishedDoesNotBlameTheNext(t *testing.T) {
+	var calls []string
+	run := func(_ context.Context, name string, args ...string) (string, error) {
+		line := name + " " + strings.Join(args, " ")
+		calls = append(calls, line)
+		switch {
+		case strings.Contains(line, "zfs list") && len(calls) == 1:
+			return "tank/miroir/pvc-1@snap-1\ntank/miroir/pvc-2@snap-1\n", nil
+		case strings.Contains(line, "zfs list"):
+			return "tank/miroir/pvc-2@snap-1\n", nil
+		case strings.Contains(line, "zfs destroy -d tank/miroir/pvc-1@snap-1"):
+			return "", errors.New("could not find any snapshots to destroy")
+		}
+		return "", nil
+	}
+	b := newZFS(cfg, run)
+
+	if err := b.DeleteSnapshot(t.Context(), "pvc-1", "snap-1"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(calls, "zfs destroy -d tank/miroir/pvc-2@snap-1") {
+		t.Fatalf("the second snapshot must still be destroyed, got %v", calls)
+	}
+}
+
+func TestRunnerRefusesCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	marker := filepath.Join(t.TempDir(), "ran")
+	if _, err := (&Runner{}).Run(ctx, "touch", marker); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the command must not be spawned on a cancelled context")
 	}
 }

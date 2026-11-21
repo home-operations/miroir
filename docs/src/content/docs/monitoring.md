@@ -96,7 +96,9 @@ stranded-children trip, this latch never clears on its own and
 survives agent restarts — the agent replays the kernel ring on start —
 so `miroir_node_wedged` holds 1 until the node reboots. Unmounts are
 not refused on a latch: the filesystem layer still works, and draining
-the node is exactly the remedy.
+the node is exactly the remedy. DRBD 9.3.4 fixes the underflow, so the
+lasting cure is a node image that ships it (Talos 1.13.11 / 1.14.2 or
+later).
 
 For RWX volumes the **controller** exports `miroir_export_ready`: 1
 while the volume's NFS gateway is serving (gateway pod available,

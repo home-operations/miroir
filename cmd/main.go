@@ -81,7 +81,11 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
-const modeController = "controller"
+const (
+	modeController = "controller"
+	modeAgent      = "agent"
+	modeGateway    = "gateway"
+)
 
 // Populated via -ldflags at build time.
 var (
@@ -96,7 +100,7 @@ func init() {
 
 // setupMembership registers the membership reconciler (completes
 // operator-added replica entries), the tie-breaker retrofit for
-// pre-existing 2-replica freeze volumes (#70) when enabled, the
+// pre-existing 2-replica freeze volumes when enabled, the
 // auto-diskful converter for long-lived client legs when a threshold is
 // set, and the auto-evict reconciler for dead nodes when its threshold
 // is set.
@@ -218,7 +222,7 @@ func parseGatewayResources(raw string) (corev1.ResourceRequirements, error) {
 // this node — it holds no storage and runs a client-only agent.
 func fetchMiroirNode(r client.Reader, name string, budget time.Duration) (*miroirv1alpha1.MiroirNode, bool, error) {
 	node := &miroirv1alpha1.MiroirNode{}
-	err := apiWithRetry(budget, func(ctx context.Context) error {
+	err := apiWithRetry(context.Background(), budget, func(ctx context.Context) error {
 		return r.Get(ctx, types.NamespacedName{Name: name}, node)
 	})
 	if apierrors.IsNotFound(err) {
@@ -252,7 +256,7 @@ func cacheOptions(mode, namespace, nodeName string) cache.Options {
 			&corev1.Service{}:    {Namespaces: map[string]cache.Config{namespace: {}}},
 		}
 	}
-	if mode == "agent" && nodeName != "" {
+	if mode == modeAgent && nodeName != "" {
 		// The corev1.Node informer gets the same pin: its only agent
 		// consumer is the CordonWatcher, which reads the node's own object.
 		opts.ByObject = map[client.Object]cache.ByObject{
@@ -365,6 +369,14 @@ func setupAgentPools(pools agent.Pools) {
 	}
 	if failed == len(pools) {
 		setupLog.Error(nil, "every pool failed setup", "pools", len(pools))
+		os.Exit(1)
+	}
+}
+
+// validateMode exits on an unknown --mode before anything reaches the API.
+func validateMode(mode string) {
+	if !slices.Contains([]string{modeController, modeAgent, modeGateway}, mode) {
+		setupLog.Error(nil, "--mode must be controller, agent, or gateway", "value", mode)
 		os.Exit(1)
 	}
 }
@@ -523,11 +535,12 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog.Info("starting miroir", "mode", mode, "version", version, "commit", commit)
 
+	validateMode(mode)
 	validateDRBDPortBase(drbdPortBase)
 
 	// Gateway mode drives the host directly and needs no controller-runtime
 	// manager, so it builds none and exits before one is constructed.
-	if mode == "gateway" {
+	if mode == modeGateway {
 		// The gateway skips the manager but serves the same operational
 		// endpoint itself (/healthz liveness + /metrics) on metricsAddr.
 		runGateway(nodeName, volumeName, exportDir, ganeshaConf, drbdStateDir, metricsAddr)
@@ -543,7 +556,7 @@ func main() {
 		// exposes a single operational port — the agent runs hostNetwork,
 		// so every listener occupies a real node port.
 		HealthProbeBindAddress: "0",
-		// Leader election is the opt-in controller HA mode (#132): extra
+		// Leader election is the opt-in controller HA mode: extra
 		// replicas stand by warm and only the reconcilers wait on the
 		// Lease — the cache, metrics server, and CSI socket run on every
 		// replica because each pod's CSI sidecars elect independently and
@@ -574,10 +587,7 @@ func main() {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddMetricsServerExtraHandler("/readyz", healthz.CheckHandler{Checker: healthz.Ping}); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
-	}
+	ready := healthz.Ping
 
 	identity := &csi.Identity{Version: version, WithController: mode == modeController}
 
@@ -633,7 +643,7 @@ func main() {
 		}
 		serveCSI(mgr, csiSocket, identity, controller, nil)
 
-	case "agent":
+	case modeAgent:
 		if nodeName == "" {
 			setupLog.Error(nil, "--node-name (or NODE_NAME) is required in agent mode")
 			os.Exit(1)
@@ -698,14 +708,14 @@ func main() {
 			// orphaned from owned, and nothing else re-runs them). Sweep
 			// execution itself is best-effort and logged inside — a wedged
 			// resource (LINBIT/drbd#137) must not keep the agent from
-			// serving the node's healthy volumes (issue #195).
-			if err := sweepOrphans(nodeName, drbdDriver); err != nil {
+			// serving the node's healthy volumes.
+			if err := sweepOrphans(context.Background(), mgr.GetAPIReader(), nodeName, drbdDriver); err != nil {
 				setupLog.Error(err, "orphan sweep failed")
 				os.Exit(1)
 			}
 			// Lift any IO barrier left by a previous agent crash; same
 			// fatal-only-on-API-failure contract.
-			if err := resumeStaleBarriers(context.Background(), drbdDriver,
+			if err := resumeStaleBarriers(context.Background(), mgr.GetAPIReader(), drbdDriver,
 				agent.NewFreezer(), nodeName, apiStartupWait); err != nil {
 				setupLog.Error(err, "barrier resume sweep failed")
 				os.Exit(1)
@@ -725,8 +735,8 @@ func main() {
 		}
 		var drbdEvents chan event.GenericEvent
 		if drbdReady {
-			shutdownSweep = func() { agentShutdownSweep(cordon, drbdDriver, nodeName) }
-			shutdownBarrierSweep = func() { agentShutdownBarrierSweep(drbdDriver, nodeName) }
+			shutdownSweep = func() { agentShutdownSweep(mgr.GetAPIReader(), cordon, drbdDriver, nodeName) }
+			shutdownBarrierSweep = func() { agentShutdownBarrierSweep(mgr.GetAPIReader(), drbdDriver, nodeName) }
 			shutdownEarly = func() { agentShutdownDownSecondaries(cordon, drbdDriver) }
 			// events2 turns kernel state changes into immediate reconciles;
 			// the 30s poll remains as the safety net.
@@ -763,7 +773,13 @@ func main() {
 			DRBDEvents: drbdEvents,
 			Workers:    volumeWorkers,
 			Recorder:   mgr.GetEventRecorder("miroir-agent"),
+			Startup: &agent.StartupGate{
+				Reader:   mgr.GetClient(),
+				NodeName: nodeName,
+				Deadline: time.Now().Add(agent.StartupSettleTimeout),
+			},
 		}
+		ready = reconciler.Startup.Check
 		if err := reconciler.SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to set up agent reconciler")
 			os.Exit(1)
@@ -816,9 +832,10 @@ func main() {
 		node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), nodeName, drbdDriver)
 		node.Wedge = storageWedge
 		serveCSI(mgr, csiSocket, identity, nil, node)
+	}
 
-	default:
-		setupLog.Error(nil, "--mode must be controller, agent, or gateway")
+	if err := mgr.AddMetricsServerExtraHandler("/readyz", healthz.CheckHandler{Checker: ready}); err != nil {
+		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
 
@@ -946,9 +963,9 @@ func (s *signalShutdown) finish() bool {
 // (non-transient) error, or the budget elapses — so a control plane still
 // coming back up does not crash the process on startup. It is the one
 // retry policy every pre-manager API access shares.
-func apiWithRetry(budget time.Duration, op func(ctx context.Context) error) error {
+func apiWithRetry(ctx context.Context, budget time.Duration, op func(ctx context.Context) error) error {
 	var lastErr error
-	waitErr := wait.PollUntilContextTimeout(context.Background(), 2*time.Second, budget, true,
+	waitErr := wait.PollUntilContextTimeout(ctx, 2*time.Second, budget, true,
 		func(ctx context.Context) (bool, error) {
 			lastErr = op(ctx)
 			if lastErr == nil {
@@ -1009,7 +1026,7 @@ func warmRESTMapper(mapper meta.RESTMapper, scheme *runtime.Scheme,
 		}
 		gvks = append(gvks, gvk)
 	}
-	return apiWithRetry(budget, func(context.Context) error {
+	return apiWithRetry(context.Background(), budget, func(context.Context) error {
 		for _, gvk := range gvks {
 			if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
 				return fmt.Errorf("warm RESTMapper: %w", err)
@@ -1020,8 +1037,8 @@ func warmRESTMapper(mapper meta.RESTMapper, scheme *runtime.Scheme,
 }
 
 // listWithRetry retries an API list with the shared startup retry policy.
-func listWithRetry(c client.Client, list client.ObjectList, budget time.Duration) error {
-	return apiWithRetry(budget, func(ctx context.Context) error { return c.List(ctx, list) })
+func listWithRetry(ctx context.Context, c client.Reader, list client.ObjectList, budget time.Duration) error {
+	return apiWithRetry(ctx, budget, func(ctx context.Context) error { return c.List(ctx, list) })
 }
 
 // transientAPIError reports whether an API error is worth retrying. Dial
@@ -1062,21 +1079,21 @@ func agentShutdownDownSecondaries(cordon *agent.CordonWatcher, driver *drbd.Driv
 	}
 }
 
-func agentShutdownBarrierSweep(driver *drbd.Driver, nodeName string) {
+func agentShutdownBarrierSweep(c client.Reader, driver *drbd.Driver, nodeName string) {
 	// Short API budget: the chart grants 60s of termination grace and the
 	// manager stop + DownSecondaries already spend up to 45s of it. A
 	// stranded barrier missed here is lifted by the startup sweep on the
 	// next boot.
-	if err := resumeStaleBarriers(context.Background(), driver,
+	if err := resumeStaleBarriers(context.Background(), c, driver,
 		agent.NewFreezer(), nodeName, apiShutdownWait); err != nil {
 		setupLog.Error(err, "shutdown barrier sweep failed")
 	}
 }
 
 // agentShutdownSweep is the final idempotent shutdown pass.
-func agentShutdownSweep(cordon *agent.CordonWatcher, driver *drbd.Driver, nodeName string) {
+func agentShutdownSweep(c client.Reader, cordon *agent.CordonWatcher, driver *drbd.Driver, nodeName string) {
 	agentShutdownDownSecondaries(cordon, driver)
-	agentShutdownBarrierSweep(driver, nodeName)
+	agentShutdownBarrierSweep(c, driver, nodeName)
 }
 
 // addBarrierSweep runs the startup/shutdown stranded-barrier sweep
@@ -1103,7 +1120,7 @@ func addBarrierSweep(mgr manager.Manager, drbdReady bool, driver *drbd.Driver, f
 			case <-ctx.Done():
 				return nil
 			case <-ticker.C:
-				if err := resumeStaleBarriers(ctx, driver, freezer, nodeName, apiShutdownWait); err != nil {
+				if err := resumeStaleBarriers(ctx, mgr.GetAPIReader(), driver, freezer, nodeName, apiShutdownWait); err != nil {
 					setupLog.Error(err, "periodic barrier sweep incomplete")
 				}
 			}
@@ -1153,17 +1170,13 @@ func addWedgeSampler(mgr manager.Manager, w *backend.Wedge) {
 	}
 }
 
-// sweepOrphans removes DRBD state with no owning volume on this node,
-// using a direct (uncached) client — the manager has not started yet.
+// sweepOrphans removes DRBD state with no owning volume on this node. c
+// must be an uncached reader: the manager has not started yet.
 // Returns an error only when the volume list cannot be fetched; the sweep
-// itself is best-effort and its failures are logged here (issue #195).
-func sweepOrphans(nodeName string, driver *drbd.Driver) error {
-	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
-	if err != nil {
-		return err
-	}
+// itself is best-effort and its failures are logged here.
+func sweepOrphans(ctx context.Context, c client.Reader, nodeName string, driver *drbd.Driver) error {
 	vols := &miroirv1alpha1.MiroirVolumeList{}
-	if err := listWithRetry(c, vols, apiStartupWait); err != nil {
+	if err := listWithRetry(ctx, c, vols, apiStartupWait); err != nil {
 		return err
 	}
 	owned := map[string]bool{}
@@ -1182,7 +1195,7 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 			}
 		}
 	}
-	if err := driver.SweepOrphans(context.Background(),
+	if err := driver.SweepOrphans(ctx,
 		func(name string) bool { return owned[name] }); err != nil {
 		setupLog.Error(err, "orphan sweep incomplete")
 	}
@@ -1191,19 +1204,26 @@ func sweepOrphans(nodeName string, driver *drbd.Driver) error {
 
 // resumeStaleBarriers lifts suspend-io left behind by a previous crash.
 // The kernel's view drives the sweep: a crash between suspend-io and the
-// status patch leaves a frozen device no snapshot records. Barriers whose
-// round is still within the deadline are the reconciler's to drive.
-// Returns an error only when the snapshot list cannot be fetched; resume
-// failures are per-resource, logged here — one wedged resource must not
-// strand the other frozen volumes' barriers (issue #195).
-func resumeStaleBarriers(ctx context.Context, driver *drbd.Driver, freezer *agent.Freezer,
+// status patch leaves a frozen device no snapshot records. It is read
+// before the rounds are listed, so a barrier is never judged against a
+// listing older than itself. Barriers whose round is still within the
+// deadline are the reconciler's to drive. c must be an uncached reader.
+// Returns an error only when a round list cannot be fetched; resume
+// failures are per-resource and logged here.
+func resumeStaleBarriers(ctx context.Context, c client.Reader, driver *drbd.Driver, freezer *agent.Freezer,
 	nodeName string, apiBudget time.Duration) error {
-	c, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+	suspended, err := driver.UserSuspended(ctx)
 	if err != nil {
-		return err
+		// No kernel view (e.g. module not loaded yet) also means nothing
+		// can be suspended — don't block agent startup on it.
+		setupLog.Error(err, "cannot list suspended resources; skipping barrier sweep")
+		return nil
+	}
+	if len(suspended) == 0 {
+		return nil
 	}
 	snaps := &miroirv1alpha1.MiroirSnapshotList{}
-	if err := listWithRetry(c, snaps, apiBudget); err != nil {
+	if err := listWithRetry(ctx, c, snaps, apiBudget); err != nil {
 		return err
 	}
 	fresh := map[string]bool{}
@@ -1219,7 +1239,7 @@ func resumeStaleBarriers(ctx context.Context, driver *drbd.Driver, freezer *agen
 	// volumes come from the member snapshots; perLeg slot keys
 	// ("<volume>/<node>") cover a member already torn out of the list.
 	groups := &miroirv1alpha1.MiroirSnapshotGroupList{}
-	if err := listWithRetry(c, groups, apiBudget); err != nil {
+	if err := listWithRetry(ctx, c, groups, apiBudget); err != nil {
 		return err
 	}
 	snapVol := map[string]string{}
@@ -1242,13 +1262,6 @@ func resumeStaleBarriers(ctx context.Context, driver *drbd.Driver, freezer *agen
 			}
 		}
 	}
-	suspended, err := driver.UserSuspended(ctx)
-	if err != nil {
-		// No kernel view (e.g. module not loaded yet) also means nothing
-		// can be suspended — don't block agent startup on it.
-		setupLog.Error(err, "cannot list suspended resources; skipping barrier sweep")
-		return nil
-	}
 	var errs []error
 	var stale []string
 	for _, vol := range suspended {
@@ -1270,7 +1283,7 @@ func resumeStaleBarriers(ctx context.Context, driver *drbd.Driver, freezer *agen
 	// keep their freeze — their own close lifts it.
 	if len(stale) > 0 && freezer != nil {
 		vols := &miroirv1alpha1.MiroirVolumeList{}
-		if err := listWithRetry(c, vols, apiBudget); err != nil {
+		if err := listWithRetry(ctx, c, vols, apiBudget); err != nil {
 			setupLog.Error(err, "cannot list volumes; skipping freeze thaw sweep")
 			return nil
 		}
@@ -1288,7 +1301,7 @@ func resumeStaleBarriers(ctx context.Context, driver *drbd.Driver, freezer *agen
 					// Usually a leg that never froze (only mounted legs do),
 					// but a freeze leaked before its mount went away is
 					// unreachable now — mount refuses the frozen device and
-					// FITHAW needs a mountpoint (issue #311). Not silent, so
+					// FITHAW needs a mountpoint. Not silent, so
 					// the leak never looks like success; the stage-time
 					// recovery is what clears it.
 					setupLog.Info("stale barrier volume is not mounted; nothing to thaw here",

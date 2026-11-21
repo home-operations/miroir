@@ -17,6 +17,7 @@ metadata:
     {{- include "miroir.labels" . | nindent 4 }}
     app.kubernetes.io/component: agent
 spec:
+  minReadySeconds: {{ .Values.agent.minReadySeconds }}
   selector:
     matchLabels:
       {{- include "miroir.selectorLabels" . | nindent 6 }}
@@ -88,7 +89,7 @@ spec:
             preStop:
               exec:
                 # Last-resort unblock if the agent's in-process shutdown
-                # demote (agentShutdownDownSecondaries) never ran — a
+                # demote (agent.ShutdownDownSecondaries) never ran — a
                 # wedged agent or a missed early-signal path. Force-
                 # demotes every DRBD resource so the OS can tear down
                 # storage pools without EIO wedging the reboot. Gated on

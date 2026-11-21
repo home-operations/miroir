@@ -118,7 +118,7 @@ func parseMinor(s string, ev fsEvent) (int32, fsEvent) {
 }
 
 // WritebackWatcher maintains this node's ReplicaStatus.WritebackError
-// from the kernel log (issue #594). A quorum loss under policy freeze can
+// from the kernel log. A quorum loss under policy freeze can
 // fail only async writeback: ext4 keeps the mount rw and the error stays
 // latent until jbd2 trips on it at the next metadata change, possibly
 // weeks later.

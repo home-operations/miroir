@@ -125,8 +125,8 @@ ok "snapshot ready under write load"
 step "no barrier left behind"
 for n in $node $other; do
     suspended=$(kubectl exec -n miroir-system "$(agent_pod "$n")" -c agent -- \
-        sh -c 'drbdsetup status | grep -c suspended' || true)
-    [ "${suspended:-0}" = 0 ] || die "device still suspended on $n"
+        sh -c 'drbdsetup status | grep -c suspended || true') || die "cannot read DRBD status on $n"
+    [ "$suspended" = 0 ] || die "device still suspended on $n"
 done
 ok "no suspended devices on either node"
 
@@ -261,7 +261,8 @@ pv2=$(kubectl get pvc -n "$NS" smoke-restore -o jsonpath='{.spec.volumeName}')
 kubectl delete namespace "$NS" --wait=true --timeout=120s
 trap - EXIT
 deadline=$((SECONDS + 120))
-while kubectl get miroirvolume "$pv" "$pv2" "$rwx_pv" 2>/dev/null | grep -q pvc-; do
+while left=$(kubectl get miroirvolume "$pv" "$pv2" "$rwx_pv" --ignore-not-found -o name) \
+    || die "cannot list miroirvolumes"; [ -n "$left" ]; do
     [ "$SECONDS" -lt "$deadline" ] || die "miroirvolumes not cleaned up"
     sleep 5
 done
@@ -270,8 +271,8 @@ done
 for pod in $(kubectl get pods -n miroir-system -l app.kubernetes.io/component=agent \
     -o jsonpath='{.items[*].metadata.name}'); do
     leftovers=$(kubectl exec -n miroir-system "$pod" -c agent -- sh -c \
-        "drbdsetup status 2>/dev/null | grep -cE '^($pv|$pv2|$rwx_pv)'" || true)
-    [ "${leftovers:-0}" = 0 ] || die "DRBD resource leftover in $pod"
+        "drbdsetup status | grep -cE '^($pv|$pv2|$rwx_pv)' || true") || die "cannot read DRBD status in $pod"
+    [ "$leftovers" = 0 ] || die "DRBD resource leftover in $pod"
 done
 ok "volumes, DRBD resources and backing devices cleaned up"
 

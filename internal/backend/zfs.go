@@ -19,6 +19,7 @@ package backend
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -227,14 +228,13 @@ func (z *zfsBackend) Delete(ctx context.Context, vol string) error {
 	// The zvol's kernel device can still be releasing after DRBD detached
 	// — zfs destroy races the cleanup and returns "dataset is busy". A
 	// few short retries let the kernel finish within this call instead
-	// of escalating to the agent's 10s cadence, which parks at 30
-	// attempts when many volumes tear down at once.
+	// of escalating to the caller's slower retry.
 	_, derr := z.exec(ctx, "zfs", "destroy", z.name(vol))
 	for attempt := 0; derr != nil && strings.Contains(derr.Error(), "dataset is busy") && attempt < 3; attempt++ {
 		select {
 		case <-time.After(time.Second):
 		case <-ctx.Done():
-			return Busy(derr)
+			return ctx.Err()
 		}
 		_, derr = z.exec(ctx, "zfs", "destroy", z.name(vol))
 	}
@@ -312,15 +312,17 @@ func (z *zfsBackend) DeleteSnapshot(ctx context.Context, vol, snap string) error
 		// teardown removes a deferred snapshot with its last clone, and a
 		// concurrent promote reparents it under the clone. Re-list to tell
 		// gone (the contract's "succeeds if already absent") from migrated:
-		// a survivor means the destroy genuinely failed or the snapshot
-		// lives under a new name, so surface the error and let the retry
-		// find it.
+		// this name surviving means the destroy genuinely failed, and a
+		// name not listed before is the snapshot under its new parent, so
+		// surface the error and let the retry find it.
 		still, err := z.snapshotsMatching(ctx, snap)
 		if err != nil {
 			return err
 		}
-		if len(still) > 0 {
-			return destroyErr
+		for _, s := range still {
+			if s == name || !slices.Contains(names, s) {
+				return destroyErr
+			}
 		}
 	}
 	return nil

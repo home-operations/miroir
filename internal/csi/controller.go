@@ -23,6 +23,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,7 +77,7 @@ type Controller struct {
 	// free×ratio. Zero → defaultFreeSpaceRatio. See poolHeadroom.
 	FreeSpaceRatio float64
 	// AutoTieBreaker adds a diskless tie-breaker replica to new 2-replica
-	// freeze volumes when a spare storage node exists (#70).
+	// freeze volumes when a spare storage node exists.
 	AutoTieBreaker bool
 	// RWXEnabled mirrors whether the export reconciler is running (a
 	// gateway image is configured). When false, RWX CreateVolume requests
@@ -188,7 +189,7 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 			}
 		}
 	}
-	// LVM refuses sizes that are not sector multiples (#413). Round up once,
+	// LVM refuses sizes that are not sector multiples. Round up once,
 	// before the size is stored or compared anywhere, so the CR spec, the
 	// overcommit accounting, and the reported PV capacity all agree.
 	sizeBytes = alignSector(sizeBytes)
@@ -221,58 +222,60 @@ func (c *Controller) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequ
 	// cluster state, and a concurrent CreateVolume that has not committed
 	// yet would otherwise be invisible to both — two RPCs could pass the
 	// guard or claim the same port. waitReady is deliberately left outside.
-	c.allocMu.Lock()
-	// One volume List serves both the overcommit guard (place) and the
-	// DRBD port scan (allocateDRBD); they need identical data and both run
-	// under the lock. Fetched only when a placing or replicated path needs
-	// it, so a 1-replica restore still does zero volume Lists.
-	vols, err := c.allocVolumes(ctx, snapID == "" || replicas > 1)
-	if err != nil {
-		c.allocMu.Unlock()
-		return nil, err
-	}
-	placed, err := c.placeVolume(ctx, req, snapID, srcReplicas, replicas, sizeBytes, vols, remoteAccess, params.pool, quorum)
-	if err != nil {
-		c.allocMu.Unlock()
-		return nil, err
-	}
-	vol := &miroirv1alpha1.MiroirVolume{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: req.GetName(),
-			Labels: constants.PVCRefLabels(
-				req.GetParameters()[paramPVCName],
-				req.GetParameters()[paramPVCNamespace]),
-		},
-		Spec: miroirv1alpha1.MiroirVolumeSpec{
-			SizeBytes: sizeBytes,
-			Replicas:  placed,
-			Source:    source,
-			// Export volumes are consumed over NFS, never through DRBD
-			// legs: leaving AllowRemoteAccess unset keeps every client-leg
-			// path closed for them (their PV is unpinned via Export
-			// already), so a stray device resolution on a consumer node
-			// fails loudly instead of attaching a leg.
-			AllowRemoteAccess: remoteAccess && !shared,
-		},
-	}
-	for _, r := range placed {
-		vol.Finalizers = append(vol.Finalizers, constants.FinalizerPrefix+r.Node)
-	}
-	if replicas > 1 {
-		vol.Spec.QuorumPolicy = quorum
-		drbdSpec, err := c.allocateDRBD(vols)
+	vol, createErr, err := func() (*miroirv1alpha1.MiroirVolume, error, error) {
+		c.allocMu.Lock()
+		defer c.allocMu.Unlock()
+		// One volume List serves both the overcommit guard (place) and the
+		// DRBD port scan (allocateDRBD); they need identical data and both run
+		// under the lock. Fetched only when a placing or replicated path needs
+		// it, so a 1-replica restore still does zero volume Lists.
+		vols, err := c.allocVolumes(ctx, snapID == "" || replicas > 1)
 		if err != nil {
-			c.allocMu.Unlock()
-			return nil, err
+			return nil, nil, err
 		}
-		drbdSpec.BitmapGranularityBytes = params.bitmapGranularity
-		vol.Spec.DRBD = drbdSpec
+		placed, err := c.placeVolume(ctx, req, snapID, srcReplicas, replicas, sizeBytes, vols, remoteAccess, params.pool, quorum)
+		if err != nil {
+			return nil, nil, err
+		}
+		vol := &miroirv1alpha1.MiroirVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: req.GetName(),
+				Labels: constants.PVCRefLabels(
+					req.GetParameters()[paramPVCName],
+					req.GetParameters()[paramPVCNamespace]),
+			},
+			Spec: miroirv1alpha1.MiroirVolumeSpec{
+				SizeBytes: sizeBytes,
+				Replicas:  placed,
+				Source:    source,
+				// Export volumes are consumed over NFS, never through DRBD
+				// legs: leaving AllowRemoteAccess unset keeps every client-leg
+				// path closed for them (their PV is unpinned via Export
+				// already), so a stray device resolution on a consumer node
+				// fails loudly instead of attaching a leg.
+				AllowRemoteAccess: remoteAccess && !shared,
+			},
+		}
+		for _, r := range placed {
+			vol.Finalizers = append(vol.Finalizers, constants.FinalizerPrefix+r.Node)
+		}
+		if replicas > 1 {
+			vol.Spec.QuorumPolicy = quorum
+			drbdSpec, err := c.allocateDRBD(vols)
+			if err != nil {
+				return nil, nil, err
+			}
+			drbdSpec.BitmapGranularityBytes = params.bitmapGranularity
+			vol.Spec.DRBD = drbdSpec
+		}
+		if shared {
+			vol.Spec.Export = &miroirv1alpha1.ExportSpec{FSType: exportFSType(req.GetVolumeCapabilities())}
+		}
+		return vol, c.Client.Create(ctx, vol), nil
+	}()
+	if err != nil {
+		return nil, err
 	}
-	if shared {
-		vol.Spec.Export = &miroirv1alpha1.ExportSpec{FSType: exportFSType(req.GetVolumeCapabilities())}
-	}
-	createErr := c.Client.Create(ctx, vol)
-	c.allocMu.Unlock()
 
 	sourceSnapshot := ""
 	if source != nil {
@@ -461,7 +464,7 @@ func (c *Controller) resolveSource(ctx context.Context, snapID string, sizeBytes
 // placeVolume decides the volume's replica layout inside the allocMu
 // critical section: fresh volumes are placed (plus tie-breaker), a
 // restore follows its source, and a restore whose class requests a
-// different diskful count than the source had is reshaped (issue #305).
+// different diskful count than the source had is reshaped.
 // One topology snapshot serves placement and the tie-breaker pick;
 // separate resolves could observe different topologies mid-RPC.
 func (c *Controller) placeVolume(ctx context.Context, req *csi.CreateVolumeRequest, snapID string, srcReplicas []miroirv1alpha1.Replica, replicas int, sizeBytes int64, vols []miroirv1alpha1.MiroirVolume, remoteAccess bool, pool string, quorum miroirv1alpha1.QuorumPolicy) ([]miroirv1alpha1.Replica, error) {
@@ -585,8 +588,8 @@ func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.Top
 	// node leads the preferred list — everything behind it is rotation
 	// artifact, not scheduler intent. Honoring the full list replayed the
 	// rotation verbatim: every second replica landed on selected+1 and the
-	// capacity ranking below never ran, starving the rotation's tail node
-	// (#258). The pinned node is kept even if it later fails the
+	// capacity ranking below never ran, starving the rotation's tail node.
+	// The pinned node is kept even if it later fails the
 	// overcommit guard, so a topology-pinned volume refuses rather than
 	// silently landing on a node the pod can't reach.
 	ordered := make([]string, 0, len(candidates))
@@ -662,8 +665,8 @@ func (c *Controller) place(ctx context.Context, nodes nodemap.Map, reqs *csi.Top
 }
 
 // withTieBreaker appends a diskless tie-breaker to a freshly placed
-// 2-replica freeze volume, so majority quorum survives a single node loss
-// (#70). It picks from the same topology snapshot the caller placed with.
+// 2-replica freeze volume, so majority quorum survives a single node loss.
+// It picks from the same topology snapshot the caller placed with.
 // Unchanged when disabled, not applicable, or no spare node exists —
 // the tie-breaker reconciler retrofits skipped volumes once one joins.
 func (c *Controller) withTieBreaker(ctx context.Context, nodes nodemap.Map, placed []miroirv1alpha1.Replica, replicas int, quorum miroirv1alpha1.QuorumPolicy) ([]miroirv1alpha1.Replica, error) {
@@ -697,7 +700,7 @@ func (c *Controller) withTieBreaker(ctx context.Context, nodes nodemap.Map, plac
 // topology without a pin — scanning on would pin a rotation artifact,
 // the exact #258 bug — and must not trip the topology refusal.
 func topologyPick(reqs *csi.TopologyRequirement, candidates map[string]nodemap.Pool, excluded map[string]bool) (pin string, matched bool) {
-	for _, t := range append(reqs.GetPreferred(), reqs.GetRequisite()...) {
+	for _, t := range slices.Concat(reqs.GetPreferred(), reqs.GetRequisite()) {
 		n, ok := t.GetSegments()[constants.TopologyKey]
 		if !ok {
 			continue
@@ -738,7 +741,7 @@ func diskfulOf(reps []miroirv1alpha1.Replica) []miroirv1alpha1.Replica {
 }
 
 // reshapeRestore adapts a restore's replica layout to a class requesting
-// a different diskful count than the source volume had (issue #305).
+// a different diskful count than the source volume had.
 // Growing appends freshly placed FullSync joiners — their content
 // arrives over the wire, so unlike the CoW legs they may land anywhere
 // the pool reaches. Shrinking keeps a subset of the source legs — the
@@ -850,7 +853,7 @@ func keepRestoreLegs(diskful []miroirv1alpha1.Replica, target int, pin string) [
 // topology is best-effort, and the scheduler cannot see leg placement
 // (capacity tracking has no per-volume dimension), so refusing would only
 // replay the same selection forever and strand the PVC in
-// ProvisioningFailed (#406). The shrink instead relocates to a complete
+// ProvisioningFailed. The shrink instead relocates to a complete
 // leg within requisite — the hard bound (allowedTopologies,
 // strict-topology) — and the response's AccessibleTopology re-places the
 // consumer. Only when requisite admits no complete leg does the refusal
@@ -1285,6 +1288,21 @@ func (c *Controller) expandWithinHeadroom(ctx context.Context, vol *miroirv1alph
 	return nil
 }
 
+// failedDetail lists the cause each replica node reported for a Failed
+// volume.
+func failedDetail(vol *miroirv1alpha1.MiroirVolume) string {
+	var parts []string
+	for _, node := range slices.Sorted(maps.Keys(vol.Status.PerNode)) {
+		if msg := vol.Status.PerNode[node].Message; msg != "" {
+			parts = append(parts, node+": "+msg)
+		}
+	}
+	if len(parts) == 0 {
+		return "no replica reported a cause"
+	}
+	return strings.Join(parts, "; ")
+}
+
 // errVolumeFailed marks a hard provisioning failure reported by an agent,
 // as opposed to "not ready yet".
 type errVolumeFailed struct{ detail string }
@@ -1331,7 +1349,7 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 				// syncing, but not while a replica agent is absent or stale.
 				return len(unreachableReplicaNodes(vol, time.Now())) == 0, nil
 			case miroirv1alpha1.VolumeFailed:
-				return false, &errVolumeFailed{detail: fmt.Sprintf("%+v", vol.Status.PerNode)}
+				return false, &errVolumeFailed{detail: failedDetail(vol)}
 			default:
 				return false, nil
 			}
@@ -1351,8 +1369,8 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 		return nil
 	}
 	if failed, ok := errors.AsType[*errVolumeFailed](err); ok {
-		// Hard agent failure (e.g. pool out of space). DeadlineExceeded
-		// would make the provisioner retry forever.
+		// The agents reported the volume Failed. DeadlineExceeded would
+		// make the provisioner retry forever.
 		return status.Errorf(codes.ResourceExhausted, "volume %s failed: %s", name, failed.detail)
 	}
 	// Post-timeout node reachability check: before returning
@@ -1393,11 +1411,6 @@ func (c *Controller) waitReady(ctx context.Context, name string) error {
 // MiroirNode heartbeat: only a node whose agent also stopped publishing
 // pool stats is reported. A just-crashed agent therefore surfaces one or
 // two retries later, once its heartbeat crosses constants.StatsStaleAfter.
-//
-// agent.StaleProbeThreshold is defined in internal/agent; the CSI
-// controller imports the agent package for this one constant. The constant
-// could live in internal/constants (imported by both packages), but moving
-// it would touch the agent package which Phase 3 deliberately avoids.
 func (c *Controller) checkNodeUnreachable(vol *miroirv1alpha1.MiroirVolume) []string {
 	// Fresh context for the reads and the status write: the caller's ctx
 	// is already canceled (waitReady timed out), so anything on it would
@@ -1662,13 +1675,16 @@ func (c *Controller) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshot
 	return &csi.DeleteSnapshotResponse{}, nil
 }
 
-// ListSnapshots reports existing snapshots (no pagination: home scale).
+// ListSnapshots reports existing snapshots, paginated in name order.
 func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
 	snaps := &miroirv1alpha1.MiroirSnapshotList{}
 	if err := c.Client.List(ctx, snaps); err != nil {
 		return nil, status.Errorf(codes.Internal, "list snapshots: %v", err)
 	}
-	resp := &csi.ListSnapshotsResponse{}
+	slices.SortFunc(snaps.Items, func(a, b miroirv1alpha1.MiroirSnapshot) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	var entries []*csi.ListSnapshotsResponse_Entry
 	for i := range snaps.Items {
 		s := &snaps.Items[i]
 		// Internal clone-source snapshots are an implementation detail of
@@ -1684,9 +1700,17 @@ func (c *Controller) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRe
 		if req.GetSourceVolumeId() != "" && s.Spec.VolumeName != req.GetSourceVolumeId() {
 			continue
 		}
-		resp.Entries = append(resp.Entries, &csi.ListSnapshotsResponse_Entry{
+		entries = append(entries, &csi.ListSnapshotsResponse_Entry{
 			Snapshot: csiSnapshot(s, s.Status.SizeBytes),
 		})
+	}
+	start, end, err := page(req.GetStartingToken(), req.GetMaxEntries(), len(entries), false)
+	if err != nil {
+		return nil, err
+	}
+	resp := &csi.ListSnapshotsResponse{Entries: entries[start:end]}
+	if end < len(entries) {
+		resp.NextToken = strconv.Itoa(end)
 	}
 	return resp, nil
 }
@@ -2058,7 +2082,7 @@ func parseReplicas(params map[string]string) (int, error) {
 }
 
 // parseQuorum defaults to freeze: with the auto-added tie-breaker a
-// 2-replica volume gets majority quorum without split-brain exposure (#70).
+// 2-replica volume gets majority quorum without split-brain exposure.
 func parseQuorum(params map[string]string) (miroirv1alpha1.QuorumPolicy, error) {
 	switch raw := params[constants.ParamQuorum]; raw {
 	case "", string(miroirv1alpha1.QuorumFreeze):

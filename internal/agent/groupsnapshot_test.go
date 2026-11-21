@@ -574,3 +574,46 @@ func TestGroupFreezeBracketsRound(t *testing.T) {
 		t.Fatalf("the unmounted Secondary must never freeze or thaw: %v", calls)
 	}
 }
+
+// A peer's slot write is fenced to the round it observed: a Done cut under
+// a round the driver has since voided and reopened must not land in the
+// new round, where it would pair with that round's cuts.
+func TestGroupSlotPatchFencedToObservedRound(t *testing.T) {
+	observedAt := metav1.NewTime(time.Now().Add(-time.Minute).Truncate(time.Second))
+	reopenedAt := metav1.NewTime(time.Now().Truncate(time.Second))
+	key := slotKey(volPvc1, nodeA)
+	tests := []struct {
+		name      string
+		liveRound metav1.Time
+		wantErr   bool
+		wantSlot  miroirv1alpha1.SnapshotNodeState
+	}{
+		{name: "same round", liveRound: observedAt, wantSlot: miroirv1alpha1.SnapshotDone},
+		{name: "round reopened since", liveRound: reopenedAt, wantErr: true, wantSlot: miroirv1alpha1.SnapshotPending},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			grp := groupObj()
+			grp.Status.IOSuspended = true
+			grp.Status.SuspendedAt = &tt.liveRound
+			grp.Status.PerLeg = map[string]miroirv1alpha1.SnapshotNodeState{key: miroirv1alpha1.SnapshotPending}
+			c := groupClient(t, grp)
+			observed := grp.DeepCopy()
+			observed.Status.SuspendedAt = &observedAt
+			r := &GroupSnapshotReconciler{Client: c, NodeName: nodeA}
+
+			err := r.patchMySlots(t.Context(), observed,
+				[]groupMember{{vol: groupVol(volPvc1)}}, miroirv1alpha1.SnapshotDone)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("patchMySlots() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			got := &miroirv1alpha1.MiroirSnapshotGroup{}
+			if err := c.Get(t.Context(), types.NamespacedName{Name: groupG1}, got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Status.PerLeg[key] != tt.wantSlot {
+				t.Fatalf("slot = %q, want %q", got.Status.PerLeg[key], tt.wantSlot)
+			}
+		})
+	}
+}

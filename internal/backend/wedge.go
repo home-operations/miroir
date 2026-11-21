@@ -78,7 +78,7 @@ func stranded(pid int) bool { return procState(pid) == 'D' }
 // are outstanding it refuses to spawn more.
 //
 // The per-resource guards cannot see this: drbd.Down already refuses a
-// second down against a resource wearing the wedge signature (issue #195),
+// second down against a resource wearing the wedge signature,
 // but that signature belongs to one resource, and a jammed kernel storage
 // path strands commands against healthy resources too. Each retry then adds
 // a task, so the node degrades instead of failing, until even kubelet's own

@@ -54,7 +54,7 @@ majority of 2 and the volume keeps serving.
 Behavior and knobs:
 
 - **Placement is zone-aware.** A spare node in a zone neither data
-  leg occupies is preferred (`nodes.<node>.spec.zone`); ties break by
+  leg occupies is preferred (the MiroirNode's `spec.zone`); ties break by
   node name.
 - **Existing volumes are retrofitted.** Adding a third node to
   the topology (applying its MiroirNode) appends a tie-breaker to every 2-replica `freeze` volume

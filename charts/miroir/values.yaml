@@ -70,7 +70,6 @@ autoTieBreaker: true
 # duration, e.g. "10m"). Conversion needs a MiroirNode for the leg's node
 # with fresh pool stats and room for the volume's full size. Empty disables
 # it.
-# See the root README, "Auto-diskful".
 autoDiskfulAfter: ""
 # -- Re-place a dead storage node's legs once its heartbeat (MiroirNode
 # status, refreshed ~60s) has been stale this long (LINSTOR's auto-evict;
@@ -213,6 +212,11 @@ agent:
   # serialized by controller-runtime regardless; this bounds how many
   # distinct volumes one agent works at once.
   volumeWorkers: 4
+  # -- Seconds an agent pod must stay Ready before the DaemonSet rollout
+  # moves to the next node. The agent already reports Ready only once the
+  # DRBD legs that were healthy before its restart have settled again (or
+  # after 2 minutes); this adds a fixed pause on top.
+  minReadySeconds: 0
   # @schema
   # type: array
   # items:
@@ -275,7 +279,6 @@ gateway:
     # Pins the image by digest (sha256:…); takes precedence over the tag.
     # The release pipeline fills this with the published image's digest.
     digest: ""
-    pullPolicy: IfNotPresent
   # -- Gateway container resources, applied to every per-volume gateway
   # Deployment. No memory limit by default: the gateway performs all of the
   # export's reads and writes, so the kernel charges the exported

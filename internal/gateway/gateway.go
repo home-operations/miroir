@@ -34,6 +34,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"k8s.io/apimachinery/pkg/util/wait"
 	mount "k8s.io/mount-utils"
 	utilexec "k8s.io/utils/exec"
@@ -117,7 +119,7 @@ func Run(ctx context.Context, cl client.Client, drbdStatus stage.DRBDStatus, cfg
 	}
 	mountPath := filepath.Join(cfg.ExportDir, cfg.VolumeID)
 
-	// Stage the device. This retries forever until it succeeds: on failover
+	// Stage the device. This retries until it succeeds: on failover
 	// stage.Device passes as soon as the local leg is UpToDate, but
 	// EnsureFilesystem's open-for-write probe is refused until DRBD drops
 	// the dead gateway's Primary claim (its connection timeout). Polling
@@ -125,6 +127,10 @@ func Run(ctx context.Context, cl client.Client, drbdStatus stage.DRBDStatus, cfg
 	var dev string
 	err := wait.PollUntilContextCancel(ctx, cfg.StageRetry, true, func(ctx context.Context) (bool, error) {
 		d, vol, err := stage.Device(ctx, deps, cfg.VolumeID)
+		if status.Code(err) == codes.NotFound {
+			// The volume is gone; no retry brings it back.
+			return false, err
+		}
 		if err != nil {
 			log.Info("waiting for device", "reason", err.Error())
 			return false, nil
@@ -135,12 +141,21 @@ func Run(ctx context.Context, cl client.Client, drbdStatus stage.DRBDStatus, cfg
 			return false, fmt.Errorf("volume %s has no spec.export (not an RWX volume)", cfg.VolumeID)
 		}
 		if err := stage.EnsureFilesystem(ctx, deps, vol, d, mountPath, vol.Spec.Export.FSType, nil); err != nil {
+			if status.Code(err) == codes.DataLoss {
+				// Retried: a device mid peer-teardown can read blank for
+				// a moment. Persisting, it needs an operator.
+				log.Error(err, "refusing to stage the filesystem")
+				return false, nil
+			}
 			log.Info("waiting to stage filesystem", "reason", err.Error())
 			return false, nil
 		}
 		dev = d
 		return true, nil
 	})
+	if ctx.Err() != nil {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("stage volume %s: %w", cfg.VolumeID, err)
 	}

@@ -290,6 +290,30 @@ func TestUnknownNodeLeavesSpecUntouched(t *testing.T) {
 	}
 }
 
+// One entry that cannot be placed must not hold up the volume's other
+// entries, and must not pin a finalizer no agent would release.
+func TestBadReplicaEntryDoesNotBlockClientLeg(t *testing.T) {
+	v := replicatedVol() // node-c is not a storage node
+	v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeBergen}}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, node(nodeBergen, addrBergen)).
+		Build()
+	r := &Reconciler{Client: c, PVs: c, Nodes: nodemap.Map{}}
+
+	reconcile(t, r, "pvc-1")
+
+	got := get(t, r, "pvc-1")
+	if got.Spec.Replicas[2].Address != "" {
+		t.Fatalf("must not complete an entry for a non-storage node: %+v", got.Spec.Replicas[2])
+	}
+	if got.Spec.Clients[0].Address != addrBergen {
+		t.Fatalf("client leg not completed: %+v", got.Spec.Clients[0])
+	}
+	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeC) {
+		t.Fatal("an uncompleted entry must not get a teardown finalizer")
+	}
+}
+
 // An address conflict is a topology misconfiguration, not a transient:
 // Reconcile must stop without an error (no backoff retries) — the
 // MiroirNode watch re-triggers it when the operator resolves the clash.

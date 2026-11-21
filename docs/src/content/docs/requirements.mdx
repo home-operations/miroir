@@ -16,7 +16,12 @@ import { Tabs, TabItem } from "@astrojs/starlight/components";
   (on Talos: shipped by ≥ 1.13.0). The agent refuses to start on a
   node whose module is older: the drbd-utils in the agent image
   render options an older module rejects. Nodes without the module at
-  all are fine (local-only).
+  all are fine (local-only). Modules before **9.3.4** (Talos before
+  1.13.11 / 1.14.2) carry the refcount bug behind the teardown wedge
+  ([LINBIT/drbd#137](https://github.com/LINBIT/drbd/issues/137)); see
+  [Monitoring](/monitoring/) for how it shows up. 9.3.4 is also the
+  first release where an idle volume can lose every UpToDate replica
+  ([#636](https://github.com/home-operations/miroir/issues/636)).
 - Kubelet [graceful node shutdown][gns], so the agent (a
   `system-node-critical` pod) is stopped _after_ workloads on reboot
   and can release DRBD backings before the backend pool exports.

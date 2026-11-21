@@ -221,6 +221,15 @@ func TestSnapshotBarrierStuckParksAfterLimit(t *testing.T) {
 	default:
 		t.Fatal("want a BarrierStuck warning event")
 	}
+	// The parked retry keeps failing: it must not warn again every cycle.
+	if _, err := r.Reconcile(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case e := <-rec.Events:
+		t.Fatalf("a parked retry must not re-emit the warning, got %q", e)
+	default:
+	}
 }
 
 // A failed suspend-io can still have set the kernel flag (the wedge kills

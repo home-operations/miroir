@@ -251,25 +251,13 @@ func (lf *loopfile) Resize(ctx context.Context, vol string, sizeBytes int64) err
 	return nil
 }
 
-func (lf *loopfile) Sync(_ context.Context, vol string) error {
-	// fsync the backing file, not the loop device: DRBD (and a directly
-	// mounted fs on replicas:1) submit bios that the loop driver writes into
-	// the *backing file's* page cache, but blockdev --flushbufs on the loop
-	// device only syncs that block device's own cache — it never reaches the
-	// file. With in-flight writes already drained by the DRBD suspend
-	// barrier, fsyncing the file makes the snapshot source durable
-	// regardless of whether reflink happens to flush it.
-	//
-	// fsync of one fd, not global sync(2): the latter waits on dirty pages
-	// of the filesystem mounted on the suspended DRBD device, which cannot
-	// flush under the barrier — deadlock (see zfsBackend.Sync). The backing
-	// file lives on the node's own filesystem, unaffected.
-	f, err := os.OpenFile(lf.imgPath(vol), os.O_RDWR, 0)
-	if err != nil {
-		return fmt.Errorf("open %s for sync: %w", vol, err)
-	}
-	defer func() { _ = f.Close() }()
-	if err := f.Sync(); err != nil {
+func (lf *loopfile) Sync(ctx context.Context, vol string) error {
+	// fsync the backing file, not the loop device: the loop driver writes
+	// into the backing file's page cache, which blockdev --flushbufs on the
+	// loop device never reaches. One file, not global sync(2): that waits
+	// on the filesystem mounted on the suspended DRBD device, which cannot
+	// flush under the barrier (see zfsBackend.Sync).
+	if _, err := lf.exec(ctx, "sync", lf.imgPath(vol)); err != nil {
 		return fmt.Errorf("fsync %s: %w", vol, err)
 	}
 	return nil

@@ -65,7 +65,7 @@ type Node struct {
 	// instead; RWX (NFS) staging needs no DRBD leg and still works.
 	ClientOnly bool
 	// Freezer lifts a snapshot-round filesystem freeze leaked onto the
-	// staging mount before unstage tears it down (issue #311); nil skips
+	// staging mount before unstage tears it down; nil skips
 	// (tests).
 	Freezer Thawer
 	// Wedge is the node-scoped breaker the unstage unmount consults. Checked
@@ -225,7 +225,7 @@ func (n *Node) disklessDevicePath(ctx context.Context, vol *miroirv1alpha1.Miroi
 		return "", nil, status.Errorf(codes.Unavailable,
 			"volume %s has no reachable UpToDate replica from node %s", vol.Name, n.NodeName)
 	}
-	// Same hold as stage.Device (#144): mid-recovery a never-activated
+	// Same hold as stage.Device: mid-recovery a never-activated
 	// birth-split volume can look healthy from a diskless leg — quorum
 	// back, an UpToDate survivor serving — while the losing leg is still
 	// divergent and disconnected. Staging here would latch Activated and
@@ -569,7 +569,11 @@ func (n *Node) NodeGetVolumeStats(_ context.Context, req *csi.NodeGetVolumeStats
 	// A raw-block publish path is a bind-mounted device file: statfs
 	// there reports the host filesystem backing the target dir, not the
 	// volume. No filesystem, no usage to report.
-	if fi, err := os.Stat(req.GetVolumePath()); err == nil && !fi.IsDir() {
+	fi, err := os.Stat(req.GetVolumePath())
+	if os.IsNotExist(err) {
+		return nil, status.Errorf(codes.NotFound, "volume path %s does not exist", req.GetVolumePath())
+	}
+	if err == nil && !fi.IsDir() {
 		return resp, nil
 	}
 	stats, err := statfsAt(req.GetVolumePath())

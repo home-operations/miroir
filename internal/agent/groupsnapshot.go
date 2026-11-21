@@ -18,7 +18,7 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -94,7 +94,7 @@ type GroupSnapshotReconciler struct {
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
 	// Freezer freezes each locally mounted member filesystem before this
-	// node's barrier on it rises (issue #291); optional (nil skips,
+	// node's barrier on it rises; optional (nil skips,
 	// crash-consistent as before).
 	Freezer *Freezer
 
@@ -766,6 +766,9 @@ func (r *GroupSnapshotReconciler) barrierFailed(ctx context.Context, grp *miroir
 	if fails < barrierFailLimit {
 		return ctrl.Result{}, cause
 	}
+	if fails > barrierFailLimit {
+		return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
+	}
 	ctrl.LoggerFrom(ctx).Error(cause, "cannot drive the group snapshot barrier; parking the retry",
 		"group", grp.Name, "volume", vol.Name, "attempts", fails)
 	if r.Recorder != nil {
@@ -781,15 +784,23 @@ func (r *GroupSnapshotReconciler) clearBarrierFails(name string) {
 	r.barrierFailsMu.Unlock()
 }
 
-// patchMySlots records only this node's slots via a merge patch; a peer
-// must not apply the whole status (see patchOwnState's twin).
+// patchMySlots records only this node's slots; a peer must not apply the
+// whole status, which would force-own the driver's round fields. The JSON
+// Patch fences the write to the round this view observed, so a delayed
+// Done cannot land in a reopened round.
 func (r *GroupSnapshotReconciler) patchMySlots(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mine []groupMember, state miroirv1alpha1.SnapshotNodeState) error {
+	if !grp.Status.IOSuspended || grp.Status.SuspendedAt == nil {
+		return errors.New("cannot patch group slots without an active round")
+	}
 	slots := make([]string, 0, len(mine))
 	for _, m := range mine {
-		slots = append(slots, fmt.Sprintf("%q:%q", slotKey(m.vol.Name, r.NodeName), state))
+		slots = append(slots, "perLeg/"+jsonPointerEscape(slotKey(m.vol.Name, r.NodeName)))
 	}
-	patch := fmt.Appendf(nil, `{"status":{"perLeg":{%s}}}`, strings.Join(slots, ","))
-	return r.Status().Patch(ctx, grp, client.RawPatch(types.MergePatchType, patch))
+	patch, err := roundSlotPatch(grp.Status.SuspendedAt, state, slots...)
+	if err != nil {
+		return err
+	}
+	return r.Status().Patch(ctx, grp, client.RawPatch(types.JSONPatchType, patch))
 }
 
 func (r *GroupSnapshotReconciler) patchGroup(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mutate func(*miroirv1alpha1.MiroirSnapshotGroup)) error {

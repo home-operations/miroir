@@ -53,7 +53,7 @@ Return the image pull policy, defaulting to IfNotPresent.
 
 {{/*
 Agent image ref — the Debian image carrying the storage userland; used by
-the agent DaemonSet and the setup Job.
+the agent DaemonSet.
 */}}
 {{- define "miroir.agentImage" -}}
 {{- if .Values.agent.image.digest -}}

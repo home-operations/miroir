@@ -18,9 +18,11 @@ package drbd
 
 import (
 	"context"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The scanner's 1 MiB buffer lifts bufio's 64 KiB token cap: a single
@@ -41,9 +43,26 @@ func TestScanSurvivesLongLines(t *testing.T) {
 		t.Fatalf("events on both sides of the long line must deliver: %v", got)
 	}
 
-	// Past the 1 MiB cap the scanner errors — surfaced so Start respawns
-	// the stream instead of wedging on a filling pipe.
+	// Past the 1 MiB cap the scanner errors, so Start respawns the stream.
 	if err := w.scan(t.Context(), strings.NewReader(strings.Repeat("y", 2<<20))); err == nil {
 		t.Fatal("an over-cap line must surface the scanner error")
+	}
+}
+
+// A scanner error leaves nobody reading the pipe: the child must be killed,
+// or it blocks on its next write and the watcher never respawns.
+func TestStreamKillsChildAfterScanError(t *testing.T) {
+	w := &EventWatcher{Notify: func(context.Context, string) {}}
+	cmd := exec.CommandContext(t.Context(), "sh", "-c",
+		`head -c 3000000 /dev/zero | tr '\0' y; exec sleep 60`)
+	done := make(chan error, 1)
+	go func() { done <- w.stream(t.Context(), cmd) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("an over-cap line must surface the scanner error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream did not return after the scanner error")
 	}
 }

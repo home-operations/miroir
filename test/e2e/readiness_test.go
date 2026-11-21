@@ -268,7 +268,7 @@ var _ = Describe("CSI node unreachability surfacing", Ordered, Label("unreachabi
 				"miroir-e2e-test/excluded=false", "label")
 		}
 		kubectlPatch("daemonset", agentNamespace, dsName,
-			fmt.Sprintf(`{"spec":{"template":{"spec":{"nodeSelector":{"miroir-e2e-test/excluded":"false"}}}}}`))
+			`{"spec":{"template":{"spec":{"nodeSelector":{"miroir-e2e-test/excluded":"false"}}}}}`)
 
 		// 2. Delete the agent pod on the excluded node. The DaemonSet
 		//    won't restart it because the nodeSelector excludes it.

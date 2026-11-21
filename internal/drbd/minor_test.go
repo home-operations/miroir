@@ -365,3 +365,15 @@ func TestSweepOrphansReleasesMinorAssignment(t *testing.T) {
 		t.Fatalf("swept orphan's minor %d must be reused, got %d", first, reused)
 	}
 }
+
+// A rendered config that cannot be read may hold any minor, so allocation
+// must fail instead of risking a duplicate.
+func TestAllocateMinorFailsOnUnreadableRes(t *testing.T) {
+	d := &Driver{StateDir: t.TempDir(), Exec: (&fakeExec{}).run}
+	if err := os.Mkdir(d.path("pvc-other.res"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.AllocateMinor(t.Context(), volPvc1, 0); err == nil {
+		t.Fatal("allocation must fail while another volume's config is unreadable")
+	}
+}

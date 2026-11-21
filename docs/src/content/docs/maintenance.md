@@ -42,6 +42,22 @@ pool-export wedge the [Requirements](/requirements/) page warns about.
 The per-node loop is therefore: cordon and drain, upgrade or reboot,
 wait for the node to rejoin, wait for Ready, uncordon, next node.
 
+## Chart upgrades
+
+A chart upgrade restarts the agents one node at a time without touching
+the kernel's DRBD state: nothing is demoted or disconnected on an
+uncordoned node. Each restarted agent re-applies every local resource,
+and reports Ready only once its replicated legs are connected to every
+peer, hold current data, and are not resyncing, so the DaemonSet waits
+for one node's replication before restarting the next agent. Legs that
+were already degraded before the restart (a peer that is down, a failed
+disk) are not waited for, and a leg the restart left unsettled stops
+holding the rollout after 2 minutes, so a rollout that disturbs
+replication on every node takes up to 2 minutes per node.
+`agent.minReadySeconds` adds a fixed pause per node on top.
+
+## While a node is down
+
 While a single node is down, replicated volumes keep serving per the
 quorum table (see [At a glance](/replication/#at-a-glance)), and the
 RWX gateway reschedules onto the surviving replica node (client I/O

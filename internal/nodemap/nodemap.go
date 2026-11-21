@@ -283,10 +283,7 @@ func (m Map) PickSpare(usedNodes, usedZones map[string]bool, keep func(node stri
 	return ""
 }
 
-const (
-	DefaultZFSVolBlockSize = "4K"
-	DefaultZFSCompression  = "lz4"
-)
+const DefaultZFSVolBlockSize = "4K"
 
 // zfsVolBlockSizes maps the CRD's volBlockSize enum to bytes. The CRD is
 // the validation surface; spellings are canonical (no case folding).

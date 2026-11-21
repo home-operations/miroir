@@ -208,7 +208,7 @@ func (c *Controller) cleanupStrayMembers(ctx context.Context, names, owned []str
 // kernel barrier to the live group round, and the group's teardown can
 // only lift barriers for members it can still resolve — so members
 // deleted first could vanish before a node's group teardown runs and
-// strand their volumes suspended (issue #272). Group-first, every agent
+// strand their volumes suspended. Group-first, every agent
 // sees the group's deletion while the members still exist, and a member
 // deleted after the group is gone lifts its own barrier. Idempotent.
 func (c *Controller) DeleteVolumeGroupSnapshot(ctx context.Context, req *csi.DeleteVolumeGroupSnapshotRequest) (*csi.DeleteVolumeGroupSnapshotResponse, error) {

@@ -195,7 +195,6 @@ install_chart() {
         gateway_args=(
             --set gateway.image.repository="$gateway_repo"
             --set gateway.image.tag="$gateway_tag"
-            --set gateway.image.pullPolicy=Always
         )
     fi
 
