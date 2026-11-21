@@ -22,7 +22,7 @@ exclude = ["charts/miroir/README.md"]
 [pre-commit.commands.format-json]
 exclude = ["charts/miroir/values.schema.json"]
 
-# Generated CRD/RBAC YAMLs are .prettierignore'd; exclude them here too, or a
+# Generated CRD YAMLs are .prettierignore'd; exclude them here too, or a
 # commit staging only generated YAML feeds oxfmt an all-ignored input list and
 # it exits 2. (An earlier `run = "... || true"` override stopped working when
 # lefthook v2 dropped shell interpretation of run strings.)
@@ -30,6 +30,4 @@ exclude = ["charts/miroir/values.schema.json"]
 exclude = [
   "charts/miroir/crds/*.yaml",
   "config/crd/bases/*.yaml",
-  "config/rbac/role.yaml",
-  "config/webhook/manifests.yaml",
 ]

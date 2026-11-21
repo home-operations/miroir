@@ -25,8 +25,8 @@ zizmor = "1.32.0"
 yq = "4.54.3"
 
 [tasks.manifests]
-description = "Generate CRD and RBAC manifests"
-run = "controller-gen rbac:roleName=miroir-controller crd paths='./...' output:crd:artifacts:config=config/crd/bases"
+description = "Generate CRD manifests"
+run = "controller-gen crd paths='./...' output:crd:artifacts:config=config/crd/bases"
 
 [tasks.generate]
 description = "Generate DeepCopy methods and apply configurations"
@@ -96,7 +96,7 @@ cp config/crd/bases/*.yaml charts/miroir/crds/
 [tasks.test]
 description = "Run unit tests"
 depends = ["manifests", "generate", "fmt", "vet"]
-run = "go test $(go list ./... | grep -v /e2e | grep -v /integration | grep -v /sanity) -coverprofile cover.out"
+run = "go test -race $(go list ./... | grep -v /e2e | grep -v /integration | grep -v /sanity) -coverprofile cover.out"
 
 [tasks.test-integration]
 description = "Run integration tests with envtest"

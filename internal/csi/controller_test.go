@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -3079,5 +3080,72 @@ func TestWaitReadyBeatsCallerDeadline(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed >= 6*time.Second {
 		t.Fatalf("waitReady must return before the caller's deadline, took %v", elapsed)
+	}
+}
+
+func TestListSnapshotsPagination(t *testing.T) {
+	s := newScheme(t)
+	objs := make([]client.Object, 0, 3)
+	const snapA, snapB, snapC = "snap-a", "snap-b", "snap-c"
+	for _, name := range []string{snapB, snapA, snapC} {
+		objs = append(objs, &miroirv1alpha1.MiroirSnapshot{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec:       miroirv1alpha1.MiroirSnapshotSpec{VolumeName: "pvc-1"},
+		})
+	}
+	c := &Controller{Client: fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()}
+
+	tests := []struct {
+		name      string
+		req       *csi.ListSnapshotsRequest
+		want      []string
+		wantToken string
+		wantCode  codes.Code
+	}{
+		{name: "no limit", req: &csi.ListSnapshotsRequest{}, want: []string{snapA, snapB, snapC}},
+		{name: "first page", req: &csi.ListSnapshotsRequest{MaxEntries: 2}, want: []string{snapA, snapB}, wantToken: "2"},
+		{name: "last page", req: &csi.ListSnapshotsRequest{MaxEntries: 2, StartingToken: "2"}, want: []string{snapC}},
+		{name: "token past the end", req: &csi.ListSnapshotsRequest{StartingToken: "9"}, wantCode: codes.Aborted},
+		{name: "garbage token", req: &csi.ListSnapshotsRequest{StartingToken: "x"}, wantCode: codes.Aborted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := c.ListSnapshots(t.Context(), tt.req)
+			if status.Code(err) != tt.wantCode {
+				t.Fatalf("code = %v, want %v", status.Code(err), tt.wantCode)
+			}
+			var got []string
+			for _, e := range resp.GetEntries() {
+				got = append(got, e.Snapshot.SnapshotId)
+			}
+			if !slices.Equal(got, tt.want) || resp.GetNextToken() != tt.wantToken {
+				t.Fatalf("got %v next %q, want %v next %q", got, resp.GetNextToken(), tt.want, tt.wantToken)
+			}
+		})
+	}
+}
+
+func TestFailedDetail(t *testing.T) {
+	tests := []struct {
+		name    string
+		perNode map[string]miroirv1alpha1.ReplicaStatus
+		want    string
+	}{
+		{name: "no cause reported", perNode: map[string]miroirv1alpha1.ReplicaStatus{"node-a": {}}, want: "no replica reported a cause"},
+		{
+			name: "causes in node order",
+			perNode: map[string]miroirv1alpha1.ReplicaStatus{
+				"node-b": {Message: "pool full"}, "node-a": {Message: "no such pool"}, "node-c": {},
+			},
+			want: "node-a: no such pool; node-b: pool full",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vol := &miroirv1alpha1.MiroirVolume{Status: miroirv1alpha1.MiroirVolumeStatus{PerNode: tt.perNode}}
+			if got := failedDetail(vol); got != tt.want {
+				t.Fatalf("failedDetail() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

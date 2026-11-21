@@ -33,7 +33,7 @@ import (
 )
 
 // TieBreakerReconciler retrofits a diskless tie-breaker onto 2-replica
-// freeze volumes that lack one (#70) — volumes created before a spare
+// freeze volumes that lack one — volumes created before a spare
 // node existed, or switched to freeze later. It appends a bare
 // {node, diskless} entry; the membership Reconciler completes it exactly
 // like an operator-added replica. The MiroirNode watch re-runs the

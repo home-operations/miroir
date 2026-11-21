@@ -95,10 +95,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			if errors.Is(err, errBadPlacement) {
 				// Unknown node or duplicate: only a volume spec edit or a
 				// topology change could fix it, and both re-trigger this
-				// controller (the MiroirNode watch), so stop without requeue.
+				// controller (the MiroirNode watch), so skip it without a
+				// requeue; the volume's other entries still complete.
 				log.Error(err, "cannot complete added replica",
 					"volume", vol.Name, "node", rep.Node)
-				return ctrl.Result{}, nil
+				continue
 			}
 			// Transient (Node not registered yet, InternalIP not posted):
 			// requeue with backoff — nothing else wakes this controller.
@@ -115,19 +116,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			if errors.Is(err, errBadPlacement) {
 				log.Error(err, "cannot complete client leg",
 					"volume", vol.Name, "node", cl.Node)
-				return ctrl.Result{}, nil
+				continue
 			}
 			return ctrl.Result{}, err
 		}
 		changed = true
 	}
+	// Only completed entries: a skipped one may name a node no agent will
+	// ever release the finalizer from.
 	for _, rep := range vol.Spec.Replicas {
-		if controllerutil.AddFinalizer(vol, constants.FinalizerPrefix+rep.Node) {
+		if rep.Address != "" && controllerutil.AddFinalizer(vol, constants.FinalizerPrefix+rep.Node) {
 			changed = true
 		}
 	}
 	for _, cl := range vol.Spec.Clients {
-		if controllerutil.AddFinalizer(vol, constants.FinalizerPrefix+cl.Node) {
+		if cl.Address != "" && controllerutil.AddFinalizer(vol, constants.FinalizerPrefix+cl.Node) {
 			changed = true
 		}
 	}
@@ -327,6 +330,7 @@ func enqueueAllVolumes(c client.Client) handler.EventHandler {
 	return handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, _ client.Object) []ctrl.Request {
 		list := &miroirv1alpha1.MiroirVolumeList{}
 		if err := c.List(ctx, list, client.UnsafeDisableDeepCopy); err != nil {
+			ctrl.LoggerFrom(ctx).Error(err, "cannot list volumes for a MiroirNode event")
 			return nil
 		}
 		reqs := make([]ctrl.Request, 0, len(list.Items))

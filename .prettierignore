@@ -7,5 +7,3 @@ charts/miroir/README.md
 charts/miroir/values.schema.json
 charts/miroir/crds/
 config/crd/bases/
-config/rbac/role.yaml
-config/webhook/manifests.yaml

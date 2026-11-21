@@ -132,7 +132,7 @@ rules:
   - apiGroups: ["miroir.home-operations.com"]
     resources: ["miroirvolumes/status", "miroirsnapshots/status", "miroirsnapshotgroups/status"]
     verbs: ["get", "patch"]
-  {{- /* Read-only on the spec: MiroirNode specs are chart-rendered desired
+  {{- /* Read-only on the spec: MiroirNode specs are operator-applied desired
          state; the agent reads its own at startup, watches it for drift,
          and publishes pool capacity through the status subresource only. */}}
   - apiGroups: ["miroir.home-operations.com"]

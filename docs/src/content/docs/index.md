@@ -61,8 +61,8 @@ flowchart LR
   serves block devices, plus a per-volume NFS export for
   `ReadWriteMany` (see [ReadWriteMany (RWX)](/rwx/)); it
   is not a general-purpose exporter.
-- You're at fleet scale. Resource groups, automatic eviction and
-  rebalancing, and multi-site replication are
+- You're at fleet scale. Resource groups, rebalancing, and multi-site
+  replication are
   [LINSTOR](https://github.com/LINBIT/linstor-server)'s territory;
   miroir runs the same DRBD9 data plane but deliberately stops at
   what 2-3 nodes need, with the Kubernetes API as its only control

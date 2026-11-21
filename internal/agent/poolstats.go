@@ -124,9 +124,8 @@ func (p *PoolStatsPublisher) publish(ctx context.Context) error {
 		recordPoolMetrics(name, st.SizeBytes, st.UsedBytes, st.MetaUsedPercent/100)
 	}
 
-	// Status only: the spec is the chart-rendered desired state, owned by
-	// the operator's values — an agent writing it would revert their edits
-	// every tick. A missing MiroirNode (this node was just removed from
+	// Status only: the spec is the operator's desired state — an agent
+	// writing it would revert their edits every tick. A missing MiroirNode (this node was just removed from
 	// the topology) surfaces as the Get error below; the topology watcher
 	// restarts the agent into client-only mode moments later.
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {

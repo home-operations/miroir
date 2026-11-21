@@ -120,7 +120,7 @@ func Device(ctx context.Context, d Deps, volumeID string) (string, *miroirv1alph
 		// survivor and tie-breaker reconnect first (quorum restores, the
 		// device turns writable) while the losing leg is still divergent. A
 		// stage completing in that window latches Activated and closes the
-		// auto-recovery that would have healed the loser (issue #144). Hold
+		// auto-recovery that would have healed the loser. Hold
 		// staging while a split is recorded AND a diskful link is down —
 		// only while the volume is still auto-recovery-eligible. The live
 		// connectivity corroboration keeps a stale slot from a dead peer
@@ -153,7 +153,7 @@ func DiskfulPeersLive(vol *miroirv1alpha1.MiroirVolume, self string, live drbd.S
 }
 
 // HoldForSplitRecovery returns the Unavailable hold for a never-activated
-// volume that is mid split-brain recovery, nil otherwise (issue #144).
+// volume that is mid split-brain recovery, nil otherwise.
 // The live-connectivity corroboration keeps a stale slot from a dead peer
 // from blocking a volume whose data legs are all established, and releases
 // the hold the moment the loser reconnects, ahead of the slots clearing on
@@ -234,7 +234,7 @@ func EnsureFilesystem(ctx context.Context, d Deps, vol *miroirv1alpha1.MiroirVol
 			// internally and answers a blank read with mkfs, and blkid cannot
 			// tell a blank device from one that is momentarily unreadable
 			// (exit status 2 either way) — under a DRBD peer-teardown storm
-			// that combination reformatted healthy replicas (issue #444). A
+			// that combination reformatted healthy replicas. A
 			// device known to carry a filesystem is mounted without ever
 			// re-entering a path that can format.
 			//
@@ -293,7 +293,7 @@ const fsckErrorsUncorrected = 4
 
 // checkAndRepair is the pre-mount fsck FormatAndMount would have run on a
 // device that already carries a filesystem; it exists because the mount
-// branch above must bypass FormatAndMount (issue #444). Repairable issues
+// branch above must bypass FormatAndMount. Repairable issues
 // are fixed in place; only damage fsck reports as uncorrectable fails the
 // stage, and every other outcome (fsck missing, unsupported filesystem)
 // falls through to the mount, matching mount-utils' tolerances.
@@ -327,8 +327,8 @@ type resourceRestarter interface {
 
 // recoverFrozenBdev handles a mount refused because the device's freeze
 // count is pinned: a filesystem freeze leaked by a snapshot barrier round
-// whose thaw never ran — agent restart or unmount between freeze and thaw
-// (issue #311). The volume is otherwise wedged on this node forever, as
+// whose thaw never ran — agent restart or unmount between freeze and thaw.
+// The volume is otherwise wedged on this node forever, as
 // FITHAW needs a mountpoint and every new mount is refused; the kernel
 // prints exactly this text for the refusal (fs/super.c get_tree_bdev),
 // surfaced through mount(8)'s output inside the error. Dropping the

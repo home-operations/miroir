@@ -14,7 +14,7 @@ mise run test-integration  # envtest apiserver: CRD schema + CEL rules
 mise run test-sanity       # upstream csi-test sanity suite, in-process
 mise run lint          # golangci-lint
 mise run build         # bin/miroir
-mise run manifests     # CRD + RBAC generation
+mise run manifests     # CRD generation
 mise run helm-test     # helm-unittest against the chart
 mise run docs-serve    # this docs site, live-reloading
 ```

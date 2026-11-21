@@ -75,7 +75,7 @@ const suspendRetryBackoff = 30 * time.Second
 // tie-breaker whose own node stages the volume — coordinates leglessly:
 // it raises the barrier and the filesystem freeze (both live where the
 // writes and the mount are) but holds no leg to cut; the diskful
-// replicas cut behind its barrier (issue #409).
+// replicas cut behind its barrier.
 type SnapshotReconciler struct {
 	client.Client
 	NodeName string
@@ -92,7 +92,7 @@ type SnapshotReconciler struct {
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
 	// Freezer freezes the mounted filesystem before this node's barrier
-	// rises, making the cut filesystem-consistent (issue #291); optional
+	// rises, making the cut filesystem-consistent; optional
 	// (nil skips, crash-consistent as before).
 	Freezer *Freezer
 
@@ -123,26 +123,44 @@ const (
 // milliseconds on healthy hardware.
 const drbdBarrierTimeout = 30 * time.Second
 
-// barrierFailed classifies one barrier-path failure: fast backoff below
-// barrierFailLimit, then a Warning Event and the parked retry.
+// barrierFailed counts one barrier-path failure of this snapshot's round and
+// paces the retry (see barrierFailure).
 func (r *SnapshotReconciler) barrierFailed(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
-	r.barrierFailsMu.Lock()
-	if r.barrierFails == nil {
-		r.barrierFails = map[string]int{}
-	}
-	r.barrierFails[snap.Name]++
-	fails := r.barrierFails[snap.Name]
-	r.barrierFailsMu.Unlock()
+	fails := bumpFails(&r.barrierFailsMu, &r.barrierFails, snap.Name)
+	ctx = ctrl.LoggerInto(ctx, ctrl.LoggerFrom(ctx).WithValues("snapshot", snap.Name))
+	return barrierFailure(ctx, r.Recorder, snap, "snapshot", vol.Name, fails, cause)
+}
+
+// barrierFailure paces the fails-th consecutive barrier-path failure of one
+// round: the workqueue's fast backoff below barrierFailLimit, then a single
+// Warning Event and the parked retry.
+func barrierFailure(ctx context.Context, rec events.EventRecorder, round client.Object, noun, volume string, fails int, cause error) (ctrl.Result, error) {
 	if fails < barrierFailLimit {
 		return ctrl.Result{}, cause
 	}
-	ctrl.LoggerFrom(ctx).Error(cause, "cannot drive the snapshot barrier; parking the retry",
-		"snapshot", snap.Name, "volume", vol.Name, "attempts", fails)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(snap, nil, corev1.EventTypeWarning, "BarrierStuck", "Suspend",
-			"cannot drive the snapshot barrier on %s after %d attempts: %v", vol.Name, fails, cause)
+	if fails > barrierFailLimit {
+		// Escalated on the crossing cycle; the parked retry stays quiet.
+		return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
+	}
+	ctrl.LoggerFrom(ctx).Error(cause, "cannot drive the "+noun+" barrier; parking the retry",
+		"volume", volume, "attempts", fails)
+	if rec != nil {
+		rec.Eventf(round, nil, corev1.EventTypeWarning, "BarrierStuck", "Suspend",
+			"cannot drive the %s barrier on %s after %d attempts: %v", noun, volume, fails, cause)
 	}
 	return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
+}
+
+// bumpFails increments name's consecutive-failure count under mu and
+// returns it.
+func bumpFails(mu *sync.Mutex, fails *map[string]int, name string) int {
+	mu.Lock()
+	defer mu.Unlock()
+	if *fails == nil {
+		*fails = map[string]int{}
+	}
+	(*fails)[name]++
+	return (*fails)[name]
 }
 
 // clearBarrierFails resets the snapshot's consecutive-failure count.
@@ -302,7 +320,7 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if vol.Spec.DRBD == nil {
 		// The volume reconciler has not created the backing device yet —
 		// the two reconcilers race at startup, and Sync on the missing
-		// device would error-loop until it exists (issue #195). Mirrors
+		// device would error-loop until it exists. Mirrors
 		// the replicated path's DiskState gate above.
 		if !vol.Status.PerNode[r.NodeName].DeviceCreated {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -773,18 +791,37 @@ func (r *SnapshotReconciler) patchOwnState(ctx context.Context, snap *miroirv1al
 	if !snap.Status.IOSuspended || snap.Status.SuspendedAt == nil {
 		return errors.New("cannot patch snapshot node state without an active round")
 	}
-	// RFC 6901 escapes ~ before /; add replaces an existing object member
-	// while preserving all concurrent writes to other members.
-	node := strings.ReplaceAll(strings.ReplaceAll(r.NodeName, "~", "~0"), "/", "~1")
-	patch, err := json.Marshal([]map[string]any{
-		{"op": "test", "path": "/status/ioSuspended", "value": true}, //nolint:goconst // JSON Patch field keys
-		{"op": "test", "path": "/status/suspendedAt", "value": snap.Status.SuspendedAt},
-		{"op": "add", "path": "/status/perNode/" + node, "value": state},
-	})
+	patch, err := roundSlotPatch(snap.Status.SuspendedAt, state, "perNode/"+jsonPointerEscape(r.NodeName))
 	if err != nil {
 		return err
 	}
 	return r.Status().Patch(ctx, snap, client.RawPatch(types.JSONPatchType, patch))
+}
+
+// roundSlotPatch builds a JSON Patch that sets status slots to state only
+// while the round observed at suspendedAt is still the live one. Each slot
+// is a path under /status with its segments already escaped; add replaces
+// an existing object member and preserves concurrent writes to the others.
+func roundSlotPatch(suspendedAt *metav1.Time, state miroirv1alpha1.SnapshotNodeState, slots ...string) ([]byte, error) {
+	type op struct {
+		Op    string `json:"op"`
+		Path  string `json:"path"`
+		Value any    `json:"value"`
+	}
+	ops := make([]op, 0, 2+len(slots))
+	ops = append(ops,
+		op{Op: "test", Path: "/status/ioSuspended", Value: true},
+		op{Op: "test", Path: "/status/suspendedAt", Value: suspendedAt})
+	for _, slot := range slots {
+		ops = append(ops, op{Op: "add", Path: "/status/" + slot, Value: state})
+	}
+	return json.Marshal(ops)
+}
+
+// jsonPointerEscape escapes one JSON Pointer path segment (RFC 6901: ~
+// before /).
+func jsonPointerEscape(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "~", "~0"), "/", "~1")
 }
 
 func (r *SnapshotReconciler) patchSnap(ctx context.Context, snap *miroirv1alpha1.MiroirSnapshot, mutate func(*miroirv1alpha1.MiroirSnapshot)) error {

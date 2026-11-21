@@ -35,6 +35,15 @@ tests:
           path: spec.template.spec.containers[1].name
           value: node-driver-registrar
 
+  - it: holds the rollout per node for agent.minReadySeconds
+    set:
+      agent.minReadySeconds: 120
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: spec.minReadySeconds
+          value: 120
+
   - it: agent container runs with mode=agent and a privileged securityContext
     set:
     documentIndex: 0

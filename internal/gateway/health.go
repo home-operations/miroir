@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -90,7 +91,7 @@ func (h *health) serve(ctx context.Context, addr string, log logr.Logger) <-chan
 	}()
 	go func() {
 		log.Info("health endpoint serving", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- fmt.Errorf("health endpoint: %w", err)
 		}
 	}()
@@ -103,12 +104,15 @@ func (h *health) serve(ctx context.Context, addr string, log logr.Logger) <-chan
 // one: a wedged server still accepts TCP connections (so the readiness
 // TCPSocket probe stays green) but never answers RPC.
 func nfsNull(addr string, timeout time.Duration) error {
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	// One deadline for the dial and the exchange, so the probe stays inside
+	// the kubelet's own timeout.
+	deadline := time.Now().Add(timeout)
+	conn, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", addr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close() //nolint:errcheck // read-side probe; nothing to flush
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+	if err := conn.SetDeadline(deadline); err != nil {
 		return err
 	}
 

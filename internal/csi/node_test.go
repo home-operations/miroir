@@ -209,6 +209,12 @@ func TestNodeGetVolumeStatsMissingVolume(t *testing.T) {
 		&csi.NodeGetVolumeStatsRequest{VolumeId: volPvc1}); status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("a missing volume path must be InvalidArgument, got %v", err)
 	}
+	if _, err := n.NodeGetVolumeStats(t.Context(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId:   volPvc1,
+		VolumePath: filepath.Join(t.TempDir(), "gone"),
+	}); status.Code(err) != codes.NotFound {
+		t.Fatalf("a volume path that does not exist must be NotFound, got %v", err)
+	}
 }
 
 // A diskless tie-breaker node must never stage the volume: it holds no

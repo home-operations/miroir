@@ -49,7 +49,7 @@ const freezeTimeout = 30 * time.Second
 // filesystem-consistent: FIFREEZE writes back all dirty pages and
 // quiesces new writes above the block layer, so the data an
 // application wrote before the cut — synced or not — is on the device
-// when the barrier rises (issue #291).
+// when the barrier rises.
 //
 // The device is matched against live mounts by device number, so any
 // alias path (/dev/drbd1000, /dev/mapper/…, /dev/zvol/…) finds its
@@ -117,7 +117,7 @@ func (f *Freezer) Freeze(ctx context.Context, device string) (string, error) {
 // (EINVAL) are successes: thaw is called from every path that closes or
 // abandons a barrier round, most of which never froze anything. But ""
 // also means an actually-leaked freeze was NOT lifted — FITHAW needs a
-// mountpoint, and a frozen device refuses every new mount (issue #311) —
+// mountpoint, and a frozen device refuses every new mount —
 // so callers who suspect a leak must not read "" as thawed; the
 // stage-time recovery (stage.EnsureFilesystem) is what clears those.
 func (f *Freezer) Thaw(device string) (string, error) {

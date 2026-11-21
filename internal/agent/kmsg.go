@@ -42,7 +42,7 @@ const kmsgReadCap = 8192
 // parks on a drained ring until the kernel logs another record instead of
 // surfacing EAGAIN: O_NONBLOCK alone does not make the read return. A
 // read deadline turns that park into os.ErrDeadlineExceeded; on a quiet
-// node the next record can be hours away (issue #501).
+// node the next record can be hours away.
 const kmsgReadTimeout = 250 * time.Millisecond
 
 // captureKmsg returns the last limit kernel-log records mentioning

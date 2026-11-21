@@ -27,7 +27,7 @@ import (
 
 // lvmSectorSize is the granularity lvcreate/lvextend require byte sizes to
 // be multiples of. The controller aligns requests already; aligning here
-// too covers CR specs that predate it (#413), and rounding up keeps the
+// too covers CR specs that predate it, and rounding up keeps the
 // "realize at least the requested size" contract.
 const lvmSectorSize = 512
 
@@ -147,7 +147,7 @@ func (l *lvmThin) DevicePath(vol string) string {
 
 // ensureDevice returns vol's device path once its node is usable. With
 // udev disabled, lvm mknods /dev/<vg>/ entries itself at activation; a
-// node lost after that never reappears on its own (#281), so a failed
+// node lost after that never reappears on its own, so a failed
 // probe is repaired with vgmknodes rather than waited out. LINSTOR guards
 // the same edge (waitUntilDeviceCreated after every create) but can rely
 // on udev to deliver the node; this environment has no udev to wait for.
@@ -240,7 +240,7 @@ func (l *lvmThin) Sync(ctx context.Context, vol string) error {
 	_, err := l.exec(ctx, "blockdev", "--flushbufs", l.DevicePath(vol))
 	if err != nil && strings.Contains(err.Error(), "No such file or directory") {
 		// The LV may have been active long before the cut; a node missing
-		// since then (#281) would otherwise fail every retry.
+		// since then would otherwise fail every retry.
 		if _, herr := l.ensureDevice(ctx, vol); herr != nil {
 			return herr
 		}
@@ -260,7 +260,7 @@ func (l *lvmThin) Snapshot(ctx context.Context, vol, snap string) error {
 	}
 	// Created inactive: nothing ever opens a snapshot device node, and
 	// cloning dm-suspends an active origin, a suspend that can wedge
-	// in-kernel with the VG lock held (#276). LINSTOR keeps snapshots
+	// in-kernel with the VG lock held. LINSTOR keeps snapshots
 	// active only because its backup shipping reads them.
 	_, err = l.lvm(ctx, "lvcreate",
 		"--snapshot",

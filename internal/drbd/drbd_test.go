@@ -2517,3 +2517,41 @@ func TestVerify(t *testing.T) {
 	}
 	fe.calledWith(t, "drbdadm verify pvc-1")
 }
+
+// A down that cannot read the kernel's peer list must not run: skipping
+// the disconnects would meet a live connection. Only a resource the kernel
+// does not know is safe to down blind.
+func TestTeardownNeedsReadableStatus(t *testing.T) {
+	ops := map[string]func(*Driver) error{
+		"down":    func(d *Driver) error { return d.Down(t.Context(), volPvc1) },
+		"restart": func(d *Driver) error { return d.Restart(t.Context(), volPvc1) },
+	}
+	tests := []struct {
+		name      string
+		statusErr error
+		wantErr   bool
+	}{
+		{name: "status times out", statusErr: errors.New("signal: killed"), wantErr: true},
+		{name: "resource not in kernel", statusErr: errors.New("pvc-1: No such resource")},
+	}
+	for op, run := range ops {
+		for _, tt := range tests {
+			t.Run(op+"/"+tt.name, func(t *testing.T) {
+				fe := &fakeExec{errOn: map[string]error{cmdDrbdsetupStatus: tt.statusErr}}
+				d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+				if err := os.WriteFile(d.path(volPvc1+".res"), nil, 0o640); err != nil {
+					t.Fatal(err)
+				}
+				err := run(d)
+				if (err != nil) != tt.wantErr {
+					t.Fatalf("error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if tt.wantErr {
+					fe.notCalledWith(t, "drbdsetup down")
+				} else {
+					fe.calledWith(t, "drbdsetup down pvc-1")
+				}
+			})
+		}
+	}
+}

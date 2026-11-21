@@ -302,3 +302,15 @@ func TestLoopfileSetupPrunesStaleSymlinks(t *testing.T) {
 		t.Fatal("matching symlink must survive")
 	}
 }
+
+// Sync must fsync the backing file through the command runner, so a hung
+// filesystem is bounded like every other host command.
+func TestLoopfileSyncFsyncsBackingFile(t *testing.T) {
+	fe := &fakeExec{}
+	b := newLoopfile(lcfg, fe.run)
+
+	if err := b.Sync(t.Context(), "pvc-1"); err != nil {
+		t.Fatal(err)
+	}
+	fe.calledWith(t, "sync /var/lib/miroir/volumes/pvc-1.img")
+}

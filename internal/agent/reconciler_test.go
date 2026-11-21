@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -481,8 +482,14 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 		Build()
 	r := &VolumeReconciler{
 		Client: c, NodeName: nodeA, Pools: poolsOf(fb),
-		DRBD: &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+		DRBD:    &drbd.Driver{StateDir: stateDir, Exec: fe.run, Mknod: func(string, uint32, int) error { return nil }},
+		Startup: &StartupGate{Reader: c, NodeName: nodeA, Deadline: time.Now().Add(time.Hour)},
 	}
+	readyz := httptest.NewRequest("GET", "/readyz", nil)
+	if r.Startup.Check(readyz) == nil {
+		t.Fatal("agent must not report ready before its replicated leg was reconciled")
+	}
+	r.Startup.Baseline(volPvc1, true)
 
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
@@ -491,6 +498,9 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	}
 	if res.RequeueAfter == 0 {
 		t.Fatal("replicated volumes must requeue to refresh DRBD state")
+	}
+	if err := r.Startup.Check(readyz); err != nil {
+		t.Fatalf("a connected UpToDate leg must open the startup gate: %v", err)
 	}
 	if fb.created[volPvc1] != 1<<30 {
 		t.Fatal("backing device not created")
@@ -3927,6 +3937,27 @@ func TestReconcileStuckResyncFingerprintLifecycle(t *testing.T) {
 	}
 }
 
+// A leg wearing the stranded-bitmap signature reads connected and UpToDate,
+// but its recovery is still pending: the agent must not report ready on it,
+// neither while the confirmation clock runs nor on the pass that cycles the
+// connection.
+func TestReconcileStuckResyncHoldsStartupGate(t *testing.T) {
+	r, _ := stuckResyncSetup(t)
+	r.Startup = &StartupGate{Reader: r.Client, NodeName: nodeA, Deadline: time.Now().Add(time.Hour)}
+	r.Startup.Baseline(volPvc1, true)
+	readyz := httptest.NewRequest("GET", "/readyz", nil)
+
+	reconcile(t, r, volPvc1)
+	if r.Startup.Check(readyz) == nil {
+		t.Fatal("ready while the stuck-resync confirmation clock is running")
+	}
+	backdateStuck(t, r)
+	reconcile(t, r, volPvc1)
+	if r.Startup.Check(readyz) == nil {
+		t.Fatal("ready on the status read before the connection was cycled")
+	}
+}
+
 // staleBitmapStatusJSON is the stale one-sided-bitmap signature (issue
 // #389): out-of-sync bits toward a connected, UpToDate Primary peer with
 // replication Established and this leg Secondary — everything healthy but
@@ -3936,142 +3967,140 @@ const staleBitmapStatusJSON = `[{"name":"pvc-1","role":"Secondary",
 	"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Primary",
 		"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":5242880}]}]}]`
 
-// A stale one-sided bitmap toward a healthy Primary peer is cycled once the
-// signature outlives the confirmation window, exactly like a stranded
-// after-unstable bitmap.
+// A stale one-sided bitmap is cycled once its signature outlives the
+// confirmation window, exactly like a stranded after-unstable bitmap. The
+// re-handshake takes its direction from generation UUIDs, so any pair but
+// Primary/Primary qualifies as long as the volume has a Primary.
 func TestReconcileStaleBitmapCyclesAfterConfirmation(t *testing.T) {
-	r, fe := stuckResyncSetup(t)
-	fe.statusJSON = staleBitmapStatusJSON
-	reconcile(t, r, volPvc1)
-	fe.notCalledWith(t, "drbdsetup disconnect")
-	backdateStuck(t, r)
-	reconcile(t, r, volPvc1)
-	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
-	fe.calledWith(t, "drbdsetup connect pvc-1 1")
-}
-
-// The inverse shape (issue #469): after a failover the new Primary holds
-// a one-sided bitmap toward a healthy Secondary, which reads zero on the
-// same connection. The Primary is the only leg that can see it, and it
-// sources the re-handshake, so it cycles the peer after the confirmation
-// window just like the Secondary-side case.
-func TestReconcileStaleBitmapPrimaryLegCyclesAfterConfirmation(t *testing.T) {
-	r, fe := stuckResyncSetup(t)
-	fe.statusJSON = `[{"name":"pvc-1","role":"Primary",
-		"devices":[{"disk-state":"UpToDate","quorum":true}],
-		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
-			"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":392}]}]}]`
-	reconcile(t, r, volPvc1)
-	fe.notCalledWith(t, "drbdsetup disconnect")
-	backdateStuck(t, r)
-	reconcile(t, r, volPvc1)
-	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
-	fe.calledWith(t, "drbdsetup connect pvc-1 1")
-}
-
-// A Secondary holding bits toward another Secondary while the volume's
-// Primary is up and clean toward both (issue #497): the re-handshake
-// settles the direction from generation UUIDs, so the holder cycles that
-// one connection after the confirmation window, leaving the Primary's
-// connections untouched.
-func TestReconcileStaleBitmapSecondaryPairCyclesAfterConfirmation(t *testing.T) {
-	r, fe := stuckResyncSetup(t)
-	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
-		"devices":[{"disk-state":"UpToDate","quorum":true}],
-		"connections":[
-			{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
-				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":4}]},
-			{"peer-node-id":2,"connection-state":"Connected","peer-role":"Primary",
-				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]}]}]`
-	reconcile(t, r, volPvc1)
-	fe.notCalledWith(t, "drbdsetup disconnect")
-	backdateStuck(t, r)
-	reconcile(t, r, volPvc1)
-	fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
-	fe.calledWith(t, "drbdsetup connect pvc-1 1")
-	fe.notCalledWith(t, "drbdsetup disconnect pvc-1 2")
-}
-
-// The same Secondary/Secondary bits with no Primary anywhere are not this
-// recovery's case: the kernel reconciles survivors of a lost Primary with
-// its own resync on reconnect. Nothing arms and nothing is cycled.
-func TestReconcileStaleBitmapSecondaryPairWithoutPrimaryStaysManual(t *testing.T) {
-	r, fe := stuckResyncSetup(t)
-	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
-		"devices":[{"disk-state":"UpToDate","quorum":true}],
-		"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
-			"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":392}]}]}]`
-	reconcile(t, r, volPvc1)
-	reconcile(t, r, volPvc1)
-	fe.notCalledWith(t, "drbdsetup disconnect")
-	r.recoveryMu.Lock()
-	_, armed := r.stuckSince[volPvc1]
-	r.recoveryMu.Unlock()
-	if armed {
-		t.Fatal("a Secondary/Secondary pair with no Primary must keep the confirmation clock unarmed")
+	tests := []struct {
+		name   string
+		status string
+		// cycled is the peer node id whose connection is cycled; untouched
+		// (0 for none) is one that must be left alone.
+		cycled, untouched int
+	}{
+		{
+			name:   "Secondary holding bits toward the Primary",
+			status: staleBitmapStatusJSON,
+			cycled: 1,
+		},
+		{
+			// After a failover the new Primary holds the bitmap toward a
+			// healthy Secondary; only the Primary can see it.
+			name: "Primary holding bits toward a Secondary",
+			status: `[{"name":"pvc-1","role":"Primary",
+				"devices":[{"disk-state":"UpToDate","quorum":true}],
+				"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":392}]}]}]`,
+			cycled: 1,
+		},
+		{
+			// The Primary is up and clean toward both: only the stale
+			// Secondary/Secondary connection is cycled.
+			name: "Secondary holding bits toward another Secondary",
+			status: `[{"name":"pvc-1","role":"Secondary",
+				"devices":[{"disk-state":"UpToDate","quorum":true}],
+				"connections":[
+					{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+						"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":4}]},
+					{"peer-node-id":2,"connection-state":"Connected","peer-role":"Primary",
+						"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]}]}]`,
+			cycled:    1,
+			untouched: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, fe := stuckResyncSetup(t)
+			fe.statusJSON = tt.status
+			reconcile(t, r, volPvc1)
+			fe.notCalledWith(t, "drbdsetup disconnect")
+			backdateStuck(t, r)
+			reconcile(t, r, volPvc1)
+			fe.calledWith(t, fmt.Sprintf("drbdsetup disconnect pvc-1 %d", tt.cycled))
+			fe.calledWith(t, fmt.Sprintf("drbdsetup connect pvc-1 %d", tt.cycled))
+			if tt.untouched != 0 {
+				fe.notCalledWith(t, fmt.Sprintf("drbdsetup disconnect pvc-1 %d", tt.untouched))
+			}
+		})
 	}
 }
 
-// The same kernel shape with a verify finding on record is a genuine
-// data-difference report, not a stale bitmap: auto-resyncing it would
-// destroy the evidence of which leg was wrong, so it stays manual — the
-// confirmation clock never even arms.
-func TestReconcileStaleBitmapVerifyFindingStaysManual(t *testing.T) {
-	r, fe := stuckResyncSetup(t)
-	fe.statusJSON = staleBitmapStatusJSON
-	var v miroirv1alpha1.MiroirVolume
-	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
-		t.Fatal(err)
+// Shapes that wear the stale-bitmap signature but are not this recovery's
+// to fix: nothing is cycled and the confirmation clock never arms.
+func TestReconcileStaleBitmapStaysManual(t *testing.T) {
+	tests := []struct {
+		name   string
+		status string
+		// slot edits node-a's status slot before the passes: node-a is the
+		// first diskful replica, the verify coordinator.
+		slot func(*miroirv1alpha1.ReplicaStatus)
+	}{
+		{
+			// The kernel reconciles survivors of a lost Primary with its own
+			// resync on reconnect.
+			name: "Secondary pair with no Primary anywhere",
+			status: `[{"name":"pvc-1","role":"Secondary",
+				"devices":[{"disk-state":"UpToDate","quorum":true}],
+				"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":392}]}]}]`,
+		},
+		{
+			// A genuine data-difference report: auto-resyncing it would
+			// destroy the evidence of which leg was wrong.
+			name:   "verify finding on record",
+			status: staleBitmapStatusJSON,
+			slot: func(s *miroirv1alpha1.ReplicaStatus) {
+				s.LastVerifyOutOfSyncBytes = new(int64(4096))
+			},
+		},
+		{
+			// A verify started but not recorded yet may have left findings
+			// in the kernel that no status field accounts for.
+			name:   "verify started but not recorded",
+			status: staleBitmapStatusJSON,
+			slot: func(s *miroirv1alpha1.ReplicaStatus) {
+				s.VerifyStartedAt = new(metav1.Now())
+			},
+		},
+		{
+			// The state is not steady while any resync runs.
+			name: "resync in flight elsewhere on the volume",
+			status: `[{"name":"pvc-1","role":"Secondary",
+				"devices":[{"disk-state":"UpToDate","quorum":true}],
+				"connections":[
+					{"peer-node-id":1,"connection-state":"Connected","peer-role":"Primary",
+						"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":5242880}]},
+					{"peer-node-id":2,"connection-state":"Connected",
+						"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Inconsistent","percent-in-sync":50,"out-of-sync":1024}]}]}]`,
+		},
 	}
-	// node-a is the first diskful replica — the verify coordinator whose
-	// slot records findings.
-	finding := int64(4096)
-	slot := v.Status.PerNode[nodeA]
-	slot.LastVerifyOutOfSyncBytes = &finding
-	v.Status.PerNode[nodeA] = slot
-	if err := r.Status().Update(t.Context(), &v); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(t, r, volPvc1)
-	reconcile(t, r, volPvc1)
-	fe.notCalledWith(t, "drbdsetup disconnect")
-	r.recoveryMu.Lock()
-	_, armed := r.stuckSince[volPvc1]
-	r.recoveryMu.Unlock()
-	if armed {
-		t.Fatal("a verify finding must keep the confirmation clock unarmed")
-	}
-}
-
-// A verify the coordinator started but has not recorded yet may have
-// left findings in the kernel that no status field accounts for — an
-// agent restart or a failed status write between the verify finishing
-// and its record landing. The started marker keeps the case manual: the
-// confirmation clock never arms.
-func TestReconcileStaleBitmapVerifyInFlightStaysManual(t *testing.T) {
-	r, fe := stuckResyncSetup(t)
-	fe.statusJSON = staleBitmapStatusJSON
-	var v miroirv1alpha1.MiroirVolume
-	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
-		t.Fatal(err)
-	}
-	// node-a is the first diskful replica — the verify coordinator whose
-	// slot records findings.
-	started := metav1.Now()
-	slot := v.Status.PerNode[nodeA]
-	slot.VerifyStartedAt = &started
-	v.Status.PerNode[nodeA] = slot
-	if err := r.Status().Update(t.Context(), &v); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(t, r, volPvc1)
-	reconcile(t, r, volPvc1)
-	fe.notCalledWith(t, "drbdsetup disconnect")
-	r.recoveryMu.Lock()
-	_, armed := r.stuckSince[volPvc1]
-	r.recoveryMu.Unlock()
-	if armed {
-		t.Fatal("a verify finding must keep the confirmation clock unarmed")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, fe := stuckResyncSetup(t)
+			fe.statusJSON = tt.status
+			if tt.slot != nil {
+				var v miroirv1alpha1.MiroirVolume
+				if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, &v); err != nil {
+					t.Fatal(err)
+				}
+				slot := v.Status.PerNode[nodeA]
+				tt.slot(&slot)
+				v.Status.PerNode[nodeA] = slot
+				if err := r.Status().Update(t.Context(), &v); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reconcile(t, r, volPvc1)
+			reconcile(t, r, volPvc1)
+			fe.notCalledWith(t, "drbdsetup disconnect")
+			r.recoveryMu.Lock()
+			_, armed := r.stuckSince[volPvc1]
+			r.recoveryMu.Unlock()
+			if armed {
+				t.Fatal("the confirmation clock must stay unarmed")
+			}
+		})
 	}
 }
 
@@ -4106,28 +4135,6 @@ func TestReconcileStaleBitmapCandidateChangeRearms(t *testing.T) {
 	reconcile(t, r, volPvc1)
 	fe.calledWith(t, "drbdsetup disconnect pvc-1 2")
 	fe.notCalledWith(t, "drbdsetup disconnect pvc-1 1")
-}
-
-// A resync already in flight anywhere on the volume defers the stale-bitmap
-// verdict — the state is not steady, so the clock never arms and nothing is
-// cycled, even though the stale signature itself is present toward peer 1.
-func TestReconcileStaleBitmapResyncInFlightStaysManual(t *testing.T) {
-	r, fe := stuckResyncSetup(t)
-	fe.statusJSON = `[{"name":"pvc-1","role":"Secondary",
-		"devices":[{"disk-state":"UpToDate","quorum":true}],
-		"connections":[
-			{"peer-node-id":1,"connection-state":"Connected","peer-role":"Primary",
-				"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":5242880}]},
-			{"peer-node-id":2,"connection-state":"Connected",
-				"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Inconsistent","percent-in-sync":50,"out-of-sync":1024}]}]}]`
-	reconcile(t, r, volPvc1)
-	fe.notCalledWith(t, "drbdsetup disconnect")
-	r.recoveryMu.Lock()
-	_, armed := r.stuckSince[volPvc1]
-	r.recoveryMu.Unlock()
-	if armed {
-		t.Fatal("an in-flight resync must keep the confirmation clock unarmed")
-	}
 }
 
 // --- birth generation ---------------------------------------------------

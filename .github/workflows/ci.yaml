@@ -469,6 +469,11 @@ jobs:
       - name: Running Unit Tests
         run: mise run test
 
+      - name: Check generated files are current
+        run: |
+          mise run helm-crds
+          git diff --exit-code api config/crd charts/miroir/crds
+
       # envtest apiserver: the only place CRD structural schemas and CEL
       # validation rules are actually enforced.
       - name: Running Integration Tests

@@ -18,13 +18,12 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -94,7 +93,7 @@ type GroupSnapshotReconciler struct {
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
 	// Freezer freezes each locally mounted member filesystem before this
-	// node's barrier on it rises (issue #291); optional (nil skips,
+	// node's barrier on it rises; optional (nil skips,
 	// crash-consistent as before).
 	Freezer *Freezer
 
@@ -752,27 +751,12 @@ func (r *GroupSnapshotReconciler) resumeIO(ctx context.Context, name string) err
 	return r.DRBD.ResumeIO(ctx, name)
 }
 
-// barrierFailed mirrors SnapshotReconciler.barrierFailed for the group
-// round: fast backoff below barrierFailLimit, then a Warning Event and
-// the parked retry.
+// barrierFailed counts one barrier-path failure of this group's round and
+// paces the retry (see barrierFailure).
 func (r *GroupSnapshotReconciler) barrierFailed(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
-	r.barrierFailsMu.Lock()
-	if r.barrierFails == nil {
-		r.barrierFails = map[string]int{}
-	}
-	r.barrierFails[grp.Name]++
-	fails := r.barrierFails[grp.Name]
-	r.barrierFailsMu.Unlock()
-	if fails < barrierFailLimit {
-		return ctrl.Result{}, cause
-	}
-	ctrl.LoggerFrom(ctx).Error(cause, "cannot drive the group snapshot barrier; parking the retry",
-		"group", grp.Name, "volume", vol.Name, "attempts", fails)
-	if r.Recorder != nil {
-		r.Recorder.Eventf(grp, nil, corev1.EventTypeWarning, "BarrierStuck", "Suspend",
-			"cannot drive the group snapshot barrier on %s after %d attempts: %v", vol.Name, fails, cause)
-	}
-	return ctrl.Result{RequeueAfter: barrierRetryAfter}, nil
+	fails := bumpFails(&r.barrierFailsMu, &r.barrierFails, grp.Name)
+	ctx = ctrl.LoggerInto(ctx, ctrl.LoggerFrom(ctx).WithValues("group", grp.Name))
+	return barrierFailure(ctx, r.Recorder, grp, "group snapshot", vol.Name, fails, cause)
 }
 
 func (r *GroupSnapshotReconciler) clearBarrierFails(name string) {
@@ -781,15 +765,23 @@ func (r *GroupSnapshotReconciler) clearBarrierFails(name string) {
 	r.barrierFailsMu.Unlock()
 }
 
-// patchMySlots records only this node's slots via a merge patch; a peer
-// must not apply the whole status (see patchOwnState's twin).
+// patchMySlots records only this node's slots; a peer must not apply the
+// whole status, which would force-own the driver's round fields. The JSON
+// Patch fences the write to the round this view observed, so a delayed
+// Done cannot land in a reopened round.
 func (r *GroupSnapshotReconciler) patchMySlots(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mine []groupMember, state miroirv1alpha1.SnapshotNodeState) error {
+	if !grp.Status.IOSuspended || grp.Status.SuspendedAt == nil {
+		return errors.New("cannot patch group slots without an active round")
+	}
 	slots := make([]string, 0, len(mine))
 	for _, m := range mine {
-		slots = append(slots, fmt.Sprintf("%q:%q", slotKey(m.vol.Name, r.NodeName), state))
+		slots = append(slots, "perLeg/"+jsonPointerEscape(slotKey(m.vol.Name, r.NodeName)))
 	}
-	patch := fmt.Appendf(nil, `{"status":{"perLeg":{%s}}}`, strings.Join(slots, ","))
-	return r.Status().Patch(ctx, grp, client.RawPatch(types.MergePatchType, patch))
+	patch, err := roundSlotPatch(grp.Status.SuspendedAt, state, slots...)
+	if err != nil {
+		return err
+	}
+	return r.Status().Patch(ctx, grp, client.RawPatch(types.JSONPatchType, patch))
 }
 
 func (r *GroupSnapshotReconciler) patchGroup(ctx context.Context, grp *miroirv1alpha1.MiroirSnapshotGroup, mutate func(*miroirv1alpha1.MiroirSnapshotGroup)) error {
