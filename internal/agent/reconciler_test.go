@@ -3463,6 +3463,43 @@ func TestReconcileLeavesPhaseToController(t *testing.T) {
 	}
 }
 
+// A leg leaving service withdraws the published phase in the same apply
+// that reports it: with the controller down nothing else would, and a
+// drain gated on Ready would pass on the stale value. This pins what the
+// agent sends; test/integration covers what an apiserver makes of it.
+func TestReconcileWithdrawsPhaseWhenLegLeavesService(t *testing.T) {
+	_, fe, r := steadyVolume(t)
+	var last *acv1alpha1.MiroirVolumeStatusApplyConfiguration
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+		SubResourceApply: func(ctx context.Context, cl client.Client, sub string,
+			obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+			if ac, ok := obj.(*acv1alpha1.MiroirVolumeApplyConfiguration); ok && ac.Status != nil {
+				last = ac.Status
+			}
+			return cl.SubResource(sub).Apply(ctx, obj, opts...)
+		},
+	})
+
+	reconcile(t, r, volPvc1) // the seeded slot is unconnected: the leg enters service
+	if last == nil || last.Phase != nil || last.ReadyReplicas != nil {
+		t.Fatalf("a leg entering service must apply its slot alone, got %+v", last)
+	}
+
+	fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
+		"devices":[{"disk-state":"` + diskStateUpToDate + `","quorum":true}],
+		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`
+	reconcile(t, r, volPvc1)
+	if last.Phase == nil || *last.Phase != "" || last.ReadyReplicas == nil || *last.ReadyReplicas != "" {
+		t.Fatalf("a leg leaving service must blank phase and readyReplicas, got %+v", last)
+	}
+
+	r.dropRealized(volPvc1)
+	reconcile(t, r, volPvc1) // still out of service: nothing left to withdraw
+	if last.Phase != nil || last.ReadyReplicas != nil {
+		t.Fatalf("a leg that stays out of service must apply its slot alone, got %+v", last)
+	}
+}
+
 // A spec change (generation bump) breaks the fingerprint.
 func TestReconcileFastPathInvalidatedByGeneration(t *testing.T) {
 	v, fe, r := steadyVolume(t)

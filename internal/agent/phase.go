@@ -30,12 +30,14 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
-// PhaseReconciler is the only writer of a volume's Phase and ReadyReplicas,
-// deriving both from the agents' PerNode slots: an agent aggregating them
-// itself would publish a verdict on its peers from its own informer cache,
-// and the last of several near-simultaneous writes need not be the freshest.
-// It runs in the central controller, so probe timestamps age the phase even
-// when every agent responsible for a volume is down.
+// PhaseReconciler is the only component that gives a volume's Phase and
+// ReadyReplicas a value, deriving both from the agents' PerNode slots: an
+// agent aggregating them itself would publish a verdict on its peers from
+// its own informer cache, and the last of several near-simultaneous writes
+// need not be the freshest. An agent can only withdraw them (see
+// VolumeReconciler.patchStatus). It runs in the central controller, so probe
+// timestamps age the phase even when every agent responsible for a volume
+// is down.
 type PhaseReconciler struct {
 	client.Client
 }
@@ -118,6 +120,21 @@ func (r *PhaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// legRealized reports whether a diskful leg's slot shows a backing device at
+// the spec size holding current data. An absent slot is the zero value and
+// reads unrealized.
+func legRealized(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStatus) bool {
+	return st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
+		(vol.Spec.DRBD == nil || st.DiskState == drbd.DiskUpToDate)
+}
+
+// legServing reports whether a realized leg is also operational: connected
+// to its diskful peers when replicated. Probe age is left out; only the
+// controller's clock judges it.
+func legServing(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStatus) bool {
+	return legRealized(vol, st) && (vol.Spec.DRBD == nil || st.Connected)
+}
+
 // computePhase aggregates per-node states into the volume phase the CSI
 // controller waits on, plus the "ready/total" diskful summary backing the
 // Replicas printcolumn.
@@ -129,18 +146,15 @@ func computePhase(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alph
 	upToDate := false
 	for _, rep := range diskfulReplicas {
 		st, ok := vol.Status.PerNode[rep.Node]
-		replicated := vol.Spec.DRBD != nil
 		// Tracked apart from realized: a leg awaiting an online grow is
 		// below spec size yet still holds current data.
 		upToDate = upToDate || (ok && st.DiskState == drbd.DiskUpToDate)
-		realizedReplica := ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
-			(!replicated || st.DiskState == drbd.DiskUpToDate)
 		switch {
-		case realizedReplica:
+		case legRealized(vol, st):
 			// Keep current data separate from operational readiness so an
 			// established but disconnected volume is Degraded, not Creating.
 			realized++
-			if !replicated || st.Connected {
+			if legServing(vol, st) {
 				// Staleness gate: a replica whose LastProbedAt is set and
 				// exceeds StaleProbeThreshold means the agent can no longer
 				// reach the node-local resources. Treat it as realized but

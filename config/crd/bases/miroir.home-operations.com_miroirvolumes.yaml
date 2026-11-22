@@ -587,13 +587,15 @@ spec:
               phase:
                 description: |-
                   Phase summarizes the volume state for the controller and humans.
-                  The controller derives it from PerNode and is its only writer.
+                  The controller derives it from PerNode and is the only component that
+                  sets a value; an agent whose leg leaves service blanks it, so empty
+                  means "not derived yet".
                 type: string
               readyReplicas:
                 description: |-
                   ReadyReplicas summarizes diskful replica readiness as "ready/total"
                   (diskless tie-breakers and client legs excluded, like Phase), and
-                  has the same single writer. A preformatted string because CRD
+                  is written and blanked with it. A preformatted string because CRD
                   printcolumns cannot combine two integer fields into one cell.
                 type: string
             type: object

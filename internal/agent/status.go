@@ -184,20 +184,30 @@ func (r *VolumeReconciler) latchActivated(ctx context.Context, vol *miroirv1alph
 }
 
 // patchStatus applies only this node's slot. A full-status apply would
-// force-own peers' slots, Formatted (a CSI field), and Phase and
-// ReadyReplicas (derived by the controller's PhaseReconciler, their only
-// writer) and revert them to this agent's stale read.
+// force-own peers' slots, Formatted (a CSI field), and the Phase and
+// ReadyReplicas the controller's PhaseReconciler derives, and revert them to
+// this agent's stale read.
+//
+// Phase and ReadyReplicas it can only withdraw: when this leg leaves service
+// a published Ready is untrue, so the same apply blanks both. A volume whose
+// controller is down then reads as underived, never as a stale Ready that an
+// operator's drain gate would pass. The controller takes the fields back
+// with the phase it derives.
 func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, mine miroirv1alpha1.ReplicaStatus) error {
+	leftService := legServing(vol, vol.Status.PerNode[r.NodeName]) && !legServing(vol, mine)
 	if vol.Status.PerNode == nil {
 		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
 	}
 	vol.Status.PerNode[r.NodeName] = mine
 
-	ac := acv1alpha1.MiroirVolume(vol.Name).
-		WithStatus(acv1alpha1.MiroirVolumeStatus().
-			WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
-				r.NodeName: *replicaStatusAC(mine),
-			}))
+	status := acv1alpha1.MiroirVolumeStatus().
+		WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
+			r.NodeName: *replicaStatusAC(mine),
+		})
+	if leftService {
+		status = status.WithPhase("").WithReadyReplicas("")
+	}
+	ac := acv1alpha1.MiroirVolume(vol.Name).WithStatus(status)
 	return r.SubResource("status").Apply(ctx, ac,
 		client.FieldOwner("agent-volume-"+r.NodeName),
 		client.ForceOwnership)

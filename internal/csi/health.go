@@ -139,7 +139,8 @@ func phaseHealth(vol *miroirv1alpha1.MiroirVolume, carried bool) *csi.VolumeHeal
 		}
 	default:
 		// Ready, or the empty phase of a volume the controller has not
-		// derived one for, which is no verdict on a volume of any age.
+		// derived one for (new, or withdrawn by an agent whose leg left
+		// service), which is no verdict on a volume of any age.
 		return nil
 	}
 	if vol.Status.Activated && vol.Spec.DRBD != nil && !anyUpToDateReplica(vol) {
