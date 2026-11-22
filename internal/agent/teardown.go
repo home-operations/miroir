@@ -49,12 +49,9 @@ func (r *VolumeReconciler) reconcileDeletion(ctx context.Context, vol *miroirv1a
 	if err := r.teardown(ctx, vol); err != nil {
 		return r.handleTeardownError(ctx, vol, err)
 	}
-	// Drop metrics only once the device is gone: a retrying teardown
-	// must not blank a volume that still exists.
-	dropVolumeMetrics(vol.Name)
-	r.dropRealized(vol.Name)
-	r.dropRecovery(vol.Name)
-	r.clearBusyFails(vol.Name)
+	// Only once the device is gone: a retrying teardown must not blank the
+	// metrics of a volume that still exists.
+	r.forget(vol.Name)
 	return ctrl.Result{}, r.removeFinalizer(ctx, vol)
 }
 
@@ -86,10 +83,7 @@ func (r *VolumeReconciler) reconcileRemoval(ctx context.Context, vol *miroirv1al
 	if err := r.teardown(ctx, vol); err != nil {
 		return r.handleTeardownError(ctx, vol, err)
 	}
-	dropVolumeMetrics(vol.Name)
-	r.dropRealized(vol.Name)
-	r.dropRecovery(vol.Name)
-	r.clearBusyFails(vol.Name)
+	r.forget(vol.Name)
 	// Drop this node's status slot — merge-patch null deletes the key.
 	// Best-effort ordering: a crash here leaves a stale slot, which
 	// nothing reads (phase and growth iterate spec.replicas only).
@@ -316,8 +310,8 @@ func planTeardownError(err error, slotMessage string, busyFails int) teardownPla
 // teardown: the busy streak, the wedged gauge, the logs and Warning Events of
 // an escalation, the status Message, and the retry cadence.
 func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, err error) (ctrl.Result, error) {
-	plan := planTeardownError(err, vol.Status.PerNode[r.NodeName].Message, r.busyFailCount(vol.Name))
-	r.setBusyFails(vol.Name, plan.busyFails)
+	plan := planTeardownError(err, vol.Status.PerNode[r.NodeName].Message, r.recall(vol.Name).busyFails)
+	r.remember(vol.Name, func(m *volumeMemory) { m.busyFails = plan.busyFails })
 	log := ctrl.LoggerFrom(ctx)
 	if plan.step != teardownParkWedged {
 		// Any non-wedged outcome means a previously reported wedge is gone
@@ -391,33 +385,9 @@ func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv
 	return r.parkWithMessage(ctx, vol, err, plan.requeue)
 }
 
-// setBusyFails stores the volume's consecutive busy-teardown count; zero
-// clears it.
-func (r *VolumeReconciler) setBusyFails(name string, fails int) {
-	r.busyMu.Lock()
-	defer r.busyMu.Unlock()
-	if fails == 0 {
-		delete(r.busyFails, name)
-		return
-	}
-	if r.busyFails == nil {
-		r.busyFails = map[string]int{}
-	}
-	r.busyFails[name] = fails
-}
-
 // clearBusyFails resets the volume's consecutive busy-teardown count.
 func (r *VolumeReconciler) clearBusyFails(name string) {
-	r.busyMu.Lock()
-	delete(r.busyFails, name)
-	r.busyMu.Unlock()
-}
-
-// busyFailCount reads the volume's consecutive busy-teardown count.
-func (r *VolumeReconciler) busyFailCount(name string) int {
-	r.busyMu.Lock()
-	defer r.busyMu.Unlock()
-	return r.busyFails[name]
+	r.remember(name, func(m *volumeMemory) { m.busyFails = 0 })
 }
 
 // procDir resolves the /proc override for the orphaned-hold checks.
@@ -444,7 +414,7 @@ func (r *VolumeReconciler) orphanHold(ctx context.Context, vol *miroirv1alpha1.M
 	if vol.DeletionTimestamp.IsZero() || slot.DRBDMinor <= 0 {
 		return false
 	}
-	if r.busyFailCount(vol.Name) < busyFailLimit {
+	if r.recall(vol.Name).busyFails < busyFailLimit {
 		return false
 	}
 	if !strings.Contains(cause.Error(), "held open") {

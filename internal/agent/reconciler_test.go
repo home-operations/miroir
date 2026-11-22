@@ -1508,11 +1508,11 @@ func TestReconcileTeardownBusyEscalates(t *testing.T) {
 	if slices.Contains(got.Finalizers, constants.FinalizerPrefix+nodeA) {
 		t.Fatalf("this node's finalizer must release once teardown succeeds: %v", got.Finalizers)
 	}
-	r.busyMu.Lock()
-	streak := len(r.busyFails)
-	r.busyMu.Unlock()
-	if streak != 0 {
-		t.Fatalf("busy streak must clear on success, still %d entries", streak)
+	r.memMu.Lock()
+	kept, ok := r.mem[volPvc1]
+	r.memMu.Unlock()
+	if ok {
+		t.Fatalf("a successful teardown must forget the volume, busy streak included; kept %+v", kept)
 	}
 }
 
@@ -1529,9 +1529,9 @@ func TestReconcileBusyStreakResetsOutsideTeardown(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	r := &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
-		busyFails: map[string]int{volPvc1: busyFailLimit - 1}}
+		mem: map[string]volumeMemory{volPvc1: {busyFails: busyFailLimit - 1}}}
 	reconcile(t, r, volPvc1)
-	if n := r.busyFails[volPvc1]; n != 0 {
+	if n := r.recall(volPvc1).busyFails; n != 0 {
 		t.Fatalf("normal reconcile must reset the busy streak, still %d", n)
 	}
 
@@ -1542,13 +1542,13 @@ func TestReconcileBusyStreakResetsOutsideTeardown(t *testing.T) {
 	c = fake.NewClientBuilder().WithScheme(s).WithObjects(v).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).Build()
 	r = &VolumeReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb),
-		busyFails: map[string]int{volPvc1: busyFailLimit - 1}}
+		mem: map[string]volumeMemory{volPvc1: {busyFails: busyFailLimit - 1}}}
 	res, err := r.Reconcile(t.Context(),
 		ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}})
 	if err != nil || res.RequeueAfter != 30*time.Second {
 		t.Fatalf("want the 30s removal-blocked requeue, got %v / %v", res.RequeueAfter, err)
 	}
-	if n := r.busyFails[volPvc1]; n != 0 {
+	if n := r.recall(volPvc1).busyFails; n != 0 {
 		t.Fatalf("a blocked removal must reset the busy streak, still %d", n)
 	}
 }
@@ -3674,11 +3674,11 @@ func TestReconcileFastPathDeepCheckExpiry(t *testing.T) {
 	reconcile(t, r, volPvc1)
 	adjusts := countCalls(fe, "adjust")
 
-	r.realizedMu.Lock()
-	e := r.realized[volPvc1]
-	e.fullPassAt = time.Now().Add(-deepCheckInterval - time.Minute)
-	r.realized[volPvc1] = e
-	r.realizedMu.Unlock()
+	r.remember(volPvc1, func(m *volumeMemory) {
+		e := *m.realized
+		e.fullPassAt = time.Now().Add(-deepCheckInterval - time.Minute)
+		m.realized = &e
+	})
 
 	reconcile(t, r, volPvc1)
 	if n := countCalls(fe, "adjust"); n <= adjusts {
@@ -3920,14 +3920,14 @@ func stuckResyncSetup(t *testing.T) (*VolumeReconciler, *fakeDRBDExec) {
 // signature as having persisted through a full poll interval.
 func backdateStuck(t *testing.T, r *VolumeReconciler) {
 	t.Helper()
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-	if _, ok := r.stuckSince[volPvc1]; !ok {
-		t.Fatal("confirmation clock not armed")
-	}
-	mark := r.stuckSince[volPvc1]
-	mark.since = time.Now().Add(-drbdPollInterval - time.Second)
-	r.stuckSince[volPvc1] = mark
+	r.remember(volPvc1, func(m *volumeMemory) {
+		if m.stuck == nil {
+			t.Fatal("confirmation clock not armed")
+		}
+		mark := *m.stuck
+		mark.since = time.Now().Add(-drbdPollInterval - time.Second)
+		m.stuck = &mark
+	})
 }
 
 // The first sighting only arms the confirmation clock — a status snapshot
@@ -4053,15 +4053,11 @@ func TestReconcileStalledTargetStabilityGate(t *testing.T) {
 			fe.notCalledWith(t, "drbdsetup disconnect")
 			// Gated, not merely inside the window: the confirmation clock
 			// never arms, so no later pass can cycle either.
-			r.recoveryMu.Lock()
-			_, armed := r.stuckSince[volPvc1]
-			r.recoveryMu.Unlock()
+			armed := r.recall(volPvc1).stuck != nil
 			if armed {
 				t.Fatal("a gated stalled target must not arm the confirmation clock")
 			}
-			r.realizedMu.Lock()
-			_, parked := r.realized[volPvc1]
-			r.realizedMu.Unlock()
+			parked := r.recall(volPvc1).realized != nil
 			if parked {
 				t.Fatal("a gated stalled target must not park in the fast path")
 			}
@@ -4085,24 +4081,18 @@ func TestReconcileStuckResyncDebounced(t *testing.T) {
 func TestReconcileStuckResyncFingerprintLifecycle(t *testing.T) {
 	r, fe := stuckResyncSetup(t)
 	reconcile(t, r, volPvc1)
-	r.realizedMu.Lock()
-	_, parked := r.realized[volPvc1]
-	r.realizedMu.Unlock()
+	parked := r.recall(volPvc1).realized != nil
 	if parked {
 		t.Fatal("stuck volume must not park in the fast path")
 	}
 
 	fe.statusJSON = healthyStatusJSON
 	reconcile(t, r, volPvc1)
-	r.realizedMu.Lock()
-	_, parked = r.realized[volPvc1]
-	r.realizedMu.Unlock()
+	parked = r.recall(volPvc1).realized != nil
 	if !parked {
 		t.Fatal("healthy volume must park in the fast path")
 	}
-	r.recoveryMu.Lock()
-	_, armed := r.stuckSince[volPvc1]
-	r.recoveryMu.Unlock()
+	armed := r.recall(volPvc1).stuck != nil
 	if armed {
 		t.Fatal("healthy pass must reset the confirmation clock")
 	}
@@ -4265,9 +4255,7 @@ func TestReconcileStaleBitmapStaysManual(t *testing.T) {
 			reconcile(t, r, volPvc1)
 			reconcile(t, r, volPvc1)
 			fe.notCalledWith(t, "drbdsetup disconnect")
-			r.recoveryMu.Lock()
-			_, armed := r.stuckSince[volPvc1]
-			r.recoveryMu.Unlock()
+			armed := r.recall(volPvc1).stuck != nil
 			if armed {
 				t.Fatal("the confirmation clock must stay unarmed")
 			}
