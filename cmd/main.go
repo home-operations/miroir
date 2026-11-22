@@ -752,6 +752,7 @@ func setupAgent(mgr ctrl.Manager, o options, identity *csi.Identity, stop contex
 	}
 	node := csi.NewNode(mgr.GetClient(), mgr.GetAPIReader(), o.nodeName, drbdDriver)
 	node.Wedge = storageWedge
+	node.Freezer = freezer
 	return hooks, serveCSI(mgr, o.csiSocket, identity, nil, node)
 }
 

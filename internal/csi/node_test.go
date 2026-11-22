@@ -626,10 +626,25 @@ func TestNodeUnstageForcesWhenVolumeGone(t *testing.T) {
 type fakeThawer struct {
 	targets []string
 	err     error
+	// held tracks HoldFreezes; heldAtThaw records it at the last thaw.
+	held, heldAtThaw bool
+	// onRelease runs when the hold is released.
+	onRelease func()
+}
+
+func (f *fakeThawer) HoldFreezes(context.Context, string) (func(), error) {
+	f.held = true
+	return func() {
+		f.held = false
+		if f.onRelease != nil {
+			f.onRelease()
+		}
+	}, nil
 }
 
 func (f *fakeThawer) ThawMountpoint(target string) error {
 	f.targets = append(f.targets, target)
+	f.heldAtThaw = f.held
 	return f.err
 }
 
@@ -640,9 +655,14 @@ func (f *fakeThawer) ThawMountpoint(target string) error {
 func TestNodeUnstageThawsBeforeUnmount(t *testing.T) {
 	target := t.TempDir()
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
-	n.Mounter = mount.NewSafeFormatAndMount(
-		mount.NewFakeMounter([]mount.MountPoint{{Path: target}}), utilexec.New())
-	thawer := &fakeThawer{}
+	fm := mount.NewFakeMounter([]mount.MountPoint{{Path: target}})
+	n.Mounter = mount.NewSafeFormatAndMount(fm, utilexec.New())
+	stillMountedAtRelease := true
+	thawer := &fakeThawer{onRelease: func() {
+		stillMountedAtRelease = slices.ContainsFunc(fm.MountPoints, func(mp mount.MountPoint) bool {
+			return mp.Path == target
+		})
+	}}
 	n.Freezer = thawer
 
 	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
@@ -653,6 +673,11 @@ func TestNodeUnstageThawsBeforeUnmount(t *testing.T) {
 	}
 	if len(thawer.targets) != 1 || thawer.targets[0] != target {
 		t.Fatalf("the staging mount must be thawed before the unmount: %v", thawer.targets)
+	}
+	if !thawer.heldAtThaw || thawer.held || stillMountedAtRelease {
+		t.Fatalf("freezes must be held off from the thaw through the unmount, then released "+
+			"(held at thaw %v, still held %v, mounted at release %v)",
+			thawer.heldAtThaw, thawer.held, stillMountedAtRelease)
 	}
 }
 

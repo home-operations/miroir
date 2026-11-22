@@ -21,7 +21,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -63,6 +65,45 @@ type Freezer struct {
 	mountinfo func() ([]byte, error)
 	devNumber func(path string) (uint64, bool, error)
 	ioctl     func(mountpoint string, req uint) error
+
+	// devLocks orders a freeze against a staging unmount of the same
+	// device (see HoldFreezes), one slot per device number. FIFREEZE first
+	// writes back every dirty page, which can take seconds after a consumer
+	// that just exited; an unstage whose own thaw ran inside that window
+	// found nothing frozen, and its unmount then tore down a filesystem the
+	// freeze froze a moment later — the leak of issue #311, permanent on an
+	// unreplicated volume. Each slot is a one-element channel so a waiter
+	// can give up with its context. Entries are never dropped: one per
+	// device number the node has seen is negligible.
+	devMu    sync.Mutex
+	devLocks map[uint64]chan struct{}
+}
+
+// lockDev takes rdev's slot, or returns the context's error if that
+// expires first.
+func (f *Freezer) lockDev(ctx context.Context, rdev uint64) (unlock func(), err error) {
+	f.devMu.Lock()
+	if f.devLocks == nil {
+		f.devLocks = map[uint64]chan struct{}{}
+	}
+	slot, ok := f.devLocks[rdev]
+	if !ok {
+		slot = make(chan struct{}, 1)
+		f.devLocks[rdev] = slot
+	}
+	f.devMu.Unlock()
+	select {
+	case slot <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	// A free slot and an expired context are both ready; select picks
+	// either, so the cancellation is re-checked after acquisition.
+	if err := ctx.Err(); err != nil {
+		<-slot
+		return nil, err
+	}
+	return func() { <-slot }, nil
 }
 
 // NewFreezer returns a Freezer backed by /proc/self/mountinfo and real
@@ -83,14 +124,31 @@ func NewFreezer() *Freezer {
 // shared state exactly like the kernel's suspend-io flag, and the
 // paired Thaw tolerates the mirror case. On timeout the ioctl cannot
 // be interrupted, so a watcher thaws the late freeze the moment it
-// lands: a failed Freeze never leaves the filesystem frozen.
+// lands: a failed Freeze never leaves the filesystem frozen. The device's
+// slot is held until the freeze is either answered or thawed by that
+// watcher, so a staging unmount can never run between a late freeze and
+// its thaw.
 func (f *Freezer) Freeze(ctx context.Context, device string) (string, error) {
+	rdev, isDev, err := f.devNumber(device)
+	if err != nil || !isDev {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, freezeTimeout)
+	defer cancel()
+	unlock, err := f.lockDev(ctx, rdev)
+	if err != nil {
+		return "", fmt.Errorf("freeze %s: %w", device, err)
+	}
+	watcherOwnsLock := false
+	defer func() {
+		if !watcherOwnsLock {
+			unlock()
+		}
+	}()
 	mp, err := f.mountpointOf(device)
 	if err != nil || mp == "" {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, freezeTimeout)
-	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- f.ioctl(mp, fiFreeze) }()
 	select {
@@ -103,7 +161,9 @@ func (f *Freezer) Freeze(ctx context.Context, device string) (string, error) {
 		}
 		return mp, nil
 	case <-ctx.Done():
+		watcherOwnsLock = true
 		go func() {
+			defer unlock()
 			if err := <-done; err == nil {
 				_ = f.ioctl(mp, fiThaw)
 			}
@@ -131,6 +191,50 @@ func (f *Freezer) Thaw(device string) (string, error) {
 	return mp, nil
 }
 
+// HoldFreezes blocks freezes of the filesystem mounted at target until the
+// returned release is called, or returns the context's error if a freeze in
+// progress outlasts it. A staging unmount holds it across its
+// ThawMountpoint and the unmount, so a snapshot round's freeze either lands
+// before the thaw (which lifts it) or runs after the unmount (and finds
+// nothing mounted to freeze). A target that is not a block-device mount
+// (not mounted, or NFS) needs no ordering and gets a no-op release.
+func (f *Freezer) HoldFreezes(ctx context.Context, target string) (release func(), err error) {
+	rdev, ok, err := f.mountDev(target)
+	if err != nil || !ok {
+		return func() {}, err
+	}
+	return f.lockDev(ctx, rdev)
+}
+
+// mountDev returns the device number backing the filesystem mounted at
+// target, as Freeze keys it: mountinfo's major:minor, or for btrfs (whose
+// st_dev is anonymous) its mount source's number. ok is false when target
+// is not a block-device mount.
+func (f *Freezer) mountDev(target string) (rdev uint64, ok bool, err error) {
+	data, err := f.mountinfo()
+	if err != nil {
+		return 0, false, err
+	}
+	for line := range strings.Lines(string(data)) {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[4] != target {
+			continue
+		}
+		majs, mins, found := strings.Cut(fields[2], ":")
+		maj, majErr := strconv.ParseUint(majs, 10, 32)
+		minor, minErr := strconv.ParseUint(mins, 10, 32)
+		if found && majErr == nil && minErr == nil && maj != 0 {
+			return unix.Mkdev(uint32(maj), uint32(minor)), true, nil
+		}
+		if fstype, _ := mountFS(fields); fstype == "btrfs" {
+			src, isDev := f.sourceDev(fields)
+			return src, isDev, nil
+		}
+		return 0, false, nil
+	}
+	return 0, false, nil
+}
+
 // ThawMountpoint lifts a freeze on the block-device-backed filesystem
 // mounted at target; not a mountpoint and not frozen (EINVAL) are
 // successes, as it guards every staging unmount and those almost never
@@ -140,7 +244,8 @@ func (f *Freezer) Thaw(device string) (string, error) {
 // Only block-device mounts (mountinfo major != 0, or btrfs, whose st_dev
 // is anonymous) are touched: opening a dead hard-NFS mountpoint for the
 // ioctl would hang exactly where the unstage path's forced unmount
-// cannot.
+// cannot. It does not take the device's slot: callers hold HoldFreezes
+// across it and the unmount.
 func (f *Freezer) ThawMountpoint(target string) error {
 	data, err := f.mountinfo()
 	if err != nil {
