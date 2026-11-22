@@ -317,3 +317,502 @@ func TestPhaseReconcilerKeepsNodeUnreachableWhileProbesStale(t *testing.T) {
 		t.Fatalf("NodeUnreachable must stay True while a replica's probe is stale, got %+v", cond)
 	}
 }
+
+// computePhase is the function the controller's waitReady depends on;
+// covering its mixed-state logic here means a regression breaks the
+// test that mirrors the live behaviour, not a synthetic helper.
+func TestComputePhaseMixing(t *testing.T) {
+	const (
+		noneOfTwo = "0/2"
+		oneOfTwo  = "1/2"
+		twoOfTwo  = "2/2"
+		zeroOfOne = "0/1"
+	)
+	cases := []struct {
+		name      string
+		vol       *miroirv1alpha1.MiroirVolume
+		want      miroirv1alpha1.VolumePhase
+		wantReady string
+	}{
+		{
+			name: "all replicas ready (unreplicated)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: oneOfOne,
+		},
+		{
+			name: "one ready, one not (replicated, degraded)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
+		},
+		{
+			name: "activated volume with every diskful replica Outdated (failed)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					Activated: true,
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateOutdated, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateOutdated, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeFailed,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "activated volume mid-expansion keeps its UpToDate replicas (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 2 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					Activated: true,
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "never-activated volume with no UpToDate replica (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					Formatted: true,
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "both diskful replicas disconnected (degraded)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "one diskful replica disconnected (degraded)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
+		},
+		{
+			name: "all diskful replicas reconnected (ready)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "no realized replicas (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "all replicas Inconsistent (creating)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateInconsistent},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "hard failure (no device, message set)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: false, Message: "pool exploded"},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeFailed,
+			wantReady: oneOfTwo,
+		},
+		{
+			name: "transient error after device exists (stays Degraded, not Failed)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: "Outdated", Message: "peer not yet up"},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
+		},
+		{
+			name: "diskless tie-breaker ignored (ready on diskful legs alone)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas: []miroirv1alpha1.Replica{
+						{Node: "a"}, {Node: "b"}, {Node: "tb", Diskless: true},
+					},
+					DRBD: &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true},
+						// The tie-breaker's slot must count toward
+						// neither ready nor failed.
+						"tb": {DiskState: diskStateDiskless, Message: "whatever"},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		// --- Staleness detection (LastProbedAt) ---
+		{
+			name: "fresh probe + healthy replicated → Ready",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": freshProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "stale probe + healthy persisted → Degraded",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": staleProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": staleProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: noneOfTwo,
+		},
+		{
+			name: "nil LastProbedAt (legacy) + healthy → Ready (backward compatible)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true, LastProbedAt: nil},
+						"b": {DeviceCreated: true, SizeBytes: 1 << 30, DiskState: diskStateUpToDate, Connected: true, LastProbedAt: nil},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "probe aged under deepCheckInterval (4 min) + healthy → Ready (steady-state false-positive guard)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": nearProbe(4*time.Minute, deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": nearProbe(4*time.Minute, deviceCreated, upToDate, connected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: twoOfTwo,
+		},
+		{
+			name: "fresh probe + disconnected → Degraded (preserves existing behavior)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}, {Node: "b"}},
+					DRBD:      &miroirv1alpha1.DRBDSpec{Port: 7000},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceCreated, upToDate, connected, sized(1<<30)),
+						"b": freshProbe(deviceCreated, upToDate, disconnected, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: oneOfTwo,
+		},
+		{
+			name: "fresh probe + DeviceCreated=false → not realized",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceNotCreated, "", false, 0),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeCreating,
+			wantReady: zeroOfOne,
+		},
+		{
+			name: "DeviceCreated cleared after missing probe + message → Failed (hard provisioning failure)",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": {DeviceCreated: false, SizeBytes: 1 << 30, LastProbedAt: probeNow(), Message: "backing device missing"},
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeFailed,
+			wantReady: zeroOfOne,
+		},
+		{
+			name: "stale probe + unreplicated volume → Degraded",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": staleProbe(deviceCreated, "", true, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeDegraded,
+			wantReady: zeroOfOne,
+		},
+		{
+			name: "fresh probe + unreplicated volume → Ready",
+			vol: &miroirv1alpha1.MiroirVolume{
+				Spec: miroirv1alpha1.MiroirVolumeSpec{
+					SizeBytes: 1 << 30,
+					Replicas:  []miroirv1alpha1.Replica{{Node: "a"}},
+				},
+				Status: miroirv1alpha1.MiroirVolumeStatus{
+					PerNode: map[string]miroirv1alpha1.ReplicaStatus{
+						"a": freshProbe(deviceCreated, "", true, sized(1<<30)),
+					},
+				},
+			},
+			want:      miroirv1alpha1.VolumeReady,
+			wantReady: oneOfOne,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, gotReady := computePhase(tc.vol, time.Now())
+			if got != tc.want {
+				t.Fatalf("phase = %s, want %s", got, tc.want)
+			}
+			if gotReady != tc.wantReady {
+				t.Fatalf("readyReplicas = %q, want %q", gotReady, tc.wantReady)
+			}
+		})
+	}
+}
+
+// --- computePhase staleness helpers ------------------------------------------
+
+const (
+	deviceCreated    = true
+	deviceNotCreated = false
+	upToDate         = diskStateUpToDate
+	connected        = true
+	disconnected     = false
+)
+
+func sized(s int64) int64 { return s }
+
+func probeTime(d time.Duration) *metav1.Time {
+	t := metav1.NewTime(time.Now().Add(d))
+	return &t
+}
+
+func freshProbe(dev bool, disk string, conn bool, size int64) miroirv1alpha1.ReplicaStatus {
+	return miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: dev,
+		DiskState:     disk,
+		Connected:     conn,
+		SizeBytes:     size,
+		LastProbedAt:  probeNow(),
+	}
+}
+
+func staleProbe(dev bool, disk string, conn bool, size int64) miroirv1alpha1.ReplicaStatus {
+	return miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: dev,
+		DiskState:     disk,
+		Connected:     conn,
+		SizeBytes:     size,
+		LastProbedAt:  probeTime(-11 * time.Minute),
+	}
+}
+
+// nearProbe is a probe aged by the given (negative) duration — used to test
+// probes that are stale-ish but still within the StaleProbeThreshold.
+func nearProbe(age time.Duration, dev bool, disk string, conn bool, size int64) miroirv1alpha1.ReplicaStatus {
+	return miroirv1alpha1.ReplicaStatus{
+		DeviceCreated: dev,
+		DiskState:     disk,
+		Connected:     conn,
+		SizeBytes:     size,
+		LastProbedAt:  probeTime(-age),
+	}
+}
+
+// legBlocksReady applies the controller's own test of a ready leg to this
+// node's slot, and only where the node holds a diskful replica: a diskless
+// leg's slot never reads as realized, and that must not withdraw a Ready.
+func TestLegBlocksReady(t *testing.T) {
+	now := time.Now()
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.Replicas[1].Diskless = true
+	serving := miroirv1alpha1.ReplicaStatus{DeviceCreated: true, SizeBytes: 1 << 30}
+	stale := serving
+	stale.LastProbedAt = ptrTime(now.Add(-StaleProbeThreshold - time.Minute))
+	cases := []struct {
+		name string
+		node string
+		st   miroirv1alpha1.ReplicaStatus
+		want bool
+	}{
+		{"diskful leg in service", nodeA, serving, false},
+		{"diskful leg without a device", nodeA, miroirv1alpha1.ReplicaStatus{}, true},
+		{"diskful leg below the spec size", nodeA, miroirv1alpha1.ReplicaStatus{DeviceCreated: true, SizeBytes: 1 << 20}, true},
+		{"diskful leg whose healthy slot went unprobed", nodeA, stale, true},
+		{"diskless leg", nodeB, miroirv1alpha1.ReplicaStatus{Diskless: true}, false},
+		{"node without a replica", "node-x", miroirv1alpha1.ReplicaStatus{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := legBlocksReady(v, tc.node, tc.st, now); got != tc.want {
+				t.Fatalf("legBlocksReady = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
