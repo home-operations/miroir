@@ -19,8 +19,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,8 +32,14 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
-// PhaseReconciler runs in the central controller so probe timestamps can age
-// the aggregate phase even when every agent responsible for a volume is down.
+// PhaseReconciler is the only component that gives a volume's Phase and
+// ReadyReplicas a value, deriving both from the agents' PerNode slots: an
+// agent aggregating them itself would publish a verdict on its peers from
+// its own informer cache, and the last of several near-simultaneous writes
+// need not be the freshest. An agent can only withdraw a Ready its own leg
+// contradicts (see VolumeReconciler.patchStatus). It runs in the central
+// controller, so probe timestamps age the phase even when every agent
+// responsible for a volume is down.
 type PhaseReconciler struct {
 	client.Client
 }
@@ -46,7 +54,7 @@ func (r *PhaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	now := time.Now()
-	phase, readyReplicas := computePhaseAt(vol, now)
+	phase, readyReplicas := computePhase(vol, now)
 	// Every diskful replica reporting a fresh probe contradicts a lingering
 	// NodeUnreachable condition. waitReady's success-path clear is one-shot —
 	// provisioning succeeded, so no further CreateVolume will retry a failed
@@ -66,7 +74,15 @@ func (r *PhaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				Reason: "NodeReachable",
 			})
 		}
-		if err := r.Status().Patch(ctx, vol, client.MergeFrom(base)); err != nil {
+		// Under an optimistic lock: a phase derived from slots that have
+		// since changed must not land over them, least of all a Ready over
+		// a leg that just left service. The event carrying the newer slots
+		// re-runs this reconcile.
+		err := r.Status().Patch(ctx, vol, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{}, nil
+		}
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -114,14 +130,40 @@ func (r *PhaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// legRealized reports whether a diskful leg's slot shows a backing device at
+// the spec size holding current data. An absent slot is the zero value and
+// reads unrealized.
+func legRealized(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStatus) bool {
+	return st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
+		(vol.Spec.DRBD == nil || st.DiskState == drbd.DiskUpToDate)
+}
+
+// legReady reports whether a diskful leg's slot counts toward Ready: realized,
+// connected to its diskful peers when replicated, and probed recently. A
+// LastProbedAt older than StaleProbeThreshold means the agent can no longer
+// reach the node-local resources, so the leg is not ready even where its
+// persisted fields still read healthy. A nil LastProbedAt (a volume from
+// before the field existed) trusts the persisted fields.
+func legReady(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStatus, now time.Time) bool {
+	if !legRealized(vol, st) || (vol.Spec.DRBD != nil && !st.Connected) {
+		return false
+	}
+	return st.LastProbedAt == nil || now.Sub(st.LastProbedAt.Time) <= StaleProbeThreshold
+}
+
+// legBlocksReady reports whether st, node's slot, rules out a Ready phase:
+// node holds a diskful replica that is not ready.
+func legBlocksReady(vol *miroirv1alpha1.MiroirVolume, node string, st miroirv1alpha1.ReplicaStatus, now time.Time) bool {
+	diskful := slices.ContainsFunc(vol.Spec.DiskfulReplicas(), func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == node
+	})
+	return diskful && !legReady(vol, st, now)
+}
+
 // computePhase aggregates per-node states into the volume phase the CSI
 // controller waits on, plus the "ready/total" diskful summary backing the
 // Replicas printcolumn.
-func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase, string) {
-	return computePhaseAt(vol, time.Now())
-}
-
-func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alpha1.VolumePhase, string) {
+func computePhase(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alpha1.VolumePhase, string) {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
 	realized := 0
@@ -129,27 +171,16 @@ func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1al
 	upToDate := false
 	for _, rep := range diskfulReplicas {
 		st, ok := vol.Status.PerNode[rep.Node]
-		replicated := vol.Spec.DRBD != nil
 		// Tracked apart from realized: a leg awaiting an online grow is
 		// below spec size yet still holds current data.
 		upToDate = upToDate || (ok && st.DiskState == drbd.DiskUpToDate)
-		realizedReplica := ok && st.DeviceCreated && st.SizeBytes >= vol.Spec.SizeBytes &&
-			(!replicated || st.DiskState == drbd.DiskUpToDate)
 		switch {
-		case realizedReplica:
+		case legRealized(vol, st):
 			// Keep current data separate from operational readiness so an
 			// established but disconnected volume is Degraded, not Creating.
 			realized++
-			if !replicated || st.Connected {
-				// Staleness gate: a replica whose LastProbedAt is set and
-				// exceeds StaleProbeThreshold means the agent can no longer
-				// reach the node-local resources. Treat it as realized but
-				// NOT ready — even if Connected=true — so the phase is
-				// Degraded, not Ready. Nil LastProbedAt (legacy volume) uses
-				// backward-compatible behavior: trust the persisted fields.
-				if st.LastProbedAt == nil || now.Sub(st.LastProbedAt.Time) <= StaleProbeThreshold {
-					ready++
-				}
+			if legReady(vol, st, now) {
+				ready++
 			}
 		case ok && st.Message != "" && !st.DeviceCreated:
 			// Hard failure: the backing device never materialised.

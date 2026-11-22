@@ -24,6 +24,12 @@ kubectl wait miroirvolumes --all \
   --for=jsonpath='{.status.phase}'=Ready --timeout=1h
 ```
 
+The controller computes `status.phase` from what each agent reports,
+and an agent whose leg stops serving blanks the field. While the
+controller is down the wait therefore blocks instead of passing on an
+old `Ready`: if it never completes and the phase column is empty, check
+the controller pod.
+
 `miroir_volume_resync_ratio` shows progress, and the
 [starter alerts](/monitoring/) flag sustained degradation.
 

@@ -42,8 +42,8 @@ const (
 	reasonNoQuorum             = "NoQuorum"
 )
 
-// volumeHealth maps a volume's aggregated CRD status (the same signals the
-// agent folds into Phase and the miroir_volume_* gauges) to a CSI
+// volumeHealth maps a volume's aggregated CRD status (the same signals that
+// feed Phase and the miroir_volume_* gauges) to a CSI
 // VolumeHealth, so operators see split-brain/degraded without scraping
 // Prometheus. This is the cluster-wide view, every condition on every node,
 // which is what ControllerGetVolumeHealth and ControllerListVolumeHealth are
@@ -130,15 +130,17 @@ func phaseHealth(vol *miroirv1alpha1.MiroirVolume, carried bool) *csi.VolumeHeal
 			"degraded: a replica is missing current data (resyncing or its peer is unreachable)")
 	case miroirv1alpha1.VolumeFailed:
 		// Always adverse; which condition it is falls out below.
-	case miroirv1alpha1.VolumeCreating, "":
-		// The expected state while a fresh volume provisions, and the empty
-		// phase of one no agent has reconciled yet. Adverse only once the
-		// volume has carried data, where it means a leg lost the device it
-		// already had.
+	case miroirv1alpha1.VolumeCreating:
+		// The expected state while a fresh volume provisions. Adverse only
+		// once the volume has carried data, where it means a leg lost the
+		// device it already had.
 		if !carried {
 			return nil
 		}
 	default:
+		// Ready, or the empty phase of a volume the controller has not
+		// derived one for (new, or withdrawn by an agent whose leg left
+		// service), which is no verdict on a volume of any age.
 		return nil
 	}
 	if vol.Status.Activated && vol.Spec.DRBD != nil && !anyUpToDateReplica(vol) {

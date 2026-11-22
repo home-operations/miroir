@@ -17,6 +17,7 @@ limitations under the License.
 package agent
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -24,7 +25,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
 	"github.com/home-operations/miroir/internal/drbd"
@@ -85,6 +88,82 @@ func TestPhaseReconcilerDegradesVolumeWhenAllAgentsAreStale(t *testing.T) {
 	}
 	if got.Status.ReadyReplicas != "0/1" {
 		t.Fatalf("readyReplicas = %q, want %q", got.Status.ReadyReplicas, "0/1")
+	}
+}
+
+// An agent publishes only its own slot; the phase reaches the CR through
+// this reconciler's pass over the same object.
+func TestPhaseReconcilerDerivesPhaseFromAgentSlot(t *testing.T) {
+	cl := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(vol(volPvc1, nodeA)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	reconcile(t, &VolumeReconciler{Client: cl, NodeName: nodeA, Pools: poolsOf(newFakeBackend())}, volPvc1)
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != "" || got.Status.ReadyReplicas != "" {
+		t.Fatalf("agent wrote phase %q, readyReplicas %q; both are the controller's",
+			got.Status.Phase, got.Status.ReadyReplicas)
+	}
+
+	r := &PhaseReconciler{Client: cl}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %q, want %q", got.Status.Phase, miroirv1alpha1.VolumeReady)
+	}
+	if got.Status.ReadyReplicas != oneOfOne {
+		t.Fatalf("readyReplicas = %q, want %q", got.Status.ReadyReplicas, oneOfOne)
+	}
+}
+
+// A phase derived from slots that changed before the write must not land
+// over them: an agent may have withdrawn a Ready in between, and writing
+// it back would restore the stale value.
+func TestPhaseReconcilerSkipsWriteOverChangedSlots(t *testing.T) {
+	vol := phaseVolume(time.Now())
+	vol.Status.Phase, vol.Status.ReadyReplicas = miroirv1alpha1.VolumeDegraded, "0/1"
+	key := types.NamespacedName{Name: vol.Name}
+	cl := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(vol).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(ctx context.Context, cl client.Client, sub string,
+				obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+				// The leg leaves service between the reconciler's read
+				// and its write.
+				cur := &miroirv1alpha1.MiroirVolume{}
+				if err := cl.Get(ctx, key, cur); err != nil {
+					return err
+				}
+				cur.Status.PerNode[nodeA] = miroirv1alpha1.ReplicaStatus{}
+				if err := cl.Status().Update(ctx, cur); err != nil {
+					return err
+				}
+				return cl.SubResource(sub).Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+	r := &PhaseReconciler{Client: cl}
+
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("a conflict is settled by the next event, not an error: %v", err)
+	}
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), key, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeDegraded {
+		t.Fatalf("phase = %q: the Ready derived from the older slots must not land", got.Status.Phase)
 	}
 }
 
