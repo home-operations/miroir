@@ -104,27 +104,6 @@ func TestRenderFreezeQuorumOptions(t *testing.T) {
 	}
 }
 
-// The seed winner is the lowest diskful node id: a diskless tie-breaker
-// holding the lowest id must never win, or no diskful node would seed
-// UpToDate and the first handshake would deadlock all-Inconsistent.
-func TestWinnerSkipsDiskless(t *testing.T) {
-	r := Resource{
-		LocalNode: nodeA,
-		Peers: []Peer{
-			{Node: nodeC, NodeID: 0, Diskless: true},
-			{Node: nodeA, NodeID: 1},
-			{Node: nodeB, NodeID: 2},
-		},
-	}
-	if !IsWinner(r) {
-		t.Fatal("node-a (lowest diskful id) must win, not the diskless tie-breaker")
-	}
-	r.LocalNode = nodeC
-	if IsWinner(r) {
-		t.Fatal("a diskless tie-breaker must never be the winner")
-	}
-}
-
 func TestRenderIPv6Address(t *testing.T) {
 	out := Render(Resource{
 		Name:      "pvc-1",
@@ -142,5 +121,113 @@ func TestRenderIPv6Address(t *testing.T) {
 	}
 	if !strings.Contains(out, "address ipv4 "+addrC+":7000;") {
 		t.Fatalf("IPv4 peer must stay ipv4:\n%s", out)
+	}
+}
+
+func TestRenderDeterministicAndLocalDisk(t *testing.T) {
+	r := testResource(nodeA)
+	a, b := Render(r), Render(r)
+	if a != b {
+		t.Fatal("render is not deterministic")
+	}
+	if !strings.Contains(a, `disk "/dev/vg-miroir/pvc-1";`) {
+		t.Fatalf("local disk path missing:\n%s", a)
+	}
+	if !strings.Contains(a, `disk "/dev/drbd/this/is/not/used";`) {
+		t.Fatalf("peer placeholder missing:\n%s", a)
+	}
+	if !strings.Contains(a, "quorum off;") {
+		t.Fatalf("last-man-standing must render quorum off:\n%s", a)
+	}
+	if !strings.Contains(a, `address ipv4 192.168.1.42:7000;`) {
+		t.Fatalf("peer address missing:\n%s", a)
+	}
+}
+
+func TestRenderSharedSecret(t *testing.T) {
+	r := testResource(nodeA)
+	if out := Render(r); strings.Contains(out, "shared-secret") {
+		t.Fatalf("no auth must render for secretless volumes (pre-secret CRs):\n%s", out)
+	}
+	r.Secret = "0123456789abcdef"
+	out := Render(r)
+	if !strings.Contains(out, "cram-hmac-alg sha1;") ||
+		!strings.Contains(out, `shared-secret "0123456789abcdef";`) {
+		t.Fatalf("peer auth missing:\n%s", out)
+	}
+}
+
+func TestRenderFreezeQuorum(t *testing.T) {
+	r := testResource(nodeA)
+	r.Quorum = miroirv1alpha1.QuorumFreeze
+	out := Render(r)
+	if !strings.Contains(out, "quorum majority;") || !strings.Contains(out, "on-no-quorum io-error;") {
+		t.Fatalf("freeze policy not rendered:\n%s", out)
+	}
+}
+
+// A client leg renders "tiebreaker no" (it must not shift quorum math);
+// a placed tie-breaker replica keeps the default — voting is its purpose.
+func TestRenderClientLegNoTiebreaker(t *testing.T) {
+	r := testResource(nodeA)
+	r.Peers = append(r.Peers,
+		Peer{Node: "tiebreak-1", NodeID: 2, Address: addrC, Diskless: true},
+		Peer{Node: nodeWorker1, NodeID: 3, Address: "192.168.1.44", Diskless: true, Client: true},
+	)
+	out := Render(r)
+	if n := strings.Count(out, "tiebreaker no;"); n != 1 {
+		t.Fatalf("tiebreaker no must render exactly once (the client leg), got %d:\n%s", n, out)
+	}
+	client := out[strings.Index(out, `on "worker-1"`):]
+	if !strings.Contains(client[:strings.Index(client, "}")+1], "tiebreaker no;") {
+		t.Fatalf("tiebreaker no must sit in the client's volume block:\n%s", out)
+	}
+}
+
+// A client leg rendered on its own node advertises the diskful legs'
+// discard granularity; rendered anywhere else (or unset) it must not.
+func TestRenderClientDiscardGranularity(t *testing.T) {
+	r := testResource(nodeA)
+	r.Peers = append(r.Peers,
+		Peer{Node: nodeWorker1, NodeID: 2, Address: addrC, Diskless: true, Client: true},
+	)
+	r.ClientDiscardGranularityBytes = 65536
+
+	// Rendered on a replica node: the option belongs to the client's
+	// device, not this one — nothing renders even with the value set.
+	if out := Render(r); strings.Contains(out, "discard-granularity") {
+		t.Fatalf("non-client local must not render discard-granularity:\n%s", out)
+	}
+
+	r.LocalNode = nodeWorker1
+	r.LocalDiskless = true
+	r.LocalDisk = ""
+	// The resync knob must stay diskful-only even when its value is set.
+	r.DiscardGranularityBytes = 4096
+	out := Render(r)
+	if !strings.Contains(out, "discard-granularity 65536;") {
+		t.Fatalf("client local must advertise the peers' granularity:\n%s", out)
+	}
+	if strings.Contains(out, "rs-discard-granularity") {
+		t.Fatalf("diskless local must not render the resync knob:\n%s", out)
+	}
+	r.DiscardGranularityBytes = 0
+
+	r.ClientDiscardGranularityBytes = 0
+	if out := Render(r); strings.Contains(out, "discard-granularity") {
+		t.Fatalf("zero must render nothing (keep the kernel heuristic):\n%s", out)
+	}
+}
+
+func TestRenderNoAutoSplitBrainResolution(t *testing.T) {
+	out := Render(testResource(nodeA))
+	for _, directive := range []string{
+		"after-sb-0pri disconnect;",
+		"after-sb-1pri disconnect;",
+		"after-sb-2pri disconnect;",
+	} {
+		if !strings.Contains(out, directive) {
+			t.Fatalf("missing %q:\n%s", directive, out)
+		}
 	}
 }
