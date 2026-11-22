@@ -97,7 +97,7 @@ type VolumeReconciler struct {
 	// busyFails counts consecutive ErrBusy teardown outcomes per volume.
 	// Past busyFailLimit the loop escalates — Warning Event, status
 	// Message, parked cadence — instead of silently retrying every 10s
-	// forever with the cause swallowed. See reportBusy.
+	// forever with the cause swallowed. See planTeardownError.
 	busyMu    sync.Mutex
 	busyFails map[string]int
 }

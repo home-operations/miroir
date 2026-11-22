@@ -160,7 +160,7 @@ func (r *VolumeReconciler) teardown(ctx context.Context, vol *miroirv1alpha1.Mir
 			if r.orphanHold(ctx, vol, slot, busy) {
 				return r.reclaimOrphanHold(ctx, vol, slot, busy)
 			}
-			// Anything else parks through reportBusy with no force-detach:
+			// Anything else parks as a busy outcome with no force-detach:
 			// destroying a backing under a live consumer loses its data.
 			return busy
 		}
@@ -217,43 +217,9 @@ func removeNodeFinalizer(ctx context.Context, c client.Client, obj client.Object
 // needs to notice that the reboot happened.
 const wedgedRequeue = 5 * time.Minute
 
-// reportWedged surfaces a teardown the kernel can no longer finish
-// (drbd.ErrWedged, or backend.ErrNodeWedged when the node-scoped breaker
-// refused the command) — Warning Event, status message, and the wedged gauge
-// the shipped alerts page on — then parks the retry at wedgedRequeue.
-// The escalation latches on the transition cycle: the park can outlive
-// the wedge only through a reboot, and re-emitting an identical Event,
-// Error log, and no-op status write every cycle is pure churn (issue
-// #319: a wedged volume streamed 123 of them). The gauge is re-raised
-// every cycle regardless — it is process state and must survive an agent
-// restart into an already-stamped Message. It clears on any non-wedged
-// teardown outcome, on teardown success (dropVolumeMetrics), and when
-// the CR vanishes (volumeGone).
-func (r *VolumeReconciler) reportWedged(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
-	recordWedged(vol)
-	if vol.Status.PerNode[r.NodeName].Message == cause.Error() {
-		ctrl.LoggerFrom(ctx).V(1).Info("teardown still wedged in kernel; retry stays parked", "volume", vol.Name)
-		return ctrl.Result{RequeueAfter: wedgedRequeue}, nil
-	}
-	ctrl.LoggerFrom(ctx).Error(cause, "teardown wedged in kernel", "volume", vol.Name)
-	if r.Recorder != nil {
-		detail := "device stuck Detaching with connections gone (LINBIT/drbd#137)"
-		switch {
-		case errors.Is(cause, drbd.ErrDownStranded):
-			detail = "a drbdsetup down is stranded in uninterruptible sleep, pinning the resource's DOWN_IN_PROGRESS flag so every open fails with EAGAIN"
-		case errors.Is(cause, backend.ErrNodeWedged):
-			detail = "the node's storage stack has stranded enough commands that miroir stopped spawning them"
-		}
-		r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownWedged", "Teardown",
-			"DRBD cannot tear down %s: %s; reboot node %s to clear it",
-			vol.Name, detail, r.NodeName)
-	}
-	return r.parkWithMessage(ctx, vol, cause, wedgedRequeue)
-}
-
 // parkWithMessage stamps the cause on this node's status slot and parks
 // the retry — the shared tail of every teardown/realize escalation
-// (reportWedged, reportBusy, reportRestoreOrphan), kept in one place so
+// (handleTeardownError, reportRestoreOrphan), kept in one place so
 // the park contract cannot drift between them.
 func (r *VolumeReconciler) parkWithMessage(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error, requeue time.Duration) (ctrl.Result, error) {
 	st := vol.Status.PerNode[r.NodeName]
@@ -263,35 +229,6 @@ func (r *VolumeReconciler) parkWithMessage(ctx context.Context, vol *miroirv1alp
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
-}
-
-// handleTeardownError triages one failed teardown outcome, shared by the
-// deletion and removal paths so the busy-streak bookkeeping cannot drift:
-// a kernel wedge parks via reportWedged, a held-open device paces via
-// reportBusy, anything else surfaces as a hard error. Every non-busy
-// outcome resets the busy streak.
-func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, err error) (ctrl.Result, error) {
-	// backend.ErrNodeWedged rides the same path as drbd.ErrWedged: both mean
-	// this node cannot finish the teardown until it reboots. It must not fall
-	// through to clearWedged below — the node breaker refuses the status read
-	// that Down needs to see the per-resource signature, so every wedged
-	// volume would otherwise report as recovered and delete the series the
-	// shipped critical alert pages on, exactly when the node is worst off.
-	if errors.Is(err, drbd.ErrWedged) || errors.Is(err, backend.ErrNodeWedged) {
-		r.clearBusyFails(vol.Name)
-		return r.reportWedged(ctx, vol, err)
-	}
-	// Any other outcome means a previously reported wedge is gone — e.g.
-	// the reboot happened and the device is now merely held open — so the
-	// critical alert must stop paging for it.
-	clearWedged(vol.Name)
-	if errors.Is(err, backend.ErrBusy) {
-		// A still-staged (or force-deleted) pod holds the device open;
-		// NodeUnstage releases it once the consumer moves off this node.
-		return r.reportBusy(ctx, vol, err)
-	}
-	r.clearBusyFails(vol.Name)
-	return ctrl.Result{}, err
 }
 
 // busyFailLimit is how many consecutive ErrBusy teardown outcomes ride the
@@ -307,47 +244,166 @@ const (
 	busyRetryAfter = time.Minute
 )
 
-// reportBusy paces one ErrBusy teardown outcome: the fast 10s retry below
-// busyFailLimit, then a Warning Event, a status Message naming the cause,
-// and the parked cadence. The cause is logged on every fast cycle and on
-// the escalation — an ErrBusy from the backend sweep looks identical to a
-// held-open device without it — and demotes to V(1) once parked.
-func (r *VolumeReconciler) reportBusy(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, cause error) (ctrl.Result, error) {
-	fails := bumpFails(&r.busyMu, &r.busyFails, vol.Name)
-	if fails < busyFailLimit {
-		ctrl.LoggerFrom(ctx).Info("device busy during teardown, retrying",
-			"volume", vol.Name, "attempts", fails, "error", cause)
-		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+// teardownStep is how the agent answers one failed teardown.
+type teardownStep int
+
+const (
+	// teardownFail: an error of no known class. Surface it and let the
+	// workqueue back off.
+	teardownFail teardownStep = iota
+	// teardownRetryBusy: a device held open, inside the fast-retry budget.
+	// A still-staged (or force-deleted) pod holds it; NodeUnstage releases
+	// it once the consumer moves off this node.
+	teardownRetryBusy
+	// teardownParkBusy: a device held open past busyFailLimit.
+	teardownParkBusy
+	// teardownParkWedged: the kernel can no longer finish the teardown
+	// (drbd.ErrWedged), or the node-scoped breaker refused the command
+	// (backend.ErrNodeWedged). Nothing but a node reboot clears either.
+	teardownParkWedged
+)
+
+// teardownPlan is the verdict on one failed teardown.
+type teardownPlan struct {
+	step teardownStep
+	// busyFails is the busy streak to carry into the next outcome; zero
+	// clears it. Every non-busy outcome resets the streak.
+	busyFails int
+	// requeue is the retry cadence; unused for teardownFail.
+	requeue time.Duration
+	// announce is set on the cycle an escalation starts, and only then: the
+	// parked retry can outlive its cause by hours, and re-emitting an
+	// identical Event and Error log every cycle is pure churn (issue #319:
+	// one parked volume streamed 648 Error lines, a wedged one 123 Events).
+	announce bool
+	// stamp is set while the cause is not yet on the status slot, so a
+	// parked cycle repeats no status write either.
+	stamp bool
+}
+
+// planTeardownError triages one failed teardown outcome from the error, the
+// Message already on this node's status slot and the busy streak so far.
+// It is shared by the deletion and removal paths so the streak bookkeeping
+// cannot drift, and it reads only its arguments, so the escalation rules can
+// be tested without running a teardown; handleTeardownError carries the plan
+// out.
+//
+// A wedge escalates on the cycle its cause first reaches the slot. A busy
+// outcome rides the fast 10s retry below busyFailLimit, escalates on the
+// crossing cycle, and stays parked after it.
+func planTeardownError(err error, slotMessage string, busyFails int) teardownPlan {
+	stamp := slotMessage != err.Error()
+	switch {
+	// backend.ErrNodeWedged rides the same path as drbd.ErrWedged: both mean
+	// this node cannot finish the teardown until it reboots.
+	case errors.Is(err, drbd.ErrWedged) || errors.Is(err, backend.ErrNodeWedged):
+		return teardownPlan{step: teardownParkWedged, requeue: wedgedRequeue, announce: stamp, stamp: stamp}
+	case errors.Is(err, backend.ErrBusy):
+		fails := busyFails + 1
+		if fails < busyFailLimit {
+			return teardownPlan{step: teardownRetryBusy, busyFails: fails, requeue: 10 * time.Second}
+		}
+		return teardownPlan{
+			step: teardownParkBusy, busyFails: fails, requeue: busyRetryAfter,
+			announce: fails == busyFailLimit, stamp: stamp,
+		}
+	default:
+		return teardownPlan{step: teardownFail}
 	}
-	// Latch the escalation on the crossing cycle: the parked retry can
-	// outlive the hold by hours, and re-emitting an identical Event, Error
-	// log, and no-op status write every cycle is pure churn (issue #319:
-	// one parked volume streamed 648 Error lines).
-	if fails > busyFailLimit {
-		ctrl.LoggerFrom(ctx).V(1).Info("teardown still busy; retry stays parked",
-			"volume", vol.Name, "attempts", fails)
-	} else {
-		ctrl.LoggerFrom(ctx).Error(cause, "teardown still busy; parking the retry",
-			"volume", vol.Name, "attempts", fails)
+}
+
+// handleTeardownError carries out planTeardownError's verdict on one failed
+// teardown: the busy streak, the wedged gauge, the logs and Warning Events of
+// an escalation, the status Message, and the retry cadence.
+func (r *VolumeReconciler) handleTeardownError(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, err error) (ctrl.Result, error) {
+	plan := planTeardownError(err, vol.Status.PerNode[r.NodeName].Message, r.busyFailCount(vol.Name))
+	r.setBusyFails(vol.Name, plan.busyFails)
+	log := ctrl.LoggerFrom(ctx)
+	if plan.step != teardownParkWedged {
+		// Any non-wedged outcome means a previously reported wedge is gone
+		// — e.g. the reboot happened and the device is now merely held
+		// open — so the critical alert must stop paging for it.
+		clearWedged(vol.Name)
+	}
+	switch plan.step {
+	case teardownParkWedged:
+		// Raised every cycle, announced or not: the gauge is process state
+		// and must survive an agent restart into an already-stamped
+		// Message. It clears on any non-wedged teardown outcome, on
+		// teardown success (dropVolumeMetrics), and when the CR vanishes
+		// (volumeGone). A node-wedged outcome must not clear it either:
+		// the node breaker refuses the status read that Down needs to see
+		// the per-resource signature, so every wedged volume would
+		// otherwise report as recovered and delete the series the shipped
+		// critical alert pages on, exactly when the node is worst off.
+		recordWedged(vol)
+		if !plan.announce {
+			log.V(1).Info("teardown still wedged in kernel; retry stays parked", "volume", vol.Name)
+			break
+		}
+		log.Error(err, "teardown wedged in kernel", "volume", vol.Name)
+		if r.Recorder != nil {
+			detail := "device stuck Detaching with connections gone (LINBIT/drbd#137)"
+			switch {
+			case errors.Is(err, drbd.ErrDownStranded):
+				detail = "a drbdsetup down is stranded in uninterruptible sleep, pinning the resource's DOWN_IN_PROGRESS flag so every open fails with EAGAIN"
+			case errors.Is(err, backend.ErrNodeWedged):
+				detail = "the node's storage stack has stranded enough commands that miroir stopped spawning them"
+			}
+			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownWedged", "Teardown",
+				"DRBD cannot tear down %s: %s; reboot node %s to clear it",
+				vol.Name, detail, r.NodeName)
+		}
+	case teardownRetryBusy:
+		// The cause is logged on every fast cycle, and again on the
+		// escalation below: an ErrBusy from the backend sweep looks
+		// identical to a held-open device without it.
+		log.Info("device busy during teardown, retrying",
+			"volume", vol.Name, "attempts", plan.busyFails, "error", err)
+	case teardownParkBusy:
+		if !plan.announce {
+			log.V(1).Info("teardown still busy; retry stays parked",
+				"volume", vol.Name, "attempts", plan.busyFails)
+			break
+		}
+		log.Error(err, "teardown still busy; parking the retry",
+			"volume", vol.Name, "attempts", plan.busyFails)
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownBusy", "Teardown",
 				"cannot tear down %s on node %s after %d attempts: %v; something still holds the device (or its backing) open",
-				vol.Name, r.NodeName, fails, cause)
+				vol.Name, r.NodeName, plan.busyFails, err)
 			// A held-open device that reached here was not reclaimed as an
 			// orphaned hold, so a live consumer (or a still-mounted device)
 			// pins it: only that consumer releasing the device ends the wait.
-			if strings.Contains(cause.Error(), "held open") {
+			if strings.Contains(err.Error(), "held open") {
 				r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "TeardownLiveConsumer", "Teardown",
 					"deletion of %s on node %s is blocked by a live consumer still holding the device open; "+
 						"teardown will retry once the consumer releases it — no force-detach will be attempted",
 					vol.Name, r.NodeName)
 			}
 		}
+	default:
+		return ctrl.Result{}, err
 	}
-	if vol.Status.PerNode[r.NodeName].Message == cause.Error() {
-		return ctrl.Result{RequeueAfter: busyRetryAfter}, nil
+	if !plan.stamp {
+		return ctrl.Result{RequeueAfter: plan.requeue}, nil
 	}
-	return r.parkWithMessage(ctx, vol, cause, busyRetryAfter)
+	return r.parkWithMessage(ctx, vol, err, plan.requeue)
+}
+
+// setBusyFails stores the volume's consecutive busy-teardown count; zero
+// clears it.
+func (r *VolumeReconciler) setBusyFails(name string, fails int) {
+	r.busyMu.Lock()
+	defer r.busyMu.Unlock()
+	if fails == 0 {
+		delete(r.busyFails, name)
+		return
+	}
+	if r.busyFails == nil {
+		r.busyFails = map[string]int{}
+	}
+	r.busyFails[name] = fails
 }
 
 // clearBusyFails resets the volume's consecutive busy-teardown count.
