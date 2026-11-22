@@ -74,32 +74,72 @@ type VolumeReconciler struct {
 	// readiness probe; optional.
 	Startup *StartupGate
 
-	// realized caches the last fully realized state per volume so the
-	// steady-state poll only re-execs `drbdsetup status` instead of the
-	// whole realize/adjust/probe pipeline. See fastPath.
-	realizedMu sync.Mutex
-	realized   map[string]realizedState
+	// mem holds what the agent remembers about each volume between
+	// passes; see volumeMemory.
+	memMu sync.Mutex
+	mem   map[string]volumeMemory
+}
 
-	// lastRecovery stamps the last split-brain recovery attempt per volume.
-	// Recovery itself flaps connections, and every flap is a DRBD event that
+// volumeMemory is what the agent remembers about one volume between passes.
+// None of it is durable: after an agent restart every volume starts from the
+// zero value and the full pipeline rebuilds it. forget drops the whole
+// record, so per-volume state cannot leak past a teardown or page forever,
+// and a later volume under the same name starts with a clean slate.
+type volumeMemory struct {
+	// realized is the fingerprint of the last full pass, so the
+	// steady-state poll only re-execs `drbdsetup status` instead of the
+	// whole realize/adjust/probe pipeline. Nil sends the next pass through
+	// the pipeline. See fastPath.
+	realized *realizedState
+	// lastSplit stamps the last split-brain recovery attempt. Recovery
+	// itself flaps connections, and every flap is a DRBD event that
 	// requeues the volume — without a floor the agent re-enters recovery
 	// several times per second. See planSplitBrain.
-	recoveryMu   sync.Mutex
-	lastRecovery map[string]time.Time
-	// stuckSince (same lock) stamps when a stranded-bitmap signature was
-	// first seen per volume, keyed to the candidate peer set it was seen
-	// on; recovery waits out one poll interval so a status snapshot mid
-	// real handshake is never acted on, and a changed set restarts the
-	// wait so a newly seen peer never rides an older peer's clock. See
-	// planStuckResync.
-	stuckSince map[string]stuckMark
+	lastSplit time.Time
+	// stuck stamps when a stranded-bitmap signature was first seen, keyed
+	// to the candidate peer set it was seen on; recovery waits out one
+	// poll interval so a status snapshot mid real handshake is never acted
+	// on, and a changed set restarts the wait so a newly seen peer never
+	// rides an older peer's clock. Nil while unarmed. See planStuckResync.
+	stuck *stuckMark
+	// busyFails counts consecutive ErrBusy teardown outcomes. Past
+	// busyFailLimit the loop escalates — Warning Event, status Message,
+	// parked cadence — instead of silently retrying every 10s forever with
+	// the cause swallowed. See planTeardownError.
+	busyFails int
+}
 
-	// busyFails counts consecutive ErrBusy teardown outcomes per volume.
-	// Past busyFailLimit the loop escalates — Warning Event, status
-	// Message, parked cadence — instead of silently retrying every 10s
-	// forever with the cause swallowed. See planTeardownError.
-	busyMu    sync.Mutex
-	busyFails map[string]int
+// recall returns a copy of name's memory, the zero value when there is none.
+func (r *VolumeReconciler) recall(name string) volumeMemory {
+	r.memMu.Lock()
+	defer r.memMu.Unlock()
+	return r.mem[name]
+}
+
+// remember applies change to name's memory under the lock. A record left at
+// its zero value is dropped.
+func (r *VolumeReconciler) remember(name string, change func(*volumeMemory)) {
+	r.memMu.Lock()
+	defer r.memMu.Unlock()
+	m := r.mem[name]
+	change(&m)
+	if m == (volumeMemory{}) {
+		delete(r.mem, name)
+		return
+	}
+	if r.mem == nil {
+		r.mem = map[string]volumeMemory{}
+	}
+	r.mem[name] = m
+}
+
+// forget drops everything the agent holds on a volume that is gone from
+// this node: its memory and its metric series.
+func (r *VolumeReconciler) forget(name string) {
+	dropVolumeMetrics(name)
+	r.memMu.Lock()
+	defer r.memMu.Unlock()
+	delete(r.mem, name)
 }
 
 // realizedState is the fingerprint of a completed full pass: repeating
@@ -370,10 +410,8 @@ func (r *VolumeReconciler) storeIfSettled(vol *miroirv1alpha1.MiroirVolume, st d
 // the hit it refreshes the metrics (cheap sets) and skips the status patch
 // entirely: the CRD already reflects this leg's state.
 func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, localDiskless bool) (bool, ctrl.Result) {
-	r.realizedMu.Lock()
-	entry, ok := r.realized[vol.Name]
-	r.realizedMu.Unlock()
-	if !ok || entry.generation != vol.Generation ||
+	entry := r.recall(vol.Name).realized
+	if entry == nil || entry.generation != vol.Generation ||
 		time.Since(entry.fullPassAt) >= deepCheckInterval ||
 		(!localDiskless && vol.Status.PerNode[r.NodeName].SizeBytes != vol.Spec.SizeBytes) {
 		return false, ctrl.Result{}
@@ -441,20 +479,15 @@ func statusEqual(a, b drbd.Status) bool {
 }
 
 func (r *VolumeReconciler) storeRealized(gen int64, name string, st drbd.Status, replicated bool) {
-	r.realizedMu.Lock()
-	defer r.realizedMu.Unlock()
-	if r.realized == nil {
-		r.realized = map[string]realizedState{}
-	}
-	r.realized[name] = realizedState{
-		generation: gen, status: st, replicated: replicated, fullPassAt: time.Now(),
-	}
+	r.remember(name, func(m *volumeMemory) {
+		m.realized = &realizedState{
+			generation: gen, status: st, replicated: replicated, fullPassAt: time.Now(),
+		}
+	})
 }
 
 func (r *VolumeReconciler) dropRealized(name string) {
-	r.realizedMu.Lock()
-	defer r.realizedMu.Unlock()
-	delete(r.realized, name)
+	r.remember(name, func(m *volumeMemory) { m.realized = nil })
 }
 
 // volumeGone handles a reconcile whose volume no longer exists in the
@@ -466,21 +499,8 @@ func (r *VolumeReconciler) volumeGone(name string, err error) error {
 	if !apierrors.IsNotFound(err) {
 		return err
 	}
-	dropVolumeMetrics(name)
-	r.dropRealized(name)
-	r.dropRecovery(name)
-	r.clearBusyFails(name)
+	r.forget(name)
 	return nil
-}
-
-// dropRecovery forgets a torn-down volume's split-brain debounce and
-// stuck-resync confirmation stamps so a later volume under the same name
-// starts with a clean slate.
-func (r *VolumeReconciler) dropRecovery(name string) {
-	r.recoveryMu.Lock()
-	defer r.recoveryMu.Unlock()
-	delete(r.lastRecovery, name)
-	delete(r.stuckSince, name)
 }
 
 // peerBackingsGrown reports whether every peer realized the desired size.

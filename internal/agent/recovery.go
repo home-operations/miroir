@@ -118,15 +118,13 @@ func (r *VolumeReconciler) runRecovery(ctx context.Context, vol *miroirv1alpha1.
 }
 
 func (r *VolumeReconciler) runSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, st drbd.Status, connected bool) bool {
-	r.recoveryMu.Lock()
-	active, step, next := planSplitBrain(vol, r.NodeName, st, connected, r.lastRecovery[vol.Name], time.Now())
-	if step != splitIdle {
-		if r.lastRecovery == nil {
-			r.lastRecovery = map[string]time.Time{}
-		}
-		r.lastRecovery[vol.Name] = next
-	}
-	r.recoveryMu.Unlock()
+	var (
+		active bool
+		step   splitStep
+	)
+	r.remember(vol.Name, func(m *volumeMemory) {
+		active, step, m.lastSplit = planSplitBrain(vol, r.NodeName, st, connected, m.lastSplit, time.Now())
+	})
 	if step == splitIdle {
 		return active
 	}
@@ -157,21 +155,13 @@ func (r *VolumeReconciler) runSplitBrain(ctx context.Context, vol *miroirv1alpha
 }
 
 func (r *VolumeReconciler) runStuckResync(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
-	r.recoveryMu.Lock()
-	var mark *stuckMark
-	if m, ok := r.stuckSince[vol.Name]; ok {
-		mark = &m
-	}
-	active, cycles, next := planStuckResync(vol, r.NodeName, st, localDiskless, mark, time.Now())
-	if next == nil {
-		delete(r.stuckSince, vol.Name)
-	} else {
-		if r.stuckSince == nil {
-			r.stuckSince = map[string]stuckMark{}
-		}
-		r.stuckSince[vol.Name] = *next
-	}
-	r.recoveryMu.Unlock()
+	var (
+		active bool
+		cycles []peerCycle
+	)
+	r.remember(vol.Name, func(m *volumeMemory) {
+		active, cycles, m.stuck = planStuckResync(vol, r.NodeName, st, localDiskless, m.stuck, time.Now())
+	})
 
 	log := ctrl.LoggerFrom(ctx)
 	for _, c := range cycles {
