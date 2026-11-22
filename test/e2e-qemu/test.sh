@@ -285,16 +285,16 @@ main() {
     #
     # SPEC_LABELS gates the specs that need a cluster or an install this one is
     # not: the default excludes them, and the leg that provides what they need
-    # selects them by label instead (see the autodiskful leg in ci.yaml).
+    # selects them by label instead (see the autodiskful and rwx legs in ci.yaml).
     # --fail-on-empty: Ginkgo defaults it off, so a label filter that selects
     # nothing (a renamed Label, a typo in the leg's specLabels) would print
     # "Ran 0 of N Specs" and exit 0 — a leg whose whole point is one spec
     # would go green having asserted nothing.
     if [[ "${RUN_SPECS:-}" == "1" ]]; then
-        log "Running miroir's Go e2e specs (labels: ${SPEC_LABELS:-!autodiskful})..."
+        log "Running miroir's Go e2e specs (labels: ${SPEC_LABELS:-!autodiskful && !rwx})..."
         (cd "$REPO_ROOT" && go test -tags e2e ./test/e2e/ -v -ginkgo.v -timeout 35m \
             -ginkgo.fail-on-empty \
-            -ginkgo.label-filter="${SPEC_LABELS:-!autodiskful}")
+            -ginkgo.label-filter="${SPEC_LABELS:-!autodiskful && !rwx}")
     fi
 
     # A leg whose whole point is a Go spec has nothing to gain from replaying the

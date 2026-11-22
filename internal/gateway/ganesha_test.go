@@ -38,6 +38,7 @@ func TestRenderGanesha(t *testing.T) {
 		"Protocols = 4;",
 		"Enable_UDP = false;",
 		"Enable_RQUOTA = false;",
+		"Only_Numeric_Owners = true;",
 		"RecoveryBackend = fs;",
 		"RecoveryRoot = /export/pvc-abc/.ganesha-recovery;",
 		"Grace_Period = 60;",

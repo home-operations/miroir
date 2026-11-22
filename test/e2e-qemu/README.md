@@ -24,7 +24,7 @@ so a failure names the path that broke:
 | `replicated-1` to `replicated-3` | the parallel upstream block/filesystem suite, sharded  | `miroir-replicated` |
 | `zfs-1` to `zfs-3`               | the parallel upstream block/filesystem suite, sharded  | `miroir-zfs`        |
 | `btrfs-1` to `btrfs-3`           | the parallel upstream filesystem suite, sharded        | `miroir-btrfs`      |
-| `rwx`                            | the parallel upstream filesystem-only RWX/ROX suite    | `miroir-replicated` |
+| `rwx`                            | the RWX Go spec, then the upstream RWX/ROX suite       | `miroir-replicated` |
 | `serial`                         | upstream `[Serial]` specs, one process                 | `miroir-replicated` |
 | `autodiskful`                    | the auto-diskful Go spec only, on `cluster-spare.yaml` | `miroir-replicated` |
 
@@ -38,8 +38,9 @@ zfs pool instead, so replication pairs zvol with zvol and the zfs snapshot/resto
 path runs under the suite. The btrfs legs drive it against a replicated class that
 formats btrfs. The suite has no btrfs patterns of its own, so these legs run only the
 patterns that format with the class's filesystem type. The rwx leg enables the NFS gateway and advertises only
-filesystem volume modes, while the serial leg gives exclusive-cluster specs a single
-Ginkgo process.
+filesystem volume modes. It is the only leg with the gateway, so it also runs the Go
+spec with the `rwx` Ginkgo label, which the other specs legs exclude. The serial leg
+gives exclusive-cluster specs a single Ginkgo process.
 
 A fresh cluster costs each leg about six minutes, so CI splits a suite only while each
 share takes longer than that. The two slowest Go specs take about six minutes each.
@@ -114,6 +115,7 @@ set -gx RUN_SPECS 1                # also run the Go specs (CI gives them legs o
 set -gx STORAGE_CAPACITY_ENABLED true
 # Required with testdriver-rwx.yaml:
 set -gx GATEWAY_ENABLED true
+set -gx SPEC_LABELS rwx            # the Go spec that needs the gateway
 ./test.sh
 
 # The autodiskful leg, against a cluster booted from cluster-spare.yaml

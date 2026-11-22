@@ -64,6 +64,14 @@ Things worth knowing:
   fails over by rescheduling onto another replica node, so it needs a
   second one to move to; the controller rejects RWX on a
   single-replica volume.
+- **Non-root pods get their `fsGroup`**, as on an RWO volume. When the
+  kubelet mounts the volume for a pod with an `fsGroup`, it changes the
+  group of every file to that `fsGroup`. On a large volume, this walk
+  over NFS is slow. Set `fsGroupChangePolicy: OnRootMismatch` in the
+  pod's `securityContext`. With that setting, the kubelet skips the walk
+  for a volume root that already has the right group and permissions.
+  Pods that share a volume must use the same `fsGroup`. If they do not,
+  each mount changes the group again.
 - **Consistency is NFS close-to-open**, not shared-memory: a writer's
   changes are visible on other nodes once it closes the file (or
   `fsync`s).
@@ -83,7 +91,8 @@ Things worth knowing:
 - The gateway keeps NFSv4 lock-recovery state in a
   `.ganesha-recovery` directory at the root of the exported
   filesystem so locks survive failover; it is visible to consumers.
-  Leave it alone.
+  A pod's `fsGroup` applies to it like any other directory, so a
+  non-root pod in that group can write to it. Leave it alone.
 - **Deletion scales the gateway to zero first.** The gateway is the
   device's only writer, so the share Deployment is scaled to zero when
   the volume is deleted. Otherwise teardown waits forever for an

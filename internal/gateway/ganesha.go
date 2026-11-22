@@ -45,6 +45,10 @@ type ganeshaParams struct {
 // ancillary protocols (mountd/statd/rquotad) are off: a single well-known
 // port keeps the per-volume Service simple and needs no portmapper. The fs
 // recovery backend rooted on the volume is what makes failover keep locks.
+// Owners go out as numeric IDs: a name such as root@<domain> needs an
+// idmapper on the client, and without one (Talos ships none) the kernel
+// shows such an owner as 4294967294. The kubelet's fsGroupChangePolicy
+// OnRootMismatch check reads the root's gid through that view.
 var ganeshaTemplate = template.Must(template.New("ganesha.conf").Parse(
 	`NFS_CORE_PARAM {
 	NFS_Port = {{.Port}};
@@ -54,6 +58,7 @@ var ganeshaTemplate = template.Must(template.New("ganesha.conf").Parse(
 }
 
 NFSv4 {
+	Only_Numeric_Owners = true;
 	RecoveryBackend = fs;
 	RecoveryRoot = {{.RecoveryRoot}};
 	Grace_Period = {{.GracePeriod}};
