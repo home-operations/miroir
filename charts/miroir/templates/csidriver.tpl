@@ -5,7 +5,9 @@ metadata:
 spec:
   attachRequired: false
   podInfoOnMount: false
-  fsGroupPolicy: ReadWriteOnceWithFSType
+  # The kubelet applies fsGroup to an RWX volume (an NFS mount from the
+  # gateway) only under File.
+  fsGroupPolicy: File
   volumeLifecycleModes:
     - Persistent
   storageCapacity: {{ .Values.storageCapacity.enabled }}

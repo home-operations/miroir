@@ -5,8 +5,9 @@
 // specs leg). It is build-tagged so `mise run test` never compiles it.
 //
 // Scope: the local backend (miroir-local / lvmthin / replicas:1), plus the
-// orphaned-hold teardown spec, which needs a replicated (DRBD) volume. The rest
-// of the DRBD path is left to the replicated conformance leg and smoke.sh.
+// orphaned-hold teardown spec, which needs a replicated (DRBD) volume, and the
+// RWX fsGroup spec, which needs the NFS gateway. The rest of the DRBD path is
+// left to the replicated conformance leg and smoke.sh.
 package e2e
 
 import (

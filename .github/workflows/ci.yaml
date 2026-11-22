@@ -168,7 +168,7 @@ jobs:
           - suite: specs
             testdriver: testdriver-local.yaml
             specs: "1"
-            specLabels: "!autodiskful && !unreachability && !orphanhold"
+            specLabels: "!autodiskful && !unreachability && !orphanhold && !rwx"
             conformance: "0"
             capacity: "true"
           - suite: specs-unreachability
@@ -232,10 +232,13 @@ jobs:
             testdriver: testdriver-btrfs.yaml
             shard: "3"
           # Filesystem-only multi-node access through the NFS gateway. Keeping this
-          # separate avoids advertising unsupported raw-block RWX.
+          # separate avoids advertising unsupported raw-block RWX. The rwx Go spec
+          # runs here too, because no other leg enables the gateway.
           - suite: rwx
             testdriver: testdriver-rwx.yaml
             gateway: "true"
+            specs: "1"
+            specLabels: rwx
             capacity: "true"
             focus: "miroir.home-operations.com.*(ROX mode|concurrently access the single volume from pods on different node)"
           # Serial specs need exclusive use of their cluster. The focus keeps this
@@ -357,7 +360,7 @@ jobs:
         env:
           TESTDRIVER: ${{ matrix.testdriver }}
           RUN_SPECS: ${{ matrix.specs }}
-          SPEC_LABELS: ${{ matrix.specLabels || '!autodiskful' }}
+          SPEC_LABELS: ${{ matrix.specLabels || '!autodiskful && !rwx' }}
           RUN_CONFORMANCE: ${{ matrix.conformance || '1' }}
           AUTO_DISKFUL_AFTER: ${{ matrix.autoDiskfulAfter }}
           GATEWAY_ENABLED: ${{ matrix.gateway || 'false' }}
