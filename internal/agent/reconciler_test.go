@@ -2124,7 +2124,7 @@ func TestReconcileResizeCoordinatorSkipsWhenAtSize(t *testing.T) {
 
 // A Primary leg latches Activated from the kernel role: a raw-block
 // consumer staged before the field existed never restages, and without
-// the latch recoverSplitBrain would treat its data-bearing volume as
+// the latch planSplitBrain would treat its data-bearing volume as
 // never-written and auto-discard a leg.
 func TestReconcilePrimaryLatchesActivated(t *testing.T) {
 	s := newScheme(t)

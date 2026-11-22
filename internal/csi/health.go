@@ -86,7 +86,7 @@ func nodeVolumeHealth(vol *miroirv1alpha1.MiroirVolume, node string, live drbd.S
 }
 
 // carriedData latches "this volume may hold data" off the same pair
-// split-brain auto-recovery keys on (see recoverSplitBrain). It separates a
+// split-brain auto-recovery keys on (see planSplitBrain). It separates a
 // volume that never provisioned from one that provisioned, served, and later
 // lost legs: the phase is identical, the operator's action is not.
 func carriedData(vol *miroirv1alpha1.MiroirVolume) bool {

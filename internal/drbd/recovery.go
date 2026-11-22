@@ -31,7 +31,7 @@ import (
 //
 // --discard-my-data drops the loser leg's generation, so this is only valid
 // on a volume that never held data; the caller gates on that (see
-// VolumeReconciler.recoverSplitBrain).
+// planSplitBrain in internal/agent).
 func (d *Driver) ResolveSplitBrain(ctx context.Context, r Resource) error {
 	unlock, err := d.lockLiveResource(ctx, r.Name)
 	if err != nil {

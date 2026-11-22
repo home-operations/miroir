@@ -136,7 +136,7 @@ func TestVolumeHealth(t *testing.T) {
 			wantContains: "split-brain on node " + nodeA,
 		},
 		{
-			// The reconciler auto-resolves this one (recoverSplitBrain);
+			// The reconciler auto-resolves this one (planSplitBrain);
 			// DATA_LOSS would send a CO restoring a snapshot of an empty
 			// volume.
 			name: "a birth split-brain is degraded, not data loss",
