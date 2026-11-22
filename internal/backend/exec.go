@@ -19,6 +19,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,6 +39,11 @@ type Exec func(ctx context.Context, name string, args ...string) (string, error)
 // D-state pins the single reconcile worker forever and head-of-line-blocks
 // every other volume on the node.
 const execTimeout = 2 * time.Minute
+
+// ErrStranded marks a command whose child outlived its SIGKILL: it is stuck
+// in uninterruptible sleep and whatever it was doing to the kernel (a dm
+// suspend, a DRBD teardown) is still in progress after Run returns.
+var ErrStranded = errors.New("child still alive after SIGKILL (uninterruptible sleep)")
 
 // CommandLine is the line a Wedge records a stranded child under; callers
 // asking Wedge.StrandedCommand about a specific command build it here so
@@ -138,7 +144,7 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, 
 	}()
 	// out is not read here: the copy goroutine still owns it until Wait
 	// returns.
-	return "", fmt.Errorf("%s: %w: child %d still alive after SIGKILL (uninterruptible sleep)", line, ctx.Err(), pid)
+	return "", fmt.Errorf("%s: %w: child %d: %w", line, ctx.Err(), pid, ErrStranded)
 }
 
 func (r *Runner) doKill(p *os.Process) error {

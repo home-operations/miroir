@@ -77,10 +77,10 @@ type Node struct {
 }
 
 // Thawer lifts a filesystem freeze from a staging mountpoint before its
-// unmount; *agent.Freezer implements it. HoldFreezes keeps snapshot rounds
-// from freezing between that thaw and the unmount; it only orders against
-// rounds that share the same Thawer, so the agent hands the node service
-// the freezer its snapshot reconcilers use.
+// unmount; *agent.Freezer implements it. HoldFreezes keeps snapshot cuts
+// from freezing the device between that thaw and the unmount; it only
+// orders against cuts that share the same Thawer, so the agent hands the
+// node service the freezer its snapshot reconcilers use.
 type Thawer interface {
 	HoldFreezes(ctx context.Context, target string) (release func(), err error)
 	ThawMountpoint(target string) error

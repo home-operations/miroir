@@ -92,8 +92,9 @@ type SnapshotReconciler struct {
 	// Recorder emits the BarrierStuck warning; optional.
 	Recorder events.EventRecorder
 	// Freezer freezes the mounted filesystem before this node's barrier
-	// rises, making the cut filesystem-consistent; optional
-	// (nil skips, crash-consistent as before).
+	// rises, making the cut filesystem-consistent, and holds staging
+	// unmounts off an unreplicated cut (see holdUnmounts); optional
+	// (nil skips both).
 	Freezer *Freezer
 
 	// barrierFails counts consecutive DRBD failures on the barrier path
@@ -338,10 +339,24 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err != nil {
 			return ctrl.Result{}, err
 		}
+		// Sync first: it also restores a device node gone missing behind a
+		// mounted LV, which the hold below needs to resolve.
 		if err := be.Sync(ctx, vol.Name); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := be.Snapshot(ctx, vol.Name, snap.Name); err != nil {
+		release, err := holdUnmounts(ctx, r.Freezer, r.NodeName, vol)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		err = be.Snapshot(ctx, vol.Name, snap.Name)
+		// A cut stranded in the kernel is still suspending the device, so
+		// the hold is kept: an unmount now would land inside the suspend.
+		// Nothing short of a node reboot (which restarts the agent) ends
+		// such a suspend, and the wedge breaker already counts the child.
+		if !errors.Is(err, backend.ErrStranded) {
+			release()
+		}
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, r.patchSnap(ctx, snap, func(s *miroirv1alpha1.MiroirSnapshot) {
