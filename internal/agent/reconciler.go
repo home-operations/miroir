@@ -380,6 +380,14 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 		(!localDiskless && vol.Status.PerNode[r.NodeName].SizeBytes != vol.Spec.SizeBytes) {
 		return false, ctrl.Result{}
 	}
+	// A Ready this leg contradicts reached the CR after the pass that
+	// stored the fingerprint (a controller write derived from older
+	// slots), and no kernel event breaks the fingerprint for it. The full
+	// pipeline withdraws it; see patchStatus.
+	if vol.Status.Phase == miroirv1alpha1.VolumeReady &&
+		legBlocksReady(vol, r.NodeName, vol.Status.PerNode[r.NodeName]) {
+		return false, ctrl.Result{}
+	}
 	if !entry.replicated {
 		recordVolumeMetrics(vol, volumePoolOn(vol, r.NodeName), miroirReplicaView{
 			upToDate: true, connected: true, quorum: true, resyncRatio: 1,

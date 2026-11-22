@@ -18,6 +18,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -34,9 +35,14 @@ import (
 type memBackend struct {
 	backend.Backend
 	devices map[string]bool
+	// createErr, when set, fails every Create.
+	createErr error
 }
 
 func (b *memBackend) Create(_ context.Context, vol string, _ int64) (string, error) {
+	if b.createErr != nil {
+		return "", b.createErr
+	}
 	b.devices[vol] = true
 	return b.DevicePath(vol), nil
 }
@@ -50,11 +56,12 @@ func (b *memBackend) Exists(_ context.Context, vol string) (bool, error) {
 func (b *memBackend) DevicePath(vol string) string { return "/dev/mem/" + vol }
 
 // Phase and ReadyReplicas change hands between field managers: the
-// controller sets them, an agent may only blank them, and the agent's
-// ordinary applies must then leave the controller's value alone. Only a
-// real apiserver tracks that ownership.
+// controller sets them, an agent may only blank a Ready its leg contradicts,
+// and the agent's ordinary applies must then leave the controller's value
+// alone. Only a real apiserver tracks that ownership, and the unit tests'
+// fake client drops an applied empty string.
 var _ = Describe("MiroirVolume phase ownership", func() {
-	It("lets an agent withdraw the phase and the controller derive it again", func() {
+	It("lets an agent withdraw a Ready and the controller derive the phase again", func() {
 		const name = "phase-ownership"
 		key := types.NamespacedName{Name: name}
 		req := ctrl.Request{NamespacedName: key}
@@ -70,7 +77,7 @@ var _ = Describe("MiroirVolume phase ownership", func() {
 		pool := &memBackend{devices: map[string]bool{}}
 		// A fresh reconciler per pass, as after an agent restart: nothing
 		// cached lets a pass skip the backing-device probe.
-		agentPass := func() {
+		agentPass := func() error {
 			r := &agent.VolumeReconciler{
 				Client:   k8sClient,
 				NodeName: nodeA,
@@ -79,7 +86,7 @@ var _ = Describe("MiroirVolume phase ownership", func() {
 				}},
 			}
 			_, err := r.Reconcile(ctx, req)
-			Expect(err).NotTo(HaveOccurred())
+			return err
 		}
 		controllerPass := func() {
 			_, err := (&agent.PhaseReconciler{Client: k8sClient}).Reconcile(ctx, req)
@@ -91,7 +98,7 @@ var _ = Describe("MiroirVolume phase ownership", func() {
 			return vol.Status
 		}
 
-		agentPass()
+		Expect(agentPass()).To(Succeed())
 		Expect(status().PerNode[nodeA].DeviceCreated).To(BeTrue())
 		Expect(status().Phase).To(BeEmpty(), "an agent never sets a phase")
 
@@ -99,25 +106,48 @@ var _ = Describe("MiroirVolume phase ownership", func() {
 		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeReady))
 		Expect(status().ReadyReplicas).To(Equal("1/1"))
 
-		agentPass()
+		Expect(agentPass()).To(Succeed())
 		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeReady),
 			"an agent whose leg stays in service leaves the phase alone")
 
-		// The backing device vanishes: the leg leaves service, and the
-		// pass that notices re-creates it.
+		// The backing device vanishes and the pool cannot re-create it:
+		// the leg is out of service.
 		delete(pool.devices, name)
-		agentPass()
-		Expect(status().PerNode[nodeA].DeviceCreated).To(BeTrue())
-		Expect(status().Phase).To(BeEmpty(), "the stale Ready must not survive the leg leaving service")
+		pool.createErr = errors.New("pool offline")
+		Expect(agentPass()).To(MatchError(pool.createErr))
+		Expect(status().PerNode[nodeA].DeviceCreated).To(BeFalse())
+		Expect(status().Phase).To(BeEmpty(), "the Ready must not survive the leg leaving service")
+		Expect(status().ReadyReplicas).To(BeEmpty())
+
+		// A Ready derived from the older slots lands late. The leg is
+		// still out of service, so the next pass withdraws that one too,
+		// in its only apply, and is left owning the blanked fields.
+		vol := &miroirv1alpha1.MiroirVolume{}
+		Expect(k8sClient.Get(ctx, key, vol)).To(Succeed())
+		base := vol.DeepCopy()
+		vol.Status.Phase, vol.Status.ReadyReplicas = miroirv1alpha1.VolumeReady, "1/1"
+		Expect(k8sClient.Status().Patch(ctx, vol, client.MergeFrom(base))).To(Succeed())
+		Expect(agentPass()).To(MatchError(pool.createErr))
+		Expect(status().Phase).To(BeEmpty())
 		Expect(status().ReadyReplicas).To(BeEmpty())
 
 		controllerPass()
-		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeReady))
-		Expect(status().ReadyReplicas).To(Equal("1/1"))
+		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeFailed),
+			"the controller takes the blanked fields back from the agent")
+		Expect(status().ReadyReplicas).To(Equal("0/1"))
 
-		agentPass()
-		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeReady),
-			"the agent's later applies must not drop the value the controller took back")
+		Expect(agentPass()).To(MatchError(pool.createErr))
+		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeFailed),
+			"an apply that no longer carries the fields must not drop the controller's value")
+		Expect(status().ReadyReplicas).To(Equal("0/1"))
+
+		pool.createErr = nil
+		Expect(agentPass()).To(Succeed())
+		Expect(status().PerNode[nodeA].DeviceCreated).To(BeTrue())
+		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeFailed), "an agent never promotes the phase")
+
+		controllerPass()
+		Expect(status().Phase).To(Equal(miroirv1alpha1.VolumeReady))
 		Expect(status().ReadyReplicas).To(Equal("1/1"))
 	})
 })

@@ -3463,11 +3463,15 @@ func TestReconcileLeavesPhaseToController(t *testing.T) {
 	}
 }
 
-// A leg leaving service withdraws the published phase in the same apply
-// that reports it: with the controller down nothing else would, and a
-// drain gated on Ready would pass on the stale value. This pins what the
-// agent sends; test/integration covers what an apiserver makes of it.
-func TestReconcileWithdrawsPhaseWhenLegLeavesService(t *testing.T) {
+// A Ready published while this node's diskful leg is out of service is
+// withdrawn in the apply that reports the slot: with the controller down
+// nothing else would, and a drain gated on Ready would pass on the stale
+// value. The rule is on the state, so a Ready that turns up later (a
+// controller write derived from older slots) breaks the fingerprint and is
+// withdrawn too. This pins what the agent sends, since the fake client
+// drops an applied empty string; test/integration covers the apiserver's
+// side.
+func TestReconcileWithdrawsReadyWhileLegOutOfService(t *testing.T) {
 	_, fe, r := steadyVolume(t)
 	var last *acv1alpha1.MiroirVolumeStatusApplyConfiguration
 	r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
@@ -3479,24 +3483,86 @@ func TestReconcileWithdrawsPhaseWhenLegLeavesService(t *testing.T) {
 			return cl.SubResource(sub).Apply(ctx, obj, opts...)
 		},
 	})
+	withdrawn := func() bool {
+		return last.Phase != nil && *last.Phase == "" && last.ReadyReplicas != nil && *last.ReadyReplicas == ""
+	}
+	setPhase := func(phase miroirv1alpha1.VolumePhase) {
+		t.Helper()
+		got := &miroirv1alpha1.MiroirVolume{}
+		if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+			t.Fatal(err)
+		}
+		got.Status.Phase = phase
+		if err := r.Status().Update(t.Context(), got); err != nil {
+			t.Fatal(err)
+		}
+	}
 
-	reconcile(t, r, volPvc1) // the seeded slot is unconnected: the leg enters service
+	setPhase(miroirv1alpha1.VolumeReady)
+	reconcile(t, r, volPvc1) // UpToDate and connected: in service
 	if last == nil || last.Phase != nil || last.ReadyReplicas != nil {
-		t.Fatalf("a leg entering service must apply its slot alone, got %+v", last)
+		t.Fatalf("a leg in service must apply its slot alone, got %+v", last)
 	}
 
 	fe.statusJSON = `[{"name":"` + volPvc1 + `","role":"Secondary",
 		"devices":[{"disk-state":"` + diskStateUpToDate + `","quorum":true}],
 		"connections":[{"peer-node-id":1,"connection-state":"Connecting"}]}]`
 	reconcile(t, r, volPvc1)
-	if last.Phase == nil || *last.Phase != "" || last.ReadyReplicas == nil || *last.ReadyReplicas != "" {
-		t.Fatalf("a leg leaving service must blank phase and readyReplicas, got %+v", last)
+	if !withdrawn() {
+		t.Fatalf("a leg out of service must blank a published Ready, got %+v", last)
 	}
 
+	// The pass above stored its fingerprint. A Ready landing afterwards
+	// must still leave the fast path and be withdrawn.
+	adjusts := countCalls(fe, "adjust")
+	last = nil
+	setPhase(miroirv1alpha1.VolumeReady)
+	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "adjust"); n <= adjusts {
+		t.Fatalf("a contradicted Ready must force the full pipeline: %v", fe.calls)
+	}
+	if last == nil || !withdrawn() {
+		t.Fatalf("a Ready that lands later must be withdrawn too, got %+v", last)
+	}
+
+	// Any other phase is the controller's to keep.
+	adjusts = countCalls(fe, "adjust")
+	setPhase(miroirv1alpha1.VolumeDegraded)
+	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "adjust"); n != adjusts {
+		t.Fatalf("a Degraded phase must not leave the fast path: %v", fe.calls)
+	}
 	r.dropRealized(volPvc1)
-	reconcile(t, r, volPvc1) // still out of service: nothing left to withdraw
+	reconcile(t, r, volPvc1)
 	if last.Phase != nil || last.ReadyReplicas != nil {
-		t.Fatalf("a leg that stays out of service must apply its slot alone, got %+v", last)
+		t.Fatalf("a leg out of service must leave a Degraded phase alone, got %+v", last)
+	}
+}
+
+// A diskless leg holds no data and feeds nothing into the phase: its slot
+// never reads as serving, and that must not withdraw a Ready.
+func TestLegBlocksReadyIgnoresDisklessAndForeignLegs(t *testing.T) {
+	v := vol(volPvc1, nodeA, nodeB)
+	v.Spec.Replicas[1].Diskless = true
+	serving := miroirv1alpha1.ReplicaStatus{DeviceCreated: true, SizeBytes: 1 << 30}
+	cases := []struct {
+		name string
+		node string
+		st   miroirv1alpha1.ReplicaStatus
+		want bool
+	}{
+		{"diskful leg in service", nodeA, serving, false},
+		{"diskful leg without a device", nodeA, miroirv1alpha1.ReplicaStatus{}, true},
+		{"diskful leg below the spec size", nodeA, miroirv1alpha1.ReplicaStatus{DeviceCreated: true, SizeBytes: 1 << 20}, true},
+		{"diskless leg", nodeB, miroirv1alpha1.ReplicaStatus{Diskless: true}, false},
+		{"node without a replica", "node-x", miroirv1alpha1.ReplicaStatus{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := legBlocksReady(v, tc.node, tc.st); got != tc.want {
+				t.Fatalf("legBlocksReady = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -188,13 +188,14 @@ func (r *VolumeReconciler) latchActivated(ctx context.Context, vol *miroirv1alph
 // ReadyReplicas the controller's PhaseReconciler derives, and revert them to
 // this agent's stale read.
 //
-// Phase and ReadyReplicas it can only withdraw: when this leg leaves service
-// a published Ready is untrue, so the same apply blanks both. A volume whose
-// controller is down then reads as underived, never as a stale Ready that an
-// operator's drain gate would pass. The controller takes the fields back
-// with the phase it derives.
+// Phase and ReadyReplicas it can only withdraw: a Ready published while this
+// node's diskful leg is out of service is untrue, so the same apply blanks
+// both. A volume whose controller is down then reads as underived, never as
+// a stale Ready that an operator's drain gate would pass. The test is on the
+// state, not on the transition, so a failed apply, a lagging informer or a
+// late controller write is withdrawn by whichever pass sees it next (see
+// fastPath). The controller takes the fields back with the phase it derives.
 func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, mine miroirv1alpha1.ReplicaStatus) error {
-	leftService := legServing(vol, vol.Status.PerNode[r.NodeName]) && !legServing(vol, mine)
 	if vol.Status.PerNode == nil {
 		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
 	}
@@ -204,13 +205,20 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.
 		WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
 			r.NodeName: *replicaStatusAC(mine),
 		})
-	if leftService {
+	withdraw := vol.Status.Phase == miroirv1alpha1.VolumeReady && legBlocksReady(vol, r.NodeName, mine)
+	if withdraw {
 		status = status.WithPhase("").WithReadyReplicas("")
 	}
 	ac := acv1alpha1.MiroirVolume(vol.Name).WithStatus(status)
-	return r.SubResource("status").Apply(ctx, ac,
+	if err := r.SubResource("status").Apply(ctx, ac,
 		client.FieldOwner("agent-volume-"+r.NodeName),
-		client.ForceOwnership)
+		client.ForceOwnership); err != nil {
+		return err
+	}
+	if withdraw {
+		vol.Status.Phase, vol.Status.ReadyReplicas = "", ""
+	}
+	return nil
 }
 
 // primarySince keeps a stable timestamp for how long this leg has been

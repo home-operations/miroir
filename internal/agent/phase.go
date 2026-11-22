@@ -19,8 +19,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,10 +36,10 @@ import (
 // ReadyReplicas a value, deriving both from the agents' PerNode slots: an
 // agent aggregating them itself would publish a verdict on its peers from
 // its own informer cache, and the last of several near-simultaneous writes
-// need not be the freshest. An agent can only withdraw them (see
-// VolumeReconciler.patchStatus). It runs in the central controller, so probe
-// timestamps age the phase even when every agent responsible for a volume
-// is down.
+// need not be the freshest. An agent can only withdraw a Ready its own leg
+// contradicts (see VolumeReconciler.patchStatus). It runs in the central
+// controller, so probe timestamps age the phase even when every agent
+// responsible for a volume is down.
 type PhaseReconciler struct {
 	client.Client
 }
@@ -72,7 +74,15 @@ func (r *PhaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 				Reason: "NodeReachable",
 			})
 		}
-		if err := r.Status().Patch(ctx, vol, client.MergeFrom(base)); err != nil {
+		// Under an optimistic lock: a phase derived from slots that have
+		// since changed must not land over them, least of all a Ready over
+		// a leg that just left service. The event carrying the newer slots
+		// re-runs this reconcile.
+		err := r.Status().Patch(ctx, vol, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{}, nil
+		}
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -133,6 +143,15 @@ func legRealized(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStat
 // controller's clock judges it.
 func legServing(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStatus) bool {
 	return legRealized(vol, st) && (vol.Spec.DRBD == nil || st.Connected)
+}
+
+// legBlocksReady reports whether st, node's slot, rules out a Ready phase:
+// node holds a diskful replica that is not in service.
+func legBlocksReady(vol *miroirv1alpha1.MiroirVolume, node string, st miroirv1alpha1.ReplicaStatus) bool {
+	diskful := slices.ContainsFunc(vol.Spec.DiskfulReplicas(), func(rep miroirv1alpha1.Replica) bool {
+		return rep.Node == node
+	})
+	return diskful && !legServing(vol, st)
 }
 
 // computePhase aggregates per-node states into the volume phase the CSI
