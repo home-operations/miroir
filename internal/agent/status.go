@@ -183,20 +183,18 @@ func (r *VolumeReconciler) latchActivated(ctx context.Context, vol *miroirv1alph
 	return r.Status().Patch(ctx, vol, client.MergeFrom(base))
 }
 
-// patchStatus applies only this node's slot and the derived phase. A
-// full-status apply would force-own peers' slots and Formatted (a CSI
-// field) and revert them to this agent's stale read.
+// patchStatus applies only this node's slot. A full-status apply would
+// force-own peers' slots, Formatted (a CSI field), and Phase and
+// ReadyReplicas (derived by the controller's PhaseReconciler, their only
+// writer) and revert them to this agent's stale read.
 func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, mine miroirv1alpha1.ReplicaStatus) error {
 	if vol.Status.PerNode == nil {
 		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
 	}
 	vol.Status.PerNode[r.NodeName] = mine
-	vol.Status.Phase, vol.Status.ReadyReplicas = computePhase(vol)
 
 	ac := acv1alpha1.MiroirVolume(vol.Name).
 		WithStatus(acv1alpha1.MiroirVolumeStatus().
-			WithPhase(vol.Status.Phase).
-			WithReadyReplicas(vol.Status.ReadyReplicas).
 			WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
 				r.NodeName: *replicaStatusAC(mine),
 			}))

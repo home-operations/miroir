@@ -88,6 +88,40 @@ func TestPhaseReconcilerDegradesVolumeWhenAllAgentsAreStale(t *testing.T) {
 	}
 }
 
+// An agent publishes only its own slot; the phase reaches the CR through
+// this reconciler's pass over the same object.
+func TestPhaseReconcilerDerivesPhaseFromAgentSlot(t *testing.T) {
+	cl := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(vol(volPvc1, nodeA)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
+		Build()
+	reconcile(t, &VolumeReconciler{Client: cl, NodeName: nodeA, Pools: poolsOf(newFakeBackend())}, volPvc1)
+
+	got := &miroirv1alpha1.MiroirVolume{}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != "" || got.Status.ReadyReplicas != "" {
+		t.Fatalf("agent wrote phase %q, readyReplicas %q; both are the controller's",
+			got.Status.Phase, got.Status.ReadyReplicas)
+	}
+
+	r := &PhaseReconciler{Client: cl}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: volPvc1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cl.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %q, want %q", got.Status.Phase, miroirv1alpha1.VolumeReady)
+	}
+	if got.Status.ReadyReplicas != oneOfOne {
+		t.Fatalf("readyReplicas = %q, want %q", got.Status.ReadyReplicas, oneOfOne)
+	}
+}
+
 func TestPhaseReconcilerSchedulesFreshProbeExpiry(t *testing.T) {
 	vol := phaseVolume(time.Now().Add(-time.Minute))
 	cl := fake.NewClientBuilder().

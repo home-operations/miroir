@@ -30,8 +30,12 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
-// PhaseReconciler runs in the central controller so probe timestamps can age
-// the aggregate phase even when every agent responsible for a volume is down.
+// PhaseReconciler is the only writer of a volume's Phase and ReadyReplicas,
+// deriving both from the agents' PerNode slots: an agent aggregating them
+// itself would publish a verdict on its peers from its own informer cache,
+// and the last of several near-simultaneous writes need not be the freshest.
+// It runs in the central controller, so probe timestamps age the phase even
+// when every agent responsible for a volume is down.
 type PhaseReconciler struct {
 	client.Client
 }
@@ -46,7 +50,7 @@ func (r *PhaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	}
 
 	now := time.Now()
-	phase, readyReplicas := computePhaseAt(vol, now)
+	phase, readyReplicas := computePhase(vol, now)
 	// Every diskful replica reporting a fresh probe contradicts a lingering
 	// NodeUnreachable condition. waitReady's success-path clear is one-shot —
 	// provisioning succeeded, so no further CreateVolume will retry a failed
@@ -117,11 +121,7 @@ func (r *PhaseReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // computePhase aggregates per-node states into the volume phase the CSI
 // controller waits on, plus the "ready/total" diskful summary backing the
 // Replicas printcolumn.
-func computePhase(vol *miroirv1alpha1.MiroirVolume) (miroirv1alpha1.VolumePhase, string) {
-	return computePhaseAt(vol, time.Now())
-}
-
-func computePhaseAt(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alpha1.VolumePhase, string) {
+func computePhase(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alpha1.VolumePhase, string) {
 	diskfulReplicas := vol.Spec.DiskfulReplicas()
 	ready := 0
 	realized := 0

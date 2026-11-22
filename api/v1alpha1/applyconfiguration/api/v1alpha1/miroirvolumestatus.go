@@ -29,11 +29,12 @@ import (
 // MiroirVolumeStatus is the observed state aggregated from node agents.
 type MiroirVolumeStatusApplyConfiguration struct {
 	// Phase summarizes the volume state for the controller and humans.
+	// The controller derives it from PerNode and is its only writer.
 	Phase *apiv1alpha1.VolumePhase `json:"phase,omitempty"`
 	// ReadyReplicas summarizes diskful replica readiness as "ready/total"
-	// (diskless tie-breakers and client legs excluded, like Phase). A
-	// preformatted string because CRD printcolumns cannot combine two
-	// integer fields into one cell.
+	// (diskless tie-breakers and client legs excluded, like Phase), and
+	// has the same single writer. A preformatted string because CRD
+	// printcolumns cannot combine two integer fields into one cell.
 	ReadyReplicas *string `json:"readyReplicas,omitempty"`
 	// PerNode maps node name to that agent's observed state.
 	PerNode map[string]ReplicaStatusApplyConfiguration `json:"perNode,omitempty"`

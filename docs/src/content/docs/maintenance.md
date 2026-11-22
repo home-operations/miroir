@@ -24,6 +24,11 @@ kubectl wait miroirvolumes --all \
   --for=jsonpath='{.status.phase}'=Ready --timeout=1h
 ```
 
+The controller computes `status.phase` from what each agent reports,
+so the gate is only current while the controller is running: if the
+drain evicted it, let its replacement pod become Ready before trusting
+the wait.
+
 `miroir_volume_resync_ratio` shows progress, and the
 [starter alerts](/monitoring/) flag sustained degradation.
 

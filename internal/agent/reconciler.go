@@ -370,9 +370,7 @@ func (r *VolumeReconciler) storeIfSettled(vol *miroirv1alpha1.MiroirVolume, st d
 // pipeline: same generation, settled size, a fresh-enough full pass, and —
 // for replicated volumes — kernel state identical to the fingerprint. On
 // the hit it refreshes the metrics (cheap sets) and skips the status patch
-// entirely: the CRD already reflects this state, and phase converges via
-// whichever peer actually changed, unless a sibling's stale apply already
-// overwrote that peer's phase; the recompute below catches that.
+// entirely: the CRD already reflects this leg's state.
 func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, localDiskless bool) (bool, ctrl.Result) {
 	r.realizedMu.Lock()
 	entry, ok := r.realized[vol.Name]
@@ -380,18 +378,6 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 	if !ok || entry.generation != vol.Generation ||
 		time.Since(entry.fullPassAt) >= deepCheckInterval ||
 		(!localDiskless && vol.Status.PerNode[r.NodeName].SizeBytes != vol.Spec.SizeBytes) {
-		return false, ctrl.Result{}
-	}
-	// Phase and ReadyReplicas are co-owned: every leg's full pass
-	// force-applies them from its own informer cache, and
-	// near-simultaneous passes (a resync completing) can land a stale
-	// value last, leaving the CR self-contradictory while every leg parks
-	// here until the deep check. No kernel event re-breaks
-	// the fingerprint after that, so recompute from the cached CR and take
-	// the full pipeline to re-apply them as soon as the informer shows the
-	// mismatch.
-	if phase, readyReplicas := computePhase(vol); phase != vol.Status.Phase ||
-		readyReplicas != vol.Status.ReadyReplicas {
 		return false, ctrl.Result{}
 	}
 	if !entry.replicated {

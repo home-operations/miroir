@@ -118,6 +118,11 @@ func TestVolumeHealth(t *testing.T) {
 			want: []healthEntry{},
 		},
 		{
+			name: "an underived phase is no verdict on a volume that has carried data",
+			vol:  activated(volWithStatus("v", "", nil)),
+			want: []healthEntry{},
+		},
+		{
 			name: "split-brain ranks above the degraded phase it implies",
 			vol: activated(volWithStatus("v", miroirv1alpha1.VolumeDegraded, map[string]miroirv1alpha1.ReplicaStatus{
 				nodeB: {DiskFailed: true},

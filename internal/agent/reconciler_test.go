@@ -215,6 +215,13 @@ func vol(name string, nodes ...string) *miroirv1alpha1.MiroirVolume {
 	}
 }
 
+// phaseOf derives the phase the controller would publish from the slots the
+// agents wrote.
+func phaseOf(vol *miroirv1alpha1.MiroirVolume) miroirv1alpha1.VolumePhase {
+	phase, _ := computePhase(vol, time.Now())
+	return phase
+}
+
 //nolint:unparam // future tests will vary the name
 func reconcile(t *testing.T, r *VolumeReconciler, name string) {
 	t.Helper()
@@ -243,8 +250,8 @@ func TestReconcileRealizesReplica(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != miroirv1alpha1.VolumeReady {
-		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
+	if phaseOf(got) != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %s, want Ready (status %+v)", phaseOf(got), got.Status.PerNode)
 	}
 	if got.Status.PerNode[nodeA].DevicePath != fb.DevicePath(volPvc1) {
 		t.Fatalf("unexpected status %+v", got.Status.PerNode)
@@ -354,8 +361,8 @@ func TestReconcileReportsBackendError(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != miroirv1alpha1.VolumeFailed {
-		t.Fatalf("phase = %s, want Failed", got.Status.Phase)
+	if phaseOf(got) != miroirv1alpha1.VolumeFailed {
+		t.Fatalf("phase = %s, want Failed", phaseOf(got))
 	}
 	if got.Status.PerNode[nodeA].Message == "" {
 		t.Fatal("error message must be reported in status")
@@ -393,8 +400,8 @@ func TestReconcileSourceSnapshotGoneRecoversBacking(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != miroirv1alpha1.VolumeReady {
-		t.Fatalf("phase = %s, want Ready (status %+v)", got.Status.Phase, got.Status.PerNode)
+	if phaseOf(got) != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %s, want Ready (status %+v)", phaseOf(got), got.Status.PerNode)
 	}
 	if got.Status.PerNode[nodeA].DevicePath != fb.DevicePath(volPvc1) {
 		t.Fatalf("backing not recovered: %+v", got.Status.PerNode)
@@ -442,8 +449,8 @@ func TestReconcileSourceSnapshotGoneAndDeviceMissingParks(t *testing.T) {
 	if err := c.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase != miroirv1alpha1.VolumeFailed {
-		t.Fatalf("phase = %s, want Failed", got.Status.Phase)
+	if phaseOf(got) != miroirv1alpha1.VolumeFailed {
+		t.Fatalf("phase = %s, want Failed", phaseOf(got))
 	}
 	if msg := got.Status.PerNode[nodeA].Message; !strings.Contains(msg, "no longer exists") {
 		t.Fatalf("Message must name the missing snapshot, got %q", msg)
@@ -546,8 +553,8 @@ func TestReconcileReplicatedVolume(t *testing.T) {
 	if got.Status.PerNode[nodeA].SizeBytes != 1<<30 {
 		t.Fatalf("size must publish after DRBD resize, got %d", got.Status.PerNode[nodeA].SizeBytes)
 	}
-	if got.Status.Phase != miroirv1alpha1.VolumeReady {
-		t.Fatalf("phase = %s, want Ready with both legs UpToDate", got.Status.Phase)
+	if phaseOf(got) != miroirv1alpha1.VolumeReady {
+		t.Fatalf("phase = %s, want Ready with both legs UpToDate", phaseOf(got))
 	}
 }
 
@@ -3038,7 +3045,7 @@ func TestComputePhaseMixing(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, gotReady := computePhase(tc.vol)
+			got, gotReady := computePhase(tc.vol, time.Now())
 			if got != tc.want {
 				t.Fatalf("phase = %s, want %s", got, tc.want)
 			}
@@ -3412,43 +3419,47 @@ func TestReconcileFastPathInvalidatedByStatusDrift(t *testing.T) {
 	}
 }
 
-// A phase contradicting the per-node slots breaks the fingerprint: a
-// sibling's concurrent full pass can force-apply a phase computed from a
-// stale informer cache after this leg's correct write (issue #279), and no
-// later kernel event breaks statusEqual, so only the recompute can route
-// the repair through the full pipeline.
-func TestReconcileFastPathInvalidatedByStalePhase(t *testing.T) {
+// Phase and ReadyReplicas belong to the controller's PhaseReconciler: a
+// full pass publishes this leg's slot and leaves both alone, even where
+// they contradict the slots, and a contradiction never breaks the
+// fingerprint.
+func TestReconcileLeavesPhaseToController(t *testing.T) {
 	_, fe, r := steadyVolume(t)
 	reconcile(t, r, volPvc1) // full pass, stores the fingerprint
-	adjusts := countCalls(fe, "adjust")
 
-	// The peer's slot reached UpToDate but a stale apply left the phase
-	// behind at Degraded.
 	got := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, got); err != nil {
 		t.Fatal(err)
 	}
-	got.Status.PerNode[nodeB] = miroirv1alpha1.ReplicaStatus{
-		DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30, Connected: true,
+	if got.Status.Phase != "" || got.Status.ReadyReplicas != "" {
+		t.Fatalf("agent wrote phase %q, readyReplicas %q; both are the controller's",
+			got.Status.Phase, got.Status.ReadyReplicas)
 	}
-	got.Status.Phase = miroirv1alpha1.VolumeDegraded
+	// nodeB has no slot, so the slots derive Degraded 1/2.
+	got.Status.Phase = miroirv1alpha1.VolumeReady
+	got.Status.ReadyReplicas = "2/2"
 	if err := r.Status().Update(t.Context(), got); err != nil {
 		t.Fatal(err)
 	}
+	adjusts := countCalls(fe, "adjust")
 
 	reconcile(t, r, volPvc1)
+	if n := countCalls(fe, "adjust"); n != adjusts {
+		t.Fatalf("a phase mismatch must not leave the fast path: %v", fe.calls)
+	}
+
+	r.dropRealized(volPvc1)
+	reconcile(t, r, volPvc1)
 	if n := countCalls(fe, "adjust"); n <= adjusts {
-		t.Fatalf("stale phase must force the full pipeline: %v", fe.calls)
+		t.Fatalf("want a full pass after dropping the fingerprint: %v", fe.calls)
 	}
 	after := &miroirv1alpha1.MiroirVolume{}
 	if err := r.Get(t.Context(), types.NamespacedName{Name: volPvc1}, after); err != nil {
 		t.Fatal(err)
 	}
-	if after.Status.Phase != miroirv1alpha1.VolumeReady {
-		t.Fatalf("phase = %q, want %q", after.Status.Phase, miroirv1alpha1.VolumeReady)
-	}
-	if after.Status.ReadyReplicas != "2/2" {
-		t.Fatalf("readyReplicas = %q, want %q", after.Status.ReadyReplicas, "2/2")
+	if after.Status.Phase != miroirv1alpha1.VolumeReady || after.Status.ReadyReplicas != "2/2" {
+		t.Fatalf("full pass rewrote phase %q, readyReplicas %q",
+			after.Status.Phase, after.Status.ReadyReplicas)
 	}
 }
 
@@ -4631,8 +4642,8 @@ func TestReconcileMissingBackingClearsDeviceCreated(t *testing.T) {
 	if !st.DeviceCreated {
 		t.Fatalf("backing was re-created by the reconcile; DeviceCreated must be true: %+v", st)
 	}
-	if got.Status.Phase != miroirv1alpha1.VolumeReady {
-		t.Fatalf("after realizing the fresh backing, phase = %s, want Ready", got.Status.Phase)
+	if phaseOf(got) != miroirv1alpha1.VolumeReady {
+		t.Fatalf("after realizing the fresh backing, phase = %s, want Ready", phaseOf(got))
 	}
 	// DeviceCreated reflects the current reality, and LastProbedAt is fresh.
 	if st.LastProbedAt == nil {
