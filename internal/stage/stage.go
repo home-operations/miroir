@@ -130,6 +130,9 @@ func Device(ctx context.Context, d Deps, volumeID string) (string, *miroirv1alph
 		if err := HoldForSplitRecovery(vol, d.NodeName, live); err != nil {
 			return "", nil, err
 		}
+		if err := HoldForRestoreGrow(vol); err != nil {
+			return "", nil, err
+		}
 	}
 	return st.DevicePath, vol, nil
 }
@@ -171,6 +174,38 @@ func HoldForSplitRecovery(vol *miroirv1alpha1.MiroirVolume, self string, live dr
 		}
 	}
 	return nil
+}
+
+// HoldForRestoreGrow returns the Unavailable hold for the first stage of a
+// replicated restore whose DRBD device has not grown to the claim yet (issue
+// #499), nil otherwise. A restore clone is born at the snapshot's size, and
+// only the resize coordinator (the first diskful replica) grows the DRBD
+// device, reporting the spec size once it has. The other legs report the
+// spec size as soon as their backing grows, which is enough for the volume
+// to provision Degraded, so a pod can stage before the grow lands. The
+// stage-time filesystem grow then compares the filesystem with a device of
+// the same size, does nothing, and the claim serves the snapshot's size
+// until the next stage. Only a never-activated volume is held: past its
+// first stage a volume grows through NodeExpandVolume, and a restage must
+// not wait on a coordinator that may be down. A coordinator latched failed
+// can never resize until a membership change replaces it, so its restore
+// is served at whatever size the device has rather than held forever; the
+// next stage after the change grows the filesystem. Shared by the diskful
+// and diskless staging paths.
+func HoldForRestoreGrow(vol *miroirv1alpha1.MiroirVolume) error {
+	if vol.Spec.DRBD == nil || vol.Spec.Source == nil || vol.Status.Activated {
+		return nil
+	}
+	coord := vol.Spec.FirstDiskfulReplica()
+	if coord == nil {
+		return nil
+	}
+	if slot := vol.Status.PerNode[coord.Node]; slot.DiskFailed || slot.SizeBytes >= vol.Spec.SizeBytes {
+		return nil
+	}
+	return status.Errorf(codes.Unavailable,
+		"volume %s is a restore still growing to %d bytes (resize coordinator %s has not reported it)",
+		vol.Name, vol.Spec.SizeBytes, coord.Node)
 }
 
 // EnsureFilesystem makes dev usable at target: mkfs-if-blank (exactly once

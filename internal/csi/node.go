@@ -77,8 +77,12 @@ type Node struct {
 }
 
 // Thawer lifts a filesystem freeze from a staging mountpoint before its
-// unmount; *agent.Freezer implements it.
+// unmount; *agent.Freezer implements it. HoldFreezes keeps snapshot rounds
+// from freezing between that thaw and the unmount; it only orders against
+// rounds that share the same Thawer, so the agent hands the node service
+// the freezer its snapshot reconcilers use.
 type Thawer interface {
+	HoldFreezes(ctx context.Context, target string) (release func(), err error)
 	ThawMountpoint(target string) error
 }
 
@@ -231,6 +235,9 @@ func (n *Node) disklessDevicePath(ctx context.Context, vol *miroirv1alpha1.Miroi
 	// divergent and disconnected. Staging here would latch Activated and
 	// close the auto-recovery that heals the loser.
 	if err := stage.HoldForSplitRecovery(vol, n.NodeName, live); err != nil {
+		return "", nil, err
+	}
+	if err := stage.HoldForRestoreGrow(vol); err != nil {
 		return "", nil, err
 	}
 	return st.DevicePath, vol, nil
@@ -449,12 +456,7 @@ func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolume
 	// has nothing left to open while the frozen device refuses every new
 	// mount — the catch-22 of issue #311. Best-effort: a failed thaw must
 	// never block unstage (the stage-time recovery is the backstop).
-	if n.Freezer != nil {
-		if err := n.Freezer.ThawMountpoint(req.GetStagingTargetPath()); err != nil {
-			log.Error(err, "cannot thaw the staging mount before unstage", "volume", req.GetVolumeId())
-		}
-	}
-	if err := cleanupMount(req.GetStagingTargetPath(), n.Mounter, n.Wedge); err != nil {
+	if err := n.thawAndUnmount(ctx, req.GetVolumeId(), req.GetStagingTargetPath()); err != nil {
 		return nil, status.Errorf(codes.Internal, "unstage: %v", err)
 	}
 	// A client leg follows its consumer: with the device released, drop the
@@ -463,6 +465,23 @@ func (n *Node) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolume
 		return nil, err
 	}
 	return &csi.NodeUnstageVolumeResponse{}, nil
+}
+
+// thawAndUnmount lifts any freeze on the staging mount and unmounts it,
+// with snapshot-round freezes of that device held off in between (see
+// Thawer).
+func (n *Node) thawAndUnmount(ctx context.Context, volumeID, target string) error {
+	if n.Freezer != nil {
+		release, err := n.Freezer.HoldFreezes(ctx, target)
+		if err != nil {
+			return fmt.Errorf("wait for a snapshot freeze of %s to finish: %w", target, err)
+		}
+		defer release()
+		if err := n.Freezer.ThawMountpoint(target); err != nil {
+			log.Error(err, "cannot thaw the staging mount before unstage", "volume", volumeID)
+		}
+	}
+	return cleanupMount(target, n.Mounter, n.Wedge)
 }
 
 // NodePublishVolume bind-mounts the staged volume (or the raw device) into

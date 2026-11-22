@@ -39,7 +39,10 @@ import (
 	"github.com/home-operations/miroir/internal/drbd"
 )
 
-const snapName = "snap-1"
+const (
+	snapName = "snap-1"
+	nodeA    = "node-a"
+)
 
 type statusOnlyDRBD struct{}
 
@@ -239,7 +242,7 @@ func ensureDeps(t *testing.T, vol *miroirv1alpha1.MiroirVolume, fm *mount.FakeMo
 	c := fakeclient.NewClientBuilder().WithScheme(s).
 		WithStatusSubresource(&miroirv1alpha1.MiroirVolume{}).
 		WithObjects(vol).Build()
-	return Deps{Client: c, NodeName: "node-a", DRBD: statusOnlyDRBD{},
+	return Deps{Client: c, NodeName: nodeA, DRBD: statusOnlyDRBD{},
 		Mounter: mount.NewSafeFormatAndMount(fm, fe)}
 }
 
@@ -392,5 +395,66 @@ func TestXFSCloneMountFlagsSkipsOtherFilesystemsAndSources(t *testing.T) {
 	withNoUUID := []string{"nouuid"}
 	if got := xfsCloneMountFlags(vol, "xfs", withNoUUID); !slices.Equal(got, withNoUUID) {
 		t.Fatalf("existing nouuid flags = %v, want %v", got, withNoUUID)
+	}
+}
+
+// growingRestore is a two-leg replicated restore into a 2 GiB claim, cloned
+// from a 1 GiB snapshot. coordSize is what the resize coordinator (node-a,
+// the first diskful leg) last reported; node-b reports the full size, as a
+// non-coordinator leg does once its backing grows.
+func growingRestore(coordSize int64) *miroirv1alpha1.MiroirVolume {
+	vol := restoredVolume()
+	vol.Spec.SizeBytes = 2 << 30
+	vol.Spec.Replicas = []miroirv1alpha1.Replica{{Node: nodeA}, {Node: "node-b"}}
+	vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA:    {DeviceCreated: true, SizeBytes: coordSize},
+		"node-b": {DeviceCreated: true, SizeBytes: 2 << 30},
+	}
+	return vol
+}
+
+// A restore into a larger claim must not stage until the coordinator has
+// grown the DRBD device: the stage-time filesystem grow would see the
+// filesystem at the device's size and leave it at the snapshot's (#499).
+func TestHoldForRestoreGrow(t *testing.T) {
+	tieBreakerFirst := growingRestore(1 << 30)
+	tieBreakerFirst.Spec.Replicas = append([]miroirv1alpha1.Replica{{Node: "node-c", Diskless: true}},
+		tieBreakerFirst.Spec.Replicas...)
+	activated := growingRestore(1 << 30)
+	activated.Status.Activated = true
+	unreplicated := growingRestore(1 << 30)
+	unreplicated.Spec.DRBD = nil
+	fresh := growingRestore(0)
+	fresh.Spec.Source = nil
+	failedCoord := growingRestore(0)
+	failedCoord.Status.PerNode[nodeA] = miroirv1alpha1.ReplicaStatus{DeviceCreated: true, DiskFailed: true}
+
+	cases := []struct {
+		name string
+		vol  *miroirv1alpha1.MiroirVolume
+		hold bool
+	}{
+		{"coordinator still at the snapshot size", growingRestore(1 << 30), true},
+		{"coordinator not reported yet", growingRestore(0), true},
+		{"coordinator grown", growingRestore(2 << 30), false},
+		{"a leading tie-breaker is not the coordinator", tieBreakerFirst, true},
+		{"an activated volume grows through NodeExpandVolume", activated, false},
+		{"an unreplicated restore is grown before it reports", unreplicated, false},
+		{"a fresh volume is born at size", fresh, false},
+		{"a latched-failed coordinator can never resize", failedCoord, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := HoldForRestoreGrow(tc.vol)
+			if !tc.hold {
+				if err != nil {
+					t.Fatalf("want no hold, got %v", err)
+				}
+				return
+			}
+			if status.Code(err) != codes.Unavailable {
+				t.Fatalf("want Unavailable so the CO retries, got %v", err)
+			}
+		})
 	}
 }

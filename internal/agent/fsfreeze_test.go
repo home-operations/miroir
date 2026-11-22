@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -335,5 +336,160 @@ func TestRawBlockBindNeverMatches(t *testing.T) {
 	mp, err := f.Freeze(t.Context(), "/dev/drbd1001")
 	if err != nil || mp != "" {
 		t.Fatalf("raw-block volumes have nothing to freeze, got %q, %v", mp, err)
+	}
+}
+
+const (
+	stagingMount = "/var/lib/kubelet/plugins/kubernetes.io/csi/miroir/abc/globalmount"
+	mntStage2    = "/mnt/stage-2"
+)
+
+// A staging unmount holds freezes off across its thaw and unmount: a freeze
+// that arrives in between waits, then finds the filesystem gone instead of
+// freezing it just before the unmount (#311). Without the hold the freeze
+// landed on a mount the unstage had already thawed and was about to
+// remove, leaving the device frozen with no mountpoint to thaw it through.
+func TestFreezeWaitsForAHeldUnmount(t *testing.T) {
+	rec := &ioctlRecorder{}
+	var mu sync.Mutex
+	mounted := true
+	f := testFreezer(rec)
+	f.mountinfo = func() ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !mounted {
+			return nil, nil
+		}
+		return []byte(testMountinfo), nil
+	}
+
+	release, err := f.HoldFreezes(t.Context(), stagingMount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		mp, err := f.Freeze(t.Context(), devDrbd1000)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- mp
+	}()
+	select {
+	case mp := <-done:
+		t.Fatalf("freeze ran while an unmount held freezes off (froze %q)", mp)
+	case <-time.After(50 * time.Millisecond):
+	}
+	mu.Lock()
+	mounted = false
+	mu.Unlock()
+	release()
+
+	if mp := <-done; mp != "" {
+		t.Fatalf("freeze after the unmount must find nothing mounted, froze %q", mp)
+	}
+	if got := rec.recorded(); len(got) != 0 {
+		t.Fatalf("no ioctl may reach an unmounted filesystem, got %v", got)
+	}
+}
+
+// A freeze that outlives its deadline keeps the device's slot until its
+// watcher has thawed the late freeze: an unmount taking the slot sooner
+// could remove the mountpoint between the freeze landing and the thaw.
+func TestTimedOutFreezeHoldsUnmountUntilThawed(t *testing.T) {
+	rec := &ioctlRecorder{}
+	landFreeze, finishThaw := make(chan struct{}), make(chan struct{})
+	f := testFreezer(rec)
+	f.ioctl = func(mountpoint string, req uint) error {
+		switch req {
+		case fiFreeze:
+			<-landFreeze
+		case fiThaw:
+			<-finishThaw
+		}
+		return rec.ioctl(mountpoint, req)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := f.Freeze(ctx, devDrbd1000); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want the freeze to time out, got %v", err)
+	}
+
+	held := make(chan struct{})
+	go func() {
+		release, err := f.HoldFreezes(t.Context(), stagingMount)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer release()
+		close(held)
+	}()
+	select {
+	case <-held:
+		t.Fatal("the unmount took the device before the late freeze landed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(landFreeze)
+	select {
+	case <-held:
+		t.Fatal("the unmount took the device while the late freeze was still being thawed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(finishThaw)
+	<-held
+	want := []string{"freeze " + stagingMount, "thaw " + stagingMount}
+	if got := rec.recorded(); !slices.Equal(got, want) {
+		t.Fatalf("ioctls = %v, want %v before the unmount could proceed", got, want)
+	}
+}
+
+// The slot is per device: a freeze stuck on one volume never stalls the
+// unstage of another.
+func TestHoldFreezesIsPerDevice(t *testing.T) {
+	rec := &ioctlRecorder{}
+	f := mountedFreezer(rec, map[string]string{"/dev/drbd1001": mntStage1, "/dev/drbd1002": mntStage2})
+	release, err := f.HoldFreezes(t.Context(), mntStage1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if mp, err := f.Freeze(ctx, "/dev/drbd1002"); err != nil || mp != mntStage2 {
+		t.Fatalf("a hold on another device must not block this freeze: %q, %v", mp, err)
+	}
+}
+
+// A waiter gives up with its context instead of queueing forever behind a
+// freeze that never returns.
+func TestHoldFreezesHonoursContext(t *testing.T) {
+	f := testFreezer(&ioctlRecorder{})
+	release, err := f.HoldFreezes(t.Context(), stagingMount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := f.HoldFreezes(ctx, stagingMount); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want the second hold to give up with its context, got %v", err)
+	}
+}
+
+// Only block-device mounts are ordered: an NFS staging mount (major 0, not
+// btrfs) or a path that is not mounted needs no slot.
+func TestHoldFreezesSkipsNonBlockMounts(t *testing.T) {
+	f := testFreezer(&ioctlRecorder{})
+	f.mountinfo = func() ([]byte, error) {
+		return []byte("50 21 0:52 / /stage/nfs rw - nfs4 10.0.0.1:/pvc-1 rw\n"), nil
+	}
+	for _, target := range []string{"/stage/nfs", "/not/mounted"} {
+		release, err := f.HoldFreezes(t.Context(), target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release()
 	}
 }
