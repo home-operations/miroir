@@ -189,12 +189,16 @@ func (r *VolumeReconciler) latchActivated(ctx context.Context, vol *miroirv1alph
 // this agent's stale read.
 //
 // Phase and ReadyReplicas it can only withdraw: a Ready published while this
-// node's diskful leg is out of service is untrue, so the same apply blanks
-// both. A volume whose controller is down then reads as underived, never as
-// a stale Ready that an operator's drain gate would pass. The test is on the
+// node's diskful leg is not ready is untrue, so the same apply blanks both.
+// A volume whose controller is down then reads as underived, never as a
+// stale Ready that an operator's drain gate would pass. The test is on the
 // state, not on the transition, so a failed apply, a lagging informer or a
 // late controller write is withdrawn by whichever pass sees it next (see
-// fastPath). The controller takes the fields back with the phase it derives.
+// fastPath), and it uses the controller's own definition of a ready leg
+// (legReady), probe age included: a leg whose passes keep failing
+// re-publishes its last good slot with only the Message changed
+// (reportError), and that slot stops counting once its probe goes stale.
+// The controller takes the fields back with the phase it derives.
 func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, mine miroirv1alpha1.ReplicaStatus) error {
 	if vol.Status.PerNode == nil {
 		vol.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{}
@@ -205,7 +209,7 @@ func (r *VolumeReconciler) patchStatus(ctx context.Context, vol *miroirv1alpha1.
 		WithPerNode(map[string]acv1alpha1.ReplicaStatusApplyConfiguration{
 			r.NodeName: *replicaStatusAC(mine),
 		})
-	withdraw := vol.Status.Phase == miroirv1alpha1.VolumeReady && legBlocksReady(vol, r.NodeName, mine)
+	withdraw := vol.Status.Phase == miroirv1alpha1.VolumeReady && legBlocksReady(vol, r.NodeName, mine, time.Now())
 	if withdraw {
 		status = status.WithPhase("").WithReadyReplicas("")
 	}

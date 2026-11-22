@@ -385,7 +385,7 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 	// slots), and no kernel event breaks the fingerprint for it. The full
 	// pipeline withdraws it; see patchStatus.
 	if vol.Status.Phase == miroirv1alpha1.VolumeReady &&
-		legBlocksReady(vol, r.NodeName, vol.Status.PerNode[r.NodeName]) {
+		legBlocksReady(vol, r.NodeName, vol.Status.PerNode[r.NodeName], time.Now()) {
 		return false, ctrl.Result{}
 	}
 	if !entry.replicated {

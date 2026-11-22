@@ -3539,12 +3539,68 @@ func TestReconcileWithdrawsReadyWhileLegOutOfService(t *testing.T) {
 	}
 }
 
-// A diskless leg holds no data and feeds nothing into the phase: its slot
-// never reads as serving, and that must not withdraw a Ready.
-func TestLegBlocksReadyIgnoresDisklessAndForeignLegs(t *testing.T) {
+// A leg whose passes keep failing re-publishes its last good slot with only
+// the Message changed. That slot vouches for a Ready until its probe goes
+// stale, and not after.
+func TestReconcileWithdrawsReadyOnceFailingLegGoesUnprobed(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		probedAgo    time.Duration
+		wantWithdraw bool
+	}{
+		{"fresh probe", time.Minute, false},
+		{"stale probe", StaleProbeThreshold + time.Minute, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, fe, r := steadyVolume(t)
+			key := types.NamespacedName{Name: volPvc1}
+			got := &miroirv1alpha1.MiroirVolume{}
+			if err := r.Get(t.Context(), key, got); err != nil {
+				t.Fatal(err)
+			}
+			got.Status.Phase = miroirv1alpha1.VolumeReady
+			got.Status.PerNode[nodeA] = miroirv1alpha1.ReplicaStatus{
+				DeviceCreated: true, DiskState: diskStateUpToDate, SizeBytes: 1 << 30, Connected: true,
+				LastProbedAt: ptrTime(time.Now().Add(-tc.probedAgo)),
+			}
+			if err := r.Status().Update(t.Context(), got); err != nil {
+				t.Fatal(err)
+			}
+			var last *acv1alpha1.MiroirVolumeStatusApplyConfiguration
+			r.Client = interceptor.NewClient(r.Client.(client.WithWatch), interceptor.Funcs{
+				SubResourceApply: func(ctx context.Context, cl client.Client, sub string,
+					obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+					if ac, ok := obj.(*acv1alpha1.MiroirVolumeApplyConfiguration); ok && ac.Status != nil {
+						last = ac.Status
+					}
+					return cl.SubResource(sub).Apply(ctx, obj, opts...)
+				},
+			})
+
+			fe.errOn = map[string]error{"drbdadm adjust": errors.New("adjust failed")}
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err == nil {
+				t.Fatal("want the adjust failure to requeue")
+			}
+			if last == nil || last.PerNode[nodeA].Message == nil {
+				t.Fatalf("the failing pass must report its error on the slot, got %+v", last)
+			}
+			if withdrew := last.Phase != nil && *last.Phase == ""; withdrew != tc.wantWithdraw {
+				t.Fatalf("withdrew Ready = %v, want %v (apply %+v)", withdrew, tc.wantWithdraw, last)
+			}
+		})
+	}
+}
+
+// legBlocksReady applies the controller's own test of a ready leg to this
+// node's slot, and only where the node holds a diskful replica: a diskless
+// leg's slot never reads as realized, and that must not withdraw a Ready.
+func TestLegBlocksReady(t *testing.T) {
+	now := time.Now()
 	v := vol(volPvc1, nodeA, nodeB)
 	v.Spec.Replicas[1].Diskless = true
 	serving := miroirv1alpha1.ReplicaStatus{DeviceCreated: true, SizeBytes: 1 << 30}
+	stale := serving
+	stale.LastProbedAt = ptrTime(now.Add(-StaleProbeThreshold - time.Minute))
 	cases := []struct {
 		name string
 		node string
@@ -3554,12 +3610,13 @@ func TestLegBlocksReadyIgnoresDisklessAndForeignLegs(t *testing.T) {
 		{"diskful leg in service", nodeA, serving, false},
 		{"diskful leg without a device", nodeA, miroirv1alpha1.ReplicaStatus{}, true},
 		{"diskful leg below the spec size", nodeA, miroirv1alpha1.ReplicaStatus{DeviceCreated: true, SizeBytes: 1 << 20}, true},
+		{"diskful leg whose healthy slot went unprobed", nodeA, stale, true},
 		{"diskless leg", nodeB, miroirv1alpha1.ReplicaStatus{Diskless: true}, false},
 		{"node without a replica", "node-x", miroirv1alpha1.ReplicaStatus{}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := legBlocksReady(v, tc.node, tc.st); got != tc.want {
+			if got := legBlocksReady(v, tc.node, tc.st, now); got != tc.want {
 				t.Fatalf("legBlocksReady = %v, want %v", got, tc.want)
 			}
 		})

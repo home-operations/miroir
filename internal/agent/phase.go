@@ -138,20 +138,26 @@ func legRealized(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStat
 		(vol.Spec.DRBD == nil || st.DiskState == drbd.DiskUpToDate)
 }
 
-// legServing reports whether a realized leg is also operational: connected
-// to its diskful peers when replicated. Probe age is left out; only the
-// controller's clock judges it.
-func legServing(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStatus) bool {
-	return legRealized(vol, st) && (vol.Spec.DRBD == nil || st.Connected)
+// legReady reports whether a diskful leg's slot counts toward Ready: realized,
+// connected to its diskful peers when replicated, and probed recently. A
+// LastProbedAt older than StaleProbeThreshold means the agent can no longer
+// reach the node-local resources, so the leg is not ready even where its
+// persisted fields still read healthy. A nil LastProbedAt (a volume from
+// before the field existed) trusts the persisted fields.
+func legReady(vol *miroirv1alpha1.MiroirVolume, st miroirv1alpha1.ReplicaStatus, now time.Time) bool {
+	if !legRealized(vol, st) || (vol.Spec.DRBD != nil && !st.Connected) {
+		return false
+	}
+	return st.LastProbedAt == nil || now.Sub(st.LastProbedAt.Time) <= StaleProbeThreshold
 }
 
 // legBlocksReady reports whether st, node's slot, rules out a Ready phase:
-// node holds a diskful replica that is not in service.
-func legBlocksReady(vol *miroirv1alpha1.MiroirVolume, node string, st miroirv1alpha1.ReplicaStatus) bool {
+// node holds a diskful replica that is not ready.
+func legBlocksReady(vol *miroirv1alpha1.MiroirVolume, node string, st miroirv1alpha1.ReplicaStatus, now time.Time) bool {
 	diskful := slices.ContainsFunc(vol.Spec.DiskfulReplicas(), func(rep miroirv1alpha1.Replica) bool {
 		return rep.Node == node
 	})
-	return diskful && !legServing(vol, st)
+	return diskful && !legReady(vol, st, now)
 }
 
 // computePhase aggregates per-node states into the volume phase the CSI
@@ -173,16 +179,8 @@ func computePhase(vol *miroirv1alpha1.MiroirVolume, now time.Time) (miroirv1alph
 			// Keep current data separate from operational readiness so an
 			// established but disconnected volume is Degraded, not Creating.
 			realized++
-			if legServing(vol, st) {
-				// Staleness gate: a replica whose LastProbedAt is set and
-				// exceeds StaleProbeThreshold means the agent can no longer
-				// reach the node-local resources. Treat it as realized but
-				// NOT ready — even if Connected=true — so the phase is
-				// Degraded, not Ready. Nil LastProbedAt (legacy volume) uses
-				// backward-compatible behavior: trust the persisted fields.
-				if st.LastProbedAt == nil || now.Sub(st.LastProbedAt.Time) <= StaleProbeThreshold {
-					ready++
-				}
+			if legReady(vol, st, now) {
+				ready++
 			}
 		case ok && st.Message != "" && !st.DeviceCreated:
 			// Hard failure: the backing device never materialised.
