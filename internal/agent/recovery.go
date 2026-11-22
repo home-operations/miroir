@@ -35,41 +35,105 @@ import (
 // errSplitBrain gives the split-brain transition log a real error value.
 var errSplitBrain = errors.New("DRBD split-brain detected")
 
-// recoverSplitBrain reacts to a split-brain, seen locally (a StandAlone
-// connection) or reported by a peer's status slot. A volume that never held
-// data holds nothing to lose, so it applies ResolveSplitBrain to self-heal —
-// the safety net for volumes born under releases whose per-node day0
-// seeding could birth-diverge (issue #139; the birth generation now makes
-// that impossible for new volumes). "Held data" is either Activated
-// (staged for a consumer) or Formatted (carries a filesystem) — Formatted
-// latches before the grow-to-fill step, so a formatted volume whose stage
-// failed at resize is still covered. Such a volume logs the manual remedy on
-// the transition edge (only where the split is locally visible — the losing
-// leg's own slot never records it, so it would log every poll) and is left
-// for an operator.
+// splitStep is what one pass does about a split-brain.
+type splitStep int
+
+const (
+	// splitIdle: no split, or one still inside the floor.
+	splitIdle splitStep = iota
+	// splitWatch: the volume held data and the operator has been told.
+	splitWatch
+	// splitReport: the volume held data and this is the transition edge;
+	// log the manual remedy.
+	splitReport
+	// splitResolve: the volume never held data; discard one generation.
+	splitResolve
+)
+
+// peerCycle is one peer connection whose handshake a pass re-runs.
+type peerCycle struct {
+	peerID int32
+	// stalledTarget selects the forced fallback a stalled resync target
+	// needs (drbd.Driver.CycleStalledTargetConnection).
+	stalledTarget bool
+}
+
+// planSplitBrain decides what one pass does about a split-brain, seen
+// locally (a StandAlone connection) or reported by a peer's status slot. Like
+// planStuckResync it reads only its arguments, so its rules can be tested
+// against a status and a clock without a kernel or an exec fake;
+// runRecovery carries both plans out. active keeps the volume out of the
+// fast path, which a split does not break by itself.
 //
-// Entry is floored to once per poll interval: connection flaps — recovery's
+// The losing leg of a split never parks StandAlone locally (it sits
+// Connecting while the survivor refuses the handshake), so its only signal
+// that it must discard is a peer's report; that one is gated on !connected
+// so a stale report cannot churn a healthy volume.
+//
+// A volume that never held data holds nothing to lose, so the step is
+// splitResolve: ResolveSplitBrain self-heals it, the safety net for volumes
+// born under releases whose per-node day0 seeding could birth-diverge (issue
+// #139; the birth generation now makes that impossible for new volumes).
+// "Held data" is either Activated (staged for a consumer) or Formatted
+// (carries a filesystem). Formatted latches before the grow-to-fill step, so
+// a formatted volume whose stage failed at resize is still covered. Such a
+// volume reports the manual remedy on the transition edge (only where the
+// split is locally visible: the losing leg's own slot never records it, so
+// it would report every poll) and is left for an operator.
+//
+// Entry is floored to once per poll interval: connection flaps (recovery's
 // own, and drbdadm adjust auto-reconnecting a parked StandAlone leg every
-// pass — each emit a DRBD event that requeues the volume, re-entering here
-// several times per second. The floor caps both the recovery
-// attempts and the manual-remedy log, whose transition edge the flapping
-// status slot keeps re-opening. Failures are retried on a later poll — the
-// split state is never fast-path cached.
-func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, localSplit bool) {
+// pass) each emit a DRBD event that requeues the volume, re-entering here
+// several times per second. The floor caps both the recovery attempts and
+// the manual-remedy log, whose transition edge the flapping status slot
+// keeps re-opening. Failures are retried on a later poll; the split state is
+// never fast-path cached.
+func planSplitBrain(vol *miroirv1alpha1.MiroirVolume, node string, st drbd.Status, connected bool, last, now time.Time) (active bool, step splitStep, next time.Time) {
+	if !st.SplitBrain && (connected || !peerReportedSplitBrain(vol, node)) {
+		return false, splitIdle, last
+	}
+	if now.Sub(last) < drbdPollInterval {
+		return true, splitIdle, last
+	}
+	switch {
+	case !vol.Status.Activated && !vol.Status.Formatted:
+		return true, splitResolve, now
+	case st.SplitBrain && !vol.Status.PerNode[node].SplitBrain:
+		return true, splitReport, now
+	default:
+		return true, splitWatch, now
+	}
+}
+
+// runRecovery works this pass's replication faults: for the split-brain and
+// then for the stranded bitmaps it plans against the volume's clock, stores
+// the clock and carries the plan out. The second plan is made only after the
+// first has run, so its clock starts once split-brain recovery is done with
+// the connections. It reports whether recovery is live, which keeps the
+// volume out of the fast path.
+func (r *VolumeReconciler) runRecovery(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, st drbd.Status, connected, localDiskless bool) bool {
+	splitActive := r.runSplitBrain(ctx, vol, res, st, connected)
+	stuckActive := r.runStuckResync(ctx, vol, st, localDiskless)
+	return splitActive || stuckActive
+}
+
+func (r *VolumeReconciler) runSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, st drbd.Status, connected bool) bool {
 	r.recoveryMu.Lock()
-	if time.Since(r.lastRecovery[vol.Name]) < drbdPollInterval {
-		r.recoveryMu.Unlock()
-		return
+	active, step, next := planSplitBrain(vol, r.NodeName, st, connected, r.lastRecovery[vol.Name], time.Now())
+	if step != splitIdle {
+		if r.lastRecovery == nil {
+			r.lastRecovery = map[string]time.Time{}
+		}
+		r.lastRecovery[vol.Name] = next
 	}
-	if r.lastRecovery == nil {
-		r.lastRecovery = map[string]time.Time{}
-	}
-	r.lastRecovery[vol.Name] = time.Now()
 	r.recoveryMu.Unlock()
+	if step == splitIdle {
+		return active
+	}
 
 	log := ctrl.LoggerFrom(ctx)
 	// The kernel log carries the handshake's actual verdict ("Split-Brain
-	// detected", "Unrelated data, aborting") — the status API only shows
+	// detected", "Unrelated data, aborting"); the status API only shows
 	// the resulting StandAlone. Captured before recovery mutates state,
 	// floored with it to once per poll interval.
 	kmsgPath := cmp.Or(r.KmsgPath, defaultKmsgPath)
@@ -78,18 +142,55 @@ func (r *VolumeReconciler) recoverSplitBrain(ctx context.Context, vol *miroirv1a
 	} else {
 		log.V(1).Info("kernel log unreadable at split-brain detection", "volume", vol.Name, "path", kmsgPath)
 	}
-	if vol.Status.Activated || vol.Status.Formatted {
-		if localSplit && !vol.Status.PerNode[r.NodeName].SplitBrain {
-			log.Error(errSplitBrain,
-				"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
-				"volume", vol.Name)
+	switch step {
+	case splitReport:
+		log.Error(errSplitBrain,
+			"manual resolution required (drbdadm connect --discard-my-data on the losing node)",
+			"volume", vol.Name)
+	case splitResolve:
+		log.Info("auto-recovering split-brain on never-written volume", "volume", vol.Name)
+		if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
+			log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)
 		}
-		return
 	}
-	log.Info("auto-recovering split-brain on never-written volume", "volume", vol.Name)
-	if err := r.DRBD.ResolveSplitBrain(ctx, res); err != nil {
-		log.Error(err, "split-brain auto-recovery failed", "volume", vol.Name)
+	return active
+}
+
+func (r *VolumeReconciler) runStuckResync(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
+	r.recoveryMu.Lock()
+	var mark *stuckMark
+	if m, ok := r.stuckSince[vol.Name]; ok {
+		mark = &m
 	}
+	active, cycles, next := planStuckResync(vol, r.NodeName, st, localDiskless, mark, time.Now())
+	if next == nil {
+		delete(r.stuckSince, vol.Name)
+	} else {
+		if r.stuckSince == nil {
+			r.stuckSince = map[string]stuckMark{}
+		}
+		r.stuckSince[vol.Name] = *next
+	}
+	r.recoveryMu.Unlock()
+
+	log := ctrl.LoggerFrom(ctx)
+	for _, c := range cycles {
+		log.Info("cycling peer connection to re-run the sync handshake (resync never settled, no resync running)",
+			"volume", vol.Name, "peerNodeID", c.peerID, "outOfSyncKiB", st.OutOfSyncKiB)
+		cycle := r.DRBD.CyclePeerConnection
+		if c.stalledTarget {
+			cycle = r.DRBD.CycleStalledTargetConnection
+		}
+		if err := cycle(ctx, vol.Name, c.peerID); err != nil {
+			log.Error(err, "stuck-resync connection cycle failed", "volume", vol.Name, "peerNodeID", c.peerID)
+			continue
+		}
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "StuckResyncRecovered", "CycleConnection",
+				"DRBD left the resync toward peer node %d unsettled with no resync running; cycled the connection so the handshake resolves it", c.peerID)
+		}
+	}
+	return active
 }
 
 // peerReportedSplitBrain reports whether any other node's status slot
@@ -108,7 +209,7 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 	return false
 }
 
-// recoverStuckResync heals the resync states DRBD leaves behind with
+// planStuckResync heals the resync states DRBD leaves behind with
 // nothing to drain them:
 //
 //   - A resync armed but never started: a rapid
@@ -153,67 +254,41 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 // The signature must persist through a full poll interval before recovery
 // runs: a status snapshot can catch a live handshake between setting the
 // bitmap and starting its resync, and cycling that would abort real work.
-// Each attempt re-arms the window, flooring retries. Returns true while the
-// signature is live so the caller keeps the volume out of the fast path —
-// the stuck state is otherwise steady, and a stored fingerprint would park
-// the confirmation clock unread.
-func (r *VolumeReconciler) recoverStuckResync(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, st drbd.Status, localDiskless bool) bool {
+// mark is that confirmation clock: a changed candidate set restarts the wait
+// so a newly seen peer never rides an older peer's clock, and each attempt
+// re-arms the window, flooring retries. active is true while the signature
+// is live so the caller keeps the volume out of the fast path: the stuck
+// state is otherwise steady, and a stored fingerprint would park the
+// confirmation clock unread.
+func planStuckResync(vol *miroirv1alpha1.MiroirVolume, node string, st drbd.Status, localDiskless bool, mark *stuckMark, now time.Time) (active bool, cycle []peerCycle, next *stuckMark) {
 	peers := st.StuckResyncPeers
-	if r.staleBitmapActionable(vol, st) {
+	if staleBitmapActionable(vol, node, st) {
 		peers = mergePeers(peers, st.StaleBitmapPeers)
 	}
 	var stalled map[int32]bool
-	if r.unsettledResyncActionable(vol, st) {
+	if unsettledResyncActionable(vol, node, st, now) {
 		stalled = st.UnsettledResyncPeers
 		peers = mergePeers(peers, stalled)
 	}
 	// A diskless leg holds no bitmap, so it can never be the stranded
 	// side; whatever it sees is a diskful pair's business to resolve.
 	if localDiskless || len(peers) == 0 {
-		r.recoveryMu.Lock()
-		delete(r.stuckSince, vol.Name)
-		r.recoveryMu.Unlock()
 		// A stalled target its gate holds back stays out of the fast
 		// path: the gate reads the other legs' status slots, which no
 		// kernel event re-breaks the fingerprint for.
-		return len(st.UnsettledResyncPeers) > 0
+		return len(st.UnsettledResyncPeers) > 0, nil, nil
 	}
 	key := stuckPeerKey(peers)
-	r.recoveryMu.Lock()
-	mark, seen := r.stuckSince[vol.Name]
-	if !seen || mark.peers != key {
-		if r.stuckSince == nil {
-			r.stuckSince = map[string]stuckMark{}
-		}
-		r.stuckSince[vol.Name] = stuckMark{since: time.Now(), peers: key}
-		r.recoveryMu.Unlock()
-		return true
+	if mark == nil || mark.peers != key {
+		return true, nil, &stuckMark{since: now, peers: key}
 	}
-	if time.Since(mark.since) < drbdPollInterval {
-		r.recoveryMu.Unlock()
-		return true
+	if now.Sub(mark.since) < drbdPollInterval {
+		return true, nil, mark
 	}
-	r.stuckSince[vol.Name] = stuckMark{since: time.Now(), peers: key}
-	r.recoveryMu.Unlock()
-
-	log := ctrl.LoggerFrom(ctx)
-	for peerID := range peers {
-		log.Info("cycling peer connection to re-run the sync handshake (resync never settled, no resync running)",
-			"volume", vol.Name, "peerNodeID", peerID, "outOfSyncKiB", st.OutOfSyncKiB)
-		cycle := r.DRBD.CyclePeerConnection
-		if stalled[peerID] {
-			cycle = r.DRBD.CycleStalledTargetConnection
-		}
-		if err := cycle(ctx, vol.Name, peerID); err != nil {
-			log.Error(err, "stuck-resync connection cycle failed", "volume", vol.Name, "peerNodeID", peerID)
-			continue
-		}
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vol, nil, corev1.EventTypeWarning, "StuckResyncRecovered", "CycleConnection",
-				"DRBD left the resync toward peer node %d unsettled with no resync running; cycled the connection so the handshake resolves it", peerID)
-		}
+	for _, peerID := range slices.Sorted(maps.Keys(peers)) {
+		cycle = append(cycle, peerCycle{peerID: peerID, stalledTarget: stalled[peerID]})
 	}
-	return true
+	return true, cycle, &stuckMark{since: now, peers: key}
 }
 
 // mergePeers unions two candidate sets without mutating either.
@@ -255,12 +330,12 @@ func stuckPeerKey(peers map[int32]bool) string {
 // no Primary at all, two Secondaries holding bits may be survivors of a
 // lost Primary, a state the kernel reconciles with its own resync on the
 // reconnect, so that case is left to the kernel rather than cycled here.
-func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
+func staleBitmapActionable(vol *miroirv1alpha1.MiroirVolume, node string, st drbd.Status) bool {
 	if len(st.StaleBitmapPeers) == 0 || st.DiskState != drbd.DiskUpToDate ||
 		!st.Quorum || st.Resyncing || st.SplitBrain || (!st.Primary && !st.PeerPrimary) {
 		return false
 	}
-	if !diskfulPeersConnected(st, vol, r.NodeName) || !diskfulPeersUpToDate(st, vol, r.NodeName) {
+	if !diskfulPeersConnected(st, vol, node) || !diskfulPeersUpToDate(st, vol, node) {
 		return false
 	}
 	if coord := vol.Spec.FirstDiskfulReplica(); coord != nil {
@@ -290,7 +365,7 @@ func (r *VolumeReconciler) staleBitmapActionable(vol *miroirv1alpha1.MiroirVolum
 // Primary may have come up behind it — and a crashed Primary's lingering
 // PrimarySince holds the case until its agent returns: both err toward
 // leaving the kernel to it.
-func (r *VolumeReconciler) unsettledResyncActionable(vol *miroirv1alpha1.MiroirVolume, st drbd.Status) bool {
+func unsettledResyncActionable(vol *miroirv1alpha1.MiroirVolume, node string, st drbd.Status, now time.Time) bool {
 	if len(st.UnsettledResyncPeers) == 0 || st.SplitBrain {
 		return false
 	}
@@ -298,12 +373,12 @@ func (r *VolumeReconciler) unsettledResyncActionable(vol *miroirv1alpha1.MiroirV
 		return true
 	}
 	for _, rep := range vol.Spec.Replicas {
-		if rep.Node != r.NodeName && rep.Address != "" && !slotRulesOutPrimary(vol, rep.Node) {
+		if rep.Node != node && rep.Address != "" && !slotRulesOutPrimary(vol, rep.Node, now) {
 			return false
 		}
 	}
 	for _, cl := range vol.Spec.Clients {
-		if cl.Address != "" && !slotRulesOutPrimary(vol, cl.Node) {
+		if cl.Address != "" && !slotRulesOutPrimary(vol, cl.Node, now) {
 			return false
 		}
 	}
@@ -312,22 +387,8 @@ func (r *VolumeReconciler) unsettledResyncActionable(vol *miroirv1alpha1.MiroirV
 
 // slotRulesOutPrimary reports whether a leg's status slot is fresh and
 // reports it not holding the Primary role.
-func slotRulesOutPrimary(vol *miroirv1alpha1.MiroirVolume, node string) bool {
+func slotRulesOutPrimary(vol *miroirv1alpha1.MiroirVolume, node string, now time.Time) bool {
 	slot, ok := vol.Status.PerNode[node]
 	return ok && slot.PrimarySince == nil && slot.LastProbedAt != nil &&
-		time.Since(slot.LastProbedAt.Time) <= StaleProbeThreshold
-}
-
-// handleSplitBrain detects an active split and routes it into recovery.
-// The losing leg of a split never parks StandAlone locally — it sits
-// Connecting while the survivor refuses the handshake — so its only signal
-// that it must discard is a peer's reported split-brain.
-// Gated on !connected so a stale peer report cannot churn a healthy
-// volume.
-func (r *VolumeReconciler) handleSplitBrain(ctx context.Context, vol *miroirv1alpha1.MiroirVolume, res drbd.Resource, st drbd.Status, connected bool) bool {
-	splitActive := st.SplitBrain || (!connected && peerReportedSplitBrain(vol, r.NodeName))
-	if splitActive {
-		r.recoverSplitBrain(ctx, vol, res, st.SplitBrain)
-	}
-	return splitActive
+		now.Sub(slot.LastProbedAt.Time) <= StaleProbeThreshold
 }

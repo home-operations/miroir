@@ -83,7 +83,7 @@ type VolumeReconciler struct {
 	// lastRecovery stamps the last split-brain recovery attempt per volume.
 	// Recovery itself flaps connections, and every flap is a DRBD event that
 	// requeues the volume — without a floor the agent re-enters recovery
-	// several times per second. See recoverSplitBrain.
+	// several times per second. See planSplitBrain.
 	recoveryMu   sync.Mutex
 	lastRecovery map[string]time.Time
 	// stuckSince (same lock) stamps when a stranded-bitmap signature was
@@ -91,7 +91,7 @@ type VolumeReconciler struct {
 	// on; recovery waits out one poll interval so a status snapshot mid
 	// real handshake is never acted on, and a changed set restarts the
 	// wait so a newly seen peer never rides an older peer's clock. See
-	// recoverStuckResync.
+	// planStuckResync.
 	stuckSince map[string]stuckMark
 
 	// busyFails counts consecutive ErrBusy teardown outcomes per volume.
@@ -301,7 +301,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if st, err = r.mintGenerations(ctx, vol, resource, st, localDiskless); err != nil {
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
-	// Ordered before handleSplitBrain so the same pass cannot auto-discard
+	// Ordered before runRecovery so the same pass cannot auto-discard
 	// a leg the latch is about to protect.
 	if err := r.latchActivated(ctx, vol, st); err != nil {
 		return ctrl.Result{}, err
@@ -314,8 +314,7 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, r.reportError(ctx, vol, err)
 	}
 	connected := diskfulPeersConnected(st, vol, r.NodeName)
-	splitActive := r.handleSplitBrain(ctx, vol, resource, st, connected)
-	stuckActive := r.recoverStuckResync(ctx, vol, st, localDiskless)
+	recovering := r.runRecovery(ctx, vol, resource, st, connected, localDiskless)
 	diskFailed := diskFailedLatch(vol, r.NodeName, st, localDiskless)
 	if !localDiskless {
 		recordVolumeMetrics(vol, poolName, replicaView(st, vol, r.NodeName, localDiskless))
@@ -345,7 +344,6 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}); err != nil {
 		return ctrl.Result{}, err
 	}
-	recovering := splitActive || stuckActive
 	r.storeIfSettled(vol, st, requeue, reportSize, recovering)
 	// st predates any connection cycle recovery just ran, so a recovering
 	// leg is never settled on its strength.
@@ -357,9 +355,9 @@ func (r *VolumeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // mid-grow pass (short requeue, size withheld) must keep taking the full
 // pipeline until the grow lands, and a volume under active recovery must
 // re-enter it every poll — a split-brain (locally seen or peer-reported) so
-// recoverSplitBrain keeps retrying until the connections re-form, and a
+// planSplitBrain keeps retrying until the connections re-form, and a
 // stranded bitmap (whose kernel state is otherwise steady) so
-// recoverStuckResync's confirmation clock is re-read.
+// planStuckResync's confirmation clock is re-read.
 func (r *VolumeReconciler) storeIfSettled(vol *miroirv1alpha1.MiroirVolume, st drbd.Status, requeue time.Duration, reportSize int64, recovering bool) {
 	if requeue == drbdPollInterval && reportSize == vol.Spec.SizeBytes && !recovering {
 		r.storeRealized(vol.Generation, vol.Name, st, true)
@@ -403,7 +401,7 @@ func (r *VolumeReconciler) fastPath(ctx context.Context, vol *miroirv1alpha1.Mir
 	// A peer reporting split-brain while this leg is not fully connected
 	// needs the full pipeline: the losing leg's own kernel state is a steady
 	// Connecting that never breaks statusEqual, so only the peers' status
-	// can route it into recoverSplitBrain.
+	// can route it into planSplitBrain.
 	if !diskfulPeersConnected(st, vol, r.NodeName) && peerReportedSplitBrain(vol, r.NodeName) {
 		return false, ctrl.Result{}
 	}

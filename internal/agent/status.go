@@ -170,7 +170,7 @@ func (r *VolumeReconciler) reportError(ctx context.Context, vol *miroirv1alpha1.
 // the local leg Primary — a Primary is (or was) open for writes. Beyond the
 // stage-time twin (csi.markActivated) it covers volumes staged before the
 // field existed: a raw-block consumer running since pre-0.4.5 never
-// restages, and without the latch recoverSplitBrain would treat its
+// restages, and without the latch planSplitBrain would treat its
 // data-bearing volume as never-written. MergeFrom, not the agent's SSA
 // apply: Activated is CSI-owned and merge patching the single field avoids
 // co-owning it.
