@@ -398,11 +398,14 @@ func TestFreezeWaitsForAHeldUnmount(t *testing.T) {
 // could remove the mountpoint between the freeze landing and the thaw.
 func TestTimedOutFreezeHoldsUnmountUntilThawed(t *testing.T) {
 	rec := &ioctlRecorder{}
-	landFreeze := make(chan struct{})
+	landFreeze, finishThaw := make(chan struct{}), make(chan struct{})
 	f := testFreezer(rec)
 	f.ioctl = func(mountpoint string, req uint) error {
-		if req == fiFreeze {
+		switch req {
+		case fiFreeze:
 			<-landFreeze
+		case fiThaw:
+			<-finishThaw
 		}
 		return rec.ioctl(mountpoint, req)
 	}
@@ -425,10 +428,16 @@ func TestTimedOutFreezeHoldsUnmountUntilThawed(t *testing.T) {
 	}()
 	select {
 	case <-held:
-		t.Fatal("the unmount took the device before the late freeze was thawed")
+		t.Fatal("the unmount took the device before the late freeze landed")
 	case <-time.After(50 * time.Millisecond):
 	}
 	close(landFreeze)
+	select {
+	case <-held:
+		t.Fatal("the unmount took the device while the late freeze was still being thawed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(finishThaw)
 	<-held
 	want := []string{"freeze " + stagingMount, "thaw " + stagingMount}
 	if got := rec.recorded(); !slices.Equal(got, want) {

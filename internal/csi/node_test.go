@@ -628,8 +628,8 @@ type fakeThawer struct {
 	err     error
 	// held tracks HoldFreezes; heldAtThaw records it at the last thaw.
 	held, heldAtThaw bool
-	// onRelease runs when the hold is released.
-	onRelease func()
+	// onThaw and onRelease run at the thaw and when the hold is released.
+	onThaw, onRelease func()
 }
 
 func (f *fakeThawer) HoldFreezes(context.Context, string) (func(), error) {
@@ -645,6 +645,9 @@ func (f *fakeThawer) HoldFreezes(context.Context, string) (func(), error) {
 func (f *fakeThawer) ThawMountpoint(target string) error {
 	f.targets = append(f.targets, target)
 	f.heldAtThaw = f.held
+	if f.onThaw != nil {
+		f.onThaw()
+	}
 	return f.err
 }
 
@@ -657,12 +660,14 @@ func TestNodeUnstageThawsBeforeUnmount(t *testing.T) {
 	n := newNode(t, stagedVolume(), fakeDRBDStatus{})
 	fm := mount.NewFakeMounter([]mount.MountPoint{{Path: target}})
 	n.Mounter = mount.NewSafeFormatAndMount(fm, utilexec.New())
-	stillMountedAtRelease := true
-	thawer := &fakeThawer{onRelease: func() {
-		stillMountedAtRelease = slices.ContainsFunc(fm.MountPoints, func(mp mount.MountPoint) bool {
-			return mp.Path == target
-		})
-	}}
+	mounted := func() bool {
+		return slices.ContainsFunc(fm.MountPoints, func(mp mount.MountPoint) bool { return mp.Path == target })
+	}
+	mountedAtThaw, stillMountedAtRelease := false, true
+	thawer := &fakeThawer{
+		onThaw:    func() { mountedAtThaw = mounted() },
+		onRelease: func() { stillMountedAtRelease = mounted() },
+	}
 	n.Freezer = thawer
 
 	if _, err := n.NodeUnstageVolume(t.Context(), &csi.NodeUnstageVolumeRequest{
@@ -673,6 +678,9 @@ func TestNodeUnstageThawsBeforeUnmount(t *testing.T) {
 	}
 	if len(thawer.targets) != 1 || thawer.targets[0] != target {
 		t.Fatalf("the staging mount must be thawed before the unmount: %v", thawer.targets)
+	}
+	if !mountedAtThaw {
+		t.Fatal("the thaw must run while the staging mount still exists")
 	}
 	if !thawer.heldAtThaw || thawer.held || stillMountedAtRelease {
 		t.Fatalf("freezes must be held off from the thaw through the unmount, then released "+
