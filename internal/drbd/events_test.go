@@ -66,3 +66,22 @@ func TestStreamKillsChildAfterScanError(t *testing.T) {
 		t.Fatal("stream did not return after the scanner error")
 	}
 }
+
+func TestParseEvent2(t *testing.T) {
+	cases := []struct{ line, want string }{
+		{"exists resource name:pvc-1 role:Secondary suspended:no", volPvc1},
+		{"change connection name:pvc-1 peer-node-id:1 connection:StandAlone", volPvc1},
+		{"change device name:pvc-2 volume:0 minor:1000 disk:UpToDate", volPvc2},
+		{"destroy resource name:pvc-3", "pvc-3"},
+		{"change peer-device name:pvc-1 peer-node-id:1 replication:SyncTarget", volPvc1},
+		{"exists -", ""},
+		{"call helper name:pvc-1 helper:before-resync-target", ""},
+		{"", ""},
+		{"garbage", ""},
+	}
+	for _, tc := range cases {
+		if got := parseEvent2(tc.line); got != tc.want {
+			t.Errorf("parseEvent2(%q) = %q, want %q", tc.line, got, tc.want)
+		}
+	}
+}
