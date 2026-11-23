@@ -206,10 +206,29 @@ func (f *Freezer) HoldFreezes(ctx context.Context, target string) (release func(
 	return f.lockDev(ctx, rdev)
 }
 
+// HoldDevice blocks freezes and staging unmounts of device until the
+// returned release is called, or returns the context's error if one in
+// progress outlasts it. It keys the same slot as Freeze and HoldFreezes. A
+// path that does not resolve to a block device is an error, not a reason
+// to skip the ordering: a mounted device whose node vanished is still
+// mounted.
+func (f *Freezer) HoldDevice(ctx context.Context, device string) (release func(), err error) {
+	rdev, isDev, err := f.devNumber(device)
+	if err != nil {
+		return nil, err
+	}
+	if !isDev {
+		return nil, fmt.Errorf("%s is not a block device", device)
+	}
+	return f.lockDev(ctx, rdev)
+}
+
 // mountDev returns the device number backing the filesystem mounted at
 // target, as Freeze keys it: mountinfo's major:minor, or for btrfs (whose
 // st_dev is anonymous) its mount source's number. ok is false when target
-// is not a block-device mount.
+// is not a block-device mount, and for a btrfs mount whose source node is
+// missing: refusing the unstage instead would wedge it for as long as the
+// node stays missing, which is worse than the narrow race left open.
 func (f *Freezer) mountDev(target string) (rdev uint64, ok bool, err error) {
 	data, err := f.mountinfo()
 	if err != nil {
@@ -344,6 +363,29 @@ func freezeMounted(ctx context.Context, f *Freezer, node string, vol *miroirv1al
 	}
 	_, err := f.Freeze(ctx, device)
 	return err
+}
+
+// holdUnmounts keeps a staging unmount of the volume's local device from
+// running until release is called. An unreplicated volume's backend cut
+// freezes the filesystem itself: lvmthin's snapshot suspends the device
+// the filesystem sits on, and dm suspend freezes it as a kernel freeze
+// holder. An unmount landing inside that suspend leaves the device frozen
+// with nothing left to thaw it through, so every later mount fails
+// ("Can't mount, blockdev is frozen"). The wait is bounded by
+// freezeTimeout: an unmount stuck in the kernel must not pin the snapshot
+// worker. A nil freezer or a leg without a device path holds nothing.
+func holdUnmounts(ctx context.Context, f *Freezer, node string, vol *miroirv1alpha1.MiroirVolume) (release func(), err error) {
+	device := vol.Status.PerNode[node].DevicePath
+	if f == nil || device == "" {
+		return func() {}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, freezeTimeout)
+	defer cancel()
+	release, err = f.HoldDevice(ctx, device)
+	if err != nil {
+		return nil, fmt.Errorf("order the cut of %s against unmounts: %w", vol.Name, err)
+	}
+	return release, nil
 }
 
 // thawMounted lifts the local filesystem freeze; best-effort (not

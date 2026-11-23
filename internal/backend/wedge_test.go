@@ -219,6 +219,15 @@ func TestRunnerRecordsChildrenThatOutliveKillUntilReaped(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "still alive") {
 		t.Fatalf("Run() error = %v, want the deadline error naming the surviving child", err)
 	}
+	stranded, ok := errors.AsType[*StrandedError](err)
+	if !ok || !errors.Is(err, ErrStranded) {
+		t.Fatalf("Run() error = %v, want a *StrandedError matching ErrStranded", err)
+	}
+	select {
+	case <-stranded.Exited:
+		t.Fatal("Exited must stay open while the child is alive")
+	default:
+	}
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("Run() took %v: a stranded child must not pin the caller", elapsed)
 	}
@@ -246,6 +255,11 @@ func TestRunnerRecordsChildrenThatOutliveKillUntilReaped(t *testing.T) {
 			t.Fatal("record must retire once the child is reaped")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case <-stranded.Exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Exited must close once the child is reaped")
 	}
 }
 

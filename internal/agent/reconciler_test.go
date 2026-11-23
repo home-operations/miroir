@@ -89,6 +89,10 @@ type fakeBackend struct {
 	// DRBD exec, so a test can assert the backing resize is ordered after
 	// the DRBD attach rather than before it.
 	seq *[]string
+	// onSnapshot, when set, runs at the start of Snapshot; snapErr is its
+	// result.
+	onSnapshot func()
+	snapErr    error
 }
 
 // errBoom is the generic injected failure for fake backends.
@@ -143,8 +147,11 @@ func (f *fakeBackend) Resize(_ context.Context, vol string, size int64) error {
 }
 
 func (f *fakeBackend) Snapshot(_ context.Context, vol, snap string) error {
+	if f.onSnapshot != nil {
+		f.onSnapshot()
+	}
 	f.snapCalls = append(f.snapCalls, "snapshot "+vol+"@"+snap)
-	return nil
+	return f.snapErr
 }
 
 func (f *fakeBackend) CreateFromSnapshot(_ context.Context, vol, _, _ string) (string, error) {

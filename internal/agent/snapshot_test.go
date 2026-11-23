@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -35,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
+	"github.com/home-operations/miroir/internal/backend"
 	"github.com/home-operations/miroir/internal/constants"
 	"github.com/home-operations/miroir/internal/drbd"
 )
@@ -95,6 +97,119 @@ func TestSnapshotUnreplicatedReadyImmediately(t *testing.T) {
 	}
 	if !got.Status.ReadyToUse {
 		t.Fatalf("unreplicated snapshot must be ready after one pass: %+v", got.Status)
+	}
+}
+
+// unreplicatedCutFixture is an unreplicated volume staged on devDrbd1000
+// (mounted at stagingMount in testFreezer's mountinfo) with a snapshot
+// waiting to be cut on nodeA.
+func unreplicatedCutFixture(t *testing.T) (*SnapshotReconciler, *fakeBackend, *Freezer) {
+	t.Helper()
+	fb := newFakeBackend()
+	v := vol(volPvc1, nodeA)
+	v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{
+		nodeA: {DeviceCreated: true, DevicePath: devDrbd1000},
+	}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(v, snapObj(snapSnap1, volPvc1, nodeA)).
+		WithStatusSubresource(&miroirv1alpha1.MiroirSnapshot{}, &miroirv1alpha1.MiroirVolume{}).
+		Build()
+	freezer := testFreezer(&ioctlRecorder{})
+	return &SnapshotReconciler{Client: c, NodeName: nodeA, Pools: poolsOf(fb), Freezer: freezer}, fb, freezer
+}
+
+func reconcileSnapAsync(t *testing.T, r *SnapshotReconciler) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Name: snapSnap1}})
+		done <- err
+	}()
+	return done
+}
+
+// tryHold reports whether a staging unmount could take the device right
+// now.
+func tryHold(t *testing.T, f *Freezer) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
+	defer cancel()
+	release, err := f.HoldFreezes(ctx, stagingMount)
+	if err != nil {
+		return false
+	}
+	release()
+	return true
+}
+
+// An unreplicated cut suspends the device the filesystem sits on, which
+// freezes it at kernel level; a staging unmount inside that window leaves
+// the device frozen for good. The cut waits for an unmount holding the
+// device, and an unmount waits for the cut.
+func TestSnapshotUnreplicatedCutIsOrderedAgainstUnmounts(t *testing.T) {
+	r, fb, freezer := unreplicatedCutFixture(t)
+	inCut, finishCut := make(chan struct{}), make(chan struct{})
+	fb.onSnapshot = func() {
+		close(inCut)
+		<-finishCut
+	}
+
+	release, err := freezer.HoldFreezes(t.Context(), stagingMount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := reconcileSnapAsync(t, r)
+	select {
+	case <-inCut:
+		t.Fatal("the cut started while an unmount held the device")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+
+	<-inCut
+	if tryHold(t, freezer) {
+		t.Fatal("an unmount took the device while the cut was suspending it")
+	}
+	close(finishCut)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !tryHold(t, freezer) {
+		t.Fatal("the cut must release the device once it is done")
+	}
+}
+
+// A cut stranded in the kernel may still be suspending the device, so the
+// device stays held until the stuck child exits, and no longer: a hold
+// kept past that would block every later cut and unstage of the device.
+func TestSnapshotUnreplicatedStrandedCutHoldsTheDeviceUntilItExits(t *testing.T) {
+	r, fb, freezer := unreplicatedCutFixture(t)
+	exited := make(chan struct{})
+	fb.snapErr = fmt.Errorf("lvcreate: %w", &backend.StrandedError{Exited: exited})
+	if err := <-reconcileSnapAsync(t, r); !errors.Is(err, backend.ErrStranded) {
+		t.Fatalf("want the stranded cut's error, got %v", err)
+	}
+	if tryHold(t, freezer) {
+		t.Fatal("an unmount took the device a stranded cut may still be suspending")
+	}
+	close(exited)
+	deadline := time.Now().Add(5 * time.Second)
+	for !tryHold(t, freezer) {
+		if time.Now().After(deadline) {
+			t.Fatal("the device must be released once the stranded child exits")
+		}
+	}
+}
+
+// A device path that no longer resolves is not a reason to cut without
+// the ordering: the cut retries instead.
+func TestSnapshotUnreplicatedCutRefusesAnUnresolvableDevice(t *testing.T) {
+	r, fb, _ := unreplicatedCutFixture(t)
+	r.Freezer.devNumber = func(string) (uint64, bool, error) { return 0, false, nil }
+	if err := <-reconcileSnapAsync(t, r); err == nil {
+		t.Fatal("want an error for a device that cannot be resolved")
+	}
+	if len(fb.snapCalls) != 0 {
+		t.Fatalf("no cut may run without the ordering: %v", fb.snapCalls)
 	}
 }
 
