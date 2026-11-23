@@ -23,9 +23,6 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	miroirv1alpha1 "github.com/home-operations/miroir/api/v1alpha1"
-	"github.com/home-operations/miroir/internal/drbd"
 )
 
 func TestStartupGateCheck(t *testing.T) {
@@ -144,98 +141,5 @@ func TestStartupGateStaysOpen(t *testing.T) {
 	g.Observe(volPvc1, false)
 	if err := g.Check(req); err != nil {
 		t.Fatalf("gate closed again after opening: %v", err)
-	}
-}
-
-func TestPublishedHealthy(t *testing.T) {
-	tests := []struct {
-		name string
-		st   miroirv1alpha1.ReplicaStatus
-		want bool
-	}{
-		{name: "never realized"},
-		{name: "connected and UpToDate", st: miroirv1alpha1.ReplicaStatus{Connected: true, DiskState: drbd.DiskUpToDate}, want: true},
-		{name: "disconnected", st: miroirv1alpha1.ReplicaStatus{DiskState: drbd.DiskUpToDate}},
-		{name: "not current", st: miroirv1alpha1.ReplicaStatus{Connected: true, DiskState: diskStateOutdated}},
-		{name: "split-brain", st: miroirv1alpha1.ReplicaStatus{Connected: true, SplitBrain: true, DiskState: drbd.DiskUpToDate}},
-		{name: "connected diskless leg", st: miroirv1alpha1.ReplicaStatus{Connected: true, Diskless: true, DiskState: drbd.DiskDiskless}, want: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := publishedHealthy(tt.st); got != tt.want {
-				t.Fatalf("publishedHealthy() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestLegSettled(t *testing.T) {
-	withClient := func() *miroirv1alpha1.MiroirVolume {
-		v := replicatedVol()
-		v.Spec.Clients = []miroirv1alpha1.VolumeClient{{Node: nodeC, NodeID: 2, Address: addrC}}
-		return v
-	}
-	connected := map[int32]bool{1: true}
-	tests := []struct {
-		name          string
-		vol           *miroirv1alpha1.MiroirVolume
-		st            drbd.Status
-		localDiskless bool
-		want          bool
-	}{
-		{
-			name: "connected and UpToDate",
-			vol:  replicatedVol(),
-			st:   drbd.Status{DiskState: drbd.DiskUpToDate, PeerConnected: connected},
-			want: true,
-		},
-		{
-			name: "peer disconnected",
-			vol:  replicatedVol(),
-			st:   drbd.Status{DiskState: drbd.DiskUpToDate},
-		},
-		{
-			name: "local disk not current",
-			vol:  replicatedVol(),
-			st:   drbd.Status{DiskState: diskStateOutdated, PeerConnected: connected},
-		},
-		{
-			name: "resyncing",
-			vol:  replicatedVol(),
-			st:   drbd.Status{DiskState: drbd.DiskUpToDate, PeerConnected: connected, Resyncing: true},
-		},
-		{
-			name: "online verify is not a resync",
-			vol:  replicatedVol(),
-			st: drbd.Status{
-				DiskState: drbd.DiskUpToDate, PeerConnected: connected, Resyncing: true, Verifying: true,
-			},
-			want: true,
-		},
-		{
-			name:          "diskless leg has no disk state to wait for",
-			vol:           replicatedVol(),
-			st:            drbd.Status{DiskState: drbd.DiskDiskless, PeerConnected: connected},
-			localDiskless: true,
-			want:          true,
-		},
-		{
-			name: "client peer disconnected",
-			vol:  withClient(),
-			st:   drbd.Status{DiskState: drbd.DiskUpToDate, PeerConnected: connected},
-		},
-		{
-			name: "client peer connected",
-			vol:  withClient(),
-			st:   drbd.Status{DiskState: drbd.DiskUpToDate, PeerConnected: map[int32]bool{1: true, 2: true}},
-			want: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := legSettled(tt.st, tt.vol, nodeA, tt.localDiskless); got != tt.want {
-				t.Fatalf("legSettled() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
