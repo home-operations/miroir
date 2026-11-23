@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.12.13](https://github.com/home-operations/miroir/compare/0.12.12...0.12.13) (2026-11-23)
+
+
+### Bug Fixes
+
+* **agent:** hold staging unmounts off an unreplicated snapshot cut ([#667](https://github.com/home-operations/miroir/issues/667)) ([69b8394](https://github.com/home-operations/miroir/commit/69b83946d088c935923223ad2631ed56bbae6eb5))
+* **agent:** make the controller the only writer of volume phase ([#657](https://github.com/home-operations/miroir/issues/657)) ([a16aaf3](https://github.com/home-operations/miroir/commit/a16aaf3e8d124e9f650536da44fff4c58afd99a9))
+* **csi:** hold restore staging until the device grows and freezes off an unmount ([#666](https://github.com/home-operations/miroir/issues/666)) ([d648463](https://github.com/home-operations/miroir/commit/d6484638d464e12085f4bcbf1a785628f626d541))
+* **rwx:** apply the pod fsGroup to RWX volumes ([#656](https://github.com/home-operations/miroir/issues/656)) ([03feba8](https://github.com/home-operations/miroir/commit/03feba899a62d5c8bb8c06e2f3c9f7514484fffc))
+
+
+### Code Refactoring
+
+* **agent:** keep each volume's in-memory state in one record ([#663](https://github.com/home-operations/miroir/issues/663)) ([4207331](https://github.com/home-operations/miroir/commit/420733117a652dfff714fe20f5cc964253065ba7))
+* **agent:** plan split-brain and stuck-resync recovery as pure steps ([#659](https://github.com/home-operations/miroir/issues/659)) ([ea6c71f](https://github.com/home-operations/miroir/commit/ea6c71fabcc92411669676af52efac9173885c92))
+* **agent:** plan the answer to a failed teardown as a pure step ([#661](https://github.com/home-operations/miroir/issues/661)) ([96723dc](https://github.com/home-operations/miroir/commit/96723dc8d37da9c6542a2f3976e425270db15764))
+* **csi:** move placement out of controller.go ([#662](https://github.com/home-operations/miroir/issues/662)) ([2b28707](https://github.com/home-operations/miroir/commit/2b2870785f5fbfabd10866d6c73a9106b3e07d6c))
+* **drbd:** split drbd.go by concern ([#658](https://github.com/home-operations/miroir/issues/658)) ([f1e2011](https://github.com/home-operations/miroir/commit/f1e2011e9c845ab061026f2c41b82df6e596c7cd))
+
+
+### Tests
+
+* **agent:** move reconciler tests beside the code they cover ([#665](https://github.com/home-operations/miroir/issues/665)) ([b771cc2](https://github.com/home-operations/miroir/commit/b771cc2a48c02df474fd2daefad814eb129b5d54))
+* **drbd:** split drbd_test.go to match the source files ([#664](https://github.com/home-operations/miroir/issues/664)) ([43269c4](https://github.com/home-operations/miroir/commit/43269c479095440e9db15f95425fca7c4ea22995))
+
+
+### Miscellaneous Chores
+
+* **github-action:** update github-actions ([#654](https://github.com/home-operations/miroir/issues/654)) ([fb3ba08](https://github.com/home-operations/miroir/commit/fb3ba080259e58d3a25fe473bdb391283b591005))
+
 ## [0.12.12](https://github.com/home-operations/miroir/compare/0.12.11...0.12.12) (2026-11-21)
 
 
