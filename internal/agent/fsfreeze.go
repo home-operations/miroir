@@ -226,7 +226,9 @@ func (f *Freezer) HoldDevice(ctx context.Context, device string) (release func()
 // mountDev returns the device number backing the filesystem mounted at
 // target, as Freeze keys it: mountinfo's major:minor, or for btrfs (whose
 // st_dev is anonymous) its mount source's number. ok is false when target
-// is not a block-device mount.
+// is not a block-device mount, and for a btrfs mount whose source node is
+// missing: refusing the unstage instead would wedge it for as long as the
+// node stays missing, which is worse than the narrow race left open.
 func (f *Freezer) mountDev(target string) (rdev uint64, ok bool, err error) {
 	data, err := f.mountinfo()
 	if err != nil {

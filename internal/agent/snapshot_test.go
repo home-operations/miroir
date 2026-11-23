@@ -178,16 +178,25 @@ func TestSnapshotUnreplicatedCutIsOrderedAgainstUnmounts(t *testing.T) {
 	}
 }
 
-// A cut stranded in the kernel is still suspending the device, so the
-// device stays held: an unmount now would land inside the suspend.
-func TestSnapshotUnreplicatedStrandedCutKeepsTheDevice(t *testing.T) {
+// A cut stranded in the kernel may still be suspending the device, so the
+// device stays held until the stuck child exits, and no longer: a hold
+// kept past that would block every later cut and unstage of the device.
+func TestSnapshotUnreplicatedStrandedCutHoldsTheDeviceUntilItExits(t *testing.T) {
 	r, fb, freezer := unreplicatedCutFixture(t)
-	fb.snapErr = fmt.Errorf("lvcreate: %w", backend.ErrStranded)
+	exited := make(chan struct{})
+	fb.snapErr = fmt.Errorf("lvcreate: %w", &backend.StrandedError{Exited: exited})
 	if err := <-reconcileSnapAsync(t, r); !errors.Is(err, backend.ErrStranded) {
 		t.Fatalf("want the stranded cut's error, got %v", err)
 	}
 	if tryHold(t, freezer) {
-		t.Fatal("an unmount took the device a stranded cut is still suspending")
+		t.Fatal("an unmount took the device a stranded cut may still be suspending")
+	}
+	close(exited)
+	deadline := time.Now().Add(5 * time.Second)
+	for !tryHold(t, freezer) {
+		if time.Now().After(deadline) {
+			t.Fatal("the device must be released once the stranded child exits")
+		}
 	}
 }
 

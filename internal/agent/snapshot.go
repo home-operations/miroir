@@ -349,11 +349,15 @@ func (r *SnapshotReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 		err = be.Snapshot(ctx, vol.Name, snap.Name)
-		// A cut stranded in the kernel is still suspending the device, so
-		// the hold is kept: an unmount now would land inside the suspend.
-		// Nothing short of a node reboot (which restarts the agent) ends
-		// such a suspend, and the wedge breaker already counts the child.
-		if !errors.Is(err, backend.ErrStranded) {
+		// A cut stranded in the kernel may still be suspending the device,
+		// so the hold lasts until the stuck child exits: an unmount before
+		// then could land inside the suspend.
+		if stranded, ok := errors.AsType[*backend.StrandedError](err); ok {
+			go func() {
+				<-stranded.Exited
+				release()
+			}()
+		} else {
 			release()
 		}
 		if err != nil {

@@ -42,8 +42,22 @@ const execTimeout = 2 * time.Minute
 
 // ErrStranded marks a command whose child outlived its SIGKILL: it is stuck
 // in uninterruptible sleep and whatever it was doing to the kernel (a dm
-// suspend, a DRBD teardown) is still in progress after Run returns.
+// suspend, a DRBD teardown) is still in progress after Run returns. Run
+// reports it as a *StrandedError, which matches ErrStranded under errors.Is.
 var ErrStranded = errors.New("child still alive after SIGKILL (uninterruptible sleep)")
+
+// StrandedError is how Run reports a stranded child. Exited is closed once
+// the child finally exits and is reaped, so a caller that must keep
+// something held for as long as the child's kernel operation lasts can
+// release it then rather than never.
+type StrandedError struct {
+	Exited <-chan struct{}
+}
+
+func (e *StrandedError) Error() string { return ErrStranded.Error() }
+
+// Is makes errors.Is(err, ErrStranded) match.
+func (e *StrandedError) Is(target error) bool { return target == ErrStranded }
 
 // CommandLine is the line a Wedge records a stranded child under; callers
 // asking Wedge.StrandedCommand about a specific command build it here so
@@ -138,13 +152,15 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (string, 
 	}
 	pid := cmd.Process.Pid
 	r.Wedge.record(pid, line)
+	exited := make(chan struct{})
 	go func() {
 		<-done //nolint:errcheck // only the wedged child's exit matters, not its status
 		r.Wedge.retire(pid)
+		close(exited)
 	}()
 	// out is not read here: the copy goroutine still owns it until Wait
 	// returns.
-	return "", fmt.Errorf("%s: %w: child %d: %w", line, ctx.Err(), pid, ErrStranded)
+	return "", fmt.Errorf("%s: %w: child %d: %w", line, ctx.Err(), pid, &StrandedError{Exited: exited})
 }
 
 func (r *Runner) doKill(p *os.Process) error {
