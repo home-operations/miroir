@@ -93,7 +93,7 @@
           "description": "kubelet plugin-registration sidecar riding the agent DaemonSet.",
           "properties": {
             "image": {
-              "default": "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.0",
+              "default": "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.18.1",
               "title": "image",
               "type": "string"
             },
