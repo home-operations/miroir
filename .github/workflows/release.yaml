@@ -52,7 +52,7 @@ jobs:
       contents: read
       id-token: write
       packages: write
-    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    uses: docker/github-builder/.github/workflows/build.yml@bb1eb9fb69408ac52395fb21f49c6b52d564529a # v1.20.0
     with:
       build-args: |
         VERSION=${{ github.ref_name }}
@@ -60,6 +60,8 @@ jobs:
         GO_VERSION=${{ needs.versions.outputs.go-version }}
       cache: true
       cache-scope: controller
+      compression: zstd
+      force-compression: true
       target: controller
       meta-images: ghcr.io/${{ github.repository }}-controller
       meta-tags: |
@@ -86,7 +88,7 @@ jobs:
       contents: read
       id-token: write
       packages: write
-    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    uses: docker/github-builder/.github/workflows/build.yml@bb1eb9fb69408ac52395fb21f49c6b52d564529a # v1.20.0
     with:
       build-args: |
         VERSION=${{ github.ref_name }}
@@ -94,6 +96,8 @@ jobs:
         GO_VERSION=${{ needs.versions.outputs.go-version }}
       cache: true
       cache-scope: agent
+      compression: zstd
+      force-compression: true
       target: agent
       meta-images: ghcr.io/${{ github.repository }}-agent
       meta-tags: |
@@ -123,7 +127,7 @@ jobs:
       contents: read
       id-token: write
       packages: write
-    uses: docker/github-builder/.github/workflows/build.yml@a31d2311da4d55e21b978c1c52bab82ba97d51ee # v1.19.0
+    uses: docker/github-builder/.github/workflows/build.yml@bb1eb9fb69408ac52395fb21f49c6b52d564529a # v1.20.0
     with:
       build-args: |
         VERSION=${{ github.ref_name }}
@@ -131,6 +135,8 @@ jobs:
         GO_VERSION=${{ needs.versions.outputs.go-version }}
       cache: true
       cache-scope: gateway
+      compression: zstd
+      force-compression: true
       target: gateway
       meta-images: ghcr.io/${{ github.repository }}-gateway
       meta-tags: |
