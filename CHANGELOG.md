@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.12.14](https://github.com/home-operations/miroir/compare/0.12.13...0.12.14) (2026-11-27)
+
+
+### Bug Fixes
+
+* **agent:** recover a resync with a source at both ends ([#685](https://github.com/home-operations/miroir/issues/685)) ([36ba5fe](https://github.com/home-operations/miroir/commit/36ba5fe7e18642a4feda9b51df1ad8cbbdbc60d0))
+* **agent:** recover a resync with a source at both ends ([#685](https://github.com/home-operations/miroir/issues/685)) ([2574704](https://github.com/home-operations/miroir/commit/2574704df15fb42b9bad56930d906507d137cb3c))
+
+
+### Continuous Integration
+
+* **release:** compress image layers with zstd ([425e141](https://github.com/home-operations/miroir/commit/425e141b7034b8aeefa27ec94e1963c8e5b70d05))
+
+
+### Miscellaneous Chores
+
+* **container:** update image registry.k8s.io/kubectl (v1.37.2 → v1.37.3) ([#676](https://github.com/home-operations/miroir/issues/676)) ([253c260](https://github.com/home-operations/miroir/commit/253c260c3ae2857d52770041aac438d94ec574dd))
+* **container:** update image registry.k8s.io/sig-storage/csi-node-driver-registrar (v2.18.0 → v2.18.1) ([#670](https://github.com/home-operations/miroir/issues/670)) ([4ed20c0](https://github.com/home-operations/miroir/commit/4ed20c0ce772ae538912e529080da8dba99a0ea0))
+* **container:** update image registry.k8s.io/sig-storage/csi-provisioner (v6.4.0 → v6.4.1) ([#671](https://github.com/home-operations/miroir/issues/671)) ([6cd7ffe](https://github.com/home-operations/miroir/commit/6cd7ffe825739f0e190b345685891848fc8ee1d7))
+* **container:** update image registry.k8s.io/sig-storage/csi-resizer (v2.3.0 → v2.3.1) ([#672](https://github.com/home-operations/miroir/issues/672)) ([f25f071](https://github.com/home-operations/miroir/commit/f25f071c09af698eb8d5004178ee6b39f1490bee))
+* **container:** update image registry.k8s.io/sig-storage/csi-snapshotter (v8.7.0 → v8.7.1) ([#673](https://github.com/home-operations/miroir/issues/673)) ([6436f99](https://github.com/home-operations/miroir/commit/6436f996516ec06809298b91351d677bc9fb0673))
+* **github-action:** update action jdx/mise-action (v5.2.10 → v5.3.0) ([#674](https://github.com/home-operations/miroir/issues/674)) ([f180ff4](https://github.com/home-operations/miroir/commit/f180ff4f9196aa63d2af139298d4b6807e98757d))
+* **github-action:** update action zizmorcore/zizmor-action (v0.8.1 → v0.9.2) ([#678](https://github.com/home-operations/miroir/issues/678)) ([194abd3](https://github.com/home-operations/miroir/commit/194abd3da3d0c0c706f5abb1bf3fde22a08afba8))
+* **github-release:** update release helm-unittest/helm-unittest (v1.2.1 → v1.3.0) ([#687](https://github.com/home-operations/miroir/issues/687)) ([7c4576c](https://github.com/home-operations/miroir/commit/7c4576c53c9dd088a52513da896be5d850cd1f20))
+* **go:** update kubernetes monorepo (v0.37.2 → v0.37.3) ([#677](https://github.com/home-operations/miroir/issues/677)) ([a670004](https://github.com/home-operations/miroir/commit/a670004e6f0fcebd8554a74c7843cde93d4d2566))
+* **mise:** update mise tools ([#679](https://github.com/home-operations/miroir/issues/679)) ([55cfc88](https://github.com/home-operations/miroir/commit/55cfc88e65d06497a523e1658b4f10b5bb236743))
+* **mise:** update mise tools ([#682](https://github.com/home-operations/miroir/issues/682)) ([761d345](https://github.com/home-operations/miroir/commit/761d3455c5b5907dfa0d1fee3d360db16a739054))
+* **mise:** update tool cosign (3.1.4 → 3.1.5) ([#686](https://github.com/home-operations/miroir/issues/686)) ([19f2b6d](https://github.com/home-operations/miroir/commit/19f2b6d45d9815f9f6405c2a93d81af2fdcd5e72))
+* **mise:** update tool github:oxc-project/oxc (0.79.0 → 0.80.0) ([#681](https://github.com/home-operations/miroir/issues/681)) ([f6776e8](https://github.com/home-operations/miroir/commit/f6776e8bc9b7db9b8bc417b50b6d632886319edf))
+* **mise:** update tool pnpm (12.21.0 → 12.22.0) ([#668](https://github.com/home-operations/miroir/issues/668)) ([acd627d](https://github.com/home-operations/miroir/commit/acd627da16e58f4f4e293b3da0f205225f35371b))
+* **mise:** update tool zizmor (1.33.0 → 1.33.1) ([#680](https://github.com/home-operations/miroir/issues/680)) ([7fcc332](https://github.com/home-operations/miroir/commit/7fcc332c4866a4320ef994277f62d0f3d3675fdf))
+* **npm:** update dependency @astrojs/starlight (0.43.1 → 0.43.2) ([#683](https://github.com/home-operations/miroir/issues/683)) ([548bb51](https://github.com/home-operations/miroir/commit/548bb5119aadc61563a918d3b968e852c9fd71fa))
+* **npm:** update dependency starlight-links-validator (0.27.0 → 0.27.1) ([#684](https://github.com/home-operations/miroir/issues/684)) ([2b86bd7](https://github.com/home-operations/miroir/commit/2b86bd7cde781f97bc324be030d11eac4fc522d7))
+
 ## [0.12.13](https://github.com/home-operations/miroir/compare/0.12.12...0.12.13) (2026-11-23)
 
 
