@@ -82,8 +82,27 @@ func TestPlanRecovery(t *testing.T) {
 		for _, p := range peers {
 			set[p] = true
 		}
-		return &stuckMark{since: since, peers: stuckPeerKey(set)}
+		return &stuckMark{since: since, peers: stuckPeerKey(set, nil)}
 	}
+	// armedMutual is a clock armed on one mutual-source candidate, with the
+	// peer slot stamp it last saw and the publications counted so far.
+	armedMutual := func(since time.Time, peer int32, stamp time.Time, advances int) *stuckMark {
+		set := map[int32]bool{peer: true}
+		return &stuckMark{
+			since: since, peers: stuckPeerKey(set, set),
+			probes: map[int32]slotProbe{peer: {stamp: stamp, advances: advances}},
+		}
+	}
+	// peerSlot is node-b's status slot reporting disk, last probed at.
+	peerSlot := func(disk string, at time.Time) func(*miroirv1alpha1.MiroirVolume) {
+		return func(v *miroirv1alpha1.MiroirVolume) {
+			v.Status.PerNode = map[string]miroirv1alpha1.ReplicaStatus{nodeB: {DiskState: disk, LastProbedAt: ptrTime(at)}}
+		}
+	}
+	syncSource := func(peer int32) func(*drbd.Status) {
+		return func(st *drbd.Status) { st.SyncSourcePeers = map[int32]bool{peer: true} }
+	}
+	probe0, probe1, probe2 := now.Add(-2*time.Minute), now.Add(-20*time.Second), now
 
 	cases := []struct {
 		name string
@@ -273,6 +292,86 @@ func TestPlanRecovery(t *testing.T) {
 				{peerID: 1, stalledTarget: true}, {peerID: 2},
 			}},
 			wantClock: recoveryClock{stuck: armed(now, 1, 2)},
+		},
+		{
+			name:      "a sync source toward a peer that reads UpToDate itself only arms the clock",
+			vol:       peerSlot(drbd.DiskUpToDate, probe0),
+			st:        syncSource(1),
+			want:      recoveryPlan{active: true},
+			wantClock: recoveryClock{stuck: armedMutual(now, 1, probe0, 0)},
+		},
+		{
+			name:      "a mutual source candidate's new publication is counted inside the window",
+			vol:       peerSlot(drbd.DiskUpToDate, probe1),
+			st:        syncSource(1),
+			clock:     recoveryClock{stuck: armedMutual(insideFloor, 1, probe0, 0)},
+			want:      recoveryPlan{active: true},
+			wantClock: recoveryClock{stuck: armedMutual(insideFloor, 1, probe1, 1)},
+		},
+		{
+			name:      "one publication may predate the resync, so the window alone cycles nothing",
+			vol:       peerSlot(drbd.DiskUpToDate, probe1),
+			st:        syncSource(1),
+			clock:     recoveryClock{stuck: armedMutual(pastFloor, 1, probe0, 0)},
+			want:      recoveryPlan{active: true},
+			wantClock: recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
+		},
+		{
+			name:      "a slot the peer has not published again is not counted twice",
+			vol:       peerSlot(drbd.DiskUpToDate, probe1),
+			st:        syncSource(1),
+			clock:     recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
+			want:      recoveryPlan{active: true},
+			wantClock: recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
+		},
+		{
+			name:      "a mutual source the peer published twice is cycled and its count reset",
+			vol:       peerSlot(drbd.DiskUpToDate, probe2),
+			st:        syncSource(1),
+			clock:     recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
+			want:      recoveryPlan{active: true, cycle: []peerCycle{{peerID: 1}}},
+			wantClock: recoveryClock{stuck: armedMutual(now, 1, probe2, 0)},
+		},
+		{
+			name: "the higher node id of a mutual source pair stays active and leaves the cycle to its peer",
+			vol: func(v *miroirv1alpha1.MiroirVolume) {
+				v.Spec.Replicas[0].NodeID, v.Spec.Replicas[1].NodeID = 1, 0
+				peerSlot(drbd.DiskUpToDate, probe2)(v)
+			},
+			st: func(st *drbd.Status) {
+				st.PeerConnected = map[int32]bool{0: true}
+				syncSource(0)(st)
+			},
+			clock:     recoveryClock{stuck: armedMutual(pastFloor, 0, probe1, 1)},
+			want:      recoveryPlan{active: true},
+			wantClock: recoveryClock{stuck: armedMutual(pastFloor, 0, probe2, 2)},
+		},
+		{
+			name:      "a peer that moves from a stale bitmap to a mutual source restarts the wait",
+			vol:       peerSlot(drbd.DiskUpToDate, probe2),
+			st:        syncSource(1),
+			clock:     recoveryClock{stuck: armed(pastFloor, 1)},
+			want:      recoveryPlan{active: true},
+			wantClock: recoveryClock{stuck: armedMutual(now, 1, probe2, 0)},
+		},
+		{
+			name:      "a slot stamp that moves back is a republished slot, not a publication",
+			vol:       peerSlot(drbd.DiskUpToDate, probe0),
+			st:        syncSource(1),
+			clock:     recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
+			want:      recoveryPlan{active: true},
+			wantClock: recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
+		},
+		{
+			name:  "a sync source toward a peer that reads Inconsistent itself is a live resync",
+			vol:   peerSlot(drbd.DiskInconsistent, probe2),
+			st:    syncSource(1),
+			clock: recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
+		},
+		{
+			name:  "a sync source toward a peer with no status slot is left alone",
+			st:    syncSource(1),
+			clock: recoveryClock{stuck: armedMutual(pastFloor, 1, probe1, 1)},
 		},
 		{
 			name: "a split and a stuck resync are both planned for one pass",
@@ -664,6 +763,71 @@ func TestReconcileStalledTargetStabilityGate(t *testing.T) {
 			if parked {
 				t.Fatal("a gated stalled target must not park in the fast path")
 			}
+		})
+	}
+}
+
+// mutualSourceStatusJSON is one end of a resync with a source at both ends
+// (issue #675): this UpToDate leg SyncSource toward a peer it reads
+// Inconsistent, nothing moving.
+const mutualSourceStatusJSON = `[{"name":"pvc-1","role":"Secondary",
+	"devices":[{"disk-state":"UpToDate","quorum":true}],
+	"connections":[{"peer-node-id":1,"connection-state":"Connected","peer-role":"Secondary",
+		"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Inconsistent","percent-in-sync":0.24,"out-of-sync":8366800}]}]}]`
+
+// A sync source whose peer reports its own disk UpToDate is cycled once the
+// signature outlives the confirmation window and the peer has published its
+// slot twice since this leg armed. One publication is not enough (it can
+// carry a kernel reading older than the resync), and a peer that reports
+// itself Inconsistent is the target of a live resync.
+func TestReconcileMutualSourceCountsPeerPublications(t *testing.T) {
+	base := time.Now().Add(-time.Minute)
+	for name, tc := range map[string]struct {
+		peerDisk string
+		// publications is how many times the peer stamps its slot after
+		// this leg armed.
+		publications  int
+		armed, cycled bool
+	}{
+		"published twice":    {peerDisk: drbd.DiskUpToDate, publications: 2, armed: true, cycled: true},
+		"published once":     {peerDisk: drbd.DiskUpToDate, publications: 1, armed: true},
+		"never published":    {peerDisk: drbd.DiskUpToDate, armed: true},
+		"live resync target": {peerDisk: drbd.DiskInconsistent, publications: 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, fe := stuckResyncSetup(t)
+			fe.statusJSON = mutualSourceStatusJSON
+			publish := func(n int) {
+				setPeerSlot(t, r, func(s *miroirv1alpha1.ReplicaStatus) {
+					s.DiskState, s.LastProbedAt = tc.peerDisk, ptrTime(base.Add(time.Duration(n)*10*time.Second))
+				})
+			}
+			publish(0)
+			reconcile(t, r, volPvc1)
+			armed := r.recall(volPvc1).stuck != nil
+			if armed != tc.armed {
+				t.Fatalf("confirmation clock armed = %v, want %v", armed, tc.armed)
+			}
+			parked := r.recall(volPvc1).realized != nil
+			if tc.armed && parked {
+				t.Fatal("a mutual source candidate must not park in the fast path")
+			}
+			for n := 1; n <= tc.publications; n++ {
+				publish(n)
+				reconcile(t, r, volPvc1)
+				fe.notCalledWith(t, "drbdsetup disconnect")
+			}
+			if !tc.armed {
+				return
+			}
+			backdateStuck(t, r)
+			reconcile(t, r, volPvc1)
+			if !tc.cycled {
+				fe.notCalledWith(t, "drbdsetup disconnect")
+				return
+			}
+			fe.calledWith(t, "drbdsetup disconnect pvc-1 1")
+			fe.calledWith(t, "drbdsetup connect pvc-1 1")
 		})
 	}
 }

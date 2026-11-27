@@ -228,6 +228,13 @@ func peerReportedSplitBrain(vol *miroirv1alpha1.MiroirVolume, self string) bool 
 //     otherwise healthy (StaleBitmapPeers, behind staleBitmapActionable's
 //     gates — the same kernel shape is a verify finding, which stays
 //     manual).
+//   - A resync with a source at both ends (issue #675): the first case's
+//     stale handshake runs on both diskful legs at once, each takes the
+//     other's bitmap for a target's reply, and both settle SyncSource
+//     waiting for resync requests only a target sends. Each leg sees a
+//     live resync's source side, so the proof is the peer's status slot
+//     (mutualSourcePeers, mutualSourceProbes), and one leg of the pair
+//     acts (lowerNodeID).
 //
 // None drains in place: the kernel only reconciles a dirty bitmap on a
 // connection transition (its missed-end-of-resync rescue runs at connect),
@@ -260,6 +267,8 @@ func planStuckResync(vol *miroirv1alpha1.MiroirVolume, node string, st drbd.Stat
 		stalled = st.UnsettledResyncPeers
 		peers = mergePeers(peers, stalled)
 	}
+	mutual := mutualSourcePeers(vol, node, st)
+	peers = mergePeers(peers, mutual)
 	// A diskless leg holds no bitmap, so it can never be the stranded
 	// side; whatever it sees is a diskful pair's business to resolve.
 	if localDiskless || len(peers) == 0 {
@@ -268,17 +277,118 @@ func planStuckResync(vol *miroirv1alpha1.MiroirVolume, node string, st drbd.Stat
 		// kernel event re-breaks the fingerprint for.
 		return len(st.UnsettledResyncPeers) > 0, nil, nil
 	}
-	key := stuckPeerKey(peers)
+	key := stuckPeerKey(peers, mutual)
 	if mark == nil || mark.peers != key {
-		return true, nil, &stuckMark{since: now, peers: key}
+		return true, nil, &stuckMark{since: now, peers: key, probes: observeProbes(vol, mutual, nil)}
 	}
+	next = &stuckMark{since: mark.since, peers: key, probes: observeProbes(vol, mutual, mark.probes)}
 	if now.Sub(mark.since) < drbdPollInterval {
-		return true, nil, mark
+		return true, nil, next
 	}
 	for _, peerID := range slices.Sorted(maps.Keys(peers)) {
+		if mutual[peerID] {
+			probe := next.probes[peerID]
+			if probe.advances < mutualSourceProbes || !lowerNodeID(vol, node, peerID) {
+				continue
+			}
+			next.probes[peerID] = slotProbe{stamp: probe.stamp}
+		}
 		cycle = append(cycle, peerCycle{peerID: peerID, stalledTarget: stalled[peerID]})
 	}
-	return true, cycle, &stuckMark{since: now, peers: key}
+	if len(cycle) > 0 {
+		next.since = now
+	}
+	return true, cycle, next
+}
+
+// mutualSourcePeers returns the SyncSourcePeers whose own status slot
+// reports an UpToDate disk. DRBD holds a resync target's disk below
+// UpToDate from the bitmap exchange until the resync ends, so a peer this
+// leg syncs toward that reads UpToDate itself is no target: it is the
+// other source of a resync with none (issue #675). The slot may predate
+// the resync, so this only makes the peer a candidate; the slotProbe count
+// decides the cycle.
+//
+// Both legs of the pair see each other this way, and both must: a
+// candidate keeps a leg out of the fast path, whose full passes are what
+// publish the slot the other leg counts. A sync source whose peer reports
+// anything else is a live resync and parks as before, so a fault that
+// begins while the peer's slot lags is picked up by the next deep check.
+func mutualSourcePeers(vol *miroirv1alpha1.MiroirVolume, node string, st drbd.Status) map[int32]bool {
+	var peers map[int32]bool
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == node || !st.SyncSourcePeers[rep.NodeID] ||
+			vol.Status.PerNode[rep.Node].DiskState != drbd.DiskUpToDate {
+			continue
+		}
+		if peers == nil {
+			peers = map[int32]bool{}
+		}
+		peers[rep.NodeID] = true
+	}
+	return peers
+}
+
+// mutualSourceProbes is how many later LastProbedAt stamps this leg must
+// see on a mutualSourcePeers candidate's slot, still UpToDate, past the
+// stamp it armed on. A pass reads the kernel first and stamps LastProbedAt
+// last, so one publication can carry a reading older than the resync; a
+// second has to come from a later pass. That narrows the stale case
+// without closing it: nothing orders the peer's kernel reads against this
+// leg's, so a peer agent that samples just before a real resync starts
+// and then stops reporting for the rest of the window can still be
+// counted. The cost is a graceful cycle of a healthy resync, which resumes
+// from its bitmap. Only the peer's stamps are compared, each to the one
+// before, which keeps the two nodes' clocks out of it.
+const mutualSourceProbes = 2
+
+// slotProbe counts one candidate's status publications.
+type slotProbe struct {
+	// stamp is the LastProbedAt last seen, zero when the slot has none.
+	stamp time.Time
+	// advances counts the later stamps seen since the leg armed. A stamp
+	// that moves back is a republished slot (reportError), not a probe.
+	advances int
+}
+
+// observeProbes carries prev forward over this pass's view of the mutual
+// candidates' slots. Nil when there are none.
+func observeProbes(vol *miroirv1alpha1.MiroirVolume, mutual map[int32]bool, prev map[int32]slotProbe) map[int32]slotProbe {
+	if len(mutual) == 0 {
+		return nil
+	}
+	probes := make(map[int32]slotProbe, len(mutual))
+	for _, rep := range vol.Spec.Replicas {
+		if !mutual[rep.NodeID] {
+			continue
+		}
+		var stamp time.Time
+		if probed := vol.Status.PerNode[rep.Node].LastProbedAt; probed != nil {
+			stamp = probed.Time
+		}
+		probe, seen := prev[rep.NodeID]
+		switch {
+		case !seen:
+			probe = slotProbe{stamp: stamp}
+		case stamp.After(probe.stamp):
+			probe = slotProbe{stamp: stamp, advances: probe.advances + 1}
+		}
+		probes[rep.NodeID] = probe
+	}
+	return probes
+}
+
+// lowerNodeID reports whether this leg holds the lower DRBD node id of its
+// pair with peerID. Both legs of a mutual-source pair wear the signature,
+// and this picks the one that cycles, the same on both without
+// coordinating.
+func lowerNodeID(vol *miroirv1alpha1.MiroirVolume, node string, peerID int32) bool {
+	for _, rep := range vol.Spec.Replicas {
+		if rep.Node == node {
+			return rep.NodeID < peerID
+		}
+	}
+	return false
 }
 
 // mergePeers unions two candidate sets without mutating either.
@@ -296,11 +406,17 @@ func mergePeers(a, b map[int32]bool) map[int32]bool {
 type stuckMark struct {
 	since time.Time
 	peers string
+	// probes holds a slotProbe per mutualSourcePeers candidate; nil
+	// without one.
+	probes map[int32]slotProbe
 }
 
 // stuckPeerKey renders a candidate set in a stable form for stuckMark.
-func stuckPeerKey(peers map[int32]bool) string {
-	return fmt.Sprint(slices.Sorted(maps.Keys(peers)))
+// mutual, the candidates among peers that are there as a mutual source, is
+// part of the key: a peer that moves from another signature to that one
+// must not ride the clock the first armed.
+func stuckPeerKey(peers, mutual map[int32]bool) string {
+	return fmt.Sprint(slices.Sorted(maps.Keys(peers)), slices.Sorted(maps.Keys(mutual)))
 }
 
 // staleBitmapActionable reports whether the stale-bitmap candidates in
