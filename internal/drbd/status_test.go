@@ -310,6 +310,56 @@ func TestStatusStaleBitmapPeersPrimaryLeg(t *testing.T) {
 	}
 }
 
+// SyncSourcePeers flags every connected peer an UpToDate leg is SyncSource
+// toward, whatever is left to sync (issue #675); the other replication
+// states and a disconnected peer stay unflagged.
+func TestStatusSyncSourcePeers(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"UpToDate","quorum":true}],
+			"connections":[
+				{"peer-node-id":1,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Inconsistent","percent-in-sync":0.24,"out-of-sync":8366800}]},
+				{"peer-node-id":2,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Inconsistent","percent-in-sync":100,"out-of-sync":0}]},
+				{"peer-node-id":3,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"PausedSyncS","peer-disk-state":"Consistent","out-of-sync":4096}]},
+				{"peer-node-id":4,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"WFBitMapS","peer-disk-state":"Consistent","out-of-sync":4096}]},
+				{"peer-node-id":5,"connection-state":"Connected",
+					"peer_devices":[{"replication-state":"Established","peer-disk-state":"UpToDate","out-of-sync":0}]},
+				{"peer-node-id":6,"connection-state":"Connecting",
+					"peer_devices":[{"replication-state":"Off","peer-disk-state":"DUnknown","out-of-sync":4096}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.SyncSourcePeers) != 2 || !s.SyncSourcePeers[1] || !s.SyncSourcePeers[2] {
+		t.Fatalf("want peers 1 and 2 flagged sync source, got %v", s.SyncSourcePeers)
+	}
+}
+
+// Both ends of the stuck pair are UpToDate, so a leg whose own disk is not
+// flags none of its SyncSource peers.
+func TestStatusSyncSourcePeersNeedUpToDateDisk(t *testing.T) {
+	fe := &fakeExec{responses: map[string]string{
+		cmdDrbdsetupStatus: `[{"name":"` + volPvc1 + `","role":"Secondary",
+			"devices":[{"disk-state":"Inconsistent","quorum":true}],
+			"connections":[{"peer-node-id":1,"connection-state":"Connected",
+				"peer_devices":[{"replication-state":"SyncSource","peer-disk-state":"Inconsistent","out-of-sync":4096}]}]}]`,
+	}}
+	d := &Driver{StateDir: t.TempDir(), Exec: fe.run, Mknod: fakeMknod}
+	s, err := d.Status(t.Context(), volPvc1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.SyncSourcePeers != nil {
+		t.Fatalf("want no sync source peers on an Inconsistent leg, got %v", s.SyncSourcePeers)
+	}
+}
+
 // A healthy volume reports no stuck peers — nil, so fingerprint comparison
 // via maps.Equal treats it the same as an empty map.
 func TestStatusStuckResyncPeersNilWhenHealthy(t *testing.T) {

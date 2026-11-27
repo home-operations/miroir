@@ -471,6 +471,7 @@ func statusEqual(a, b drbd.Status) bool {
 		maps.Equal(a.StuckResyncPeers, b.StuckResyncPeers) &&
 		maps.Equal(a.StaleBitmapPeers, b.StaleBitmapPeers) &&
 		maps.Equal(a.UnsettledResyncPeers, b.UnsettledResyncPeers) &&
+		maps.Equal(a.SyncSourcePeers, b.SyncSourcePeers) &&
 		maps.Equal(a.PeerConnected, b.PeerConnected) &&
 		// A peer disk-state flip (DUnknown → Inconsistent at birth) can be
 		// the only change in a pass — without it the winner's fingerprint

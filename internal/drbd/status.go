@@ -81,7 +81,8 @@ const rolePrimary = "Primary"
 // other than Established/Off means an active resync or verify; VerifyS/VerifyT
 // narrow that to an online verify, and WFBitMapS is the source side of a
 // bitmap exchange — normally milliseconds, but parked forever when the peer
-// discarded the exchange (see Status.StuckResyncPeers).
+// discarded the exchange (see Status.StuckResyncPeers). SyncSource is the
+// source side of a running resync (see Status.SyncSourcePeers).
 const (
 	replEstablished = "Established"
 	replOff         = "Off"
@@ -89,6 +90,7 @@ const (
 	replVerifyT     = "VerifyT"
 	replWFBitMapS   = "WFBitMapS"
 	replWFBitMapT   = "WFBitMapT"
+	replSyncSource  = "SyncSource"
 )
 
 // Status reports this node's view of one resource.
@@ -182,6 +184,19 @@ type Status struct {
 	// Inconsistent and re-runs the handshake once the Primary is back in
 	// view), so the agent gates on that before acting. Nil when none.
 	UnsettledResyncPeers map[int32]bool
+	// SyncSourcePeers holds the DRBD node ids of connected peers this
+	// UpToDate leg is the resync source toward (replication SyncSource,
+	// which clamps the peer-disk Inconsistent). Every live resync wears
+	// this on its source side, so alone it says nothing. It is a fault
+	// when the peer wears it too: both ends of a stale after-unstable
+	// handshake (issue #390) can enter the bitmap exchange as source,
+	// each takes the other's bitmap for a target's reply, and both
+	// settle SyncSource waiting for resync requests only a target sends
+	// (issue #675). Nothing in this node's kernel view shows the peer's
+	// end, so the agent reads it off the peer's status slot before
+	// acting. Out-of-sync is no condition: a stuck pair's count falls as
+	// the consumer writes, like a live resync's. Nil when none.
+	SyncSourcePeers map[int32]bool
 }
 
 // drbdsetup status --json shapes (the fields miroir reads).
@@ -232,6 +247,25 @@ func (s jsonStatus) unsettledResyncPeers() map[int32]bool {
 				return nil
 			}
 			if c.ConnectionState == connConnected && pd.PeerDiskState == DiskUpToDate && pd.OutOfSyncKiB == 0 {
+				if peers == nil {
+					peers = map[int32]bool{}
+				}
+				peers[c.PeerNodeID] = true
+			}
+		}
+	}
+	return peers
+}
+
+// syncSourcePeers computes Status.SyncSourcePeers.
+func (s jsonStatus) syncSourcePeers() map[int32]bool {
+	if len(s.Devices) == 0 || s.Devices[0].DiskState != DiskUpToDate {
+		return nil
+	}
+	var peers map[int32]bool
+	for _, c := range s.Connections {
+		for _, pd := range c.PeerDevices {
+			if c.ConnectionState == connConnected && pd.ReplicationState == replSyncSource {
 				if peers == nil {
 					peers = map[int32]bool{}
 				}
@@ -361,5 +395,6 @@ func (d *Driver) Status(ctx context.Context, name string) (Status, error) {
 		}
 	}
 	s.UnsettledResyncPeers = res.unsettledResyncPeers()
+	s.SyncSourcePeers = res.syncSourcePeers()
 	return s, nil
 }

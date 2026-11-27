@@ -83,6 +83,21 @@ title: Troubleshooting
   `drbdsetup disconnect <res> <peer-node-id>` followed by
   `drbdsetup connect <res> <peer-node-id>` resyncs the flagged blocks
   from the UpToDate side.
+- **`MiroirVolumeOutOfSync` firing with both diskful legs `SyncSource`**:
+  each leg reads `UpToDate` itself, shows `replication:SyncSource` and
+  `peer-disk:Inconsistent` toward the other, and no data moves. A rapid
+  promote/demote of a diskless Primary ran a stale handshake on both
+  legs at once. The resync then has two sources and no target, as in
+  issue [#675](https://github.com/home-operations/miroir/issues/675).
+  The volume stays `Ready`. Snapshots, resizes and verifies wait for a
+  resync that never ends. Both legs report `UpToDate` in their own
+  status slots, which no real resync target does. The agent on the leg
+  with the lower DRBD node id sees that and cycles the connection,
+  usually within a few poll cycles. It emits `StuckResyncRecovered`. The other
+  leg's agent must keep publishing its status slot, because the acting
+  leg waits for two new publications of that slot. By hand,
+  `drbdsetup disconnect <res> <peer-node-id>` followed by
+  `drbdsetup connect <res> <peer-node-id>` on either leg clears it.
 - **Resync activity on every kopiur backup**: kopiur's staged PVC
   inherits the source PVC's StorageClass, so a replicated volume gets
   a replicated (and therefore syncing) staging volume once per backup
