@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.15](https://github.com/home-operations/miroir/compare/0.12.14...0.12.15) (2026-11-28)
+
+
+### Miscellaneous Chores
+
+* **npm:** update dependency astro-mermaid (2.2.0 → 2.2.1) ([#688](https://github.com/home-operations/miroir/issues/688)) ([4d0f17c](https://github.com/home-operations/miroir/commit/4d0f17c658db1214f57c28ee506f33d44565d644))
+
 ## [0.12.14](https://github.com/home-operations/miroir/compare/0.12.13...0.12.14) (2026-11-27)
 
 
